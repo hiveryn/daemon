@@ -1,29 +1,51 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
-type errorResponse struct {
-	Error   string `json:"error"`
-	Message string `json:"message"`
+func writeJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
+	env := domain.Envelope{
+		Data:     v,
+		Logs:     []domain.LogEntry{},
+		Commands: []any{},
+		Meta: domain.Meta{
+			RequestID: requestIDFromContext(r.Context()),
+		},
+	}
+	writeRawJSON(w, status, env)
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+func writeError(w http.ResponseWriter, r *http.Request, status int, code, message string, details any) {
+	env := domain.Envelope{
+		Error: &domain.ErrorBody{
+			Code:       code,
+			Message:    message,
+			Details:    details,
+			Stacktrace: string(debug.Stack()),
+		},
+		Logs:     []domain.LogEntry{},
+		Commands: []any{},
+		Meta: domain.Meta{
+			RequestID: requestIDFromContext(r.Context()),
+		},
+	}
+	writeRawJSON(w, status, env)
+}
+
+func writeRawJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 	}
-}
-
-func writeError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, errorResponse{Error: code, Message: message})
 }
 
 func decodeJSON(r *http.Request, dst any) error {
@@ -38,19 +60,19 @@ func decodeJSON(r *http.Request, dst any) error {
 	return nil
 }
 
-func mapDomainError(w http.ResponseWriter, err error) bool {
+func mapDomainError(w http.ResponseWriter, r *http.Request, err error) bool {
 	var validationErr *domain.ValidationError
 	if errors.As(err, &validationErr) {
-		writeError(w, http.StatusBadRequest, "validation_error", validationErr.Error())
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), validationErr.Error(), map[string]string{"field": validationErr.Field})
 		return true
 	}
 	var conflictErr *domain.ConflictError
 	if errors.As(err, &conflictErr) {
-		writeError(w, http.StatusConflict, "conflict", conflictErr.Error())
+		writeError(w, r, http.StatusConflict, string(domain.ErrCodeConflict), conflictErr.Error(), map[string]string{"resource": conflictErr.Resource, "field": conflictErr.Field})
 		return true
 	}
 	if errors.Is(err, domain.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "resource not found")
+		writeError(w, r, http.StatusNotFound, string(domain.ErrCodeNotFound), "resource not found", nil)
 		return true
 	}
 	return false
@@ -62,4 +84,9 @@ func logHandlerError(logger *slog.Logger, context, id string, err error) {
 	} else {
 		logger.Error(context, "error", err)
 	}
+}
+
+func requestIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(ctxKeyRequestID).(string)
+	return id
 }

@@ -53,3 +53,17 @@ Local state is stored at `~/Library/Application Support/Hiveryn/state.db`. This 
 | `DELETE` | `/api/agent-profiles/{id}` | Delete an agent profile |
 
 `agent_kind` must be `claude`, `codex`, or `opencode`.
+
+All responses use a standard envelope:
+
+```json
+{
+  "data": { ... },
+  "error": { "code": "VALIDATION", "message": "...", "details": { ... }, "stacktrace": "..." },
+  "logs": [],
+  "commands": [],
+  "meta": { "request_id": "..." }
+}
+```
+
+`data` and `error` are mutually exclusive. Error codes use uppercase snake_case: `VALIDATION`, `CONFLICT`, `NOT_FOUND`, `INTERNAL`.

@@ -90,6 +90,7 @@ Each resource is self-contained across four packages — no cross-contamination.
 - SQLite uses `SetMaxOpenConns(1)` (single-writer). Busy timeout is 5 seconds.
 - Never log secrets from profiles, env configs, or MCP configurations.
 - The architect folder's markdown is the source of truth for tickets and conclusions. SQLite stores local preferences and runtime state only. Deleting `state.db` must be recoverable by re-registering architect folders.
+- All API responses use a standard envelope (`domain.Envelope`) with `data`/`error` (mutually exclusive), `logs`, `commands`, and `meta.request_id`. Handlers write via `writeJSON(w, r, ...)` and `writeError(w, r, ...)` — envelope wrapping is automatic.
 
 ## Development
 

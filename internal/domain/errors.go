@@ -5,6 +5,15 @@ import (
 	"fmt"
 )
 
+type ErrorCode string
+
+const (
+	ErrCodeValidation ErrorCode = "VALIDATION"
+	ErrCodeConflict   ErrorCode = "CONFLICT"
+	ErrCodeNotFound   ErrorCode = "NOT_FOUND"
+	ErrCodeInternal   ErrorCode = "INTERNAL"
+)
+
 var ErrNotFound = errors.New("resource not found")
 
 type ValidationError struct {
@@ -24,4 +33,13 @@ type ConflictError struct {
 
 func (e *ConflictError) Error() string {
 	return fmt.Sprintf("%s %s: %s", e.Resource, e.Field, e.Message)
+}
+
+type NotFoundError struct {
+	Resource string
+	ID       string
+}
+
+func (e *NotFoundError) Error() string {
+	return fmt.Sprintf("%s %s not found", e.Resource, e.ID)
 }

@@ -34,7 +34,7 @@ func TestAgentProfileCRUD(t *testing.T) {
 	}
 
 	var created domain.AgentProfile
-	decodeResponse(t, createBody, &created)
+	decodeEnvelopeData(t, createBody, &created)
 	if created.ID == "" {
 		t.Fatal("expected created profile ID")
 	}
@@ -47,7 +47,7 @@ func TestAgentProfileCRUD(t *testing.T) {
 	var listed struct {
 		AgentProfiles []domain.AgentProfile `json:"agent_profiles"`
 	}
-	decodeResponse(t, listBody, &listed)
+	decodeEnvelopeData(t, listBody, &listed)
 	if len(listed.AgentProfiles) != 1 {
 		t.Fatalf("expected 1 profile, got %d", len(listed.AgentProfiles))
 	}
@@ -58,7 +58,7 @@ func TestAgentProfileCRUD(t *testing.T) {
 	}
 
 	var fetched domain.AgentProfile
-	decodeResponse(t, getBody, &fetched)
+	decodeEnvelopeData(t, getBody, &fetched)
 	if fetched.Name != created.Name {
 		t.Fatalf("expected fetched name %q, got %q", created.Name, fetched.Name)
 	}
@@ -76,7 +76,7 @@ func TestAgentProfileCRUD(t *testing.T) {
 	}
 
 	var updated domain.AgentProfile
-	decodeResponse(t, updateBody, &updated)
+	decodeEnvelopeData(t, updateBody, &updated)
 	if updated.Name != "Codex Exec" || updated.AgentKind != domain.AgentKindCodex {
 		t.Fatalf("unexpected updated profile: %#v", updated)
 	}
@@ -103,7 +103,7 @@ func TestHealth(t *testing.T) {
 	}
 
 	var payload map[string]string
-	decodeResponse(t, body, &payload)
+	decodeEnvelopeData(t, body, &payload)
 	if payload["status"] != "ok" {
 		t.Fatalf("expected health status ok, got %q", payload["status"])
 	}
@@ -129,10 +129,15 @@ func TestCreateAgentProfileDuplicateName(t *testing.T) {
 		t.Fatalf("expected duplicate create status %d, got %d: %s", http.StatusConflict, status, string(body))
 	}
 
-	var errResp errorResponse
-	decodeResponse(t, body, &errResp)
-	if errResp.Error != "conflict" {
-		t.Fatalf("expected error code 'conflict', got %q", errResp.Error)
+	errBody := decodeEnvelopeError(t, body)
+	if errBody.Code != string(domain.ErrCodeConflict) {
+		t.Fatalf("expected error code %q, got %q", domain.ErrCodeConflict, errBody.Code)
+	}
+	if errBody.Message == "" {
+		t.Fatal("expected non-empty error message")
+	}
+	if errBody.Stacktrace == "" {
+		t.Fatal("expected non-empty stacktrace")
 	}
 }
 
@@ -147,6 +152,14 @@ func TestCreateAgentProfileValidation(t *testing.T) {
 	})
 	if status != http.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, status, string(body))
+	}
+
+	errBody := decodeEnvelopeError(t, body)
+	if errBody.Code != string(domain.ErrCodeValidation) {
+		t.Fatalf("expected error code %q, got %q", domain.ErrCodeValidation, errBody.Code)
+	}
+	if errBody.Stacktrace == "" {
+		t.Fatal("expected non-empty stacktrace")
 	}
 }
 
@@ -195,12 +208,43 @@ func request(t *testing.T, handler http.Handler, method, path string, body io.Re
 	return resp.StatusCode, respBody
 }
 
-func decodeResponse(t *testing.T, body []byte, dst any) {
+func decodeEnvelopeData(t *testing.T, body []byte, dst any) {
 	t.Helper()
 
-	if err := json.Unmarshal(body, dst); err != nil {
-		t.Fatalf("decode response: %v\nbody: %s", err, string(body))
+	var env struct {
+		Data json.RawMessage `json:"data"`
+		Meta domain.Meta     `json:"meta"`
 	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("decode envelope: %v\nbody: %s", err, string(body))
+	}
+	if env.Meta.RequestID == "" {
+		t.Fatal("expected non-empty meta.request_id")
+	}
+	if dst != nil {
+		if err := json.Unmarshal(env.Data, dst); err != nil {
+			t.Fatalf("decode envelope data: %v\ndata: %s", err, string(env.Data))
+		}
+	}
+}
+
+func decodeEnvelopeError(t *testing.T, body []byte) domain.ErrorBody {
+	t.Helper()
+
+	var env struct {
+		Error domain.ErrorBody `json:"error"`
+		Meta  domain.Meta      `json:"meta"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("decode envelope error: %v\nbody: %s", err, string(body))
+	}
+	if env.Meta.RequestID == "" {
+		t.Fatal("expected non-empty meta.request_id")
+	}
+	if env.Error.Code == "" {
+		t.Fatal("expected non-empty error code in envelope")
+	}
+	return env.Error
 }
 
 func TestMain(m *testing.M) {
