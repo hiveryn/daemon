@@ -13,6 +13,7 @@ var migrationsFS embed.FS
 
 var migrationFiles = []string{
 	"migrations/0001_agent_profiles.sql",
+	"migrations/0002_agent_profiles_unique_name.sql",
 }
 
 func runMigrations(ctx context.Context, db *sql.DB) error {

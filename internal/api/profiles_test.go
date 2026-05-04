@@ -109,6 +109,33 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+func TestCreateAgentProfileDuplicateName(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(t)
+
+	payload := map[string]any{
+		"name":       "Duplicate Name",
+		"agent_kind": "claude",
+	}
+
+	status, _ := requestJSON(t, handler, http.MethodPost, "/api/agent-profiles", payload)
+	if status != http.StatusCreated {
+		t.Fatalf("first create should return %d, got %d", http.StatusCreated, status)
+	}
+
+	status, body := requestJSON(t, handler, http.MethodPost, "/api/agent-profiles", payload)
+	if status != http.StatusConflict {
+		t.Fatalf("expected duplicate create status %d, got %d: %s", http.StatusConflict, status, string(body))
+	}
+
+	var errResp errorResponse
+	decodeResponse(t, body, &errResp)
+	if errResp.Error != "conflict" {
+		t.Fatalf("expected error code 'conflict', got %q", errResp.Error)
+	}
+}
+
 func TestCreateAgentProfileValidation(t *testing.T) {
 	t.Parallel()
 

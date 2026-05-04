@@ -44,6 +44,11 @@ func mapDomainError(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusBadRequest, "validation_error", validationErr.Error())
 		return true
 	}
+	var conflictErr *domain.ConflictError
+	if errors.As(err, &conflictErr) {
+		writeError(w, http.StatusConflict, "conflict", conflictErr.Error())
+		return true
+	}
 	if errors.Is(err, domain.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "resource not found")
 		return true

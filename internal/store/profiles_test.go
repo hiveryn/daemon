@@ -68,6 +68,32 @@ func TestProfileStoreCRUD(t *testing.T) {
 	}
 }
 
+func TestCreateDuplicateName(t *testing.T) {
+	t.Parallel()
+
+	s := newTestProfileStore(t)
+	defer func() { _ = s.db.Close() }()
+
+	input := domain.AgentProfileInput{
+		Name:      "Duplicate Me",
+		AgentKind: domain.AgentKindClaude,
+	}
+
+	_, err := s.Create(context.Background(), input)
+	if err != nil {
+		t.Fatalf("first create should succeed: %v", err)
+	}
+
+	_, err = s.Create(context.Background(), input)
+	var conflictErr *domain.ConflictError
+	if !errors.As(err, &conflictErr) {
+		t.Fatalf("expected ConflictError, got %v", err)
+	}
+	if conflictErr.Resource != "agent_profile" || conflictErr.Field != "name" {
+		t.Fatalf("unexpected ConflictError: %#v", conflictErr)
+	}
+}
+
 func TestCreateValidatesAgentKind(t *testing.T) {
 	t.Parallel()
 

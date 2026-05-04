@@ -71,6 +71,13 @@ func (s *ProfileStore) Create(ctx context.Context, input domain.AgentProfileInpu
 		VALUES (?, ?, ?, ?, ?)
 	`, id, normalized.Name, string(normalized.AgentKind), argsJSON, envJSON)
 	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed: agent_profiles.name") {
+			return domain.AgentProfile{}, &domain.ConflictError{
+				Resource: "agent_profile",
+				Field:    "name",
+				Message:  "name already exists",
+			}
+		}
 		return domain.AgentProfile{}, fmt.Errorf("insert agent profile: %w", err)
 	}
 
@@ -109,6 +116,13 @@ func (s *ProfileStore) Update(ctx context.Context, id string, input domain.Agent
 		WHERE id = ?
 	`, normalized.Name, string(normalized.AgentKind), argsJSON, envJSON, id)
 	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed: agent_profiles.name") {
+			return domain.AgentProfile{}, &domain.ConflictError{
+				Resource: "agent_profile",
+				Field:    "name",
+				Message:  "name already exists",
+			}
+		}
 		return domain.AgentProfile{}, fmt.Errorf("update agent profile: %w", err)
 	}
 
