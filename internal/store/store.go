@@ -46,6 +46,10 @@ func Open(ctx context.Context, path string) (*sql.DB, error) {
 }
 
 func initialize(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		return fmt.Errorf("enable sqlite foreign keys: %w", err)
+	}
+
 	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
 		return fmt.Errorf("set sqlite busy timeout: %w", err)
 	}

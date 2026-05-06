@@ -39,7 +39,10 @@ func Run(configPath, databasePath string) error {
 	}()
 
 	profileRepo := store.NewProfileStore(db)
-	handler := api.NewHandler(profileRepo, logger)
+	groupRepo := store.NewArchitectGroupStore(db)
+	architectRepo := store.NewArchitectStore(db)
+	repoRepo := store.NewRepoStore(db)
+	handler := api.NewHandler(profileRepo, groupRepo, architectRepo, repoRepo, logger)
 
 	srv := server.New(cfg.BindAddress, cfg.Port, handler)
 	logger.Info("daemon listening", "addr", srv.Addr())

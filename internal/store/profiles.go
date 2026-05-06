@@ -2,9 +2,7 @@ package store
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -242,9 +240,5 @@ func marshalProfileJSON(args []string, env map[string]string) (string, string, e
 }
 
 func newProfileID() (string, error) {
-	buf := make([]byte, 8)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return "ap_" + hex.EncodeToString(buf), nil
+	return newResourceID("ap")
 }

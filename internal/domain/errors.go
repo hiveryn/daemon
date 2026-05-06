@@ -43,3 +43,7 @@ type NotFoundError struct {
 func (e *NotFoundError) Error() string {
 	return fmt.Sprintf("%s %s not found", e.Resource, e.ID)
 }
+
+func (e *NotFoundError) Unwrap() error {
+	return ErrNotFound
+}

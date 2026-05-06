@@ -51,8 +51,25 @@ Local state is stored at `~/Library/Application Support/Hiveryn/state.db`. This 
 | `GET` | `/api/agent-profiles/{id}` | Get one agent profile |
 | `PUT` | `/api/agent-profiles/{id}` | Update an agent profile |
 | `DELETE` | `/api/agent-profiles/{id}` | Delete an agent profile |
+| `GET` | `/api/architect-groups` | List architect groups |
+| `POST` | `/api/architect-groups` | Create an architect group |
+| `GET` | `/api/architect-groups/{id}` | Get one architect group |
+| `PATCH` | `/api/architect-groups/{id}` | Update an architect group |
+| `DELETE` | `/api/architect-groups/{id}` | Delete an architect group |
+| `GET` | `/api/architects` | List registered architects |
+| `POST` | `/api/architects` | Register an architect workspace |
+| `GET` | `/api/architects/{id}` | Get one registered architect |
+| `PATCH` | `/api/architects/{id}` | Update a registered architect |
+| `DELETE` | `/api/architects/{id}` | Delete a registered architect |
+| `GET` | `/api/architects/{id}/repos` | List repos for an architect |
+| `POST` | `/api/architects/{id}/repos` | Add a repo to an architect |
+| `GET` | `/api/architects/{id}/repos/{repoId}` | Get one architect repo |
+| `PATCH` | `/api/architects/{id}/repos/{repoId}` | Update an architect repo |
+| `DELETE` | `/api/architects/{id}/repos/{repoId}` | Delete an architect repo |
 
 `agent_kind` must be `claude`, `codex`, or `opencode`.
+
+Architect and repo `path` values must be absolute paths that already exist on disk.
 
 All responses use a standard envelope:
 

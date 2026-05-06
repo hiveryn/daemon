@@ -173,8 +173,11 @@ func newTestHandler(t *testing.T) http.Handler {
 	t.Cleanup(func() { _ = db.Close() })
 
 	repo := store.NewProfileStore(db)
+	groupRepo := store.NewArchitectGroupStore(db)
+	architectRepo := store.NewArchitectStore(db)
+	repoStore := store.NewRepoStore(db)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewHandler(repo, logger)
+	return NewHandler(repo, groupRepo, architectRepo, repoStore, logger)
 }
 
 func requestJSON(t *testing.T, handler http.Handler, method, path string, body any) (int, []byte) {
