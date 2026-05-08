@@ -35,6 +35,9 @@ func NewHandler(profileRepo domain.ProfileRepository, groupRepo domain.Architect
 	rh := &reposHandler{repo: repoRepo, logger: logger}
 
 	mux.HandleFunc("GET /api/health", handleHealth)
+	mux.HandleFunc("GET /api/system/home", func(w http.ResponseWriter, r *http.Request) {
+		handleSystemHome(w, r, logger)
+	})
 	mux.HandleFunc("GET /api/agent-profiles", ph.list)
 	mux.HandleFunc("POST /api/agent-profiles", ph.create)
 	mux.HandleFunc("GET /api/agent-profiles/{id}", ph.get)

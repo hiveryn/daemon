@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/hiveryn/daemon/internal/domain"
@@ -160,5 +162,43 @@ func TestArchitectRegistrationAPIValidationAndConflict(t *testing.T) {
 	errBody = decodeEnvelopeError(t, body)
 	if errBody.Code != string(domain.ErrCodeConflict) {
 		t.Fatalf("expected conflict code %q, got %q", domain.ErrCodeConflict, errBody.Code)
+	}
+}
+
+func TestArchitectRegistrationAPIFilePathRejected(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(t)
+
+	filePath := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(filePath, []byte("hello"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	status, body := requestJSON(t, handler, http.MethodPost, "/api/architects", map[string]any{"path": filePath})
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected validation status %d for file path, got %d: %s", http.StatusBadRequest, status, string(body))
+	}
+	errBody := decodeEnvelopeError(t, body)
+	if errBody.Code != string(domain.ErrCodeValidation) {
+		t.Fatalf("expected validation code %q, got %q", domain.ErrCodeValidation, errBody.Code)
+	}
+}
+
+func TestArchitectRegistrationAPINonexistentPathCreated(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(t)
+
+	base := t.TempDir()
+	newPath := filepath.Join(base, "new-architect-folder")
+
+	status, _ := requestJSON(t, handler, http.MethodPost, "/api/architects", map[string]any{"path": newPath})
+	if status != http.StatusCreated {
+		t.Fatalf("expected created status %d for non-existing path, got %d", http.StatusCreated, status)
+	}
+
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("expected directory to be created at %q, got: %v", newPath, err)
 	}
 }

@@ -68,6 +68,9 @@ func (s *ArchitectStore) Create(ctx context.Context, input domain.ArchitectInput
 	if err := ensureArchitectGroupExists(ctx, s.db, normalized.GroupID); err != nil {
 		return domain.Architect{}, err
 	}
+	if err := os.MkdirAll(normalized.Path, 0755); err != nil {
+		return domain.Architect{}, fmt.Errorf("create architect directory %q: %w", normalized.Path, err)
+	}
 
 	id, err := newResourceID("arc")
 	if err != nil {
@@ -354,11 +357,15 @@ func normalizeExistingAbsolutePath(field, value string) (string, error) {
 	if !filepath.IsAbs(value) {
 		return "", &domain.ValidationError{Field: field, Message: "must be an absolute path"}
 	}
-	if _, err := os.Stat(value); err != nil {
+	info, err := os.Stat(value)
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return "", &domain.ValidationError{Field: field, Message: "must exist on disk"}
+			return value, nil
 		}
 		return "", fmt.Errorf("stat %s %q: %w", field, value, err)
+	}
+	if !info.IsDir() {
+		return "", &domain.ValidationError{Field: field, Message: "must be a directory"}
 	}
 	return value, nil
 }

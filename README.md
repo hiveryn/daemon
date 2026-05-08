@@ -45,6 +45,7 @@ Local state is stored at `~/Library/Application Support/Hiveryn/state.db`. This 
 
 | Method | Path | Description |
 |---|---|---|
+| `GET` | `/api/system/home` | Get daemon host home directory |
 | `GET` | `/api/health` | Health check |
 | `GET` | `/api/agent-profiles` | List all agent profiles |
 | `POST` | `/api/agent-profiles` | Create an agent profile |
@@ -69,7 +70,7 @@ Local state is stored at `~/Library/Application Support/Hiveryn/state.db`. This 
 
 `agent_kind` must be `claude`, `codex`, or `opencode`.
 
-Architect and repo `path` values must be absolute paths that already exist on disk.
+Architect `path` values must be absolute paths. If the path does not exist, the daemon creates it. If it exists, it must be a directory. Repo `path` values must be absolute paths that already exist on disk.
 
 All responses use a standard envelope:
 
