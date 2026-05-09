@@ -2,53 +2,13 @@ package api
 
 import (
 	"net/http"
-	"os"
-	"path/filepath"
 	"testing"
-
-	"github.com/hiveryn/daemon/internal/domain"
 )
 
-func TestArchitectRegistrationAPI(t *testing.T) {
+func TestArchitectsReadOnlyAPI(t *testing.T) {
 	t.Parallel()
 
 	handler := newTestHandler(t)
-	architectPath := t.TempDir()
-	repoPath := t.TempDir()
-
-	groupStatus, groupBody := requestJSON(t, handler, http.MethodPost, "/api/architect-groups", map[string]any{"name": "Core"})
-	if groupStatus != http.StatusCreated {
-		t.Fatalf("expected group create status %d, got %d: %s", http.StatusCreated, groupStatus, string(groupBody))
-	}
-
-	var group domain.ArchitectGroup
-	decodeEnvelopeData(t, groupBody, &group)
-
-	architectStatus, architectBody := requestJSON(t, handler, http.MethodPost, "/api/architects", map[string]any{
-		"path":     architectPath,
-		"title":    "Hiveryn",
-		"group_id": group.ID,
-	})
-	if architectStatus != http.StatusCreated {
-		t.Fatalf("expected architect create status %d, got %d: %s", http.StatusCreated, architectStatus, string(architectBody))
-	}
-
-	var architect domain.Architect
-	decodeEnvelopeData(t, architectBody, &architect)
-	if architect.Group == nil || architect.Group.ID != group.ID {
-		t.Fatalf("expected architect group %q, got %#v", group.ID, architect.Group)
-	}
-
-	repoStatus, repoBody := requestJSON(t, handler, http.MethodPost, "/api/architects/"+architect.ID+"/repos", map[string]any{
-		"key":  "daemon",
-		"path": repoPath,
-	})
-	if repoStatus != http.StatusCreated {
-		t.Fatalf("expected repo create status %d, got %d: %s", http.StatusCreated, repoStatus, string(repoBody))
-	}
-
-	var repo domain.Repo
-	decodeEnvelopeData(t, repoBody, &repo)
 
 	listStatus, listBody := request(t, handler, http.MethodGet, "/api/architects", nil)
 	if listStatus != http.StatusOK {
@@ -56,149 +16,147 @@ func TestArchitectRegistrationAPI(t *testing.T) {
 	}
 
 	var listed struct {
-		Architects []domain.Architect `json:"architects"`
+		Architects []architectResponse `json:"architects"`
 	}
 	decodeEnvelopeData(t, listBody, &listed)
-	if len(listed.Architects) != 1 || listed.Architects[0].RepoCount != 1 {
-		t.Fatalf("unexpected architect list payload: %#v", listed.Architects)
+	if len(listed.Architects) != 2 {
+		t.Fatalf("expected 2 architects, got %d", len(listed.Architects))
+	}
+	if listed.Architects[0].Key != "hiveryn" {
+		t.Fatalf("expected sorted architect keys, got %#v", listed.Architects)
+	}
+	if len(listed.Architects[0].Repos) != 0 {
+		t.Fatalf("did not expect repos on architect list payload: %#v", listed.Architects[0])
 	}
 
-	getStatus, getBody := request(t, handler, http.MethodGet, "/api/architects/"+architect.ID, nil)
+	getStatus, getBody := request(t, handler, http.MethodGet, "/api/architects/hiveryn", nil)
 	if getStatus != http.StatusOK {
 		t.Fatalf("expected architect get status %d, got %d: %s", http.StatusOK, getStatus, string(getBody))
 	}
 
-	var fetched domain.Architect
-	decodeEnvelopeData(t, getBody, &fetched)
-	if len(fetched.Repos) != 1 || fetched.Repos[0].ID != repo.ID {
-		t.Fatalf("unexpected architect detail repos: %#v", fetched.Repos)
+	var architect architectResponse
+	decodeEnvelopeData(t, getBody, &architect)
+	if architect.Key != "hiveryn" || architect.Group != "personal" {
+		t.Fatalf("unexpected architect payload: %#v", architect)
 	}
-
-	updateStatus, updateBody := requestJSON(t, handler, http.MethodPatch, "/api/architects/"+architect.ID, map[string]any{
-		"title":    "Renamed",
-		"group_id": nil,
-	})
-	if updateStatus != http.StatusOK {
-		t.Fatalf("expected architect patch status %d, got %d: %s", http.StatusOK, updateStatus, string(updateBody))
-	}
-
-	var updated domain.Architect
-	decodeEnvelopeData(t, updateBody, &updated)
-	if updated.Title != "Renamed" || updated.Group != nil {
-		t.Fatalf("unexpected updated architect: %#v", updated)
-	}
-
-	repoUpdateStatus, repoUpdateBody := requestJSON(t, handler, http.MethodPatch, "/api/architects/"+architect.ID+"/repos/"+repo.ID, map[string]any{"path": nil})
-	if repoUpdateStatus != http.StatusBadRequest {
-		t.Fatalf("expected repo patch validation status %d, got %d: %s", http.StatusBadRequest, repoUpdateStatus, string(repoUpdateBody))
-	}
-
-	errBody := decodeEnvelopeError(t, repoUpdateBody)
-	if errBody.Code != string(domain.ErrCodeValidation) {
-		t.Fatalf("expected repo path validation code %q, got %q", domain.ErrCodeValidation, errBody.Code)
-	}
-
-	repoListStatus, repoListBody := request(t, handler, http.MethodGet, "/api/architects/"+architect.ID+"/repos", nil)
-	if repoListStatus != http.StatusOK {
-		t.Fatalf("expected repo list status %d, got %d: %s", http.StatusOK, repoListStatus, string(repoListBody))
-	}
-
-	var repoList struct {
-		Repos []domain.Repo `json:"repos"`
-	}
-	decodeEnvelopeData(t, repoListBody, &repoList)
-	if len(repoList.Repos) != 1 || repoList.Repos[0].ID != repo.ID {
-		t.Fatalf("unexpected repo list payload: %#v", repoList.Repos)
-	}
-
-	deleteStatus, deleteBody := request(t, handler, http.MethodDelete, "/api/architects/"+architect.ID, nil)
-	if deleteStatus != http.StatusNoContent {
-		t.Fatalf("expected architect delete status %d, got %d: %s", http.StatusNoContent, deleteStatus, string(deleteBody))
-	}
-
-	notFoundStatus, _ := request(t, handler, http.MethodGet, "/api/architects/"+architect.ID, nil)
-	if notFoundStatus != http.StatusNotFound {
-		t.Fatalf("expected deleted architect get status %d, got %d", http.StatusNotFound, notFoundStatus)
+	if len(architect.Repos) != 2 {
+		t.Fatalf("expected 2 repos on architect detail, got %#v", architect.Repos)
 	}
 }
 
-func TestArchitectRegistrationAPIValidationAndConflict(t *testing.T) {
-	t.Parallel()
-
-	handler := newTestHandler(t)
-	architectPath := t.TempDir()
-
-	status, body := requestJSON(t, handler, http.MethodPost, "/api/architects", map[string]any{"path": "relative/path"})
-	if status != http.StatusBadRequest {
-		t.Fatalf("expected validation status %d, got %d: %s", http.StatusBadRequest, status, string(body))
-	}
-	errBody := decodeEnvelopeError(t, body)
-	if errBody.Code != string(domain.ErrCodeValidation) {
-		t.Fatalf("expected validation code %q, got %q", domain.ErrCodeValidation, errBody.Code)
-	}
-
-	status, _ = requestJSON(t, handler, http.MethodPost, "/api/architects", map[string]any{"path": architectPath})
-	if status != http.StatusCreated {
-		t.Fatalf("expected first architect create status %d, got %d", http.StatusCreated, status)
-	}
-
-	var created domain.Architect
-	_, createdBody := requestJSON(t, handler, http.MethodPost, "/api/architects", map[string]any{"path": t.TempDir()})
-	decodeEnvelopeData(t, createdBody, &created)
-
-	status, body = requestJSON(t, handler, http.MethodPost, "/api/architects/"+created.ID+"/repos", map[string]any{"key": "daemon"})
-	if status != http.StatusBadRequest {
-		t.Fatalf("expected repo validation status %d, got %d: %s", http.StatusBadRequest, status, string(body))
-	}
-	errBody = decodeEnvelopeError(t, body)
-	if errBody.Code != string(domain.ErrCodeValidation) {
-		t.Fatalf("expected repo validation code %q, got %q", domain.ErrCodeValidation, errBody.Code)
-	}
-
-	status, body = requestJSON(t, handler, http.MethodPost, "/api/architects", map[string]any{"path": architectPath})
-	if status != http.StatusConflict {
-		t.Fatalf("expected conflict status %d, got %d: %s", http.StatusConflict, status, string(body))
-	}
-	errBody = decodeEnvelopeError(t, body)
-	if errBody.Code != string(domain.ErrCodeConflict) {
-		t.Fatalf("expected conflict code %q, got %q", domain.ErrCodeConflict, errBody.Code)
-	}
-}
-
-func TestArchitectRegistrationAPIFilePathRejected(t *testing.T) {
+func TestArchitectGroupsReadOnlyAPI(t *testing.T) {
 	t.Parallel()
 
 	handler := newTestHandler(t)
 
-	filePath := filepath.Join(t.TempDir(), "not-a-directory")
-	if err := os.WriteFile(filePath, []byte("hello"), 0644); err != nil {
-		t.Fatalf("failed to create test file: %v", err)
+	listStatus, listBody := request(t, handler, http.MethodGet, "/api/architect-groups", nil)
+	if listStatus != http.StatusOK {
+		t.Fatalf("expected group list status %d, got %d: %s", http.StatusOK, listStatus, string(listBody))
 	}
 
-	status, body := requestJSON(t, handler, http.MethodPost, "/api/architects", map[string]any{"path": filePath})
-	if status != http.StatusBadRequest {
-		t.Fatalf("expected validation status %d for file path, got %d: %s", http.StatusBadRequest, status, string(body))
+	var listed struct {
+		ArchitectGroups []architectGroupResponse `json:"architect_groups"`
 	}
-	errBody := decodeEnvelopeError(t, body)
-	if errBody.Code != string(domain.ErrCodeValidation) {
-		t.Fatalf("expected validation code %q, got %q", domain.ErrCodeValidation, errBody.Code)
+	decodeEnvelopeData(t, listBody, &listed)
+	if len(listed.ArchitectGroups) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(listed.ArchitectGroups))
+	}
+	if listed.ArchitectGroups[0].Name != "personal" {
+		t.Fatalf("unexpected group payload: %#v", listed.ArchitectGroups[0])
+	}
+	if len(listed.ArchitectGroups[0].Architects) != 2 {
+		t.Fatalf("expected 2 architects in group payload, got %#v", listed.ArchitectGroups[0].Architects)
+	}
+
+	getStatus, getBody := request(t, handler, http.MethodGet, "/api/architect-groups/personal", nil)
+	if getStatus != http.StatusOK {
+		t.Fatalf("expected group get status %d, got %d: %s", http.StatusOK, getStatus, string(getBody))
+	}
+
+	var group architectGroupResponse
+	decodeEnvelopeData(t, getBody, &group)
+	if group.Name != "personal" || len(group.Architects) != 2 {
+		t.Fatalf("unexpected group detail payload: %#v", group)
 	}
 }
 
-func TestArchitectRegistrationAPINonexistentPathCreated(t *testing.T) {
+func TestReposReadOnlyAPI(t *testing.T) {
 	t.Parallel()
 
 	handler := newTestHandler(t)
 
-	base := t.TempDir()
-	newPath := filepath.Join(base, "new-architect-folder")
-
-	status, _ := requestJSON(t, handler, http.MethodPost, "/api/architects", map[string]any{"path": newPath})
-	if status != http.StatusCreated {
-		t.Fatalf("expected created status %d for non-existing path, got %d", http.StatusCreated, status)
+	listStatus, listBody := request(t, handler, http.MethodGet, "/api/architects/hiveryn/repos", nil)
+	if listStatus != http.StatusOK {
+		t.Fatalf("expected repo list status %d, got %d: %s", http.StatusOK, listStatus, string(listBody))
 	}
 
-	if _, err := os.Stat(newPath); err != nil {
-		t.Fatalf("expected directory to be created at %q, got: %v", newPath, err)
+	var listed struct {
+		Repos []repoResponse `json:"repos"`
+	}
+	decodeEnvelopeData(t, listBody, &listed)
+	if len(listed.Repos) != 2 {
+		t.Fatalf("expected 2 repos, got %d", len(listed.Repos))
+	}
+	if listed.Repos[0].Key != "daemon" {
+		t.Fatalf("expected sorted repos, got %#v", listed.Repos)
+	}
+
+	getStatus, getBody := request(t, handler, http.MethodGet, "/api/architects/hiveryn/repos/desktop", nil)
+	if getStatus != http.StatusOK {
+		t.Fatalf("expected repo get status %d, got %d: %s", http.StatusOK, getStatus, string(getBody))
+	}
+
+	var repo repoResponse
+	decodeEnvelopeData(t, getBody, &repo)
+	if repo.Key != "desktop" || repo.Path == "" {
+		t.Fatalf("unexpected repo payload: %#v", repo)
+	}
+}
+
+func TestArchitectMutationEndpointsRemoved(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(t)
+
+	cases := []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodPost, path: "/api/architect-groups"},
+		{method: http.MethodPatch, path: "/api/architect-groups/personal"},
+		{method: http.MethodDelete, path: "/api/architect-groups/personal"},
+		{method: http.MethodPost, path: "/api/architects"},
+		{method: http.MethodPatch, path: "/api/architects/hiveryn"},
+		{method: http.MethodDelete, path: "/api/architects/hiveryn"},
+		{method: http.MethodPost, path: "/api/architects/hiveryn/repos"},
+		{method: http.MethodPatch, path: "/api/architects/hiveryn/repos/daemon"},
+		{method: http.MethodDelete, path: "/api/architects/hiveryn/repos/daemon"},
+	}
+
+	for _, tc := range cases {
+		status, _ := requestJSON(t, handler, tc.method, tc.path, map[string]any{"ignored": true})
+		if status != http.StatusMethodNotAllowed {
+			t.Fatalf("expected %s %s to return %d, got %d", tc.method, tc.path, http.StatusMethodNotAllowed, status)
+		}
+	}
+}
+
+func TestArchitectAndRepoNotFound(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(t)
+
+	cases := []string{
+		"/api/architects/missing",
+		"/api/architect-groups/missing",
+		"/api/architects/missing/repos",
+		"/api/architects/hiveryn/repos/missing",
+	}
+
+	for _, path := range cases {
+		status, body := request(t, handler, http.MethodGet, path, nil)
+		if status != http.StatusNotFound {
+			t.Fatalf("expected %s to return %d, got %d: %s", path, http.StatusNotFound, status, string(body))
+		}
 	}
 }

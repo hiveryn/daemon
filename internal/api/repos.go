@@ -1,91 +1,37 @@
 package api
 
-import (
-	"net/http"
-
-	"github.com/hiveryn/daemon/internal/domain"
-)
+import "net/http"
 
 func (h *reposHandler) list(w http.ResponseWriter, r *http.Request) {
-	architectID := r.PathValue("id")
-	repos, err := h.repo.List(r.Context(), architectID)
-	if err != nil {
-		if mapDomainError(w, r, err) {
-			return
-		}
-		logHandlerError(h.logger, "list repos failed", architectID, err)
-		writeError(w, r, http.StatusInternalServerError, "INTERNAL", "failed to list repos", nil)
+	architectKey := r.PathValue("key")
+	repos, ok := listRepos(h.config, architectKey)
+	if !ok {
+		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "architect "+architectKey+" not found", map[string]string{
+			"resource": "architect",
+			"id":       architectKey,
+		})
 		return
 	}
-	writeJSON(w, r, http.StatusOK, map[string][]domain.Repo{"repos": repos})
-}
-
-func (h *reposHandler) create(w http.ResponseWriter, r *http.Request) {
-	architectID := r.PathValue("id")
-	var input domain.RepoInput
-	if err := decodeJSON(r, &input); err != nil {
-		writeError(w, r, http.StatusBadRequest, "VALIDATION", err.Error(), nil)
-		return
-	}
-
-	repo, err := h.repo.Create(r.Context(), architectID, input)
-	if err != nil {
-		if mapDomainError(w, r, err) {
-			return
-		}
-		logHandlerError(h.logger, "create repo failed", architectID, err)
-		writeError(w, r, http.StatusInternalServerError, "INTERNAL", "failed to create repo", nil)
-		return
-	}
-	writeJSON(w, r, http.StatusCreated, repo)
+	writeJSON(w, r, http.StatusOK, map[string][]repoResponse{"repos": repos})
 }
 
 func (h *reposHandler) get(w http.ResponseWriter, r *http.Request) {
-	architectID := r.PathValue("id")
-	repoID := r.PathValue("repoId")
-	repo, err := h.repo.Get(r.Context(), architectID, repoID)
-	if err != nil {
-		if mapDomainError(w, r, err) {
-			return
-		}
-		logHandlerError(h.logger, "get repo failed", repoID, err)
-		writeError(w, r, http.StatusInternalServerError, "INTERNAL", "failed to load repo", nil)
+	architectKey := r.PathValue("key")
+	repoKey := r.PathValue("repoKey")
+	repo, architectExists, repoExists := getRepo(h.config, architectKey, repoKey)
+	if !architectExists {
+		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "architect "+architectKey+" not found", map[string]string{
+			"resource": "architect",
+			"id":       architectKey,
+		})
+		return
+	}
+	if !repoExists {
+		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "repo "+repoKey+" not found", map[string]string{
+			"resource": "repo",
+			"id":       repoKey,
+		})
 		return
 	}
 	writeJSON(w, r, http.StatusOK, repo)
-}
-
-func (h *reposHandler) update(w http.ResponseWriter, r *http.Request) {
-	architectID := r.PathValue("id")
-	repoID := r.PathValue("repoId")
-	var input domain.RepoUpdate
-	if err := decodeJSON(r, &input); err != nil {
-		writeError(w, r, http.StatusBadRequest, "VALIDATION", err.Error(), nil)
-		return
-	}
-
-	repo, err := h.repo.Update(r.Context(), architectID, repoID, input)
-	if err != nil {
-		if mapDomainError(w, r, err) {
-			return
-		}
-		logHandlerError(h.logger, "update repo failed", repoID, err)
-		writeError(w, r, http.StatusInternalServerError, "INTERNAL", "failed to update repo", nil)
-		return
-	}
-	writeJSON(w, r, http.StatusOK, repo)
-}
-
-func (h *reposHandler) delete(w http.ResponseWriter, r *http.Request) {
-	architectID := r.PathValue("id")
-	repoID := r.PathValue("repoId")
-	if err := h.repo.Delete(r.Context(), architectID, repoID); err != nil {
-		if mapDomainError(w, r, err) {
-			return
-		}
-		logHandlerError(h.logger, "delete repo failed", repoID, err)
-		writeError(w, r, http.StatusInternalServerError, "INTERNAL", "failed to delete repo", nil)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }

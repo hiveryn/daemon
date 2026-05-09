@@ -1,11 +1,11 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -16,20 +16,36 @@ const (
 	DefaultBindAddress = "127.0.0.1"
 	DefaultLogLevel    = "info"
 	configDirName      = ".hiveryn"
-	configFileName     = "daemon.yaml"
+	configFileName     = "config.yaml"
 )
 
 type Config struct {
-	Port        int    `json:"port" yaml:"port"`
-	BindAddress string `json:"bind_address" yaml:"bind_address"`
-	LogLevel    string `json:"log_level" yaml:"log_level"`
+	Port          int                           `yaml:"port"`
+	BindAddress   string                        `yaml:"bind_address"`
+	LogLevel      string                        `yaml:"log_level"`
+	AgentProfiles map[string]AgentProfileConfig `yaml:"agent_profiles"`
+	Architects    map[string]ArchitectConfig    `yaml:"architects"`
+}
+
+type AgentProfileConfig struct {
+	Agent string            `yaml:"agent"`
+	Args  []string          `yaml:"args"`
+	Env   map[string]string `yaml:"env"`
+}
+
+type ArchitectConfig struct {
+	Path  string            `yaml:"path"`
+	Group string            `yaml:"group"`
+	Repos map[string]string `yaml:"repos"`
 }
 
 func Default() Config {
 	return Config{
-		Port:        DefaultPort,
-		BindAddress: DefaultBindAddress,
-		LogLevel:    DefaultLogLevel,
+		Port:          DefaultPort,
+		BindAddress:   DefaultBindAddress,
+		LogLevel:      DefaultLogLevel,
+		AgentProfiles: map[string]AgentProfileConfig{},
+		Architects:    map[string]ArchitectConfig{},
 	}
 }
 
@@ -51,26 +67,24 @@ func Load(path string) (Config, error) {
 		}
 	}
 
-	cfg := Default()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			cfg := Default()
+			if err := cfg.Save(path); err != nil {
+				return Config{}, err
+			}
 			return cfg, nil
 		}
 		return Config{}, fmt.Errorf("read config %q: %w", path, err)
 	}
 
-	switch ext := strings.ToLower(filepath.Ext(path)); ext {
-	case ".json":
-		if err := json.Unmarshal(data, &cfg); err != nil {
-			return Config{}, fmt.Errorf("decode JSON config %q: %w", path, err)
-		}
-	default:
-		if err := yaml.Unmarshal(data, &cfg); err != nil {
-			return Config{}, fmt.Errorf("decode YAML config %q: %w", path, err)
-		}
+	cfg := Default()
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return Config{}, fmt.Errorf("decode YAML config %q: %w", path, err)
 	}
 
+	cfg.normalize()
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -87,6 +101,7 @@ func (c Config) Save(path string) error {
 		}
 	}
 
+	c.normalize()
 	if err := c.Validate(); err != nil {
 		return err
 	}
@@ -95,20 +110,7 @@ func (c Config) Save(path string) error {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 
-	var (
-		data []byte
-		err  error
-	)
-
-	switch ext := strings.ToLower(filepath.Ext(path)); ext {
-	case ".json":
-		data, err = json.MarshalIndent(c, "", "  ")
-		if err == nil {
-			data = append(data, '\n')
-		}
-	default:
-		data, err = yaml.Marshal(c)
-	}
+	data, err := yaml.Marshal(c)
 	if err != nil {
 		return fmt.Errorf("marshal config %q: %w", path, err)
 	}
@@ -133,7 +135,78 @@ func (c Config) Validate() error {
 		return fmt.Errorf("log_level is required")
 	}
 
+	profileNames := sortedKeys(c.AgentProfiles)
+	for _, name := range profileNames {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("agent_profiles keys must not be blank")
+		}
+		profile := c.AgentProfiles[name]
+		if strings.TrimSpace(profile.Agent) == "" {
+			return fmt.Errorf("agent_profiles.%s.agent is required", name)
+		}
+		for key := range profile.Env {
+			if strings.TrimSpace(key) == "" {
+				return fmt.Errorf("agent_profiles.%s.env keys must not be blank", name)
+			}
+		}
+	}
+
+	architectKeys := sortedKeys(c.Architects)
+	for _, key := range architectKeys {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("architects keys must not be blank")
+		}
+		architect := c.Architects[key]
+		if strings.TrimSpace(architect.Path) == "" {
+			return fmt.Errorf("architects.%s.path is required", key)
+		}
+		if strings.TrimSpace(architect.Group) == "" {
+			return fmt.Errorf("architects.%s.group is required", key)
+		}
+		for repoKey, repoPath := range architect.Repos {
+			if strings.TrimSpace(repoKey) == "" {
+				return fmt.Errorf("architects.%s.repos keys must not be blank", key)
+			}
+			if strings.TrimSpace(repoPath) == "" {
+				return fmt.Errorf("architects.%s.repos.%s is required", key, repoKey)
+			}
+		}
+	}
+
 	return nil
+}
+
+func (c *Config) normalize() {
+	if c.Port == 0 {
+		c.Port = DefaultPort
+	}
+	if strings.TrimSpace(c.BindAddress) == "" {
+		c.BindAddress = DefaultBindAddress
+	}
+	if strings.TrimSpace(c.LogLevel) == "" {
+		c.LogLevel = DefaultLogLevel
+	}
+	if c.AgentProfiles == nil {
+		c.AgentProfiles = map[string]AgentProfileConfig{}
+	}
+	for name, profile := range c.AgentProfiles {
+		if profile.Args == nil {
+			profile.Args = []string{}
+		}
+		if profile.Env == nil {
+			profile.Env = map[string]string{}
+		}
+		c.AgentProfiles[name] = profile
+	}
+	if c.Architects == nil {
+		c.Architects = map[string]ArchitectConfig{}
+	}
+	for key, architect := range c.Architects {
+		if architect.Repos == nil {
+			architect.Repos = map[string]string{}
+		}
+		c.Architects[key] = architect
+	}
 }
 
 func isLoopbackHost(host string) bool {
@@ -144,4 +217,13 @@ func isLoopbackHost(host string) bool {
 
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }

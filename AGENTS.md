@@ -6,7 +6,7 @@
 
 The daemon is the **single mutation and event hub** for Hiveryn. Every state change — whether initiated by the desktop app, an MCP tool call from a running agent, or a lifecycle event from `agentruntime` — flows through the daemon. It owns:
 
-- **Local state** (SQLite): agent profiles, architect folder registrations, repo mappings, active/recent sessions, terminal buffers, runtime events.
+- **Local state**: bootstrap config in `~/.hiveryn/config.yaml`; SQLite for sessions, terminal buffers, and runtime events.
 - **Agent lifecycle**: spawn, kill, and track agent processes through daemon-owned ptys; delegate launch/config synthesis to `agentruntime`.
 - **Filesystem mutations**: read/write architect folder markdown (tickets, conclusions, collabs). The architect folder is the shared source of truth; the daemon's SQLite is local-only.
 - **MCP tools**: exposed by the daemon so running agents can mutate project state (create tickets, conclude sessions) without direct filesystem access.
@@ -51,27 +51,27 @@ The daemon is the integration point. The desktop app, MCP tools, and agent proce
 cmd/hiverynd          entrypoint: flags → app.Run()
 internal/
   app/                dependency wiring, startup/shutdown orchestration
-  config/             bootstrap config (~/.hiveryn/daemon.yaml) — port, bind_address, log_level
-  domain/             pure types, repository interfaces, shared errors — zero imports of store/api
+  config/             bootstrap config (~/.hiveryn/config.yaml) — port, bind_address, profiles, architects
+  domain/             shared envelope/error/session types — zero imports of store/api
   server/             HTTP server lifecycle (Listen, Shutdown) — thin wrapper around net/http
   api/                HTTP handlers, routing, middleware (request ID, recovery, access logging), JSON helpers
-  store/              SQLite persistence: DB open, migration runner, per-resource repository implementations
+  store/              SQLite persistence: DB open, migration runner, session/event repository implementations
 ```
 
 **Key rules:**
 
 - `domain/` must not import `store/`, `api/`, or `server/`. It defines the contract everything else depends on.
-- `store/` implements repository interfaces from `domain/`.
-- `api/` handlers depend on `domain/` interfaces (e.g. `domain.ProfileRepository`), never on `store/` structs directly.
+- `store/` implements repository interfaces from `domain/` where runtime state is persisted in SQLite.
+- Config-backed read APIs read from the parsed `config.Config` snapshot, not SQLite.
 - `app/` wires everything together — it's the only package that imports both `store/` and `api/`.
 - `config/` is self-contained. Bootstrap config lives outside SQLite because the server needs it before the DB opens.
 
 ## Adding a new resource
 
-Example: adding a `sessions` table and API.
+Example: adding a SQLite-backed `sessions` table and API.
 
 1. **Domain** (`internal/domain/session.go`): `Session` struct, `SessionRepository` interface, any enums or validation errors.
-2. **Migration** (`internal/store/migrations/0002_sessions.sql`): CREATE TABLE. Add to `migrationFiles` slice in `internal/store/migrate.go`.
+2. **Migration** (`internal/store/migrations/0002_<resource>.sql`): CREATE TABLE. Add to `migrationFiles` slice in `internal/store/migrate.go`.
 3. **Repository** (`internal/store/sessions.go`): `SessionStore` struct implementing `domain.SessionRepository` with SQLite queries.
 4. **API** (`internal/api/sessions.go`): handlers using `domain.SessionRepository` interface. Use Go 1.24 method-pattern routing (`"POST /api/sessions"`).
 5. **Routes** (`internal/api/router.go`): register handler methods in `NewHandler`.
@@ -82,14 +82,14 @@ Each resource is self-contained across four packages — no cross-contamination.
 ## Design rules
 
 - Bind to localhost by default. Allow loopback-only addresses in config validation.
-- Use Go 1.24 stdlib `http.ServeMux` method-pattern routing (`"GET /api/agent-profiles/{id}"`). No third-party routers.
+- Use Go 1.24 stdlib `http.ServeMux` method-pattern routing (`"GET /api/agent-profiles/{name}"`). No third-party routers.
 - Prefer interfaces over concrete dependencies at handler boundaries.
 - One repository file per table/aggregate in `store/`. One handler file per resource in `api/`.
 - Migrations are idempotent, versioned, and run inside a transaction per file.
 - Access logging, panic recovery, and request IDs are enforced by middleware — not per-handler.
 - SQLite uses `SetMaxOpenConns(1)` (single-writer). Busy timeout is 5 seconds.
 - Never log secrets from profiles, env configs, or MCP configurations.
-- The architect folder's markdown is the source of truth for tickets and conclusions. SQLite stores local preferences and runtime state only. Deleting `state.db` must be recoverable by re-registering architect folders.
+- The architect folder's markdown is the source of truth for tickets and conclusions. `~/.hiveryn/config.yaml` is the source of truth for profiles, architects, and repo mappings. SQLite stores runtime state only.
 - All API responses use a standard envelope (`domain.Envelope`) with `data`/`error` (mutually exclusive), `logs`, `commands`, and `meta.request_id`. Handlers write via `writeJSON(w, r, ...)` and `writeError(w, r, ...)` — envelope wrapping is automatic.
 
 ## Development
