@@ -40,7 +40,7 @@ The daemon is the integration point. The desktop app, MCP tools, and agent proce
 | Phase | What the daemon owns | Status |
 |---|---|---|
 | Phase 2 — daemon core | Architect folder FS ops, ticket CRUD, conclusions, registered folders, repo mappings, agent profiles, HTTP API | **in progress** |
-| Phase 3 — MCP + first session | MCP tools, first architect spawn through daemon pty, `concludeSession` | planned |
+| Phase 3 — MCP + first session | MCP tools, first architect spawn through daemon pty, `concludeSession` | **in progress** |
 | Phase 4 — desktop shell | Pty WebSocket, app event stream (SSE/WS), session surface integration | planned |
 | Phase 5 — worker loop | Worker spawn from ticket repo key, repo mapping resolution, worker MCP tools, cancel/reject | planned |
 | Phase 6 — collab loop | Collab sessions, prompt/conclusion files, collab MCP tools, recent session history | planned |
@@ -55,6 +55,7 @@ internal/
   domain/             shared envelope/error/session types — zero imports of store/api
   server/             HTTP server lifecycle (Listen, Shutdown) — thin wrapper around net/http
   api/                HTTP handlers, routing, middleware (request ID, recovery, access logging), JSON helpers
+  sessionruntime/     architect session orchestration, agentruntime ingest bridge, daemon-owned PTY manager
   store/              SQLite persistence: DB open, migration runner, session/event repository implementations
 ```
 
@@ -64,6 +65,7 @@ internal/
 - `store/` implements repository interfaces from `domain/` where runtime state is persisted in SQLite.
 - Config-backed read APIs read from the parsed `config.Config` snapshot, not SQLite.
 - `app/` wires everything together — it's the only package that imports both `store/` and `api/`.
+- `sessionruntime/` owns live process/PTY state and bridges `agentruntime` events into persisted session events.
 - `config/` is self-contained. Bootstrap config lives outside SQLite because the server needs it before the DB opens.
 
 ## Adding a new resource
@@ -89,6 +91,7 @@ Each resource is self-contained across four packages — no cross-contamination.
 - Access logging, panic recovery, and request IDs are enforced by middleware — not per-handler.
 - SQLite uses `SetMaxOpenConns(1)` (single-writer). Busy timeout is 5 seconds.
 - Never log secrets from profiles, env configs, or MCP configurations.
+- PTY/process handles stay in memory under `sessionruntime`; SQLite stores session metadata and structured events only.
 - The architect folder's markdown is the source of truth for tickets and conclusions. `~/.hiveryn/config.yaml` is the source of truth for profiles, architects, and repo mappings. SQLite stores runtime state only.
 - All API responses use a standard envelope (`domain.Envelope`) with `data`/`error` (mutually exclusive), `logs`, `commands`, and `meta.request_id`. Handlers write via `writeJSON(w, r, ...)` and `writeError(w, r, ...)` — envelope wrapping is automatic.
 

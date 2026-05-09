@@ -104,7 +104,10 @@ func newTestHandler(t *testing.T) http.Handler {
 	t.Helper()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewHandler(testConfig(), logger)
+	return NewHandler(Dependencies{
+		Config: testConfig(),
+		Logger: logger,
+	})
 }
 
 func testConfig() config.Config {

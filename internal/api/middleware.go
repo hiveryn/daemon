@@ -1,10 +1,12 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 )
@@ -63,6 +65,31 @@ func (sw *statusWriter) WriteHeader(code int) {
 		sw.wroteHeader = true
 	}
 	sw.ResponseWriter.WriteHeader(code)
+}
+
+func (sw *statusWriter) Write(p []byte) (int, error) {
+	if !sw.wroteHeader {
+		sw.WriteHeader(http.StatusOK)
+	}
+	return sw.ResponseWriter.Write(p)
+}
+
+func (sw *statusWriter) Flush() {
+	if flusher, ok := sw.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (sw *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := sw.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	return hijacker.Hijack()
+}
+
+func (sw *statusWriter) Unwrap() http.ResponseWriter {
+	return sw.ResponseWriter
 }
 
 func generateRequestID() string {

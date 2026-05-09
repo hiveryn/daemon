@@ -4,15 +4,18 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/hiveryn/daemon/internal/api"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/server"
+	"github.com/hiveryn/daemon/internal/sessionruntime"
 	"github.com/hiveryn/daemon/internal/store"
 )
 
@@ -38,7 +41,21 @@ func Run(configPath, databasePath string) error {
 		}
 	}()
 
-	handler := api.NewHandler(cfg, logger)
+	sessionStore := store.NewSessionStore(db)
+	service, err := sessionruntime.New(ctx, cfg, sessionStore, logger, baseURL(cfg))
+	if err != nil {
+		return err
+	}
+	if err := service.FailRunningSessions(ctx); err != nil {
+		return err
+	}
+
+	handler := api.NewHandler(api.Dependencies{
+		Config:        cfg,
+		Logger:        logger,
+		Sessions:      service,
+		IngestHandler: service.IngestHandler(),
+	})
 
 	srv := server.New(cfg.BindAddress, cfg.Port, handler)
 	logger.Info("daemon listening", "addr", srv.Addr())
@@ -60,6 +77,9 @@ func Run(configPath, databasePath string) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if err := service.Shutdown(shutdownCtx); err != nil {
+		logger.Error("runtime shutdown failed", "error", err)
+	}
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return err
 	}
@@ -75,4 +95,8 @@ func newLogger(level string) (*slog.Logger, error) {
 	}
 	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slogLevel})
 	return slog.New(handler), nil
+}
+
+func baseURL(cfg config.Config) string {
+	return "http://" + net.JoinHostPort(cfg.BindAddress, strconv.Itoa(cfg.Port))
 }

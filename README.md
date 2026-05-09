@@ -54,10 +54,16 @@ Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to de
 | `GET` | `/api/architect-groups/{name}` | Get one architect group by name |
 | `GET` | `/api/architects` | List configured architects |
 | `GET` | `/api/architects/{key}` | Get one configured architect by key |
+| `POST` | `/api/architects/{key}/spawn` | Spawn an architect session using an agent profile |
 | `GET` | `/api/architects/{key}/repos` | List repos for an architect |
 | `GET` | `/api/architects/{key}/repos/{repoKey}` | Get one architect repo by key |
+| `GET` | `/api/sessions` | List sessions; supports `?status=running` |
+| `GET` | `/api/sessions/{id}` | Get one session |
+| `DELETE` | `/api/sessions/{id}` | Kill and delete a session |
+| `GET` | `/api/sessions/{id}/events` | Stream structured session events over SSE |
+| `WS` | `/ws/session/{id}` | Stream PTY output and send terminal input |
 
-These endpoints are read-only. Edit `~/.hiveryn/config.yaml` directly to change profiles, architects, or repos.
+Profile, architect, and repo configuration endpoints are read-only. Edit `~/.hiveryn/config.yaml` directly to change profiles, architects, or repos.
 
 All responses use a standard envelope:
 

@@ -1,12 +1,23 @@
 package api
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"sort"
 
 	"github.com/hiveryn/daemon/internal/config"
+	"github.com/hiveryn/daemon/internal/domain"
 )
+
+const ingestRoutePrefix = "/internal/agentruntime"
+
+type Dependencies struct {
+	Config        config.Config
+	Logger        *slog.Logger
+	Sessions      domain.SessionService
+	IngestHandler http.Handler
+}
 
 type profilesHandler struct {
 	config config.Config
@@ -19,13 +30,19 @@ type architectGroupsHandler struct {
 }
 
 type architectsHandler struct {
-	config config.Config
-	logger *slog.Logger
+	config   config.Config
+	logger   *slog.Logger
+	sessions domain.SessionService
 }
 
 type reposHandler struct {
 	config config.Config
 	logger *slog.Logger
+}
+
+type sessionsHandler struct {
+	logger   *slog.Logger
+	sessions domain.SessionService
 }
 
 type agentProfileResponse struct {
@@ -52,16 +69,17 @@ type repoResponse struct {
 	Path string `json:"path"`
 }
 
-func NewHandler(cfg config.Config, logger *slog.Logger) http.Handler {
+func NewHandler(deps Dependencies) http.Handler {
 	mux := http.NewServeMux()
-	ph := &profilesHandler{config: cfg, logger: logger}
-	gh := &architectGroupsHandler{config: cfg, logger: logger}
-	ah := &architectsHandler{config: cfg, logger: logger}
-	rh := &reposHandler{config: cfg, logger: logger}
+	ph := &profilesHandler{config: deps.Config, logger: deps.Logger}
+	gh := &architectGroupsHandler{config: deps.Config, logger: deps.Logger}
+	ah := &architectsHandler{config: deps.Config, logger: deps.Logger, sessions: deps.Sessions}
+	rh := &reposHandler{config: deps.Config, logger: deps.Logger}
+	sh := &sessionsHandler{logger: deps.Logger, sessions: deps.Sessions}
 
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("GET /api/system/home", func(w http.ResponseWriter, r *http.Request) {
-		handleSystemHome(w, r, logger)
+		handleSystemHome(w, r, deps.Logger)
 	})
 	mux.HandleFunc("GET /api/agent-profiles", ph.list)
 	mux.HandleFunc("GET /api/agent-profiles/{name}", ph.get)
@@ -69,10 +87,19 @@ func NewHandler(cfg config.Config, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /api/architect-groups/{name}", gh.get)
 	mux.HandleFunc("GET /api/architects", ah.list)
 	mux.HandleFunc("GET /api/architects/{key}", ah.get)
+	mux.HandleFunc("POST /api/architects/{key}/spawn", ah.spawn)
 	mux.HandleFunc("GET /api/architects/{key}/repos", rh.list)
 	mux.HandleFunc("GET /api/architects/{key}/repos/{repoKey}", rh.get)
+	mux.HandleFunc("GET /api/sessions", sh.list)
+	mux.HandleFunc("GET /api/sessions/{id}", sh.get)
+	mux.HandleFunc("DELETE /api/sessions/{id}", sh.delete)
+	mux.HandleFunc("GET /api/sessions/{id}/events", sh.events)
+	mux.HandleFunc("GET /ws/session/{id}", sh.ws)
+	if deps.IngestHandler != nil {
+		mux.Handle(ingestRoutePrefix+"/", deps.IngestHandler)
+	}
 
-	return requestID(recovery(accessLog(logger, mux)))
+	return requestID(recovery(accessLog(deps.Logger, mux)))
 }
 
 func listAgentProfiles(cfg config.Config) []agentProfileResponse {
@@ -207,4 +234,34 @@ func cloneStringMap(input map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
+	var validationErr *domain.ValidationError
+	if errors.As(err, &validationErr) {
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), validationErr.Error(), map[string]string{
+			"field": validationErr.Field,
+		})
+		return
+	}
+
+	var conflictErr *domain.ConflictError
+	if errors.As(err, &conflictErr) {
+		writeError(w, r, http.StatusConflict, string(domain.ErrCodeConflict), conflictErr.Error(), map[string]string{
+			"resource": conflictErr.Resource,
+			"field":    conflictErr.Field,
+		})
+		return
+	}
+
+	var notFoundErr *domain.NotFoundError
+	if errors.As(err, &notFoundErr) {
+		writeError(w, r, http.StatusNotFound, string(domain.ErrCodeNotFound), notFoundErr.Error(), map[string]string{
+			"resource": notFoundErr.Resource,
+			"id":       notFoundErr.ID,
+		})
+		return
+	}
+
+	writeError(w, r, http.StatusInternalServerError, string(domain.ErrCodeInternal), "internal server error", nil)
 }
