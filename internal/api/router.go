@@ -107,7 +107,7 @@ func listArchitects(cfg config.Config) []architectResponse {
 	keys := configKeys(cfg.Architects)
 	architects := make([]architectResponse, 0, len(keys))
 	for _, key := range keys {
-		architects = append(architects, buildArchitectResponse(key, cfg.Architects[key], false))
+		architects = append(architects, buildArchitectResponse(key, cfg.Architects[key], true))
 	}
 	return architects
 }

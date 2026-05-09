@@ -25,8 +25,11 @@ func TestArchitectsReadOnlyAPI(t *testing.T) {
 	if listed.Architects[0].Key != "hiveryn" {
 		t.Fatalf("expected sorted architect keys, got %#v", listed.Architects)
 	}
-	if len(listed.Architects[0].Repos) != 0 {
-		t.Fatalf("did not expect repos on architect list payload: %#v", listed.Architects[0])
+	if len(listed.Architects[0].Repos) != 2 {
+		t.Fatalf("expected 2 repos on architect list payload, got %#v", listed.Architects[0])
+	}
+	if listed.Architects[0].Repos[0].Key != "daemon" || listed.Architects[0].Repos[1].Key != "desktop" {
+		t.Fatalf("expected sorted repos on architect list payload, got %#v", listed.Architects[0].Repos)
 	}
 
 	getStatus, getBody := request(t, handler, http.MethodGet, "/api/architects/hiveryn", nil)
