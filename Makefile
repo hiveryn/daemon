@@ -1,7 +1,7 @@
 GO ?= go
 GOLANGCI_LINT ?= golangci-lint
 
-.PHONY: tidy vet test build lint
+.PHONY: tidy vet test build lint db-clean
 
 tidy:
 	$(GO) mod tidy
@@ -17,3 +17,6 @@ build:
 
 lint:
 	$(GOLANGCI_LINT) run ./...
+
+db-clean:
+	rm -f "$$HOME/.hiveryn/daemon.db"

@@ -40,7 +40,7 @@ architects: {}
 
 ## Data
 
-Local runtime state is stored at `~/Library/Application Support/Hiveryn/state.db`. This file is safe to delete — it will be recreated on next start. Profiles, architects, and repo mappings live in `~/.hiveryn/config.yaml`. Your architect workspace (tickets, conclusions) is stored separately as markdown files and is never affected.
+Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to delete — it will be recreated on next start. Profiles, architects, and repo mappings live in `~/.hiveryn/config.yaml`. Your architect workspace (tickets, conclusions) is stored separately as markdown files and is never affected.
 
 ## API
 

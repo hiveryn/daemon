@@ -15,7 +15,7 @@ func DefaultDBPath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	return filepath.Join(homeDir, "Library", "Application Support", "Hiveryn", "state.db"), nil
+	return filepath.Join(homeDir, ".hiveryn", "daemon.db"), nil
 }
 
 func Open(ctx context.Context, path string) (*sql.DB, error) {
@@ -25,10 +25,6 @@ func Open(ctx context.Context, path string) (*sql.DB, error) {
 		if err != nil {
 			return nil, err
 		}
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, fmt.Errorf("create state directory: %w", err)
 	}
 
 	db, err := sql.Open("sqlite", path)
