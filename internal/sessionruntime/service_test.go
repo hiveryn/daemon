@@ -18,15 +18,16 @@ func TestSpawnArchitectSessionMarksReservedSessionFailedWhenTerminalStartFails(t
 
 	repo := newFakeSessionRepository()
 	terminal := &fakeTerminalManager{startErr: errors.New("terminal unavailable")}
+	adapter := &fakeAdapter{}
 	service := &Service{
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg:    testRuntimeConfig(t),
 		repo:   repo,
 		receiver: ingest.NewReceiver(
-			fakeAdapter{},
+			adapter,
 		),
 		adapters: map[agentruntime.AgentKind]agentruntime.Adapter{
-			agentruntime.AgentCodex: fakeAdapter{},
+			agentruntime.AgentCodex: adapter,
 		},
 		terminal:      terminal,
 		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
@@ -50,6 +51,54 @@ func TestSpawnArchitectSessionMarksReservedSessionFailedWhenTerminalStartFails(t
 	if repo.updatedStatus != domain.SessionStatusFailed {
 		t.Fatalf("expected reserved session to be marked failed, got %q", repo.updatedStatus)
 	}
+	if adapter.ensureRequest.Marker != setupMarker {
+		t.Fatalf("expected setup marker %q, got %q", setupMarker, adapter.ensureRequest.Marker)
+	}
+	if adapter.ensureRequest.ConfigRoot != "/custom/codex" {
+		t.Fatalf("expected codex config root to come from profile env, got %q", adapter.ensureRequest.ConfigRoot)
+	}
+	if adapter.ensureRequest.Hook.Endpoint == "" {
+		t.Fatal("expected hook endpoint to be configured")
+	}
+}
+
+func TestSpawnArchitectSessionFailsWhenSetupFails(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	adapter := &fakeAdapter{ensureErr: errors.New("setup unavailable")}
+	service := &Service{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:    testRuntimeConfig(t),
+		repo:   repo,
+		receiver: ingest.NewReceiver(
+			adapter,
+		),
+		adapters: map[agentruntime.AgentKind]agentruntime.Adapter{
+			agentruntime.AgentCodex: adapter,
+		},
+		terminal:      &fakeTerminalManager{},
+		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels: map[string]func(){},
+	}
+
+	_, err := service.SpawnArchitectSession(context.Background(), domain.SpawnArchitectSessionRequest{
+		ArchitectKey: "hiveryn",
+		ProfileName:  "codex",
+	})
+	if err == nil {
+		t.Fatal("expected setup error")
+	}
+
+	if repo.createdSession.ID == "" {
+		t.Fatal("expected session to be reserved before setup failure")
+	}
+	if adapter.ensureRequest.ConfigRoot != "/custom/codex" {
+		t.Fatalf("expected setup to use profile config root, got %q", adapter.ensureRequest.ConfigRoot)
+	}
+	if repo.updatedStatus != domain.SessionStatusFailed {
+		t.Fatalf("expected reserved session to be marked failed, got %q", repo.updatedStatus)
+	}
 }
 
 func testRuntimeConfig(t *testing.T) config.Config {
@@ -59,6 +108,9 @@ func testRuntimeConfig(t *testing.T) config.Config {
 		AgentProfiles: map[string]config.AgentProfileConfig{
 			"codex": {
 				Agent: "codex",
+				Env: map[string]string{
+					"CODEX_HOME": "/custom/codex",
+				},
 			},
 		},
 		Architects: map[string]config.ArchitectConfig{
@@ -71,7 +123,10 @@ func testRuntimeConfig(t *testing.T) config.Config {
 	}
 }
 
-type fakeAdapter struct{}
+type fakeAdapter struct {
+	ensureRequest agentruntime.SetupRequest
+	ensureErr     error
+}
 
 func (fakeAdapter) Agent() agentruntime.AgentKind {
 	return agentruntime.AgentCodex
@@ -84,11 +139,15 @@ func (fakeAdapter) PrepareLaunch(context.Context, agentruntime.StartRequest) (ag
 	}, nil
 }
 
-func (fakeAdapter) EnsureSetup(context.Context, agentruntime.SetupRequest) (agentruntime.SetupResult, error) {
+func (f *fakeAdapter) EnsureSetup(_ context.Context, req agentruntime.SetupRequest) (agentruntime.SetupResult, error) {
+	f.ensureRequest = req
+	if f.ensureErr != nil {
+		return agentruntime.SetupResult{}, f.ensureErr
+	}
 	return agentruntime.SetupResult{}, nil
 }
 
-func (fakeAdapter) RemoveSetup(context.Context, agentruntime.SetupRequest) (agentruntime.SetupResult, error) {
+func (f *fakeAdapter) RemoveSetup(context.Context, agentruntime.SetupRequest) (agentruntime.SetupResult, error) {
 	return agentruntime.SetupResult{}, nil
 }
 

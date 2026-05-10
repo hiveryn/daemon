@@ -32,6 +32,7 @@ type Service struct {
 	logger     *slog.Logger
 	cfg        config.Config
 	repo       domain.SessionRepository
+	baseURL    string
 	receiver   *ingest.Receiver
 	ingestHTTP http.Handler
 
@@ -64,29 +65,6 @@ func New(ctx context.Context, cfg config.Config, repo domain.SessionRepository, 
 	}
 	receiver := ingest.NewReceiver(claudeAdapter, codexAdapter, openCodeAdapter)
 
-	setupRequests := map[agentruntime.AgentKind]agentruntime.SetupRequest{
-		agentruntime.AgentClaude: {
-			Marker: setupMarker,
-			Hook:   claude.HookCommand(baseURL + ingestPathPrefix),
-		},
-		agentruntime.AgentCodex: {
-			Marker: setupMarker,
-			Hook:   artcodex.HookCommand(baseURL + ingestPathPrefix),
-		},
-		agentruntime.AgentOpenCode: {
-			Marker: setupMarker,
-			Hook: agentruntime.HookCommand{
-				Endpoint: baseURL + ingestPathPrefix,
-			},
-		},
-	}
-
-	for agent, adapter := range adapters {
-		if _, err := adapter.EnsureSetup(ctx, setupRequests[agent]); err != nil {
-			return nil, fmt.Errorf("ensure %s setup: %w", agent, err)
-		}
-	}
-
 	mux := http.NewServeMux()
 	mux.Handle("/claude", receiver.Handler(agentruntime.AgentClaude))
 	mux.Handle("/codex", receiver.Handler(agentruntime.AgentCodex))
@@ -96,6 +74,7 @@ func New(ctx context.Context, cfg config.Config, repo domain.SessionRepository, 
 		logger:        logger,
 		cfg:           cfg,
 		repo:          repo,
+		baseURL:       baseURL,
 		receiver:      receiver,
 		ingestHTTP:    http.StripPrefix(ingestPathPrefix, mux),
 		adapters:      adapters,
@@ -144,6 +123,10 @@ func (s *Service) SpawnArchitectSession(ctx context.Context, req domain.SpawnArc
 	}
 
 	adapter := s.adapters[agentKind]
+	if _, err := adapter.EnsureSetup(ctx, setupRequestForAgent(agentKind, s.baseURL+ingestPathPrefix, profile.Env)); err != nil {
+		s.markSessionFailed(session.ID, "ensure setup")
+		return domain.SpawnArchitectSessionResult{}, fmt.Errorf("ensure %s setup: %w", agentKind, err)
+	}
 	spec, err := adapter.PrepareLaunch(ctx, agentruntime.StartRequest{
 		ID:           session.ID,
 		Agent:        agentKind,
@@ -177,6 +160,40 @@ func (s *Service) SpawnArchitectSession(ctx context.Context, req domain.SpawnArc
 	}
 
 	return domain.SpawnArchitectSessionResult{Session: session}, nil
+}
+
+func setupRequestForAgent(agentKind agentruntime.AgentKind, endpoint string, env map[string]string) agentruntime.SetupRequest {
+	return agentruntime.SetupRequest{
+		Marker:     setupMarker,
+		ConfigRoot: configRootForAgent(agentKind, env),
+		Hook:       hookCommandForAgent(agentKind, endpoint),
+	}
+}
+
+func configRootForAgent(agentKind agentruntime.AgentKind, env map[string]string) string {
+	switch agentKind {
+	case agentruntime.AgentCodex:
+		return env["CODEX_HOME"]
+	case agentruntime.AgentClaude:
+		return ""
+	case agentruntime.AgentOpenCode:
+		return ""
+	default:
+		return ""
+	}
+}
+
+func hookCommandForAgent(agentKind agentruntime.AgentKind, endpoint string) agentruntime.HookCommand {
+	switch agentKind {
+	case agentruntime.AgentClaude:
+		return claude.HookCommand(endpoint)
+	case agentruntime.AgentCodex:
+		return artcodex.HookCommand(endpoint)
+	case agentruntime.AgentOpenCode:
+		return agentruntime.HookCommand{Endpoint: endpoint}
+	default:
+		return agentruntime.HookCommand{Endpoint: endpoint}
+	}
 }
 
 func (s *Service) TerminateSession(ctx context.Context, id string) error {
