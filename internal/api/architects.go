@@ -34,15 +34,26 @@ func (h *architectsHandler) spawn(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	var request struct {
 		ProfileName string `json:"profile_name"`
+		Cols        uint16 `json:"cols,omitempty"`
+		Rows        uint16 `json:"rows,omitempty"`
 	}
 	if err := decodeJSON(r, &request); err != nil {
 		writeError(w, r, http.StatusBadRequest, "VALIDATION", err.Error(), nil)
 		return
 	}
 
+	h.logger.Info("[spawn] request",
+		"architect_key", key,
+		"profile_name", request.ProfileName,
+		"cols", request.Cols,
+		"rows", request.Rows,
+	)
+
 	result, err := h.sessions.SpawnArchitectSession(r.Context(), domain.SpawnArchitectSessionRequest{
 		ArchitectKey: key,
 		ProfileName:  request.ProfileName,
+		Cols:         request.Cols,
+		Rows:         request.Rows,
 	})
 	if err != nil {
 		writeDomainError(w, r, err)

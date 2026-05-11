@@ -147,8 +147,12 @@ func (h *sessionsHandler) ws(w http.ResponseWriter, r *http.Request) {
 
 	errCh := make(chan error, 2)
 	go func() {
+		// PTY output is a raw byte stream that may include incomplete UTF-8 sequences
+		// (multi-byte chars split across read chunks) or non-text control bytes.
+		// Use BinaryMessage; TextMessage requires valid UTF-8 per RFC 6455 and the
+		// peer will close with 1007 on the first split codepoint.
 		for chunk := range attachment.Output() {
-			if err := conn.WriteMessage(websocket.TextMessage, chunk); err != nil {
+			if err := conn.WriteMessage(websocket.BinaryMessage, chunk); err != nil {
 				errCh <- err
 				return
 			}
@@ -156,10 +160,13 @@ func (h *sessionsHandler) ws(w http.ResponseWriter, r *http.Request) {
 		errCh <- nil
 	}()
 
+	sessionID := r.PathValue("id")
+	h.logger.Info("[ws] attached", "session_id", sessionID)
 	go func() {
 		for {
 			messageType, payload, err := conn.ReadMessage()
 			if err != nil {
+				h.logger.Info("[ws] read goroutine exit", "session_id", sessionID, "err", err)
 				errCh <- err
 				return
 			}
@@ -173,16 +180,19 @@ func (h *sessionsHandler) ws(w http.ResponseWriter, r *http.Request) {
 				Rows uint16 `json:"rows"`
 			}
 			if err := json.Unmarshal(payload, &resize); err == nil && resize.Type == "resize" {
+				h.logger.Info("[ws] resize", "session_id", sessionID, "cols", resize.Cols, "rows", resize.Rows)
 				if resize.Cols > 0 && resize.Rows > 0 {
+					// A transient resize failure (e.g. EBADF during teardown) must NOT tear down
+					// the whole WebSocket. Log and continue — input must keep flowing.
 					if err := attachment.Resize(resize.Cols, resize.Rows); err != nil {
-						errCh <- err
-						return
+						h.logger.Warn("[ws] resize error (ignored)", "session_id", sessionID, "err", err)
 					}
 				}
 				continue
 			}
 
 			if err := attachment.Write(payload); err != nil {
+				h.logger.Info("[ws] write error", "session_id", sessionID, "err", err)
 				errCh <- err
 				return
 			}

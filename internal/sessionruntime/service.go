@@ -144,13 +144,20 @@ func (s *Service) SpawnArchitectSession(ctx context.Context, req domain.SpawnArc
 	cancelBridge := s.startReceiverBridge(session.ID)
 	s.storeBridgeCancel(session.ID, cancelBridge)
 
+	s.logger.Info("[spawn] starting PTY",
+		"session_id", session.ID,
+		"requested_cols", req.Cols,
+		"requested_rows", req.Rows,
+		"command", spec.Command,
+	)
+
 	if err := s.terminal.Start(ctx, terminalStartSpec{
 		ID:           session.ID,
 		Command:      spec.Command,
 		Args:         append([]string(nil), spec.Args...),
 		Env:          cloneStringMap(spec.Env),
 		Workdir:      spec.Workdir,
-		Size:         terminalSize{Cols: defaultPTYCols, Rows: defaultPTYRows},
+		Size:         terminalSize{Cols: req.Cols, Rows: req.Rows},
 		CleanupPaths: append([]string(nil), spec.CleanupPaths...),
 		OnExit:       s.handleTerminalExit,
 	}); err != nil {

@@ -84,6 +84,8 @@ type SessionRepository interface {
 type SpawnArchitectSessionRequest struct {
 	ArchitectKey string
 	ProfileName  string
+	Cols         uint16
+	Rows         uint16
 }
 
 type SpawnArchitectSessionResult struct {

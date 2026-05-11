@@ -37,6 +37,8 @@ func TestSpawnArchitectSessionMarksReservedSessionFailedWhenTerminalStartFails(t
 	_, err := service.SpawnArchitectSession(context.Background(), domain.SpawnArchitectSessionRequest{
 		ArchitectKey: "hiveryn",
 		ProfileName:  "codex",
+		Cols:         132,
+		Rows:         48,
 	})
 	if err == nil {
 		t.Fatal("expected terminal start error")
@@ -47,6 +49,9 @@ func TestSpawnArchitectSessionMarksReservedSessionFailedWhenTerminalStartFails(t
 	}
 	if terminal.startSpec.ID != repo.createdSession.ID {
 		t.Fatalf("expected terminal to start reserved session %q, got %q", repo.createdSession.ID, terminal.startSpec.ID)
+	}
+	if terminal.startSpec.Size.Cols != 132 || terminal.startSpec.Size.Rows != 48 {
+		t.Fatalf("expected terminal start size to use requested dimensions, got %#v", terminal.startSpec.Size)
 	}
 	if repo.updatedStatus != domain.SessionStatusFailed {
 		t.Fatalf("expected reserved session to be marked failed, got %q", repo.updatedStatus)
@@ -85,6 +90,8 @@ func TestSpawnArchitectSessionFailsWhenSetupFails(t *testing.T) {
 	_, err := service.SpawnArchitectSession(context.Background(), domain.SpawnArchitectSessionRequest{
 		ArchitectKey: "hiveryn",
 		ProfileName:  "codex",
+		Cols:         120,
+		Rows:         40,
 	})
 	if err == nil {
 		t.Fatal("expected setup error")

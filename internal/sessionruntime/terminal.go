@@ -113,6 +113,12 @@ func (m *ptyTerminalManager) Start(ctx context.Context, spec terminalStartSpec) 
 	cmd.Dir = spec.Workdir
 	cmd.Env = mergeProcessEnv(spec.Env)
 
+	m.logger.Info("[pty] start",
+		"session_id", spec.ID,
+		"cols", spec.Size.Cols,
+		"rows", spec.Size.Rows,
+	)
+
 	ptyFile, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: spec.Size.Cols, Rows: spec.Size.Rows})
 	if err != nil {
 		m.remove(spec.ID)
@@ -306,9 +312,15 @@ func (p *terminalProcess) resize(cols, rows uint16) error {
 	closing := p.closing
 	p.mu.Unlock()
 	if closing || ptyFile == nil {
+		p.logger.Info("[pty] resize skipped (closing)", "cols", cols, "rows", rows)
 		return fmt.Errorf("session is closing")
 	}
-	return pty.Setsize(ptyFile, &pty.Winsize{Cols: cols, Rows: rows})
+	p.logger.Info("[pty] resize", "cols", cols, "rows", rows)
+	if err := pty.Setsize(ptyFile, &pty.Winsize{Cols: cols, Rows: rows}); err != nil {
+		p.logger.Warn("[pty] resize failed", "cols", cols, "rows", rows, "err", err)
+		return err
+	}
+	return nil
 }
 
 func (p *terminalProcess) detach(subID uint64) {

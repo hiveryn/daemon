@@ -26,7 +26,7 @@ func TestArchitectSpawnEndpoint(t *testing.T) {
 	}
 	handler := newSessionTestHandler(t, service)
 
-	status, body := request(t, handler, http.MethodPost, "/api/architects/hiveryn/spawn", strings.NewReader(`{"profile_name":"claude-sonnet"}`))
+	status, body := request(t, handler, http.MethodPost, "/api/architects/hiveryn/spawn", strings.NewReader(`{"profile_name":"claude-sonnet","cols":120,"rows":40}`))
 	if status != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, status, string(body))
 	}
@@ -41,6 +41,9 @@ func TestArchitectSpawnEndpoint(t *testing.T) {
 	}
 	if service.lastSpawn.ArchitectKey != "hiveryn" || service.lastSpawn.ProfileName != "claude-sonnet" {
 		t.Fatalf("unexpected spawn request: %#v", service.lastSpawn)
+	}
+	if service.lastSpawn.Cols != 120 || service.lastSpawn.Rows != 40 {
+		t.Fatalf("unexpected spawn dimensions: %#v", service.lastSpawn)
 	}
 }
 
