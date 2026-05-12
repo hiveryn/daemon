@@ -16,6 +16,7 @@ type Dependencies struct {
 	Config        config.Config
 	Logger        *slog.Logger
 	Sessions      domain.SessionService
+	Tickets       domain.TicketService
 	IngestHandler http.Handler
 }
 
@@ -43,6 +44,12 @@ type reposHandler struct {
 type sessionsHandler struct {
 	logger   *slog.Logger
 	sessions domain.SessionService
+}
+
+type ticketsHandler struct {
+	config  config.Config
+	logger  *slog.Logger
+	tickets domain.TicketService
 }
 
 type agentProfileResponse struct {
@@ -76,6 +83,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	ah := &architectsHandler{config: deps.Config, logger: deps.Logger, sessions: deps.Sessions}
 	rh := &reposHandler{config: deps.Config, logger: deps.Logger}
 	sh := &sessionsHandler{logger: deps.Logger, sessions: deps.Sessions}
+	th := &ticketsHandler{config: deps.Config, logger: deps.Logger, tickets: deps.Tickets}
 
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("GET /api/system/home", func(w http.ResponseWriter, r *http.Request) {
@@ -88,6 +96,13 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/architects", ah.list)
 	mux.HandleFunc("GET /api/architects/{key}", ah.get)
 	mux.HandleFunc("POST /api/architects/{key}/spawn", ah.spawn)
+	mux.HandleFunc("GET /api/architects/{key}/tickets", th.list)
+	mux.HandleFunc("POST /api/architects/{key}/tickets", th.create)
+	mux.HandleFunc("GET /api/architects/{key}/tickets/{id}", th.get)
+	mux.HandleFunc("PATCH /api/architects/{key}/tickets/{id}", th.edit)
+	mux.HandleFunc("PATCH /api/architects/{key}/tickets/{id}/metadata", th.updateMetadata)
+	mux.HandleFunc("DELETE /api/architects/{key}/tickets/{id}", th.delete)
+	mux.HandleFunc("POST /api/architects/{key}/tickets/{id}/move", th.move)
 	mux.HandleFunc("GET /api/architects/{key}/repos", rh.list)
 	mux.HandleFunc("GET /api/architects/{key}/repos/{repoKey}", rh.get)
 	mux.HandleFunc("GET /api/sessions", sh.list)
@@ -145,6 +160,14 @@ func getArchitect(cfg config.Config, key string, includeRepos bool) (architectRe
 		return architectResponse{}, false
 	}
 	return buildArchitectResponse(key, architect, includeRepos), true
+}
+
+func getArchitectPath(cfg config.Config, key string) (string, bool) {
+	architect, ok := cfg.Architects[key]
+	if !ok {
+		return "", false
+	}
+	return architect.Path, true
 }
 
 func listArchitectGroups(cfg config.Config) []architectGroupResponse {

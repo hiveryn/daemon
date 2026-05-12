@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hiveryn/daemon/internal/api"
+	"github.com/hiveryn/daemon/internal/architectfs"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/server"
 	"github.com/hiveryn/daemon/internal/sessionruntime"
@@ -49,11 +50,13 @@ func Run(configPath, databasePath string) error {
 	if err := service.FailRunningSessions(ctx); err != nil {
 		return err
 	}
+	ticketService := architectfs.NewTicketService()
 
 	handler := api.NewHandler(api.Dependencies{
 		Config:        cfg,
 		Logger:        logger,
 		Sessions:      service,
+		Tickets:       ticketService,
 		IngestHandler: service.IngestHandler(),
 	})
 

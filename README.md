@@ -55,6 +55,13 @@ Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to de
 | `GET` | `/api/architects` | List configured architects |
 | `GET` | `/api/architects/{key}` | Get one configured architect by key |
 | `POST` | `/api/architects/{key}/spawn` | Spawn an architect session using an agent profile |
+| `GET` | `/api/architects/{key}/tickets` | List filesystem-backed ticket board columns |
+| `POST` | `/api/architects/{key}/tickets` | Create a backlog ticket in the architect folder |
+| `GET` | `/api/architects/{key}/tickets/{id}` | Get one filesystem-backed ticket by ID |
+| `PATCH` | `/api/architects/{key}/tickets/{id}` | Apply a targeted body edit to a ticket |
+| `PATCH` | `/api/architects/{key}/tickets/{id}/metadata` | Update ticket frontmatter (`title`, `repo`, `references`) |
+| `DELETE` | `/api/architects/{key}/tickets/{id}` | Delete a ticket folder and its contents |
+| `POST` | `/api/architects/{key}/tickets/{id}/move?to=...` | Move a ticket between backlog, progress, and done |
 | `GET` | `/api/architects/{key}/repos` | List repos for an architect |
 | `GET` | `/api/architects/{key}/repos/{repoKey}` | Get one architect repo by key |
 | `GET` | `/api/sessions` | List sessions; supports `?status=running` |
