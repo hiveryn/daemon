@@ -110,6 +110,7 @@ func (s *Service) SpawnArchitectSession(ctx context.Context, req domain.SpawnArc
 
 	systemContent, kickoffContent, err := loadArchitectPrompts(req.ArchitectKey, architect, s.cfg)
 	if err != nil {
+		s.logger.Error("failed to load architect prompts", "architect_key", req.ArchitectKey, "error", err)
 		return domain.SpawnArchitectSessionResult{}, err
 	}
 
@@ -219,6 +220,7 @@ func (s *Service) SpawnWorkSession(ctx context.Context, req domain.SpawnWorkSess
 
 	kickoffContent, err := loadWorkerPrompt(req.ArchitectKey, architect, s.cfg, ticket)
 	if err != nil {
+		s.logger.Error("failed to load worker prompt", "architect_key", req.ArchitectKey, "ticket_id", req.TicketID, "error", err)
 		return domain.SpawnWorkSessionResult{}, err
 	}
 

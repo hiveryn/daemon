@@ -97,6 +97,13 @@ Each resource is self-contained across four packages — no cross-contamination.
 - The architect folder's markdown is the source of truth for tickets and conclusions. `~/.hiveryn/config.yaml` is the source of truth for profiles, architects, and repo mappings. SQLite stores runtime state only.
 - All API responses use a standard envelope (`domain.Envelope`) with `data`/`error` (mutually exclusive), `logs`, `commands`, and `meta.request_id`. Handlers write via `writeJSON(w, r, ...)` and `writeError(w, r, ...)` — envelope wrapping is automatic.
 
+## Error handling
+
+- Never swallow error details. Every error path must either return the error verbatim or wrap it with `fmt.Errorf("context: %w", err)`.
+- `writeDomainError` must log unexpected errors before converting them to 500 responses.
+- All new handlers and service methods must surface internal errors with enough detail to diagnose failures from logs alone.
+- Domain errors (Validation, Conflict, NotFound) are the only errors that should be converted to user-facing messages. Everything else is an internal error and must be logged with full context.
+
 ## Development
 
 - `make vet` — static analysis

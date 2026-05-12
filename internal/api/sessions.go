@@ -97,6 +97,7 @@ func (h *sessionsHandler) events(w http.ResponseWriter, r *http.Request) {
 
 	for _, event := range backlog {
 		if err := writeSSEEvent(w, event); err != nil {
+			h.logger.Warn("[sse] backlog write error", "session_id", sessionID, "error", err)
 			return
 		}
 	}
@@ -114,11 +115,13 @@ func (h *sessionsHandler) events(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if err := writeSSEEvent(w, event); err != nil {
+				h.logger.Warn("[sse] live event write error", "session_id", sessionID, "error", err)
 				return
 			}
 			flusher.Flush()
 		case <-keepAlive.C:
 			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
+				h.logger.Warn("[sse] keepalive write error", "session_id", sessionID, "error", err)
 				return
 			}
 			flusher.Flush()
@@ -166,7 +169,7 @@ func (h *sessionsHandler) ws(w http.ResponseWriter, r *http.Request) {
 		for {
 			messageType, payload, err := conn.ReadMessage()
 			if err != nil {
-				h.logger.Info("[ws] read goroutine exit", "session_id", sessionID, "err", err)
+				h.logger.Info("[ws] read goroutine exit", "session_id", sessionID, "error", err)
 				errCh <- err
 				return
 			}
@@ -185,14 +188,14 @@ func (h *sessionsHandler) ws(w http.ResponseWriter, r *http.Request) {
 					// A transient resize failure (e.g. EBADF during teardown) must NOT tear down
 					// the whole WebSocket. Log and continue — input must keep flowing.
 					if err := attachment.Resize(resize.Cols, resize.Rows); err != nil {
-						h.logger.Warn("[ws] resize error (ignored)", "session_id", sessionID, "err", err)
+						h.logger.Warn("[ws] resize error (ignored)", "session_id", sessionID, "error", err)
 					}
 				}
 				continue
 			}
 
 			if err := attachment.Write(payload); err != nil {
-				h.logger.Info("[ws] write error", "session_id", sessionID, "err", err)
+				h.logger.Info("[ws] write error", "session_id", sessionID, "error", err)
 				errCh <- err
 				return
 			}

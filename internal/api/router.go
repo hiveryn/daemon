@@ -298,5 +298,6 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 
-	writeError(w, r, http.StatusInternalServerError, string(domain.ErrCodeInternal), "internal server error", nil)
+	slog.Error("unexpected internal error", "error", err)
+	writeError(w, r, http.StatusInternalServerError, string(domain.ErrCodeInternal), "internal server error: "+err.Error(), nil)
 }

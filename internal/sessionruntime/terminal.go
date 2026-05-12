@@ -317,7 +317,7 @@ func (p *terminalProcess) resize(cols, rows uint16) error {
 	}
 	p.logger.Info("[pty] resize", "cols", cols, "rows", rows)
 	if err := pty.Setsize(ptyFile, &pty.Winsize{Cols: cols, Rows: rows}); err != nil {
-		p.logger.Warn("[pty] resize failed", "cols", cols, "rows", rows, "err", err)
+		p.logger.Warn("[pty] resize failed", "cols", cols, "rows", rows, "error", err)
 		return err
 	}
 	return nil

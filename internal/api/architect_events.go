@@ -60,14 +60,17 @@ func (h *architectEventsHandler) events(w http.ResponseWriter, r *http.Request) 
 			}
 			data, err := json.Marshal(event)
 			if err != nil {
+				h.logger.Error("[sse] marshal architect event error", "error", err)
 				return
 			}
 			if err := writeSSEEventData(w, data); err != nil {
+				h.logger.Warn("[sse] architect event write error", "error", err)
 				return
 			}
 			flusher.Flush()
 		case <-keepAlive.C:
 			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
+				h.logger.Warn("[sse] keepalive write error", "error", err)
 				return
 			}
 			flusher.Flush()
