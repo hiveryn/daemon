@@ -1,14 +1,21 @@
 package api
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/hiveryn/daemon/internal/archevents"
 	"github.com/hiveryn/daemon/internal/architectfs"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
@@ -304,4 +311,159 @@ func writeTicketFixture(t *testing.T, root string, status domain.TicketStatus, i
 	if err := os.WriteFile(filepath.Join(dir, "ticket.md"), []byte(content), 0o644); err != nil {
 		t.Fatalf("write fixture file: %v", err)
 	}
+}
+
+func TestTicketSSEEvents(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	handler := newTicketWithEventsHandler(t, root)
+	srv := httptest.NewServer(handler)
+	defer srv.CloseClientConnections()
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/architects/hiveryn/events", nil)
+	if err != nil {
+		t.Fatalf("create SSE request: %v", err)
+	}
+
+	client := srv.Client()
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("SSE request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected status 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("expected Content-Type text/event-stream, got %q", ct)
+	}
+
+	createStatus, _ := requestJSON(t, handler, http.MethodPost, "/api/architects/hiveryn/tickets", map[string]any{
+		"title": "SSE test ticket",
+		"body":  "hello",
+	})
+	if createStatus != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d", http.StatusCreated, createStatus)
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	eventCh := make(chan domain.ArchitectEvent, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				errCh <- err
+				return
+			}
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, ":") {
+				continue
+			}
+			if !strings.HasPrefix(line, "data: ") {
+				errCh <- fmt.Errorf("expected data: prefix, got %q", line)
+				return
+			}
+			var event domain.ArchitectEvent
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+				errCh <- err
+				return
+			}
+			eventCh <- event
+			return
+		}
+	}()
+
+	select {
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for SSE event")
+	case err := <-errCh:
+		t.Fatalf("read SSE event: %v", err)
+	case event := <-eventCh:
+		if event.Type != "workspace_changed" {
+			t.Fatalf("expected type workspace_changed, got %q", event.Type)
+		}
+		if event.ArchitectKey != "hiveryn" {
+			t.Fatalf("expected architect_key hiveryn, got %q", event.ArchitectKey)
+		}
+		if event.Reason != "ticket_created" {
+			t.Fatalf("expected reason ticket_created, got %q", event.Reason)
+		}
+		if event.TicketID == "" {
+			t.Fatal("expected non-empty ticket_id")
+		}
+		if event.At.IsZero() {
+			t.Fatal("expected non-zero at timestamp")
+		}
+	}
+
+	cancel()
+	_ = resp.Body.Close()
+}
+
+func TestTicketSSEEventsCleanupOnDisconnect(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	handler := newTicketWithEventsHandler(t, root)
+	srv := httptest.NewServer(handler)
+	defer srv.CloseClientConnections()
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/architects/hiveryn/events", nil)
+	if err != nil {
+		t.Fatalf("create SSE request: %v", err)
+	}
+
+	client := srv.Client()
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("SSE request: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected status 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	_ = resp.Body.Close()
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	createStatus, _ := requestJSON(t, handler, http.MethodPost, "/api/architects/hiveryn/tickets", map[string]any{
+		"title": "After disconnect",
+	})
+	if createStatus != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d", http.StatusCreated, createStatus)
+	}
+}
+
+func newTicketWithEventsHandler(t *testing.T, architectPath string) http.Handler {
+	t.Helper()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := testConfig()
+	cfg.Architects = cloneArchitects(cfg.Architects)
+	architect := cfg.Architects["hiveryn"]
+	architect.Path = architectPath
+	cfg.Architects["hiveryn"] = architect
+
+	hub := archevents.New()
+
+	return NewHandler(Dependencies{
+		Config:          cfg,
+		Logger:          logger,
+		Tickets:         architectfs.NewTicketService(),
+		ArchitectEvents: hub,
+	})
 }

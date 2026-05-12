@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 
+	"github.com/hiveryn/daemon/internal/archevents"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
 )
@@ -13,11 +14,12 @@ import (
 const ingestRoutePrefix = "/internal/agentruntime"
 
 type Dependencies struct {
-	Config        config.Config
-	Logger        *slog.Logger
-	Sessions      domain.SessionService
-	Tickets       domain.TicketService
-	IngestHandler http.Handler
+	Config          config.Config
+	Logger          *slog.Logger
+	Sessions        domain.SessionService
+	Tickets         domain.TicketService
+	IngestHandler   http.Handler
+	ArchitectEvents *archevents.Hub
 }
 
 type profilesHandler struct {
@@ -47,9 +49,10 @@ type sessionsHandler struct {
 }
 
 type ticketsHandler struct {
-	config  config.Config
-	logger  *slog.Logger
-	tickets domain.TicketService
+	config           config.Config
+	logger           *slog.Logger
+	tickets          domain.TicketService
+	publishArchitect func(key string, event domain.ArchitectEvent)
 }
 
 type agentProfileResponse struct {
@@ -84,6 +87,12 @@ func NewHandler(deps Dependencies) http.Handler {
 	rh := &reposHandler{config: deps.Config, logger: deps.Logger}
 	sh := &sessionsHandler{logger: deps.Logger, sessions: deps.Sessions}
 	th := &ticketsHandler{config: deps.Config, logger: deps.Logger, tickets: deps.Tickets}
+	eh := &architectEventsHandler{config: deps.Config, logger: deps.Logger, hub: deps.ArchitectEvents}
+
+	if deps.ArchitectEvents != nil {
+		hub := deps.ArchitectEvents
+		th.publishArchitect = hub.Publish
+	}
 
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("GET /api/system/home", func(w http.ResponseWriter, r *http.Request) {
@@ -105,6 +114,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("POST /api/architects/{key}/tickets/{id}/move", th.move)
 	mux.HandleFunc("GET /api/architects/{key}/repos", rh.list)
 	mux.HandleFunc("GET /api/architects/{key}/repos/{repoKey}", rh.get)
+	mux.HandleFunc("GET /api/architects/{key}/events", eh.events)
 	mux.HandleFunc("GET /api/sessions", sh.list)
 	mux.HandleFunc("GET /api/sessions/{id}", sh.get)
 	mux.HandleFunc("DELETE /api/sessions/{id}", sh.delete)

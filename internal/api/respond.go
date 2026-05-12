@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"runtime/debug"
 
@@ -44,6 +45,11 @@ func writeRawJSON(w http.ResponseWriter, status int, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 	}
+}
+
+func writeSSEEventData(w http.ResponseWriter, data []byte) error {
+	_, err := fmt.Fprintf(w, "data: %s\n\n", data)
+	return err
 }
 
 func requestIDFromContext(ctx context.Context) string {

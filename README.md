@@ -62,6 +62,7 @@ Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to de
 | `PATCH` | `/api/architects/{key}/tickets/{id}/metadata` | Update ticket frontmatter (`title`, `repo`, `references`) |
 | `DELETE` | `/api/architects/{key}/tickets/{id}` | Delete a ticket folder and its contents |
 | `POST` | `/api/architects/{key}/tickets/{id}/move?to=...` | Move a ticket between backlog, progress, and done |
+| `GET` | `/api/architects/{key}/events` | Stream architect-scoped workspace_changed SSE hints |
 | `GET` | `/api/architects/{key}/repos` | List repos for an architect |
 | `GET` | `/api/architects/{key}/repos/{repoKey}` | Get one architect repo by key |
 | `GET` | `/api/sessions` | List sessions; supports `?status=running` |

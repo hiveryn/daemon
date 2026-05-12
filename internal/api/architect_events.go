@@ -1,0 +1,76 @@
+package api
+
+import (
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/hiveryn/daemon/internal/archevents"
+	"github.com/hiveryn/daemon/internal/config"
+)
+
+type architectEventsHandler struct {
+	config config.Config
+	logger *slog.Logger
+	hub    *archevents.Hub
+}
+
+func (h *architectEventsHandler) events(w http.ResponseWriter, r *http.Request) {
+	if h.hub == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "architect events not configured", nil)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, r, http.StatusInternalServerError, "INTERNAL", "streaming not supported", nil)
+		return
+	}
+
+	key := r.PathValue("key")
+	if _, ok := getArchitect(h.config, key, false); !ok {
+		writeArchitectNotFound(w, r, key)
+		return
+	}
+
+	sub := h.hub.Subscribe(key)
+	defer sub.Close()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	if _, err := fmt.Fprint(w, ":\n\n"); err != nil {
+		return
+	}
+	flusher.Flush()
+
+	keepAlive := time.NewTicker(20 * time.Second)
+	defer keepAlive.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case event, ok := <-sub.C():
+			if !ok {
+				return
+			}
+			data, err := json.Marshal(event)
+			if err != nil {
+				return
+			}
+			if err := writeSSEEventData(w, data); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-keepAlive.C:
+			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}

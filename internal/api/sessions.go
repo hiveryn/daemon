@@ -230,6 +230,5 @@ func writeSSEEvent(w http.ResponseWriter, event domain.SessionEvent) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(w, "data: %s\n\n", data)
-	return err
+	return writeSSEEventData(w, data)
 }

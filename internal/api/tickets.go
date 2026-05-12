@@ -82,6 +82,15 @@ func (h *ticketsHandler) create(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, r, err)
 		return
 	}
+	if h.publishArchitect != nil {
+		h.publishArchitect(r.PathValue("key"), domain.ArchitectEvent{
+			Type:         "workspace_changed",
+			ArchitectKey: r.PathValue("key"),
+			Reason:       "ticket_created",
+			TicketID:     ticket.ID,
+			At:           time.Now().UTC(),
+		})
+	}
 	writeJSON(w, r, http.StatusCreated, ticket)
 }
 
@@ -116,6 +125,15 @@ func (h *ticketsHandler) edit(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
+	}
+	if h.publishArchitect != nil {
+		h.publishArchitect(r.PathValue("key"), domain.ArchitectEvent{
+			Type:         "workspace_changed",
+			ArchitectKey: r.PathValue("key"),
+			Reason:       "ticket_updated",
+			TicketID:     ticket.ID,
+			At:           time.Now().UTC(),
+		})
 	}
 	writeJSON(w, r, http.StatusOK, ticket)
 }
@@ -152,6 +170,15 @@ func (h *ticketsHandler) updateMetadata(w http.ResponseWriter, r *http.Request) 
 		writeDomainError(w, r, err)
 		return
 	}
+	if h.publishArchitect != nil {
+		h.publishArchitect(r.PathValue("key"), domain.ArchitectEvent{
+			Type:         "workspace_changed",
+			ArchitectKey: r.PathValue("key"),
+			Reason:       "ticket_updated",
+			TicketID:     ticket.ID,
+			At:           time.Now().UTC(),
+		})
+	}
 	writeJSON(w, r, http.StatusOK, ticket)
 }
 
@@ -170,6 +197,15 @@ func (h *ticketsHandler) delete(w http.ResponseWriter, r *http.Request) {
 	if err := h.tickets.DeleteTicket(r.Context(), architectPath, r.PathValue("id")); err != nil {
 		writeDomainError(w, r, err)
 		return
+	}
+	if h.publishArchitect != nil {
+		h.publishArchitect(r.PathValue("key"), domain.ArchitectEvent{
+			Type:         "workspace_changed",
+			ArchitectKey: r.PathValue("key"),
+			Reason:       "ticket_deleted",
+			TicketID:     r.PathValue("id"),
+			At:           time.Now().UTC(),
+		})
 	}
 	writeJSON(w, r, http.StatusOK, map[string]bool{"deleted": true})
 }
@@ -191,6 +227,15 @@ func (h *ticketsHandler) move(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
+	}
+	if h.publishArchitect != nil {
+		h.publishArchitect(r.PathValue("key"), domain.ArchitectEvent{
+			Type:         "workspace_changed",
+			ArchitectKey: r.PathValue("key"),
+			Reason:       "ticket_moved",
+			TicketID:     ticket.ID,
+			At:           time.Now().UTC(),
+		})
 	}
 	writeJSON(w, r, http.StatusOK, ticket)
 }

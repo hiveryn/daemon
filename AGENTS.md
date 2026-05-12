@@ -51,6 +51,8 @@ The daemon is the integration point. The desktop app, MCP tools, and agent proce
 cmd/hiverynd          entrypoint: flags → app.Run()
 internal/
   app/                dependency wiring, startup/shutdown orchestration
+  archevents/         in-memory publish/subscribe hub for architect-scoped SSE events
+  architectfs/        architect folder filesystem operations (ticket CRUD, frontmatter, body edits)
   config/             bootstrap config (~/.hiveryn/config.yaml) — port, bind_address, profiles, architects
   domain/             shared envelope/error/session types — zero imports of store/api
   server/             HTTP server lifecycle (Listen, Shutdown) — thin wrapper around net/http
