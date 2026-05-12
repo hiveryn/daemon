@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -50,11 +51,19 @@ func accessLog(log *slog.Logger, next http.Handler) http.Handler {
 			"status", ww.status,
 			"duration", time.Since(start),
 		)
+		if ww.status >= 400 {
+			log.Error("error response",
+				"path", r.URL.Path,
+				"status", ww.status,
+				"envelope", ww.buf.String(),
+			)
+		}
 	})
 }
 
 type statusWriter struct {
 	http.ResponseWriter
+	buf         bytes.Buffer
 	status      int
 	wroteHeader bool
 }
@@ -71,6 +80,7 @@ func (sw *statusWriter) Write(p []byte) (int, error) {
 	if !sw.wroteHeader {
 		sw.WriteHeader(http.StatusOK)
 	}
+	sw.buf.Write(p)
 	return sw.ResponseWriter.Write(p)
 }
 
