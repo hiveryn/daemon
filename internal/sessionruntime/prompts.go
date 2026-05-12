@@ -36,6 +36,8 @@ type workerKickoffTemplateData struct {
 	Created       string
 	Updated       string
 	ArchitectName string
+	ProjectPath   string
+	Repos         string
 }
 
 func loadArchitectPrompts(architectKey string, architect config.ArchitectConfig, cfg config.Config) (string, string, error) {
@@ -98,6 +100,8 @@ func loadWorkerPrompt(architectKey string, architect config.ArchitectConfig, cfg
 		Created:       created,
 		Updated:       updated,
 		ArchitectName: architectKey,
+		ProjectPath:   architect.Path,
+		Repos:         renderRepos(architect.Repos),
 	})
 	if err != nil {
 		return "", err
