@@ -271,7 +271,7 @@ func (e ticketEntry) summary() domain.TicketSummary {
 		Repo:          e.metadata.Repo,
 		Created:       e.metadata.Created,
 		Updated:       e.metadata.Updated,
-		References:    append([]string(nil), e.metadata.References...),
+		References:    nonNilStrings(e.metadata.References),
 		HasConclusion: e.conclusion != nil,
 		Warnings:      cloneWarnings(e.warnings),
 	}
@@ -285,7 +285,7 @@ func (e ticketEntry) ticket() domain.Ticket {
 	}
 	if e.conclusion != nil {
 		conclusion := *e.conclusion
-		conclusion.Commits = append([]string(nil), conclusion.Commits...)
+		conclusion.Commits = nonNilStrings(conclusion.Commits)
 		t.Conclusion = &conclusion
 	}
 	return t
@@ -488,10 +488,16 @@ func slugify(input string) string {
 	return strings.Trim(b.String(), "-")
 }
 
-func cloneWarnings(warnings []domain.TicketWarning) []domain.TicketWarning {
-	if len(warnings) == 0 {
-		return nil
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
 	}
+	cloned := make([]string, len(s))
+	copy(cloned, s)
+	return cloned
+}
+
+func cloneWarnings(warnings []domain.TicketWarning) []domain.TicketWarning {
 	cloned := make([]domain.TicketWarning, len(warnings))
 	copy(cloned, warnings)
 	return cloned
@@ -594,7 +600,7 @@ func readConclusion(path string) (*domain.TicketConclusion, error) {
 		Profile:         raw.Profile,
 		Rejected:        raw.Rejected,
 		RejectionReason: raw.RejectionReason,
-		Commits:         append([]string(nil), raw.Commits...),
+		Commits:         nonNilStrings(raw.Commits),
 		Body:            doc.Body,
 	}, nil
 }
@@ -633,7 +639,7 @@ func validateTicketReferences(ticketID string, references []string, validIDs map
 
 func normalizeReferences(references []string) ([]string, error) {
 	if references == nil {
-		return nil, nil
+		return []string{}, nil
 	}
 	normalized := make([]string, 0, len(references))
 	for _, reference := range references {

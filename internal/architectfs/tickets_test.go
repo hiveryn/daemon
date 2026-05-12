@@ -270,6 +270,55 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 	})
 }
 
+func TestTicketServiceEmptySlicesAreNonNull(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-empty-slices", "---\ntitle: Empty slices\n---\n\nbody\n")
+	writeTicketFile(t, root, domain.TicketStatusDone, "2026-05-12-1000-done-empty", "---\ntitle: Done empty\n---\n\ndone\n")
+	writeConclusionFile(t, root, domain.TicketStatusDone, "2026-05-12-1000-done-empty", "---\nstarted_at: 2026-05-12T10:00:00Z\nconcluded_at: 2026-05-12T10:30:00Z\nrejected: false\n---\n\nok\n")
+
+	service := NewTicketService()
+
+	board, err := service.ListTickets(context.Background(), root)
+	if err != nil {
+		t.Fatalf("ListTickets: %v", err)
+	}
+	for _, summary := range append(append(board.Backlog, board.Progress...), board.Done...) {
+		if summary.References == nil {
+			t.Fatalf("expected References to be non-nil slice for ticket %s", summary.ID)
+		}
+		if summary.Warnings == nil {
+			t.Fatalf("expected Warnings to be non-nil slice for ticket %s", summary.ID)
+		}
+	}
+
+	ticket, err := service.GetTicket(context.Background(), root, "2026-05-12-0900-empty-slices")
+	if err != nil {
+		t.Fatalf("GetTicket: %v", err)
+	}
+	if ticket.References == nil {
+		t.Fatal("expected References to be non-nil slice on detail ticket")
+	}
+	if ticket.Warnings == nil {
+		t.Fatal("expected Warnings to be non-nil slice on detail ticket")
+	}
+	if ticket.Conclusion != nil {
+		t.Fatal("expected Conclusion to be nil on ticket without conclusion")
+	}
+
+	done, err := service.GetTicket(context.Background(), root, "2026-05-12-1000-done-empty")
+	if err != nil {
+		t.Fatalf("GetTicket done: %v", err)
+	}
+	if done.Conclusion == nil {
+		t.Fatal("expected non-nil conclusion on done ticket")
+	}
+	if done.Conclusion.Commits == nil {
+		t.Fatal("expected Commits to be non-nil slice in conclusion")
+	}
+}
+
 func writeTicketFile(t *testing.T, root string, status domain.TicketStatus, id, content string) {
 	t.Helper()
 	dir := filepath.Join(root, ticketsDirName, string(status), id)

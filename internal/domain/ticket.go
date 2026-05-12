@@ -34,9 +34,9 @@ type TicketSummary struct {
 	Repo          string          `json:"repo,omitempty"`
 	Created       *time.Time      `json:"created,omitempty"`
 	Updated       *time.Time      `json:"updated,omitempty"`
-	References    []string        `json:"references,omitempty"`
+	References    []string        `json:"references"`
 	HasConclusion bool            `json:"has_conclusion"`
-	Warnings      []TicketWarning `json:"warnings,omitempty"`
+	Warnings      []TicketWarning `json:"warnings"`
 }
 
 type TicketConclusion struct {
@@ -46,14 +46,14 @@ type TicketConclusion struct {
 	Profile         string    `json:"profile,omitempty"`
 	Rejected        bool      `json:"rejected"`
 	RejectionReason string    `json:"rejection_reason,omitempty"`
-	Commits         []string  `json:"commits,omitempty"`
+	Commits         []string  `json:"commits"`
 	Body            string    `json:"body"`
 }
 
 type Ticket struct {
 	TicketSummary
 	Body       string            `json:"body"`
-	Conclusion *TicketConclusion `json:"conclusion,omitempty"`
+	Conclusion *TicketConclusion `json:"conclusion"`
 }
 
 type TicketBoard struct {

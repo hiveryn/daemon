@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -162,6 +163,105 @@ func TestTicketsAPIValidationAndNotFound(t *testing.T) {
 	status, body = requestJSON(t, handler, http.MethodPost, "/api/architects/hiveryn/tickets/2026-05-12-0900-edit/move?to=invalid", map[string]any{})
 	if status != http.StatusBadRequest {
 		t.Fatalf("expected invalid move status %d, got %d: %s", http.StatusBadRequest, status, string(body))
+	}
+}
+
+func TestTicketResponsesAlwaysIncludeCollections(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeTicketFixture(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-no-refs", "---\ntitle: No refs or warnings\n---\n\nbody\n")
+	handler := newTicketTestHandler(t, root)
+
+	t.Run("board summaries include empty references and warnings arrays", func(t *testing.T) {
+		_, body := request(t, handler, http.MethodGet, "/api/architects/hiveryn/tickets", nil)
+		summary := firstBoardSummary(t, body)
+		assertJSONArray(t, summary, "references")
+		assertJSONArray(t, summary, "warnings")
+	})
+
+	t.Run("ticket detail includes null conclusion when absent", func(t *testing.T) {
+		_, body := request(t, handler, http.MethodGet, "/api/architects/hiveryn/tickets/2026-05-12-0900-no-refs", nil)
+		ticket := envelopeDataMap(t, body)
+		assertJSONNull(t, ticket, "conclusion")
+		assertJSONArray(t, ticket, "references")
+		assertJSONArray(t, ticket, "warnings")
+	})
+
+	t.Run("ticket with conclusion includes empty commits array", func(t *testing.T) {
+		writeTicketFixture(t, root, domain.TicketStatusDone, "2026-05-12-1000-has-conclusion", "---\ntitle: Has conclusion\n---\n\ndone\n")
+		dir := filepath.Join(root, "tickets", string(domain.TicketStatusDone), "2026-05-12-1000-has-conclusion")
+		if err := os.WriteFile(filepath.Join(dir, "conclusion.md"), []byte("---\nstarted_at: 2026-05-12T10:00:00Z\nconcluded_at: 2026-05-12T10:30:00Z\nrejected: false\n---\n\nsummary\n"), 0o644); err != nil {
+			t.Fatalf("write conclusion: %v", err)
+		}
+
+		_, body := request(t, handler, http.MethodGet, "/api/architects/hiveryn/tickets/2026-05-12-1000-has-conclusion", nil)
+		ticket := envelopeDataMap(t, body)
+		conclusion, _ := ticket["conclusion"].(map[string]any)
+		if conclusion == nil {
+			t.Fatal("expected non-null conclusion")
+		}
+		assertJSONArrayRaw(t, conclusion, "commits")
+	})
+}
+
+func firstBoardSummary(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+	board := envelopeDataMap(t, body)
+	backlog, _ := board["backlog"].([]any)
+	if len(backlog) == 0 {
+		t.Fatal("expected at least one backlog ticket")
+	}
+	summary, _ := backlog[0].(map[string]any)
+	if summary == nil {
+		t.Fatal("expected summary to be a JSON object")
+	}
+	return summary
+}
+
+func envelopeDataMap(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+	var env struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("decode envelope: %v\nbody: %s", err, string(body))
+	}
+	if env.Data == nil {
+		t.Fatal("expected non-nil data in envelope")
+	}
+	return env.Data
+}
+
+func assertJSONArray(t *testing.T, obj map[string]any, key string) {
+	t.Helper()
+	assertJSONArrayRaw(t, obj, key)
+}
+
+func assertJSONArrayRaw(t *testing.T, obj map[string]any, key string) {
+	t.Helper()
+	val, exists := obj[key]
+	if !exists {
+		t.Fatalf("expected key %q to be present in JSON object, but it was omitted", key)
+	}
+	arr, ok := val.([]any)
+	if !ok {
+		t.Fatalf("expected key %q to be a JSON array, got type %T with value %v", key, val, val)
+	}
+	if arr == nil {
+		t.Fatalf("expected key %q to be a non-null JSON array, but it was null", key)
+	}
+	// ensure empty arrays are non-nil (just checked above)
+}
+
+func assertJSONNull(t *testing.T, obj map[string]any, key string) {
+	t.Helper()
+	val, exists := obj[key]
+	if !exists {
+		t.Fatalf("expected key %q to be present in JSON object, but it was omitted", key)
+	}
+	if val != nil {
+		t.Fatalf("expected key %q to be null, got %v", key, val)
 	}
 }
 
