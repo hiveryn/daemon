@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -32,6 +34,7 @@ type Service struct {
 	logger     *slog.Logger
 	cfg        config.Config
 	repo       domain.SessionRepository
+	tickets    domain.TicketService
 	baseURL    string
 	receiver   *ingest.Receiver
 	ingestHTTP http.Handler
@@ -53,7 +56,7 @@ type eventSubscription struct {
 	closed sync.Once
 }
 
-func New(ctx context.Context, cfg config.Config, repo domain.SessionRepository, logger *slog.Logger, baseURL string) (*Service, error) {
+func New(ctx context.Context, cfg config.Config, repo domain.SessionRepository, tickets domain.TicketService, logger *slog.Logger, baseURL string) (*Service, error) {
 	claudeAdapter := claude.New(claude.DefaultOptions())
 	codexAdapter := artcodex.New(artcodex.DefaultOptions())
 	openCodeAdapter := opencode.New(opencode.DefaultOptions())
@@ -74,6 +77,7 @@ func New(ctx context.Context, cfg config.Config, repo domain.SessionRepository, 
 		logger:        logger,
 		cfg:           cfg,
 		repo:          repo,
+		tickets:       tickets,
 		baseURL:       baseURL,
 		receiver:      receiver,
 		ingestHTTP:    http.StripPrefix(ingestPathPrefix, mux),
@@ -114,6 +118,7 @@ func (s *Service) SpawnArchitectSession(ctx context.Context, req domain.SpawnArc
 		ID:           sessionID,
 		ProfileName:  req.ProfileName,
 		ArchitectKey: req.ArchitectKey,
+		SessionType:  string(domain.SessionTypeArchitect),
 		Prompt:       kickoffContent,
 		Instructions: systemContent,
 		Status:       domain.SessionStatusRunning,
@@ -167,6 +172,121 @@ func (s *Service) SpawnArchitectSession(ctx context.Context, req domain.SpawnArc
 	}
 
 	return domain.SpawnArchitectSessionResult{Session: session}, nil
+}
+
+func (s *Service) SpawnWorkSession(ctx context.Context, req domain.SpawnWorkSessionRequest) (domain.SpawnWorkSessionResult, error) {
+	architect, ok := s.cfg.Architects[req.ArchitectKey]
+	if !ok {
+		return domain.SpawnWorkSessionResult{}, &domain.NotFoundError{Resource: "architect", ID: req.ArchitectKey}
+	}
+
+	ticket, err := s.tickets.GetTicket(ctx, architect.Path, req.TicketID)
+	if err != nil {
+		return domain.SpawnWorkSessionResult{}, err
+	}
+
+	if ticket.Status != domain.TicketStatusBacklog {
+		return domain.SpawnWorkSessionResult{}, &domain.ValidationError{Field: "ticket_id", Message: "ticket must be in backlog to spawn a work session"}
+	}
+
+	repoKey := ticket.Repo
+	if repoKey == "" {
+		return domain.SpawnWorkSessionResult{}, &domain.ValidationError{Field: "repo", Message: "ticket has no repo key in frontmatter"}
+	}
+
+	repoPath, ok := architect.Repos[repoKey]
+	if !ok {
+		return domain.SpawnWorkSessionResult{}, &domain.ValidationError{Field: "repo", Message: "repo key " + repoKey + " not configured in architect repos"}
+	}
+
+	if err := validateRepoPath(repoPath); err != nil {
+		return domain.SpawnWorkSessionResult{}, err
+	}
+
+	if req.Mode != "" && req.Mode != "normal" {
+		return domain.SpawnWorkSessionResult{}, &domain.ValidationError{Field: "mode", Message: "only 'normal' mode is supported"}
+	}
+
+	profile, ok := s.cfg.AgentProfiles[req.ProfileName]
+	if !ok {
+		return domain.SpawnWorkSessionResult{}, &domain.NotFoundError{Resource: "agent_profile", ID: req.ProfileName}
+	}
+
+	agentKind, err := parseAgentKind(profile.Agent)
+	if err != nil {
+		return domain.SpawnWorkSessionResult{}, err
+	}
+
+	kickoffContent, err := loadWorkerPrompt(req.ArchitectKey, architect, s.cfg, ticket)
+	if err != nil {
+		return domain.SpawnWorkSessionResult{}, err
+	}
+
+	sessionID := uuid.NewString()
+	session, err := s.repo.CreateSession(ctx, domain.CreateSessionParams{
+		ID:           sessionID,
+		ProfileName:  req.ProfileName,
+		ArchitectKey: req.ArchitectKey,
+		SessionType:  string(domain.SessionTypeWork),
+		Prompt:       kickoffContent,
+		Status:       domain.SessionStatusRunning,
+		TicketID:     req.TicketID,
+	})
+	if err != nil {
+		return domain.SpawnWorkSessionResult{}, err
+	}
+
+	adapter := s.adapters[agentKind]
+	if _, err := adapter.EnsureSetup(ctx, setupRequestForAgent(agentKind, s.baseURL+ingestPathPrefix, profile.Env)); err != nil {
+		s.markSessionFailed(session.ID, "ensure setup")
+		return domain.SpawnWorkSessionResult{}, fmt.Errorf("ensure %s setup: %w", agentKind, err)
+	}
+
+	spec, err := adapter.PrepareLaunch(ctx, agentruntime.StartRequest{
+		ID:      session.ID,
+		Agent:   agentKind,
+		Prompt:  kickoffContent,
+		Workdir: repoPath,
+		Args:    append([]string(nil), profile.Args...),
+		Env:     cloneStringMap(profile.Env),
+	})
+	if err != nil {
+		s.markSessionFailed(session.ID, "prepare launch")
+		return domain.SpawnWorkSessionResult{}, fmt.Errorf("prepare launch: %w", err)
+	}
+
+	cancelBridge := s.startReceiverBridge(session.ID)
+	s.storeBridgeCancel(session.ID, cancelBridge)
+
+	s.logger.Info("[spawn] starting worker PTY",
+		"session_id", session.ID,
+		"ticket_id", req.TicketID,
+		"repo_path", repoPath,
+		"command", spec.Command,
+	)
+
+	if err := s.terminal.Start(ctx, terminalStartSpec{
+		ID:           session.ID,
+		Command:      spec.Command,
+		Args:         append([]string(nil), spec.Args...),
+		Env:          cloneStringMap(spec.Env),
+		Workdir:      spec.Workdir,
+		Size:         terminalSize{Cols: req.Cols, Rows: req.Rows},
+		CleanupPaths: append([]string(nil), spec.CleanupPaths...),
+		OnExit:       s.handleTerminalExit,
+	}); err != nil {
+		s.cancelReceiverBridge(session.ID)
+		s.markSessionFailed(session.ID, "terminal start")
+		return domain.SpawnWorkSessionResult{}, err
+	}
+
+	if _, err := s.tickets.MoveTicket(ctx, architect.Path, req.TicketID, domain.MoveTicketParams{
+		To: domain.TicketStatusProgress,
+	}); err != nil {
+		s.logger.Error("failed to move ticket to progress", "ticket_id", req.TicketID, "error", err)
+	}
+
+	return domain.SpawnWorkSessionResult{Session: session}, nil
 }
 
 func setupRequestForAgent(agentKind agentruntime.AgentKind, endpoint string, env map[string]string) agentruntime.SetupRequest {
@@ -498,4 +618,22 @@ func cloneAnyMap(input map[string]any) map[string]any {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func validateRepoPath(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &domain.ValidationError{Field: "repo", Message: "repo path does not exist: " + path}
+		}
+		return fmt.Errorf("stat repo path %s: %w", path, err)
+	}
+	if !info.IsDir() {
+		return &domain.ValidationError{Field: "repo", Message: "repo path is not a directory: " + path}
+	}
+	gitPath := filepath.Join(path, ".git")
+	if gitInfo, err := os.Stat(gitPath); err != nil || !gitInfo.IsDir() {
+		return &domain.ValidationError{Field: "repo", Message: "no .git directory found at repo path: " + path}
+	}
+	return nil
 }

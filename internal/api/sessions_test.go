@@ -47,6 +47,27 @@ func TestArchitectSpawnEndpoint(t *testing.T) {
 	}
 }
 
+func TestWorkerSpawnEndpoint(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeSessionService{}
+	handler := newSessionTestHandler(t, service)
+
+	status, body := request(t, handler, http.MethodPost, "/api/architects/hiveryn/tickets/ticket-1/spawn", strings.NewReader(`{"profile_name":"codex-personal","mode":"normal","cols":100,"rows":30}`))
+	if status != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, status, string(body))
+	}
+
+	var payload map[string]string
+	decodeEnvelopeData(t, body, &payload)
+	if payload["session_id"] != "ticket-1-session" {
+		t.Fatalf("unexpected session id: %q", payload["session_id"])
+	}
+	if payload["ws_url"] != "ws://example.com/ws/session/ticket-1-session" {
+		t.Fatalf("unexpected ws url: %q", payload["ws_url"])
+	}
+}
+
 func TestSessionsListAndDeleteEndpoints(t *testing.T) {
 	t.Parallel()
 
@@ -141,6 +162,7 @@ func newSessionTestHandler(t *testing.T, sessions domain.SessionService) http.Ha
 		Config:   testConfig(),
 		Logger:   logger,
 		Sessions: sessions,
+		Tickets:  &fakeTicketService{},
 	})
 }
 
@@ -158,6 +180,12 @@ type fakeSessionService struct {
 func (f *fakeSessionService) SpawnArchitectSession(_ context.Context, req domain.SpawnArchitectSessionRequest) (domain.SpawnArchitectSessionResult, error) {
 	f.lastSpawn = req
 	return f.spawnResult, f.spawnErr
+}
+
+func (f *fakeSessionService) SpawnWorkSession(_ context.Context, req domain.SpawnWorkSessionRequest) (domain.SpawnWorkSessionResult, error) {
+	return domain.SpawnWorkSessionResult{
+		Session: domain.Session{ID: req.TicketID + "-session"},
+	}, nil
 }
 
 func (f *fakeSessionService) TerminateSession(_ context.Context, id string) error {
@@ -210,6 +238,36 @@ type fakeTerminalAttachment struct {
 	input  chan []byte
 	resize chan terminalResize
 	once   sync.Once
+}
+
+type fakeTicketService struct{}
+
+func (f *fakeTicketService) ListTickets(context.Context, string) (domain.TicketBoard, error) {
+	return domain.TicketBoard{}, nil
+}
+
+func (f *fakeTicketService) GetTicket(context.Context, string, string) (domain.Ticket, error) {
+	return domain.Ticket{}, nil
+}
+
+func (f *fakeTicketService) CreateTicket(context.Context, string, domain.CreateTicketParams) (domain.Ticket, error) {
+	return domain.Ticket{}, nil
+}
+
+func (f *fakeTicketService) EditTicket(context.Context, string, string, domain.EditTicketParams) (domain.Ticket, error) {
+	return domain.Ticket{}, nil
+}
+
+func (f *fakeTicketService) UpdateTicketMetadata(context.Context, string, string, domain.UpdateTicketMetadataParams) (domain.Ticket, error) {
+	return domain.Ticket{}, nil
+}
+
+func (f *fakeTicketService) DeleteTicket(context.Context, string, string) error {
+	return nil
+}
+
+func (f *fakeTicketService) MoveTicket(context.Context, string, string, domain.MoveTicketParams) (domain.Ticket, error) {
+	return domain.Ticket{}, nil
 }
 
 type terminalResize struct {

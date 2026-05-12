@@ -44,14 +44,14 @@ func Run(configPath, databasePath string) error {
 	}()
 
 	sessionStore := store.NewSessionStore(db)
-	service, err := sessionruntime.New(ctx, cfg, sessionStore, logger, baseURL(cfg))
+	ticketService := architectfs.NewTicketService()
+	service, err := sessionruntime.New(ctx, cfg, sessionStore, ticketService, logger, baseURL(cfg))
 	if err != nil {
 		return err
 	}
 	if err := service.FailRunningSessions(ctx); err != nil {
 		return err
 	}
-	ticketService := architectfs.NewTicketService()
 	architectHub := archevents.New()
 
 	handler := api.NewHandler(api.Dependencies{

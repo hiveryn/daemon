@@ -2,9 +2,11 @@ CREATE TABLE sessions (
     id TEXT PRIMARY KEY,
     profile_name TEXT NOT NULL,
     architect_key TEXT NOT NULL,
+    session_type TEXT NOT NULL,
     prompt TEXT,
     instructions TEXT,
     status TEXT NOT NULL,
+    ticket_id TEXT,
     native_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -28,5 +30,6 @@ CREATE TABLE session_events (
 );
 
 CREATE INDEX idx_sessions_architect_status ON sessions(architect_key, status);
-CREATE UNIQUE INDEX idx_sessions_one_running_architect ON sessions(architect_key) WHERE status = 'running';
+CREATE UNIQUE INDEX idx_sessions_one_running_architect ON sessions(architect_key) WHERE status = 'running' AND session_type = 'architect';
+CREATE UNIQUE INDEX idx_sessions_one_running_ticket ON sessions(ticket_id) WHERE status = 'running' AND session_type = 'work';
 CREATE INDEX idx_session_events_session_seq ON session_events(session_id, seq);

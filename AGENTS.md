@@ -42,7 +42,7 @@ The daemon is the integration point. The desktop app, MCP tools, and agent proce
 | Phase 2 — daemon core | Architect folder FS ops, ticket CRUD, conclusions, registered folders, repo mappings, agent profiles, HTTP API | **in progress** |
 | Phase 3 — MCP + first session | MCP tools, first architect spawn through daemon pty, `concludeSession` | **in progress** |
 | Phase 4 — desktop shell | Pty WebSocket, app event stream (SSE/WS), session surface integration | planned |
-| Phase 5 — worker loop | Worker spawn from ticket repo key, repo mapping resolution, worker MCP tools, cancel/reject | planned |
+| Phase 5 — worker loop | Worker spawn from ticket repo key, repo mapping resolution, worker MCP tools, cancel/reject | **in progress** |
 | Phase 6 — collab loop | Collab sessions, prompt/conclusion files, collab MCP tools, recent session history | planned |
 
 ## Package boundaries
@@ -57,7 +57,7 @@ internal/
   domain/             shared envelope/error/session types — zero imports of store/api
   server/             HTTP server lifecycle (Listen, Shutdown) — thin wrapper around net/http
   api/                HTTP handlers, routing, middleware (request ID, recovery, access logging), JSON helpers
-  sessionruntime/     architect session orchestration, agentruntime ingest bridge, daemon-owned PTY manager
+  sessionruntime/     session orchestration (architect + worker), agentruntime ingest bridge, daemon-owned PTY manager
   store/              SQLite persistence: DB open, migration runner, session/event repository implementations
 ```
 

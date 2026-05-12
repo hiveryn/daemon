@@ -29,11 +29,18 @@ func (s *SessionStore) CreateSession(ctx context.Context, params domain.CreateSe
 	}
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, profile_name, architect_key, prompt, instructions, status, native_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, params.ID, params.ProfileName, params.ArchitectKey, params.Prompt, params.Instructions, params.Status, nullIfEmpty(params.NativeID))
+		INSERT INTO sessions (id, profile_name, architect_key, session_type, prompt, instructions, status, ticket_id, native_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, params.ID, params.ProfileName, params.ArchitectKey, params.SessionType, params.Prompt, params.Instructions, params.Status, nullIfEmpty(params.TicketID), nullIfEmpty(params.NativeID))
 	if err != nil {
 		if params.Status == domain.SessionStatusRunning && isRunningSessionUniqueConstraint(err) {
+			if params.SessionType == string(domain.SessionTypeWork) {
+				return domain.Session{}, &domain.ConflictError{
+					Resource: "session",
+					Field:    "ticket_id",
+					Message:  fmt.Sprintf("ticket %s already has an active work session", params.TicketID),
+				}
+			}
 			return domain.Session{}, &domain.ConflictError{
 				Resource: "session",
 				Field:    "architect_key",
@@ -48,7 +55,7 @@ func (s *SessionStore) CreateSession(ctx context.Context, params domain.CreateSe
 
 func (s *SessionStore) GetSession(ctx context.Context, id string) (domain.Session, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, profile_name, architect_key, prompt, instructions, status, COALESCE(native_id, ''), created_at, updated_at
+		SELECT id, profile_name, architect_key, session_type, prompt, instructions, status, COALESCE(ticket_id, ''), COALESCE(native_id, ''), created_at, updated_at
 		FROM sessions
 		WHERE id = ?
 	`, id)
@@ -65,7 +72,7 @@ func (s *SessionStore) GetSession(ctx context.Context, id string) (domain.Sessio
 
 func (s *SessionStore) ListSessions(ctx context.Context, filter domain.SessionListFilter) ([]domain.Session, error) {
 	query := `
-		SELECT id, profile_name, architect_key, prompt, instructions, status, COALESCE(native_id, ''), created_at, updated_at
+		SELECT id, profile_name, architect_key, session_type, prompt, instructions, status, COALESCE(ticket_id, ''), COALESCE(native_id, ''), created_at, updated_at
 		FROM sessions
 	`
 	args := []any{}
@@ -276,9 +283,11 @@ func scanSession(scanner interface{ Scan(...any) error }) (domain.Session, error
 		&session.ID,
 		&session.ProfileName,
 		&session.ArchitectKey,
+		&session.SessionType,
 		&session.Prompt,
 		&session.Instructions,
 		&status,
+		&session.TicketID,
 		&session.NativeID,
 		&createdAt,
 		&updatedAt,
@@ -452,5 +461,5 @@ func nullIfEmpty(value string) any {
 func isRunningSessionUniqueConstraint(err error) bool {
 	message := err.Error()
 	return strings.Contains(message, "UNIQUE constraint failed") &&
-		strings.Contains(message, "sessions.architect_key")
+		(strings.Contains(message, "sessions.architect_key") || strings.Contains(message, "sessions.ticket_id"))
 }

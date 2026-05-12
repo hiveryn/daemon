@@ -7,6 +7,14 @@ import (
 
 type SessionStatus string
 
+type SessionType string
+
+const (
+	SessionTypeArchitect SessionType = "architect"
+	SessionTypeWork      SessionType = "work"
+	SessionTypeCollab    SessionType = "collab"
+)
+
 const (
 	SessionStatusRunning   SessionStatus = "running"
 	SessionStatusCompleted SessionStatus = "completed"
@@ -17,9 +25,11 @@ type Session struct {
 	ID           string        `json:"id"`
 	ProfileName  string        `json:"profile_name"`
 	ArchitectKey string        `json:"architect_key"`
+	SessionType  string        `json:"session_type"`
 	Prompt       string        `json:"prompt"`
 	Instructions string        `json:"instructions"`
 	Status       SessionStatus `json:"status"`
+	TicketID     string        `json:"ticket_id,omitempty"`
 	NativeID     string        `json:"native_id,omitempty"`
 	CreatedAt    time.Time     `json:"created_at"`
 	UpdatedAt    time.Time     `json:"updated_at"`
@@ -49,9 +59,11 @@ type CreateSessionParams struct {
 	ID           string
 	ProfileName  string
 	ArchitectKey string
+	SessionType  string
 	Prompt       string
 	Instructions string
 	Status       SessionStatus
+	TicketID     string
 	NativeID     string
 }
 
@@ -92,6 +104,19 @@ type SpawnArchitectSessionResult struct {
 	Session Session
 }
 
+type SpawnWorkSessionRequest struct {
+	ArchitectKey string
+	TicketID     string
+	ProfileName  string
+	Mode         string
+	Cols         uint16
+	Rows         uint16
+}
+
+type SpawnWorkSessionResult struct {
+	Session Session
+}
+
 type SessionEventSubscription interface {
 	C() <-chan SessionEvent
 	Close()
@@ -106,6 +131,7 @@ type TerminalAttachment interface {
 
 type SessionService interface {
 	SpawnArchitectSession(context.Context, SpawnArchitectSessionRequest) (SpawnArchitectSessionResult, error)
+	SpawnWorkSession(context.Context, SpawnWorkSessionRequest) (SpawnWorkSessionResult, error)
 	TerminateSession(context.Context, string) error
 	GetSession(context.Context, string) (Session, error)
 	ListSessions(context.Context, SessionListFilter) ([]Session, error)

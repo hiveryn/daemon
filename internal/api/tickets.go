@@ -246,3 +246,63 @@ func writeArchitectNotFound(w http.ResponseWriter, r *http.Request, key string) 
 		"id":       key,
 	})
 }
+
+func (h *ticketsHandler) spawn(w http.ResponseWriter, r *http.Request) {
+	if h.tickets == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "ticket service not configured", nil)
+		return
+	}
+	if h.sessions == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
+		return
+	}
+
+	key := r.PathValue("key")
+	ticketID := r.PathValue("id")
+
+	var request struct {
+		ProfileName string `json:"profile_name"`
+		Mode        string `json:"mode,omitempty"`
+		Cols        uint16 `json:"cols,omitempty"`
+		Rows        uint16 `json:"rows,omitempty"`
+	}
+	if err := decodeJSON(r, &request); err != nil {
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), err.Error(), nil)
+		return
+	}
+
+	h.logger.Info("[worker-spawn] request",
+		"architect_key", key,
+		"ticket_id", ticketID,
+		"profile_name", request.ProfileName,
+		"mode", request.Mode,
+	)
+
+	result, err := h.sessions.SpawnWorkSession(r.Context(), domain.SpawnWorkSessionRequest{
+		ArchitectKey: key,
+		TicketID:     ticketID,
+		ProfileName:  request.ProfileName,
+		Mode:         request.Mode,
+		Cols:         request.Cols,
+		Rows:         request.Rows,
+	})
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	if h.publishArchitect != nil {
+		h.publishArchitect(key, domain.ArchitectEvent{
+			Type:         "workspace_changed",
+			ArchitectKey: key,
+			Reason:       "ticket_moved",
+			TicketID:     ticketID,
+			At:           time.Now().UTC(),
+		})
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]string{
+		"session_id": result.Session.ID,
+		"ws_url":     websocketURL(r, "/ws/session/"+result.Session.ID),
+	})
+}

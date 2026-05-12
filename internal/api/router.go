@@ -51,6 +51,7 @@ type sessionsHandler struct {
 type ticketsHandler struct {
 	config           config.Config
 	logger           *slog.Logger
+	sessions         domain.SessionService
 	tickets          domain.TicketService
 	publishArchitect func(key string, event domain.ArchitectEvent)
 }
@@ -86,7 +87,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	ah := &architectsHandler{config: deps.Config, logger: deps.Logger, sessions: deps.Sessions}
 	rh := &reposHandler{config: deps.Config, logger: deps.Logger}
 	sh := &sessionsHandler{logger: deps.Logger, sessions: deps.Sessions}
-	th := &ticketsHandler{config: deps.Config, logger: deps.Logger, tickets: deps.Tickets}
+	th := &ticketsHandler{config: deps.Config, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
 	eh := &architectEventsHandler{config: deps.Config, logger: deps.Logger, hub: deps.ArchitectEvents}
 
 	if deps.ArchitectEvents != nil {
@@ -112,6 +113,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("PATCH /api/architects/{key}/tickets/{id}/metadata", th.updateMetadata)
 	mux.HandleFunc("DELETE /api/architects/{key}/tickets/{id}", th.delete)
 	mux.HandleFunc("POST /api/architects/{key}/tickets/{id}/move", th.move)
+	mux.HandleFunc("POST /api/architects/{key}/tickets/{id}/spawn", th.spawn)
 	mux.HandleFunc("GET /api/architects/{key}/repos", rh.list)
 	mux.HandleFunc("GET /api/architects/{key}/repos/{repoKey}", rh.get)
 	mux.HandleFunc("GET /api/architects/{key}/events", eh.events)
