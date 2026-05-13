@@ -6,7 +6,9 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,6 +113,97 @@ func TestSpawnArchitectSessionFailsWhenSetupFails(t *testing.T) {
 	}
 }
 
+func TestConcludeArchitectSessionAppendsEndedEventRawBody(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.createdSession = domain.Session{
+		ID:           "sess-architect",
+		ProfileName:  "codex",
+		ArchitectKey: "hiveryn",
+		SessionType:  string(domain.SessionTypeArchitect),
+		Status:       domain.SessionStatusRunning,
+		CreatedAt:    time.Date(2026, 5, 13, 15, 0, 0, 0, time.UTC),
+	}
+	service := &Service{
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:          testRuntimeConfig(t),
+		repo:         repo,
+		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
+	}
+
+	_, err := service.ConcludeSession(context.Background(), "sess-architect", domain.ConcludeSessionParams{
+		Body: "architect conclusion",
+	})
+	if err != nil {
+		t.Fatalf("ConcludeSession failed: %v", err)
+	}
+
+	event := repo.lastAppendedEvent(t)
+	if event.Raw["body"] != "architect conclusion" {
+		t.Fatalf("expected raw body in ended event, got %#v", event.Raw)
+	}
+	if event.Status != "ended" {
+		t.Fatalf("expected ended event, got %#v", event)
+	}
+}
+
+func TestConcludeWorkSessionAppendsEndedEventRawConclusionData(t *testing.T) {
+	t.Parallel()
+
+	architectPath := t.TempDir()
+	repoPath := t.TempDir()
+	commit := createTestGitCommit(t, repoPath)
+	created := time.Date(2026, 5, 13, 15, 30, 0, 0, time.UTC)
+	repo := newFakeSessionRepository()
+	repo.createdSession = domain.Session{
+		ID:           "sess-work",
+		ProfileName:  "codex",
+		ArchitectKey: "hiveryn",
+		SessionType:  string(domain.SessionTypeWork),
+		Status:       domain.SessionStatusRunning,
+		TicketID:     "ticket-1",
+		CreatedAt:    created,
+	}
+	service := &Service{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:    testRuntimeConfigWithPaths(architectPath, repoPath),
+		repo:   repo,
+		tickets: &fakeTicketService{ticket: domain.Ticket{
+			TicketSummary: domain.TicketSummary{
+				ID: "ticket-1", Title: "Ticket", Repo: "daemon", Status: domain.TicketStatusProgress, Created: &created, Updated: &created,
+			},
+			Body: "body",
+		}},
+		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
+	}
+
+	_, err := service.ConcludeSession(context.Background(), "sess-work", domain.ConcludeSessionParams{
+		Body:            "worker conclusion",
+		Commits:         []string{commit},
+		Rejected:        true,
+		RejectionReason: "needs another pass",
+	})
+	if err != nil {
+		t.Fatalf("ConcludeSession failed: %v", err)
+	}
+
+	event := repo.lastAppendedEvent(t)
+	if event.Raw["body"] != "worker conclusion" {
+		t.Fatalf("expected raw body in ended event, got %#v", event.Raw)
+	}
+	commits, ok := event.Raw["commits"].([]string)
+	if !ok || len(commits) != 1 || commits[0] != commit {
+		t.Fatalf("expected raw commits in ended event, got %#v", event.Raw["commits"])
+	}
+	if event.Raw["rejected"] != true {
+		t.Fatalf("expected raw rejected in ended event, got %#v", event.Raw)
+	}
+	if event.Raw["rejection_reason"] != "needs another pass" {
+		t.Fatalf("expected raw rejection reason in ended event, got %#v", event.Raw)
+	}
+}
+
 func testRuntimeConfig(t *testing.T) config.Config {
 	t.Helper()
 
@@ -192,6 +285,7 @@ func (f *fakeTerminalManager) Shutdown(context.Context) error {
 type fakeSessionRepository struct {
 	createdSession domain.Session
 	updatedStatus  domain.SessionStatus
+	appendedEvents []domain.AppendSessionEventParams
 }
 
 func newFakeSessionRepository() *fakeSessionRepository {
@@ -242,8 +336,24 @@ func (f *fakeSessionRepository) ListSessionEvents(context.Context, string) ([]do
 	return nil, nil
 }
 
-func (f *fakeSessionRepository) AppendSessionEvent(context.Context, domain.AppendSessionEventParams) (domain.SessionEvent, error) {
-	return domain.SessionEvent{}, nil
+func (f *fakeSessionRepository) AppendSessionEvent(_ context.Context, params domain.AppendSessionEventParams) (domain.SessionEvent, error) {
+	f.appendedEvents = append(f.appendedEvents, params)
+	return domain.SessionEvent{
+		SessionID: params.SessionID,
+		Type:      params.Type,
+		Status:    params.Status,
+		Message:   params.Message,
+		Raw:       params.Raw,
+		At:        params.At,
+	}, nil
+}
+
+func (f *fakeSessionRepository) lastAppendedEvent(t *testing.T) domain.AppendSessionEventParams {
+	t.Helper()
+	if len(f.appendedEvents) == 0 {
+		t.Fatal("expected appended session event")
+	}
+	return f.appendedEvents[len(f.appendedEvents)-1]
 }
 
 func (f *fakeSessionRepository) FailRunningSessions(context.Context) error {
@@ -406,4 +516,30 @@ func testRuntimeConfigWithPaths(architectPath, repoPath string) config.Config {
 			},
 		},
 	}
+}
+
+func createTestGitCommit(t *testing.T, repoPath string) string {
+	t.Helper()
+
+	runGit(t, repoPath, "init")
+	runGit(t, repoPath, "config", "user.email", "test@example.com")
+	runGit(t, repoPath, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("test\n"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	runGit(t, repoPath, "add", "README.md")
+	runGit(t, repoPath, "commit", "-m", "initial")
+	return runGit(t, repoPath, "rev-parse", "HEAD")
+}
+
+func runGit(t *testing.T, repoPath string, args ...string) string {
+	t.Helper()
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repoPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, output)
+	}
+	return strings.TrimSpace(string(output))
 }

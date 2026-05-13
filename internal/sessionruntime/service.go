@@ -386,7 +386,7 @@ func (s *Service) concludeArchitectSession(ctx context.Context, session domain.S
 		return domain.ConcludeSessionResult{}, err
 	}
 
-	s.appendAndPublishSessionEnded(ctx, session.ID, "session concluded")
+	s.appendAndPublishSessionEnded(ctx, session.ID, "session concluded", map[string]any{"body": params.Body})
 
 	return domain.ConcludeSessionResult{SessionID: session.ID}, nil
 }
@@ -458,17 +458,23 @@ func (s *Service) concludeWorkSession(ctx context.Context, session domain.Sessio
 		return domain.ConcludeSessionResult{}, err
 	}
 
-	s.appendAndPublishSessionEnded(ctx, session.ID, "session concluded")
+	s.appendAndPublishSessionEnded(ctx, session.ID, "session concluded", map[string]any{
+		"body":             params.Body,
+		"commits":          params.Commits,
+		"rejected":         params.Rejected,
+		"rejection_reason": params.RejectionReason,
+	})
 
 	return domain.ConcludeSessionResult{SessionID: session.ID, TicketID: session.TicketID}, nil
 }
 
-func (s *Service) appendAndPublishSessionEnded(ctx context.Context, sessionID, message string) {
+func (s *Service) appendAndPublishSessionEnded(ctx context.Context, sessionID, message string, raw map[string]any) {
 	event, err := s.repo.AppendSessionEvent(ctx, domain.AppendSessionEventParams{
 		SessionID: sessionID,
 		Type:      "status",
 		Status:    "ended",
 		Message:   message,
+		Raw:       raw,
 		At:        time.Now().UTC(),
 	})
 	if err != nil {
