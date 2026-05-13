@@ -1,7 +1,9 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,7 +27,50 @@ func (h *ticketsHandler) list(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, r, err)
 		return
 	}
-	writeJSON(w, r, http.StatusOK, board)
+
+	statusParam := strings.TrimSpace(r.URL.Query().Get("status"))
+	if statusParam == "" {
+		writeJSON(w, r, http.StatusOK, board)
+		return
+	}
+
+	status := domain.TicketStatus(statusParam)
+	if !status.Valid() {
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid status: "+statusParam, map[string]string{
+			"field": "status",
+		})
+		return
+	}
+
+	limit := 10
+	if limitParam := strings.TrimSpace(r.URL.Query().Get("limit")); limitParam != "" {
+		parsed, err := strconv.Atoi(limitParam)
+		if err != nil || parsed < 1 {
+			writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid limit: "+limitParam, map[string]string{
+				"field": "limit",
+			})
+			return
+		}
+		limit = parsed
+	}
+
+	var filtered []domain.TicketSummary
+	switch status {
+	case domain.TicketStatusBacklog:
+		filtered = board.Backlog
+	case domain.TicketStatusProgress:
+		filtered = board.Progress
+	case domain.TicketStatusDone:
+		filtered = board.Done
+	}
+
+	if len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	if filtered == nil {
+		filtered = []domain.TicketSummary{}
+	}
+	writeJSON(w, r, http.StatusOK, filtered)
 }
 
 func (h *ticketsHandler) get(w http.ResponseWriter, r *http.Request) {
@@ -71,6 +116,21 @@ func (h *ticketsHandler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	architectKey := r.PathValue("key")
+	if request.Repo != "" {
+		architect, ok := h.config.Architects[architectKey]
+		if !ok {
+			writeArchitectNotFound(w, r, architectKey)
+			return
+		}
+		if _, ok := architect.Repos[request.Repo]; !ok {
+			writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation),
+				fmt.Sprintf("repo key '%s' not found in architect config", request.Repo),
+				map[string]string{"field": "repo"})
+			return
+		}
+	}
+
 	ticket, err := h.tickets.CreateTicket(r.Context(), architectPath, domain.CreateTicketParams{
 		Title:      request.Title,
 		Repo:       request.Repo,
@@ -83,9 +143,9 @@ func (h *ticketsHandler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.publishArchitect != nil {
-		h.publishArchitect(r.PathValue("key"), domain.ArchitectEvent{
+		h.publishArchitect(architectKey, domain.ArchitectEvent{
 			Type:         "workspace_changed",
-			ArchitectKey: r.PathValue("key"),
+			ArchitectKey: architectKey,
 			Reason:       "ticket_created",
 			TicketID:     ticket.ID,
 			At:           time.Now().UTC(),

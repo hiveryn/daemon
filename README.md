@@ -63,7 +63,7 @@ Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to de
 | `GET` | `/api/architects` | List configured architects |
 | `GET` | `/api/architects/{key}` | Get one configured architect by key |
 | `POST` | `/api/architects/{key}/spawn` | Spawn an architect session using an agent profile |
-| `GET` | `/api/architects/{key}/tickets` | List filesystem-backed ticket board columns |
+| `GET` | `/api/architects/{key}/tickets` | List ticket board columns; supports `?status=backlog\|progress\|done` and `?limit=N` |
 | `POST` | `/api/architects/{key}/tickets` | Create a backlog ticket in the architect folder |
 | `GET` | `/api/architects/{key}/tickets/{id}` | Get one filesystem-backed ticket by ID |
 | `PATCH` | `/api/architects/{key}/tickets/{id}` | Apply a targeted body edit to a ticket |

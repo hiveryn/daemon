@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -153,6 +154,259 @@ func TestHandleReadTicketMalformedEnvelope(t *testing.T) {
 		t.Fatalf("expected ToolError, got %T", err)
 	}
 	if toolErr.Code != ErrorCodeInternal {
+		t.Fatalf("code = %q", toolErr.Code)
+	}
+}
+
+func TestHandleListTicketsSuccess(t *testing.T) {
+	t.Parallel()
+
+	created := time.Date(2026, 5, 13, 14, 30, 0, 0, time.UTC)
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s", r.Method)
+		}
+		if !strings.Contains(r.URL.Path, "/api/architects/hiveryn/tickets") {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("status") != "backlog" {
+			t.Fatalf("status = %s", r.URL.Query().Get("status"))
+		}
+		if r.URL.Query().Get("limit") != "10" {
+			t.Fatalf("limit = %s", r.URL.Query().Get("limit"))
+		}
+		writeEnvelope(t, w, http.StatusOK, []domain.TicketSummary{
+			{ID: "ticket-1", Status: domain.TicketStatusBacklog, Title: "First", Created: &created, References: []string{}, Warnings: []domain.TicketWarning{}},
+			{ID: "ticket-2", Status: domain.TicketStatusBacklog, Title: "Second", Created: &created, References: []string{}, Warnings: []domain.TicketWarning{}},
+		})
+	})
+
+	_, output, err := server.handleListTickets(context.Background(), nil, ListTicketsInput{Status: "backlog", Limit: 10})
+	if err != nil {
+		t.Fatalf("handleListTickets failed: %v", err)
+	}
+	if len(output.Tickets) != 2 {
+		t.Fatalf("expected 2 tickets, got %d", len(output.Tickets))
+	}
+	if output.Tickets[0].ID != "ticket-1" {
+		t.Fatalf("unexpected first ticket: %#v", output.Tickets[0])
+	}
+}
+
+func TestHandleListTicketsMissingStatus(t *testing.T) {
+	t.Parallel()
+
+	server, err := NewServer(Config{
+		DaemonURL:    "http://127.0.0.1:4200",
+		ArchitectKey: "hiveryn",
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	_, _, err = server.handleListTickets(context.Background(), nil, ListTicketsInput{})
+	toolErr, ok := err.(*ToolError)
+	if !ok {
+		t.Fatalf("expected ToolError, got %T", err)
+	}
+	if toolErr.Code != ErrorCodeValidation {
+		t.Fatalf("code = %q", toolErr.Code)
+	}
+}
+
+func TestHandleListTicketsBadStatus(t *testing.T) {
+	t.Parallel()
+
+	server, err := NewServer(Config{
+		DaemonURL:    "http://127.0.0.1:4200",
+		ArchitectKey: "hiveryn",
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	_, _, err = server.handleListTickets(context.Background(), nil, ListTicketsInput{Status: "invalid"})
+	toolErr, ok := err.(*ToolError)
+	if !ok {
+		t.Fatalf("expected ToolError, got %T", err)
+	}
+	if toolErr.Code != ErrorCodeValidation {
+		t.Fatalf("code = %q", toolErr.Code)
+	}
+}
+
+func TestHandleListTicketsLimitApplied(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("limit") != "5" {
+			t.Fatalf("limit = %s, want 5", r.URL.Query().Get("limit"))
+		}
+		writeEnvelope(t, w, http.StatusOK, []domain.TicketSummary{})
+	})
+
+	_, _, err := server.handleListTickets(context.Background(), nil, ListTicketsInput{Status: "done", Limit: 5})
+	if err != nil {
+		t.Fatalf("handleListTickets failed: %v", err)
+	}
+}
+
+func TestHandleCreateWorkTicketSuccess(t *testing.T) {
+	t.Parallel()
+
+	created := time.Date(2026, 5, 13, 14, 30, 0, 0, time.UTC)
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s", r.Method)
+		}
+		writeEnvelope(t, w, http.StatusCreated, domain.Ticket{
+			TicketSummary: domain.TicketSummary{
+				ID:            "2026-05-13-1430-new-ticket",
+				Status:        domain.TicketStatusBacklog,
+				Title:         "New Ticket",
+				Repo:          "daemon",
+				Created:       &created,
+				References:    []string{},
+				HasConclusion: false,
+				Warnings:      []domain.TicketWarning{},
+			},
+			Body:       "ticket body",
+			Conclusion: nil,
+		})
+	})
+
+	_, output, err := server.handleCreateWorkTicket(context.Background(), nil, CreateWorkTicketInput{
+		Title: "New Ticket",
+		Repo:  "daemon",
+		Body:  "ticket body",
+	})
+	if err != nil {
+		t.Fatalf("handleCreateWorkTicket failed: %v", err)
+	}
+	if output.ID != "2026-05-13-1430-new-ticket" {
+		t.Fatalf("unexpected output: %#v", output)
+	}
+}
+
+func TestHandleCreateWorkTicketMissingTitle(t *testing.T) {
+	t.Parallel()
+
+	server, err := NewServer(Config{
+		DaemonURL:    "http://127.0.0.1:4200",
+		ArchitectKey: "hiveryn",
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	_, _, err = server.handleCreateWorkTicket(context.Background(), nil, CreateWorkTicketInput{})
+	toolErr, ok := err.(*ToolError)
+	if !ok {
+		t.Fatalf("expected ToolError, got %T", err)
+	}
+	if toolErr.Code != ErrorCodeValidation {
+		t.Fatalf("code = %q", toolErr.Code)
+	}
+}
+
+func TestHandleCreateWorkTicketInvalidRepo(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeErrorEnvelope(t, w, http.StatusBadRequest, &domain.ErrorBody{
+			Code:    string(domain.ErrCodeValidation),
+			Message: "repo key 'nonexistent' not found in architect config",
+		})
+	})
+
+	_, _, err := server.handleCreateWorkTicket(context.Background(), nil, CreateWorkTicketInput{
+		Title: "Some ticket",
+		Repo:  "nonexistent",
+	})
+	toolErr, ok := err.(*ToolError)
+	if !ok {
+		t.Fatalf("expected ToolError, got %T", err)
+	}
+	if toolErr.Code != ErrorCodeValidation {
+		t.Fatalf("code = %q, want %q", toolErr.Code, ErrorCodeValidation)
+	}
+}
+
+func TestHandleCreateWorkTicketOptionalFieldsOmitted(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s", r.Method)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if _, hasRepo := body["repo"]; hasRepo {
+			t.Fatalf("repo should be absent when empty")
+		}
+		if _, hasBody := body["body"]; hasBody {
+			t.Fatalf("body should be absent when empty")
+		}
+		if _, hasRefs := body["references"]; hasRefs {
+			t.Fatalf("references should be absent when empty")
+		}
+		writeEnvelope(t, w, http.StatusCreated, domain.Ticket{
+			TicketSummary: domain.TicketSummary{
+				ID:     "minimal-ticket",
+				Status: domain.TicketStatusBacklog,
+				Title:  "Minimal",
+			},
+		})
+	})
+
+	_, output, err := server.handleCreateWorkTicket(context.Background(), nil, CreateWorkTicketInput{
+		Title: "Minimal",
+	})
+	if err != nil {
+		t.Fatalf("handleCreateWorkTicket failed: %v", err)
+	}
+	if output.ID != "minimal-ticket" {
+		t.Fatalf("unexpected output: %#v", output)
+	}
+}
+
+func TestHandleDeleteTicketSuccess(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Fatalf("method = %s", r.Method)
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]bool{"deleted": true})
+	})
+
+	_, output, err := server.handleDeleteTicket(context.Background(), nil, DeleteTicketInput{ID: "ticket-to-delete"})
+	if err != nil {
+		t.Fatalf("handleDeleteTicket failed: %v", err)
+	}
+	if !output.Deleted {
+		t.Fatalf("expected deleted=true, got %#v", output)
+	}
+}
+
+func TestHandleDeleteTicketNotFound(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeErrorEnvelope(t, w, http.StatusNotFound, &domain.ErrorBody{
+			Code:    string(domain.ErrCodeNotFound),
+			Message: "ticket missing not found",
+		})
+	})
+
+	_, _, err := server.handleDeleteTicket(context.Background(), nil, DeleteTicketInput{ID: "missing"})
+	toolErr, ok := err.(*ToolError)
+	if !ok {
+		t.Fatalf("expected ToolError, got %T", err)
+	}
+	if toolErr.Code != ErrorCodeNotFound {
 		t.Fatalf("code = %q", toolErr.Code)
 	}
 }
