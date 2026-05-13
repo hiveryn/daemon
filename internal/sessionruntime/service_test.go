@@ -5,7 +5,10 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/hiveryn/agentruntime"
 	"github.com/hiveryn/agentruntime/ingest"
@@ -133,13 +136,15 @@ func testRuntimeConfig(t *testing.T) config.Config {
 type fakeAdapter struct {
 	ensureRequest agentruntime.SetupRequest
 	ensureErr     error
+	launchRequest agentruntime.StartRequest
 }
 
 func (fakeAdapter) Agent() agentruntime.AgentKind {
 	return agentruntime.AgentCodex
 }
 
-func (fakeAdapter) PrepareLaunch(context.Context, agentruntime.StartRequest) (agentruntime.LaunchSpec, error) {
+func (f *fakeAdapter) PrepareLaunch(_ context.Context, req agentruntime.StartRequest) (agentruntime.LaunchSpec, error) {
+	f.launchRequest = req
 	return agentruntime.LaunchSpec{
 		Command: "fake-command",
 		Workdir: "/tmp",
@@ -239,4 +244,158 @@ func (f *fakeSessionRepository) AppendSessionEvent(context.Context, domain.Appen
 
 func (f *fakeSessionRepository) FailRunningSessions(context.Context) error {
 	return nil
+}
+
+type fakeTicketService struct {
+	ticket domain.Ticket
+	err    error
+}
+
+func (f *fakeTicketService) ListTickets(context.Context, string) (domain.TicketBoard, error) {
+	return domain.TicketBoard{}, nil
+}
+
+func (f *fakeTicketService) GetTicket(context.Context, string, string) (domain.Ticket, error) {
+	return f.ticket, f.err
+}
+
+func (f *fakeTicketService) CreateTicket(context.Context, string, domain.CreateTicketParams) (domain.Ticket, error) {
+	return domain.Ticket{}, nil
+}
+
+func (f *fakeTicketService) EditTicket(context.Context, string, string, domain.EditTicketParams) (domain.Ticket, error) {
+	return domain.Ticket{}, nil
+}
+
+func (f *fakeTicketService) UpdateTicketMetadata(context.Context, string, string, domain.UpdateTicketMetadataParams) (domain.Ticket, error) {
+	return domain.Ticket{}, nil
+}
+
+func (f *fakeTicketService) DeleteTicket(context.Context, string, string) error {
+	return nil
+}
+
+func (f *fakeTicketService) MoveTicket(context.Context, string, string, domain.MoveTicketParams) (domain.Ticket, error) {
+	return domain.Ticket{}, nil
+}
+
+func TestSpawnArchitectSessionAddsMCPServer(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	adapter := &fakeAdapter{}
+	service := &Service{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:    testRuntimeConfig(t),
+		repo:   repo,
+		receiver: ingest.NewReceiver(
+			adapter,
+		),
+		adapters: map[agentruntime.AgentKind]agentruntime.Adapter{
+			agentruntime.AgentCodex: adapter,
+		},
+		terminal:       &fakeTerminalManager{},
+		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels:  map[string]func(){},
+		baseURL:        "http://127.0.0.1:4200",
+		executablePath: func() (string, error) { return "/tmp/hiverynd", nil },
+	}
+
+	if _, err := service.SpawnArchitectSession(context.Background(), domain.SpawnArchitectSessionRequest{
+		ArchitectKey: "hiveryn",
+		ProfileName:  "codex",
+	}); err != nil {
+		t.Fatalf("SpawnArchitectSession failed: %v", err)
+	}
+
+	assertMCPServer(t, adapter.launchRequest.MCPServers, domain.SessionTypeArchitect)
+}
+
+func TestSpawnWorkSessionAddsMCPServer(t *testing.T) {
+	t.Parallel()
+
+	architectPath := t.TempDir()
+	repoPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoPath, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	created := time.Date(2026, 5, 13, 14, 30, 0, 0, time.UTC)
+	adapter := &fakeAdapter{}
+	service := &Service{
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:     testRuntimeConfigWithPaths(architectPath, repoPath),
+		repo:    newFakeSessionRepository(),
+		tickets: &fakeTicketService{ticket: domain.Ticket{TicketSummary: domain.TicketSummary{ID: "ticket-1", Title: "Ticket", Repo: "daemon", Status: domain.TicketStatusBacklog, Created: &created, Updated: &created, References: []string{}, Warnings: []domain.TicketWarning{}}, Body: "body"}},
+		receiver: ingest.NewReceiver(
+			adapter,
+		),
+		adapters: map[agentruntime.AgentKind]agentruntime.Adapter{
+			agentruntime.AgentCodex: adapter,
+		},
+		terminal:       &fakeTerminalManager{},
+		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels:  map[string]func(){},
+		baseURL:        "http://127.0.0.1:4200",
+		executablePath: func() (string, error) { return "/tmp/hiverynd", nil },
+	}
+
+	if _, err := service.SpawnWorkSession(context.Background(), domain.SpawnWorkSessionRequest{
+		ArchitectKey: "hiveryn",
+		TicketID:     "ticket-1",
+		ProfileName:  "codex",
+	}); err != nil {
+		t.Fatalf("SpawnWorkSession failed: %v", err)
+	}
+
+	assertMCPServer(t, adapter.launchRequest.MCPServers, domain.SessionTypeWork)
+}
+
+func assertMCPServer(t *testing.T, servers []agentruntime.MCPServerConfig, sessionType domain.SessionType) {
+	t.Helper()
+
+	if len(servers) != 1 {
+		t.Fatalf("mcp servers = %#v", servers)
+	}
+	server := servers[0]
+	if server.Name != "hiveryn-daemon" {
+		t.Fatalf("name = %q", server.Name)
+	}
+	if server.Command != "/tmp/hiverynd" {
+		t.Fatalf("command = %q", server.Command)
+	}
+	if len(server.Args) != 5 {
+		t.Fatalf("args = %#v", server.Args)
+	}
+	if server.Args[0] != "mcp" || server.Args[1] != "--architect-key" || server.Args[2] != "hiveryn" || server.Args[3] != "--daemon-url" || server.Args[4] != "http://127.0.0.1:4200" {
+		t.Fatalf("args = %#v", server.Args)
+	}
+	if server.Env["HIVERYN_DAEMON_URL"] != "http://127.0.0.1:4200" {
+		t.Fatalf("env = %#v", server.Env)
+	}
+	if server.Env["HIVERYN_ARCHITECT_KEY"] != "hiveryn" {
+		t.Fatalf("env = %#v", server.Env)
+	}
+	if server.Env["HIVERYN_SESSION_TYPE"] != string(sessionType) {
+		t.Fatalf("env = %#v", server.Env)
+	}
+}
+
+func testRuntimeConfigWithPaths(architectPath, repoPath string) config.Config {
+	return config.Config{
+		AgentProfiles: map[string]config.AgentProfileConfig{
+			"codex": {
+				Agent: "codex",
+				Env: map[string]string{
+					"CODEX_HOME": "/custom/codex",
+				},
+			},
+		},
+		Architects: map[string]config.ArchitectConfig{
+			"hiveryn": {
+				Path:  architectPath,
+				Group: "personal",
+				Repos: map[string]string{"daemon": repoPath},
+			},
+		},
+	}
 }

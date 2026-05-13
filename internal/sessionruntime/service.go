@@ -31,13 +31,14 @@ const (
 )
 
 type Service struct {
-	logger     *slog.Logger
-	cfg        config.Config
-	repo       domain.SessionRepository
-	tickets    domain.TicketService
-	baseURL    string
-	receiver   *ingest.Receiver
-	ingestHTTP http.Handler
+	logger         *slog.Logger
+	cfg            config.Config
+	repo           domain.SessionRepository
+	tickets        domain.TicketService
+	baseURL        string
+	receiver       *ingest.Receiver
+	ingestHTTP     http.Handler
+	executablePath func() (string, error)
 
 	adapters map[agentruntime.AgentKind]agentruntime.Adapter
 	terminal terminalManager
@@ -74,17 +75,18 @@ func New(ctx context.Context, cfg config.Config, repo domain.SessionRepository, 
 	mux.Handle("/opencode", receiver.Handler(agentruntime.AgentOpenCode))
 
 	return &Service{
-		logger:        logger,
-		cfg:           cfg,
-		repo:          repo,
-		tickets:       tickets,
-		baseURL:       baseURL,
-		receiver:      receiver,
-		ingestHTTP:    http.StripPrefix(ingestPathPrefix, mux),
-		adapters:      adapters,
-		terminal:      newPTYTerminalManager(logger),
-		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
-		bridgeCancels: map[string]func(){},
+		logger:         logger,
+		cfg:            cfg,
+		repo:           repo,
+		tickets:        tickets,
+		baseURL:        baseURL,
+		receiver:       receiver,
+		ingestHTTP:     http.StripPrefix(ingestPathPrefix, mux),
+		executablePath: os.Executable,
+		adapters:       adapters,
+		terminal:       newPTYTerminalManager(logger),
+		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels:  map[string]func(){},
 	}, nil
 }
 
@@ -133,6 +135,11 @@ func (s *Service) SpawnArchitectSession(ctx context.Context, req domain.SpawnArc
 		s.markSessionFailed(session.ID, "ensure setup")
 		return domain.SpawnArchitectSessionResult{}, fmt.Errorf("ensure %s setup: %w", agentKind, err)
 	}
+	mcpServers, err := s.mcpServersForSession(domain.SessionTypeArchitect, req.ArchitectKey)
+	if err != nil {
+		s.markSessionFailed(session.ID, "resolve mcp server")
+		return domain.SpawnArchitectSessionResult{}, err
+	}
 	spec, err := adapter.PrepareLaunch(ctx, agentruntime.StartRequest{
 		ID:           session.ID,
 		Agent:        agentKind,
@@ -141,6 +148,7 @@ func (s *Service) SpawnArchitectSession(ctx context.Context, req domain.SpawnArc
 		Workdir:      architect.Path,
 		Args:         append([]string(nil), profile.Args...),
 		Env:          cloneStringMap(profile.Env),
+		MCPServers:   mcpServers,
 	})
 	if err != nil {
 		s.markSessionFailed(session.ID, "prepare launch")
@@ -243,14 +251,20 @@ func (s *Service) SpawnWorkSession(ctx context.Context, req domain.SpawnWorkSess
 		s.markSessionFailed(session.ID, "ensure setup")
 		return domain.SpawnWorkSessionResult{}, fmt.Errorf("ensure %s setup: %w", agentKind, err)
 	}
+	mcpServers, err := s.mcpServersForSession(domain.SessionTypeWork, req.ArchitectKey)
+	if err != nil {
+		s.markSessionFailed(session.ID, "resolve mcp server")
+		return domain.SpawnWorkSessionResult{}, err
+	}
 
 	spec, err := adapter.PrepareLaunch(ctx, agentruntime.StartRequest{
-		ID:      session.ID,
-		Agent:   agentKind,
-		Prompt:  kickoffContent,
-		Workdir: repoPath,
-		Args:    append([]string(nil), profile.Args...),
-		Env:     cloneStringMap(profile.Env),
+		ID:         session.ID,
+		Agent:      agentKind,
+		Prompt:     kickoffContent,
+		Workdir:    repoPath,
+		Args:       append([]string(nil), profile.Args...),
+		Env:        cloneStringMap(profile.Env),
+		MCPServers: mcpServers,
 	})
 	if err != nil {
 		s.markSessionFailed(session.ID, "prepare launch")
@@ -609,6 +623,35 @@ func cloneStringMap(input map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func (s *Service) mcpServersForSession(sessionType domain.SessionType, architectKey string) ([]agentruntime.MCPServerConfig, error) {
+	hiveryndPath, err := s.resolveExecutablePath()
+	if err != nil {
+		return nil, fmt.Errorf("resolve hiverynd executable: %w", err)
+	}
+
+	return []agentruntime.MCPServerConfig{{
+		Name:    "hiveryn-daemon",
+		Command: hiveryndPath,
+		Args: []string{
+			"mcp",
+			"--architect-key", architectKey,
+			"--daemon-url", s.baseURL,
+		},
+		Env: map[string]string{
+			"HIVERYN_DAEMON_URL":    s.baseURL,
+			"HIVERYN_ARCHITECT_KEY": architectKey,
+			"HIVERYN_SESSION_TYPE":  string(sessionType),
+		},
+	}}, nil
+}
+
+func (s *Service) resolveExecutablePath() (string, error) {
+	if s.executablePath != nil {
+		return s.executablePath()
+	}
+	return os.Executable()
 }
 
 func cloneAnyMap(input map[string]any) map[string]any {

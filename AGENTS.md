@@ -48,13 +48,14 @@ The daemon is the integration point. The desktop app, MCP tools, and agent proce
 ## Package boundaries
 
 ```
-cmd/hiverynd          entrypoint: flags → app.Run()
+cmd/hiverynd          entrypoint: `serve` daemon mode and `mcp` stdio subcommand
 internal/
   app/                dependency wiring, startup/shutdown orchestration
   archevents/         in-memory publish/subscribe hub for architect-scoped SSE events
   architectfs/        architect folder filesystem operations (ticket CRUD, frontmatter, body edits)
   config/             bootstrap config (~/.hiveryn/config.yaml) — port, bind_address, profiles, architects
   domain/             shared envelope/error/session types — zero imports of store/api
+  mcp/                stdio MCP server; registers role-scoped tools and translates tool calls into daemon HTTP API requests
   server/             HTTP server lifecycle (Listen, Shutdown) — thin wrapper around net/http
   api/                HTTP handlers, routing, middleware (request ID, recovery, access logging), JSON helpers
   sessionruntime/     session orchestration (architect + worker), agentruntime ingest bridge, daemon-owned PTY manager
@@ -68,6 +69,7 @@ internal/
 - Config-backed read APIs read from the parsed `config.Config` snapshot, not SQLite.
 - `app/` wires everything together — it's the only package that imports both `store/` and `api/`.
 - `sessionruntime/` owns live process/PTY state and bridges `agentruntime` events into persisted session events.
+- `mcp/` stays transport-focused: role-specific tool registration plus HTTP client shims back into daemon APIs. Keep tool handlers out of `cmd/` and avoid filesystem mutations here.
 - `config/` is self-contained. Bootstrap config lives outside SQLite because the server needs it before the DB opens.
 
 ## Adding a new resource

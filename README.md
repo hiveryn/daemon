@@ -19,6 +19,14 @@ cd daemon
 go run ./cmd/hiverynd
 ```
 
+The daemon binary also exposes an MCP stdio subcommand for agent-launched tool access:
+
+```bash
+hiverynd mcp --daemon-url http://127.0.0.1:4200 --architect-key hiveryn
+```
+
+`hiverynd mcp` is intended to be spawned by `agentruntime`; session scoping comes from `HIVERYN_SESSION_TYPE` (`architect` or `work`).
+
 ## Configuration
 
 The daemon reads `~/.hiveryn/config.yaml` on startup. If the file doesn't exist, it creates a default file.
