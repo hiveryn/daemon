@@ -180,6 +180,8 @@ type fakeSessionService struct {
 	concludeErr           error
 	lastConcludeSessionID string
 	lastConcludeParams    domain.ConcludeSessionParams
+	readConclusionResult  domain.ArchitectConclusion
+	readConclusionErr     error
 }
 
 func (f *fakeSessionService) SpawnArchitectSession(_ context.Context, req domain.SpawnArchitectSessionRequest) (domain.SpawnArchitectSessionResult, error) {
@@ -234,6 +236,18 @@ func (f *fakeSessionService) ConcludeSession(_ context.Context, id string, param
 	f.lastConcludeSessionID = id
 	f.lastConcludeParams = params
 	return f.concludeResult, f.concludeErr
+}
+
+func (f *fakeSessionService) ReadConclusion(_ context.Context, architectKey, id string) (domain.ArchitectConclusion, error) {
+	return f.readConclusionResult, f.readConclusionErr
+}
+
+func (f *fakeSessionService) ReadRecentConclusion(_ context.Context, architectKey string) (domain.ArchitectConclusion, error) {
+	return f.readConclusionResult, f.readConclusionErr
+}
+
+func (f *fakeSessionService) ListConclusions(_ context.Context, key string, limit int) ([]domain.ConclusionSummary, error) {
+	return nil, nil
 }
 
 type fakeEventSubscription struct {

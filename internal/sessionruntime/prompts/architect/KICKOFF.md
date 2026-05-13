@@ -1,29 +1,10 @@
 # Project: {{.ArchitectName}}
 
-**Session started**: {{.CurrentDate}}
+Session started: {{.CurrentDate}}
 
-# Tickets
-
-{{.TicketList}}
-{{- if .Sessions}}
-
-# Recent Conclusions
-
-{{.Sessions}}
-{{- end}}
+Start by checking the kanban board with listTickets, then read the most recent conclusion with readRecentConclusion.
 {{- if .Repos}}
 
-# Configured Repos
-
+Configured repos:
 {{.Repos}}
-{{- end}}
-{{- if .Variants}}
-
-# Available Agent Variants
-
-{{.Variants}}
-{{- end}}
-{{- if .LastConclusionID}}
-
-Start by reading the last architect session conclusion: readConclusion(id: "{{.LastConclusionID}}")
 {{- end}}

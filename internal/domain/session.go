@@ -142,10 +142,25 @@ type TerminalAttachment interface {
 	Close() error
 }
 
+type ArchitectConclusion struct {
+	StartedAt   time.Time `json:"started_at"`
+	ConcludedAt time.Time `json:"concluded_at"`
+	Agent       string    `json:"agent,omitempty"`
+	Body        string    `json:"body"`
+}
+
+type ConclusionSummary struct {
+	ID          string    `json:"id"`
+	ConcludedAt time.Time `json:"concluded_at"`
+}
+
 type SessionService interface {
 	SpawnArchitectSession(context.Context, SpawnArchitectSessionRequest) (SpawnArchitectSessionResult, error)
 	SpawnWorkSession(context.Context, SpawnWorkSessionRequest) (SpawnWorkSessionResult, error)
 	ConcludeSession(context.Context, string, ConcludeSessionParams) (ConcludeSessionResult, error)
+	ReadConclusion(context.Context, string, string) (ArchitectConclusion, error)
+	ReadRecentConclusion(context.Context, string) (ArchitectConclusion, error)
+	ListConclusions(context.Context, string, int) ([]ConclusionSummary, error)
 	TerminateSession(context.Context, string) error
 	GetSession(context.Context, string) (Session, error)
 	ListSessions(context.Context, SessionListFilter) ([]Session, error)

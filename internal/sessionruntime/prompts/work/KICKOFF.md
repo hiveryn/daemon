@@ -1,17 +1,10 @@
-# Ticket: {{.TicketTitle}}
+You are a ticket agent under the {{.ArchitectName}} architect, working in repo `{{.Repo}}`.
 
-**Ticket ID**: {{.TicketID}}
-**Repo**: {{.Repo}}{{if .RepoPath}} ({{.RepoPath}}){{end}}
-**Created**: {{.Created}}
-**Updated**: {{.Updated}}
-**Architect**: {{.ArchitectName}}
-{{- if .References}}
+Read your ticket with readTicket(id: "{{.TicketID}}") and complete the work.
+{{- if .Repos}}
 
-## References
-
-{{.References}}
+Other repos in this architect's ecosystem:
+{{.Repos}}
 {{- end}}
 
-## Ticket Body
-
-{{.TicketBody}}
+Never commit until the user explicitly approves.

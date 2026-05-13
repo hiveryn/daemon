@@ -417,7 +417,7 @@ func getTicketEntry(architectPath, id string) (ticketEntry, error) {
 
 func loadTicketEntry(architectPath string, status domain.TicketStatus, id string) (ticketEntry, error) {
 	dir := ticketDir(architectPath, status, id)
-	document, err := readMarkdownDocument(filepath.Join(dir, ticketFileName))
+	document, err := ReadMarkdownDocument(filepath.Join(dir, ticketFileName))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return ticketEntry{}, &domain.ValidationError{Field: "ticket.md", Message: "is required for ticket " + id}
@@ -614,7 +614,7 @@ func newTicketDocument(metadata ticketMetadata, body string) MarkdownDocument {
 }
 
 func readConclusion(path string) (*domain.TicketConclusion, error) {
-	doc, err := readMarkdownDocument(path)
+	doc, err := ReadMarkdownDocument(path)
 	if err != nil {
 		return nil, err
 	}

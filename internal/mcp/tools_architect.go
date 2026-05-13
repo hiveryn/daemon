@@ -42,6 +42,21 @@ func (s *Server) registerArchitectTools() {
 		Name:        "deleteTicket",
 		Description: "Delete a ticket by ID.",
 	}, s.handleDeleteTicket)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "readConclusion",
+		Description: "Read a conclusion by ID.",
+	}, s.handleReadConclusion)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "readRecentConclusion",
+		Description: "Read the most recent architect session conclusion.",
+	}, s.handleReadRecentConclusion)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "listConclusions",
+		Description: "List recent architect session conclusions. Returns summaries with IDs and timestamps.",
+	}, s.handleListConclusions)
 }
 
 func (s *Server) handleReadTicket(
@@ -192,6 +207,54 @@ func (s *Server) handleArchitectConcludeSession(
 	output, err := s.concludeSession(ctx, ConcludeSessionInput{Body: input.Body})
 	if err != nil {
 		return nil, ConcludeSessionOutput{}, err
+	}
+
+	return nil, output, nil
+}
+
+func (s *Server) handleReadConclusion(
+	ctx context.Context,
+	_ *mcp.CallToolRequest,
+	input ReadConclusionInput,
+) (*mcp.CallToolResult, ReadConclusionOutput, error) {
+	if strings.TrimSpace(input.ConclusionID) == "" {
+		return nil, ReadConclusionOutput{}, newValidationError("conclusionId", "cannot be empty")
+	}
+
+	output, err := s.readConclusion(ctx, input.ConclusionID)
+	if err != nil {
+		return nil, ReadConclusionOutput{}, err
+	}
+
+	return nil, output, nil
+}
+
+func (s *Server) handleReadRecentConclusion(
+	ctx context.Context,
+	_ *mcp.CallToolRequest,
+	_ struct{},
+) (*mcp.CallToolResult, ReadConclusionOutput, error) {
+	output, err := s.readRecentConclusion(ctx)
+	if err != nil {
+		return nil, ReadConclusionOutput{}, err
+	}
+
+	return nil, output, nil
+}
+
+func (s *Server) handleListConclusions(
+	ctx context.Context,
+	_ *mcp.CallToolRequest,
+	input ListConclusionsInput,
+) (*mcp.CallToolResult, ListConclusionsOutput, error) {
+	limit := input.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+
+	output, err := s.listConclusions(ctx, limit)
+	if err != nil {
+		return nil, ListConclusionsOutput{}, err
 	}
 
 	return nil, output, nil

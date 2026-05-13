@@ -28,7 +28,7 @@ func RenderMarkdownDocument(doc MarkdownDocument) (string, error) {
 	return renderMarkdownDocument(doc)
 }
 
-func readMarkdownDocument(path string) (MarkdownDocument, error) {
+func ReadMarkdownDocument(path string) (MarkdownDocument, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return MarkdownDocument{}, err

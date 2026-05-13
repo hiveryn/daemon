@@ -64,6 +64,30 @@ type ConcludeSessionOutput struct {
 	TicketID  string `json:"ticket_id,omitempty"`
 }
 
+type ReadConclusionInput struct {
+	ConclusionID string `json:"conclusionId" jsonschema:"The conclusion ID to read (required)"`
+}
+
+type ReadConclusionOutput struct {
+	StartedAt   string `json:"started_at"`
+	ConcludedAt string `json:"concluded_at"`
+	Agent       string `json:"agent,omitempty"`
+	Body        string `json:"body"`
+}
+
+type ListConclusionsInput struct {
+	Limit int `json:"limit,omitempty" jsonschema:"Maximum results to return (default 10)"`
+}
+
+type ListConclusionsOutput struct {
+	Conclusions []ConclusionSummaryOutput `json:"conclusions"`
+}
+
+type ConclusionSummaryOutput struct {
+	ID          string `json:"id"`
+	ConcludedAt string `json:"concluded_at"`
+}
+
 type ListTicketsOutput struct {
 	Tickets []TicketSummary `json:"tickets"`
 }

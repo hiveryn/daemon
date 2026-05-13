@@ -325,6 +325,114 @@ func (s *Server) concludeSession(ctx context.Context, input ConcludeSessionInput
 	return output, nil
 }
 
+func (s *Server) readConclusion(ctx context.Context, id string) (ReadConclusionOutput, error) {
+	var output ReadConclusionOutput
+
+	u := fmt.Sprintf("%s/api/architects/%s/conclusions/%s", s.daemonURL, url.PathEscape(s.architectKey), url.PathEscape(id))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return ReadConclusionOutput{}, fmt.Errorf("build readConclusion request: %w", err)
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return ReadConclusionOutput{}, fmt.Errorf("request readConclusion: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	var env daemonEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return ReadConclusionOutput{}, newInternalError(fmt.Sprintf("decode daemon response: %v", err))
+	}
+
+	if env.Error != nil {
+		return ReadConclusionOutput{}, mapDaemonError(env.Error)
+	}
+	if len(env.Data) == 0 {
+		return ReadConclusionOutput{}, newInternalError("daemon response missing data")
+	}
+	if err := json.Unmarshal(env.Data, &output); err != nil {
+		return ReadConclusionOutput{}, newInternalError(fmt.Sprintf("decode readConclusion payload: %v", err))
+	}
+
+	return output, nil
+}
+
+func (s *Server) readRecentConclusion(ctx context.Context) (ReadConclusionOutput, error) {
+	var output ReadConclusionOutput
+
+	u := fmt.Sprintf("%s/api/architects/%s/conclusions/recent", s.daemonURL, url.PathEscape(s.architectKey))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return ReadConclusionOutput{}, fmt.Errorf("build readRecentConclusion request: %w", err)
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return ReadConclusionOutput{}, fmt.Errorf("request readRecentConclusion: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	var env daemonEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return ReadConclusionOutput{}, newInternalError(fmt.Sprintf("decode daemon response: %v", err))
+	}
+
+	if env.Error != nil {
+		return ReadConclusionOutput{}, mapDaemonError(env.Error)
+	}
+	if len(env.Data) == 0 {
+		return ReadConclusionOutput{}, newInternalError("daemon response missing data")
+	}
+	if err := json.Unmarshal(env.Data, &output); err != nil {
+		return ReadConclusionOutput{}, newInternalError(fmt.Sprintf("decode readRecentConclusion payload: %v", err))
+	}
+
+	return output, nil
+}
+
+func (s *Server) listConclusions(ctx context.Context, limit int) (ListConclusionsOutput, error) {
+	var output ListConclusionsOutput
+
+	u := fmt.Sprintf("%s/api/architects/%s/conclusions", s.daemonURL, url.PathEscape(s.architectKey))
+	if limit > 0 {
+		u += fmt.Sprintf("?limit=%d", limit)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return ListConclusionsOutput{}, fmt.Errorf("build listConclusions request: %w", err)
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return ListConclusionsOutput{}, fmt.Errorf("request listConclusions: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	var env daemonEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return ListConclusionsOutput{}, newInternalError(fmt.Sprintf("decode daemon response: %v", err))
+	}
+
+	if env.Error != nil {
+		return ListConclusionsOutput{}, mapDaemonError(env.Error)
+	}
+	if len(env.Data) == 0 {
+		return ListConclusionsOutput{}, nil
+	}
+	if err := json.Unmarshal(env.Data, &output); err != nil {
+		return ListConclusionsOutput{}, newInternalError(fmt.Sprintf("decode listConclusions payload: %v", err))
+	}
+
+	return output, nil
+}
+
 func mapDaemonError(err *domain.ErrorBody) error {
 	if err == nil {
 		return nil

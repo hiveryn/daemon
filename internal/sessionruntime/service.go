@@ -23,6 +23,7 @@ import (
 	"github.com/hiveryn/daemon/internal/architectfs"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -364,20 +365,145 @@ func (s *Service) ConcludeSession(ctx context.Context, id string, params domain.
 	}
 }
 
+func (s *Service) ReadConclusion(ctx context.Context, architectKey, id string) (domain.ArchitectConclusion, error) {
+	architect, ok := s.cfg.Architects[architectKey]
+	if !ok {
+		return domain.ArchitectConclusion{}, &domain.NotFoundError{Resource: "architect", ID: architectKey}
+	}
+
+	conclusionPath := filepath.Join(architect.Path, "architect-sessions", id, conclusionFileName)
+	doc, err := architectfs.ReadMarkdownDocument(conclusionPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return domain.ArchitectConclusion{}, &domain.NotFoundError{Resource: "conclusion", ID: id}
+		}
+		return domain.ArchitectConclusion{}, fmt.Errorf("read conclusion file: %w", err)
+	}
+
+	return parseArchitectConclusion(doc)
+}
+
+func parseArchitectConclusion(doc architectfs.MarkdownDocument) (domain.ArchitectConclusion, error) {
+	var result domain.ArchitectConclusion
+	result.Body = doc.Body
+
+	if doc.Metadata != nil {
+		result.StartedAt = yamlNodeTime(doc.Metadata, "started_at")
+		result.ConcludedAt = yamlNodeTime(doc.Metadata, "concluded_at")
+		result.Agent = yamlNodeString(doc.Metadata, "agent")
+	}
+
+	return result, nil
+}
+
+func (s *Service) ReadRecentConclusion(ctx context.Context, architectKey string) (domain.ArchitectConclusion, error) {
+	architect, ok := s.cfg.Architects[architectKey]
+	if !ok {
+		return domain.ArchitectConclusion{}, &domain.NotFoundError{Resource: "architect", ID: architectKey}
+	}
+
+	sessionsDir := filepath.Join(architect.Path, "architect-sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return domain.ArchitectConclusion{}, &domain.NotFoundError{Resource: "conclusion", ID: "recent"}
+		}
+		return domain.ArchitectConclusion{}, fmt.Errorf("read architect-sessions directory: %w", err)
+	}
+
+	var bestEntry string
+	var bestTime time.Time
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		conclusionPath := filepath.Join(sessionsDir, entry.Name(), conclusionFileName)
+		doc, err := architectfs.ReadMarkdownDocument(conclusionPath)
+		if err != nil {
+			continue
+		}
+		var concludedAt time.Time
+		if doc.Metadata != nil {
+			concludedAt = yamlNodeTime(doc.Metadata, "concluded_at")
+		}
+		if concludedAt.After(bestTime) {
+			bestTime = concludedAt
+			bestEntry = entry.Name()
+		}
+	}
+
+	if bestEntry == "" {
+		return domain.ArchitectConclusion{}, &domain.NotFoundError{Resource: "conclusion", ID: "recent"}
+	}
+
+	return s.ReadConclusion(ctx, architectKey, bestEntry)
+}
+
+func (s *Service) ListConclusions(ctx context.Context, architectKey string, limit int) ([]domain.ConclusionSummary, error) {
+	architect, ok := s.cfg.Architects[architectKey]
+	if !ok {
+		return nil, &domain.NotFoundError{Resource: "architect", ID: architectKey}
+	}
+
+	if limit <= 0 {
+		limit = 10
+	}
+
+	sessionsDir := filepath.Join(architect.Path, "architect-sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read architect-sessions directory: %w", err)
+	}
+
+	var summaries []domain.ConclusionSummary
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		conclusionPath := filepath.Join(sessionsDir, entry.Name(), conclusionFileName)
+		doc, err := architectfs.ReadMarkdownDocument(conclusionPath)
+		if err != nil {
+			continue
+		}
+		var concludedAt time.Time
+		if doc.Metadata != nil {
+			concludedAt = yamlNodeTime(doc.Metadata, "concluded_at")
+		}
+		summaries = append(summaries, domain.ConclusionSummary{
+			ID:          entry.Name(),
+			ConcludedAt: concludedAt,
+		})
+	}
+
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].ConcludedAt.After(summaries[j].ConcludedAt)
+	})
+
+	if len(summaries) > limit {
+		summaries = summaries[:limit]
+	}
+
+	return summaries, nil
+}
+
 func (s *Service) concludeArchitectSession(ctx context.Context, session domain.Session, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
 	architect, ok := s.cfg.Architects[session.ArchitectKey]
 	if !ok {
 		return domain.ConcludeSessionResult{}, &domain.NotFoundError{Resource: "architect", ID: session.ArchitectKey}
 	}
 
-	dir := filepath.Join(architect.Path, "architect-sessions", session.ID)
+	folderName := session.CreatedAt.UTC().Format("2006-01-02-1504")
+	dir := filepath.Join(architect.Path, "architect-sessions", folderName)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return domain.ConcludeSessionResult{}, fmt.Errorf("create architect session directory: %w", err)
 	}
 
-	now := session.CreatedAt
+	now := time.Now().UTC()
 	conclusionPath := filepath.Join(dir, conclusionFileName)
-	doc := newArchitectConclusionDocument(now, now, session.ProfileName, params.Body)
+	doc := newArchitectConclusionDocument(session.CreatedAt, now, session.ProfileName, params.Body)
 	if err := writeConclusionFile(conclusionPath, doc); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
@@ -858,4 +984,32 @@ func validateRepoPath(path string) error {
 		return &domain.ValidationError{Field: "repo", Message: "no .git directory found at repo path: " + path}
 	}
 	return nil
+}
+
+func yamlNodeString(node *yaml.Node, key string) string {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return ""
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1].Value
+		}
+	}
+	return ""
+}
+
+func yamlNodeTime(node *yaml.Node, key string) time.Time {
+	raw := yamlNodeString(node, key)
+	if raw == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		t2, err2 := time.Parse(time.RFC3339, raw)
+		if err2 != nil {
+			return time.Time{}
+		}
+		return t2
+	}
+	return t
 }

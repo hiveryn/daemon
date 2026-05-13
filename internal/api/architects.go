@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/hiveryn/daemon/internal/domain"
 )
@@ -64,4 +66,58 @@ func (h *architectsHandler) spawn(w http.ResponseWriter, r *http.Request) {
 		"session_id": result.Session.ID,
 		"ws_url":     websocketURL(r, "/ws/session/"+result.Session.ID),
 	})
+}
+
+func (h *architectsHandler) listConclusions(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
+		return
+	}
+
+	limit := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	summaries, err := h.sessions.ListConclusions(r.Context(), r.PathValue("key"), limit)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string][]domain.ConclusionSummary{
+		"conclusions": summaries,
+	})
+}
+
+func (h *architectsHandler) readRecentConclusion(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
+		return
+	}
+
+	conclusion, err := h.sessions.ReadRecentConclusion(r.Context(), r.PathValue("key"))
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, conclusion)
+}
+
+func (h *architectsHandler) readConclusion(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
+		return
+	}
+
+	conclusion, err := h.sessions.ReadConclusion(r.Context(), r.PathValue("key"), r.PathValue("id"))
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, conclusion)
 }
