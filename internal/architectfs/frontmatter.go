@@ -9,20 +9,34 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type markdownDocument struct {
+type MarkdownDocument struct {
 	Metadata *yaml.Node
 	Body     string
 }
 
-func readMarkdownDocument(path string) (markdownDocument, error) {
+func NewArchitectConclusion(startedAt, concludedAt time.Time, agent, body string) MarkdownDocument {
+	meta := newMappingNode()
+	setNodeTime(meta, "started_at", startedAt)
+	setNodeTime(meta, "concluded_at", concludedAt)
+	if agent != "" {
+		setNodeString(meta, "agent", agent)
+	}
+	return MarkdownDocument{Metadata: meta, Body: body}
+}
+
+func RenderMarkdownDocument(doc MarkdownDocument) (string, error) {
+	return renderMarkdownDocument(doc)
+}
+
+func readMarkdownDocument(path string) (MarkdownDocument, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return markdownDocument{}, err
+		return MarkdownDocument{}, err
 	}
 	return parseMarkdownDocument(string(data))
 }
 
-func writeMarkdownDocument(path string, doc markdownDocument) error {
+func writeMarkdownDocument(path string, doc MarkdownDocument) error {
 	content, err := renderMarkdownDocument(doc)
 	if err != nil {
 		return err
@@ -33,29 +47,29 @@ func writeMarkdownDocument(path string, doc markdownDocument) error {
 	return nil
 }
 
-func parseMarkdownDocument(content string) (markdownDocument, error) {
+func parseMarkdownDocument(content string) (MarkdownDocument, error) {
 	if !strings.HasPrefix(content, "---\n") {
-		return markdownDocument{Body: content}, nil
+		return MarkdownDocument{Body: content}, nil
 	}
 	end := strings.Index(content[4:], "\n---\n")
 	if end == -1 {
-		return markdownDocument{}, fmt.Errorf("parse frontmatter: missing closing delimiter")
+		return MarkdownDocument{}, fmt.Errorf("parse frontmatter: missing closing delimiter")
 	}
 	frontmatter := content[4 : 4+end]
 	body := content[4+end+5:]
 	body = strings.TrimPrefix(body, "\n")
 	var parsed yaml.Node
 	if err := yaml.Unmarshal([]byte(frontmatter), &parsed); err != nil {
-		return markdownDocument{}, fmt.Errorf("parse frontmatter: %w", err)
+		return MarkdownDocument{}, fmt.Errorf("parse frontmatter: %w", err)
 	}
 	meta := &parsed
 	if parsed.Kind == yaml.DocumentNode && len(parsed.Content) > 0 {
 		meta = parsed.Content[0]
 	}
-	return markdownDocument{Metadata: meta, Body: body}, nil
+	return MarkdownDocument{Metadata: meta, Body: body}, nil
 }
 
-func renderMarkdownDocument(doc markdownDocument) (string, error) {
+func renderMarkdownDocument(doc MarkdownDocument) (string, error) {
 	if doc.Metadata == nil || len(doc.Metadata.Content) == 0 {
 		return doc.Body, nil
 	}
@@ -80,6 +94,15 @@ func setNodeString(node *yaml.Node, key, value string) {
 
 func setNodeTime(node *yaml.Node, key string, value time.Time) {
 	setMappingValue(node, key, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value.UTC().Format(time.RFC3339Nano)})
+}
+
+func setNodeBool(node *yaml.Node, key string, value bool) {
+	tag := "!!bool"
+	strVal := "false"
+	if value {
+		strVal = "true"
+	}
+	setMappingValue(node, key, &yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: strVal})
 }
 
 func setNodeStrings(node *yaml.Node, key string, values []string) {

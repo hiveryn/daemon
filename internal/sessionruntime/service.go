@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	artcodex "github.com/hiveryn/agentruntime/adapter/codex"
 	"github.com/hiveryn/agentruntime/adapter/opencode"
 	"github.com/hiveryn/agentruntime/ingest"
+	"github.com/hiveryn/daemon/internal/architectfs"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
 )
@@ -135,7 +137,7 @@ func (s *Service) SpawnArchitectSession(ctx context.Context, req domain.SpawnArc
 		s.markSessionFailed(session.ID, "ensure setup")
 		return domain.SpawnArchitectSessionResult{}, fmt.Errorf("ensure %s setup: %w", agentKind, err)
 	}
-	mcpServers, err := s.mcpServersForSession(domain.SessionTypeArchitect, req.ArchitectKey)
+	mcpServers, err := s.mcpServersForSession(domain.SessionTypeArchitect, req.ArchitectKey, session.ID)
 	if err != nil {
 		s.markSessionFailed(session.ID, "resolve mcp server")
 		return domain.SpawnArchitectSessionResult{}, err
@@ -251,7 +253,7 @@ func (s *Service) SpawnWorkSession(ctx context.Context, req domain.SpawnWorkSess
 		s.markSessionFailed(session.ID, "ensure setup")
 		return domain.SpawnWorkSessionResult{}, fmt.Errorf("ensure %s setup: %w", agentKind, err)
 	}
-	mcpServers, err := s.mcpServersForSession(domain.SessionTypeWork, req.ArchitectKey)
+	mcpServers, err := s.mcpServersForSession(domain.SessionTypeWork, req.ArchitectKey, session.ID)
 	if err != nil {
 		s.markSessionFailed(session.ID, "resolve mcp server")
 		return domain.SpawnWorkSessionResult{}, err
@@ -337,6 +339,174 @@ func hookCommandForAgent(agentKind agentruntime.AgentKind, endpoint string) agen
 	default:
 		return agentruntime.HookCommand{Endpoint: endpoint}
 	}
+}
+
+func (s *Service) ConcludeSession(ctx context.Context, id string, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
+	if strings.TrimSpace(params.Body) == "" {
+		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "body", Message: "is required"}
+	}
+
+	session, err := s.repo.GetSession(ctx, id)
+	if err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+	if session.Status != domain.SessionStatusRunning {
+		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_id", Message: "session is not running"}
+	}
+
+	switch session.SessionType {
+	case string(domain.SessionTypeArchitect):
+		return s.concludeArchitectSession(ctx, session, params)
+	case string(domain.SessionTypeWork):
+		return s.concludeWorkSession(ctx, session, params)
+	default:
+		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_type", Message: "cannot conclude session of type " + session.SessionType}
+	}
+}
+
+func (s *Service) concludeArchitectSession(ctx context.Context, session domain.Session, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
+	architect, ok := s.cfg.Architects[session.ArchitectKey]
+	if !ok {
+		return domain.ConcludeSessionResult{}, &domain.NotFoundError{Resource: "architect", ID: session.ArchitectKey}
+	}
+
+	dir := filepath.Join(architect.Path, "architect-sessions", session.ID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return domain.ConcludeSessionResult{}, fmt.Errorf("create architect session directory: %w", err)
+	}
+
+	now := session.CreatedAt
+	conclusionPath := filepath.Join(dir, conclusionFileName)
+	doc := newArchitectConclusionDocument(now, now, session.ProfileName, params.Body)
+	if err := writeConclusionFile(conclusionPath, doc); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+
+	if err := s.repo.EndSession(ctx, session.ID); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+
+	s.appendAndPublishSessionEnded(ctx, session.ID, "session concluded")
+
+	return domain.ConcludeSessionResult{SessionID: session.ID}, nil
+}
+
+func (s *Service) concludeWorkSession(ctx context.Context, session domain.Session, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
+	if params.Rejected {
+		if strings.TrimSpace(params.RejectionReason) == "" {
+			return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "rejection_reason", Message: "is required when rejected is true"}
+		}
+	} else {
+		if len(params.Commits) == 0 {
+			return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "commits", Message: "are required when not rejected"}
+		}
+	}
+
+	if session.TicketID == "" {
+		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_id", Message: "work session has no ticket ID"}
+	}
+
+	architect, ok := s.cfg.Architects[session.ArchitectKey]
+	if !ok {
+		return domain.ConcludeSessionResult{}, &domain.NotFoundError{Resource: "architect", ID: session.ArchitectKey}
+	}
+
+	ticket, err := s.tickets.GetTicket(ctx, architect.Path, session.TicketID)
+	if err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+	if ticket.Status != domain.TicketStatusProgress {
+		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "ticket_id", Message: "ticket must be in progress to conclude"}
+	}
+
+	repoKey := ticket.Repo
+	if repoKey == "" {
+		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "repo", Message: "ticket has no repo key"}
+	}
+	repoPath, ok := architect.Repos[repoKey]
+	if !ok {
+		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "repo", Message: "repo key " + repoKey + " not configured in architect repos"}
+	}
+
+	for _, sha := range params.Commits {
+		sha = strings.TrimSpace(sha)
+		if sha == "" {
+			return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "commits", Message: "commit SHA cannot be empty"}
+		}
+		if err := validateCommitSHA(ctx, repoPath, sha); err != nil {
+			return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "commits", Message: "commit " + sha + " not found in repo " + repoKey + ": " + err.Error()}
+		}
+	}
+
+	now := time.Now().UTC()
+	conclusion := domain.TicketConclusion{
+		StartedAt:       session.CreatedAt,
+		ConcludedAt:     now,
+		Agent:           session.ProfileName,
+		Profile:         session.ProfileName,
+		Rejected:        params.Rejected,
+		RejectionReason: params.RejectionReason,
+		Commits:         params.Commits,
+		Body:            params.Body,
+	}
+
+	if _, err := s.tickets.ConcludeTicket(ctx, architect.Path, session.TicketID, conclusion); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+
+	if err := s.repo.EndSession(ctx, session.ID); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+
+	s.appendAndPublishSessionEnded(ctx, session.ID, "session concluded")
+
+	return domain.ConcludeSessionResult{SessionID: session.ID, TicketID: session.TicketID}, nil
+}
+
+func (s *Service) appendAndPublishSessionEnded(ctx context.Context, sessionID, message string) {
+	event, err := s.repo.AppendSessionEvent(ctx, domain.AppendSessionEventParams{
+		SessionID: sessionID,
+		Type:      "status",
+		Status:    "ended",
+		Message:   message,
+		At:        time.Now().UTC(),
+	})
+	if err != nil {
+		s.logger.Warn("append session ended event failed", "session_id", sessionID, "error", err)
+		return
+	}
+	s.publishEvent(sessionID, event)
+}
+
+func validateCommitSHA(ctx context.Context, repoPath, sha string) error {
+	cmd := exec.CommandContext(ctx, "git", "cat-file", "-t", sha)
+	cmd.Dir = repoPath
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("git cat-file -t %s failed: %w", sha, err)
+	}
+	objType := strings.TrimSpace(string(output))
+	if objType != "commit" {
+		return fmt.Errorf("expected commit type, got %s", objType)
+	}
+	return nil
+}
+
+const conclusionFileName = "conclusion.md"
+
+func newArchitectConclusionDocument(startedAt, concludedAt time.Time, agent, body string) architectfs.MarkdownDocument {
+	return architectfs.NewArchitectConclusion(startedAt, concludedAt, agent, body)
+}
+
+func writeConclusionFile(path string, doc architectfs.MarkdownDocument) error {
+	content, err := architectfs.RenderMarkdownDocument(doc)
+	if err != nil {
+		return fmt.Errorf("render conclusion: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("write conclusion: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) TerminateSession(ctx context.Context, id string) error {
@@ -625,7 +795,7 @@ func cloneStringMap(input map[string]string) map[string]string {
 	return cloned
 }
 
-func (s *Service) mcpServersForSession(sessionType domain.SessionType, architectKey string) ([]agentruntime.MCPServerConfig, error) {
+func (s *Service) mcpServersForSession(sessionType domain.SessionType, architectKey, sessionID string) ([]agentruntime.MCPServerConfig, error) {
 	hiveryndPath, err := s.resolveExecutablePath()
 	if err != nil {
 		return nil, fmt.Errorf("resolve hiverynd executable: %w", err)
@@ -643,6 +813,7 @@ func (s *Service) mcpServersForSession(sessionType domain.SessionType, architect
 			"HIVERYN_DAEMON_URL":    s.baseURL,
 			"HIVERYN_ARCHITECT_KEY": architectKey,
 			"HIVERYN_SESSION_TYPE":  string(sessionType),
+			"HIVERYN_SESSION_ID":    sessionID,
 		},
 	}}, nil
 }

@@ -52,6 +52,52 @@ func (h *sessionsHandler) get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, session)
 }
 
+func (h *sessionsHandler) conclude(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
+		return
+	}
+
+	var input struct {
+		Body            string   `json:"body"`
+		Commits         []string `json:"commits,omitempty"`
+		Rejected        bool     `json:"rejected,omitempty"`
+		RejectionReason string   `json:"rejection_reason,omitempty"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
+		return
+	}
+
+	result, err := h.sessions.ConcludeSession(r.Context(), r.PathValue("id"), domain.ConcludeSessionParams{
+		Body:            input.Body,
+		Commits:         input.Commits,
+		Rejected:        input.Rejected,
+		RejectionReason: input.RejectionReason,
+	})
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	if result.TicketID != "" && h.publishArchitect != nil {
+		session, _ := h.sessions.GetSession(r.Context(), r.PathValue("id"))
+		h.publishArchitect(session.ArchitectKey, domain.ArchitectEvent{
+			Type:         "workspace_changed",
+			ArchitectKey: session.ArchitectKey,
+			Reason:       "ticket_concluded",
+			TicketID:     result.TicketID,
+			At:           time.Now().UTC(),
+		})
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"success":    true,
+		"session_id": result.SessionID,
+		"ticket_id":  result.TicketID,
+	})
+}
+
 func (h *sessionsHandler) delete(w http.ResponseWriter, r *http.Request) {
 	if h.sessions == nil {
 		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)

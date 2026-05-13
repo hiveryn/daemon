@@ -219,6 +219,55 @@ func (s *TicketService) DeleteTicket(_ context.Context, architectPath, id string
 	return nil
 }
 
+func (s *TicketService) ConcludeTicket(_ context.Context, architectPath, id string, conclusion domain.TicketConclusion) (domain.Ticket, error) {
+	entry, err := getTicketEntry(architectPath, id)
+	if err != nil {
+		return domain.Ticket{}, err
+	}
+	if entry.status != domain.TicketStatusProgress {
+		return domain.Ticket{}, &domain.ValidationError{Field: "ticket_id", Message: "ticket must be in progress to conclude"}
+	}
+
+	doc := newConclusionDocument(conclusion)
+	if err := writeMarkdownDocument(filepath.Join(entry.dir, conclusionFileName), doc); err != nil {
+		return domain.Ticket{}, err
+	}
+
+	now := time.Now().UTC()
+	setNodeTime(entry.document.Metadata, "updated", now)
+	if err := writeMarkdownDocument(filepath.Join(entry.dir, ticketFileName), entry.document); err != nil {
+		return domain.Ticket{}, err
+	}
+
+	moved, err := s.MoveTicket(context.Background(), architectPath, id, domain.MoveTicketParams{To: domain.TicketStatusDone})
+	if err != nil {
+		return domain.Ticket{}, err
+	}
+	return moved, nil
+}
+
+func newConclusionDocument(conclusion domain.TicketConclusion) MarkdownDocument {
+	meta := newMappingNode()
+	setNodeTime(meta, "started_at", conclusion.StartedAt)
+	setNodeTime(meta, "concluded_at", conclusion.ConcludedAt)
+	if conclusion.Agent != "" {
+		setNodeString(meta, "agent", conclusion.Agent)
+	}
+	if conclusion.Profile != "" {
+		setNodeString(meta, "profile", conclusion.Profile)
+	}
+	if conclusion.Rejected {
+		setNodeBool(meta, "rejected", true)
+	}
+	if conclusion.RejectionReason != "" {
+		setNodeString(meta, "rejection_reason", conclusion.RejectionReason)
+	}
+	if len(conclusion.Commits) > 0 {
+		setNodeStrings(meta, "commits", conclusion.Commits)
+	}
+	return MarkdownDocument{Metadata: meta, Body: conclusion.Body}
+}
+
 func (s *TicketService) MoveTicket(_ context.Context, architectPath, id string, params domain.MoveTicketParams) (domain.Ticket, error) {
 	if !params.To.Valid() {
 		return domain.Ticket{}, &domain.ValidationError{Field: "to", Message: "must be backlog, progress, or done"}
@@ -257,7 +306,7 @@ type ticketEntry struct {
 	id         string
 	status     domain.TicketStatus
 	dir        string
-	document   markdownDocument
+	document   MarkdownDocument
 	metadata   ticketMetadata
 	conclusion *domain.TicketConclusion
 	warnings   []domain.TicketWarning
@@ -546,7 +595,7 @@ func decodeTicketMetadata(node *yaml.Node) (ticketMetadata, error) {
 	return metadata, nil
 }
 
-func newTicketDocument(metadata ticketMetadata, body string) markdownDocument {
+func newTicketDocument(metadata ticketMetadata, body string) MarkdownDocument {
 	meta := newMappingNode()
 	setNodeString(meta, "title", metadata.Title)
 	if metadata.Repo != "" {
@@ -561,7 +610,7 @@ func newTicketDocument(metadata ticketMetadata, body string) markdownDocument {
 	if metadata.References != nil {
 		setNodeStrings(meta, "references", metadata.References)
 	}
-	return markdownDocument{Metadata: meta, Body: body}
+	return MarkdownDocument{Metadata: meta, Body: body}
 }
 
 func readConclusion(path string) (*domain.TicketConclusion, error) {

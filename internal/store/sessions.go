@@ -114,6 +114,18 @@ func (s *SessionStore) UpdateSessionStatus(ctx context.Context, id string, statu
 	return ensureRowsAffected(result, "session", id)
 }
 
+func (s *SessionStore) EndSession(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE sessions
+		SET status = ?, updated_at = datetime('now')
+		WHERE id = ?
+	`, domain.SessionStatusCompleted, id)
+	if err != nil {
+		return fmt.Errorf("end session %s: %w", id, err)
+	}
+	return ensureRowsAffected(result, "session", id)
+}
+
 func (s *SessionStore) UpdateSessionNativeID(ctx context.Context, id, nativeID string) error {
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE sessions

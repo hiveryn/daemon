@@ -87,10 +87,23 @@ type SessionRepository interface {
 	ListSessions(context.Context, SessionListFilter) ([]Session, error)
 	UpdateSessionStatus(context.Context, string, SessionStatus) error
 	UpdateSessionNativeID(context.Context, string, string) error
+	EndSession(context.Context, string) error
 	DeleteSession(context.Context, string) error
 	ListSessionEvents(context.Context, string) ([]SessionEvent, error)
 	AppendSessionEvent(context.Context, AppendSessionEventParams) (SessionEvent, error)
 	FailRunningSessions(context.Context) error
+}
+
+type ConcludeSessionParams struct {
+	Body            string
+	Commits         []string
+	Rejected        bool
+	RejectionReason string
+}
+
+type ConcludeSessionResult struct {
+	SessionID string `json:"session_id"`
+	TicketID  string `json:"ticket_id,omitempty"`
 }
 
 type SpawnArchitectSessionRequest struct {
@@ -132,6 +145,7 @@ type TerminalAttachment interface {
 type SessionService interface {
 	SpawnArchitectSession(context.Context, SpawnArchitectSessionRequest) (SpawnArchitectSessionResult, error)
 	SpawnWorkSession(context.Context, SpawnWorkSessionRequest) (SpawnWorkSessionResult, error)
+	ConcludeSession(context.Context, string, ConcludeSessionParams) (ConcludeSessionResult, error)
 	TerminateSession(context.Context, string) error
 	GetSession(context.Context, string) (Session, error)
 	ListSessions(context.Context, SessionListFilter) ([]Session, error)

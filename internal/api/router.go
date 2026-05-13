@@ -44,8 +44,9 @@ type reposHandler struct {
 }
 
 type sessionsHandler struct {
-	logger   *slog.Logger
-	sessions domain.SessionService
+	logger           *slog.Logger
+	sessions         domain.SessionService
+	publishArchitect func(key string, event domain.ArchitectEvent)
 }
 
 type ticketsHandler struct {
@@ -93,6 +94,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	if deps.ArchitectEvents != nil {
 		hub := deps.ArchitectEvents
 		th.publishArchitect = hub.Publish
+		sh.publishArchitect = hub.Publish
 	}
 
 	mux.HandleFunc("GET /api/health", handleHealth)
@@ -119,6 +121,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/architects/{key}/events", eh.events)
 	mux.HandleFunc("GET /api/sessions", sh.list)
 	mux.HandleFunc("GET /api/sessions/{id}", sh.get)
+	mux.HandleFunc("POST /api/sessions/{id}/conclude", sh.conclude)
 	mux.HandleFunc("DELETE /api/sessions/{id}", sh.delete)
 	mux.HandleFunc("GET /api/sessions/{id}/events", sh.events)
 	mux.HandleFunc("GET /ws/session/{id}", sh.ws)

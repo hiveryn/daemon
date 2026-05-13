@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/hiveryn/daemon/internal/archevents"
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
@@ -167,14 +168,18 @@ func newSessionTestHandler(t *testing.T, sessions domain.SessionService) http.Ha
 }
 
 type fakeSessionService struct {
-	spawnResult      domain.SpawnArchitectSessionResult
-	spawnErr         error
-	lastSpawn        domain.SpawnArchitectSessionRequest
-	sessions         []domain.Session
-	lastListFilter   domain.SessionListFilter
-	deletedID        string
-	attachTerminal   func(context.Context, string) (domain.TerminalAttachment, error)
-	getSessionResult domain.Session
+	spawnResult           domain.SpawnArchitectSessionResult
+	spawnErr              error
+	lastSpawn             domain.SpawnArchitectSessionRequest
+	sessions              []domain.Session
+	lastListFilter        domain.SessionListFilter
+	deletedID             string
+	attachTerminal        func(context.Context, string) (domain.TerminalAttachment, error)
+	getSessionResult      domain.Session
+	concludeResult        domain.ConcludeSessionResult
+	concludeErr           error
+	lastConcludeSessionID string
+	lastConcludeParams    domain.ConcludeSessionParams
 }
 
 func (f *fakeSessionService) SpawnArchitectSession(_ context.Context, req domain.SpawnArchitectSessionRequest) (domain.SpawnArchitectSessionResult, error) {
@@ -225,6 +230,12 @@ func (f *fakeSessionService) AttachTerminal(ctx context.Context, id string) (dom
 	return nil, nil
 }
 
+func (f *fakeSessionService) ConcludeSession(_ context.Context, id string, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
+	f.lastConcludeSessionID = id
+	f.lastConcludeParams = params
+	return f.concludeResult, f.concludeErr
+}
+
 type fakeEventSubscription struct {
 	ch chan domain.SessionEvent
 }
@@ -267,6 +278,10 @@ func (f *fakeTicketService) DeleteTicket(context.Context, string, string) error 
 }
 
 func (f *fakeTicketService) MoveTicket(context.Context, string, string, domain.MoveTicketParams) (domain.Ticket, error) {
+	return domain.Ticket{}, nil
+}
+
+func (f *fakeTicketService) ConcludeTicket(context.Context, string, string, domain.TicketConclusion) (domain.Ticket, error) {
 	return domain.Ticket{}, nil
 }
 
@@ -378,5 +393,179 @@ func TestWriteSSEEvent(t *testing.T) {
 	}
 	if payload.ID != "evt-1" {
 		t.Fatalf("unexpected payload %#v", payload)
+	}
+}
+
+func TestConcludeSessionArchitectSuccess(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeSessionService{
+		concludeResult: domain.ConcludeSessionResult{SessionID: "sess-1"},
+		getSessionResult: domain.Session{
+			ID:           "sess-1",
+			ArchitectKey: "hiveryn",
+			SessionType:  string(domain.SessionTypeArchitect),
+			Status:       domain.SessionStatusRunning,
+		},
+	}
+	handler := newSessionTestHandler(t, service)
+
+	status, body := requestJSON(t, handler, http.MethodPost, "/api/sessions/sess-1/conclude", map[string]any{
+		"body": "All tasks completed.",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, status, string(body))
+	}
+
+	var payload map[string]any
+	decodeEnvelopeData(t, body, &payload)
+	if payload["success"] != true {
+		t.Fatalf("expected success=true, got %#v", payload)
+	}
+	if payload["session_id"] != "sess-1" {
+		t.Fatalf("expected session_id=sess-1, got %#v", payload)
+	}
+	if service.lastConcludeSessionID != "sess-1" {
+		t.Fatalf("expected conclude session id sess-1, got %q", service.lastConcludeSessionID)
+	}
+	if service.lastConcludeParams.Body != "All tasks completed." {
+		t.Fatalf("expected body, got %#v", service.lastConcludeParams)
+	}
+}
+
+func TestConcludeSessionWorkerSuccess(t *testing.T) {
+	t.Parallel()
+
+	hub := archevents.New()
+	service := &fakeSessionService{
+		concludeResult: domain.ConcludeSessionResult{SessionID: "sess-1", TicketID: "ticket-1"},
+		getSessionResult: domain.Session{
+			ID:           "sess-1",
+			ArchitectKey: "hiveryn",
+			SessionType:  string(domain.SessionTypeWork),
+			Status:       domain.SessionStatusRunning,
+			TicketID:     "ticket-1",
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := NewHandler(Dependencies{
+		Config:          testConfig(),
+		Logger:          logger,
+		Sessions:        service,
+		Tickets:         &fakeTicketService{},
+		ArchitectEvents: hub,
+	})
+
+	status, body := requestJSON(t, handler, http.MethodPost, "/api/sessions/sess-1/conclude", map[string]any{
+		"body":    "Implemented feature X.",
+		"commits": []string{"abc123"},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, status, string(body))
+	}
+
+	var payload map[string]any
+	decodeEnvelopeData(t, body, &payload)
+	if payload["success"] != true {
+		t.Fatalf("expected success=true, got %#v", payload)
+	}
+	if payload["ticket_id"] != "ticket-1" {
+		t.Fatalf("expected ticket_id=ticket-1, got %#v", payload)
+	}
+}
+
+func TestConcludeSessionMissingBody(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeSessionService{
+		concludeErr: &domain.ValidationError{Field: "body", Message: "is required"},
+	}
+	handler := newSessionTestHandler(t, service)
+
+	status, body := requestJSON(t, handler, http.MethodPost, "/api/sessions/sess-1/conclude", map[string]any{})
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, status, string(body))
+	}
+}
+
+func TestConcludeSessionNotFound(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeSessionService{
+		concludeErr: &domain.NotFoundError{Resource: "session", ID: "sess-missing"},
+	}
+	handler := newSessionTestHandler(t, service)
+
+	status, body := requestJSON(t, handler, http.MethodPost, "/api/sessions/sess-missing/conclude", map[string]any{
+		"body": "done",
+	})
+	if status != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusNotFound, status, string(body))
+	}
+}
+
+func TestConcludeSessionWrongType(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeSessionService{
+		concludeErr: &domain.ValidationError{Field: "session_type", Message: "cannot conclude session of type collab"},
+	}
+	handler := newSessionTestHandler(t, service)
+
+	status, body := requestJSON(t, handler, http.MethodPost, "/api/sessions/sess-collab/conclude", map[string]any{
+		"body": "done",
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, status, string(body))
+	}
+}
+
+func TestConcludeSessionAlreadyCompleted(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeSessionService{
+		concludeErr: &domain.ValidationError{Field: "session_id", Message: "session is not running"},
+	}
+	handler := newSessionTestHandler(t, service)
+
+	status, body := requestJSON(t, handler, http.MethodPost, "/api/sessions/sess-done/conclude", map[string]any{
+		"body": "done",
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, status, string(body))
+	}
+}
+
+func TestConcludeSessionWorkerMissingCommits(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeSessionService{
+		concludeErr: &domain.ValidationError{Field: "commits", Message: "are required when not rejected"},
+	}
+	handler := newSessionTestHandler(t, service)
+
+	status, body := requestJSON(t, handler, http.MethodPost, "/api/sessions/sess-1/conclude", map[string]any{
+		"body": "done",
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, status, string(body))
+	}
+}
+
+func TestConcludeSessionWorkerRejectedWithoutReason(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeSessionService{
+		concludeErr: &domain.ValidationError{Field: "rejection_reason", Message: "is required when rejected is true"},
+	}
+	handler := newSessionTestHandler(t, service)
+
+	status, body := requestJSON(t, handler, http.MethodPost, "/api/sessions/sess-1/conclude", map[string]any{
+		"body":     "nothing done",
+		"rejected": true,
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, status, string(body))
 	}
 }

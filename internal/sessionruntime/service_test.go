@@ -230,6 +230,10 @@ func (f *fakeSessionRepository) UpdateSessionNativeID(context.Context, string, s
 	return nil
 }
 
+func (f *fakeSessionRepository) EndSession(context.Context, string) error {
+	return nil
+}
+
 func (f *fakeSessionRepository) DeleteSession(context.Context, string) error {
 	return nil
 }
@@ -276,6 +280,10 @@ func (f *fakeTicketService) DeleteTicket(context.Context, string, string) error 
 }
 
 func (f *fakeTicketService) MoveTicket(context.Context, string, string, domain.MoveTicketParams) (domain.Ticket, error) {
+	return domain.Ticket{}, nil
+}
+
+func (f *fakeTicketService) ConcludeTicket(context.Context, string, string, domain.TicketConclusion) (domain.Ticket, error) {
 	return domain.Ticket{}, nil
 }
 

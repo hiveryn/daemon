@@ -96,4 +96,5 @@ type TicketService interface {
 	UpdateTicketMetadata(context.Context, string, string, UpdateTicketMetadataParams) (Ticket, error)
 	DeleteTicket(context.Context, string, string) error
 	MoveTicket(context.Context, string, string, MoveTicketParams) (Ticket, error)
+	ConcludeTicket(context.Context, string, string, TicketConclusion) (Ticket, error)
 }

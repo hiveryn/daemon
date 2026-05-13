@@ -51,6 +51,7 @@ func runMCP(args []string) error {
 		DaemonURL:    *daemonURL,
 		ArchitectKey: *architectKey,
 		SessionType:  daemonmcp.SessionType(os.Getenv("HIVERYN_SESSION_TYPE")),
+		SessionID:    os.Getenv("HIVERYN_SESSION_ID"),
 	})
 	if err != nil {
 		return err

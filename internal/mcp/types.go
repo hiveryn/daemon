@@ -47,6 +47,23 @@ type DeleteTicketOutput struct {
 	Deleted bool `json:"deleted"`
 }
 
+type ConcludeSessionInput struct {
+	Body            string   `json:"body" jsonschema:"Session conclusion summary — outcome, files changed, and follow-up work or blockers (required)."`
+	Commits         []string `json:"commits,omitempty" jsonschema:"List of commit SHAs produced during this session. Required for work ticket sessions unless rejected=true."`
+	Rejected        bool     `json:"rejected,omitempty" jsonschema:"Set to true if the session produced no work and should be marked as rejected. Work ticket sessions only."`
+	RejectionReason string   `json:"rejection_reason,omitempty" jsonschema:"Required when rejected=true. Explain why the session produced no commits. Work ticket sessions only."`
+}
+
+type ArchitectConcludeSessionInput struct {
+	Body string `json:"body" jsonschema:"Session conclusion summary — topics covered, decisions made, tickets created, follow-up work, and blockers (required)."`
+}
+
+type ConcludeSessionOutput struct {
+	Success   bool   `json:"success"`
+	SessionID string `json:"session_id"`
+	TicketID  string `json:"ticket_id,omitempty"`
+}
+
 type ListTicketsOutput struct {
 	Tickets []TicketSummary `json:"tickets"`
 }

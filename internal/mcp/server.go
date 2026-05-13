@@ -14,6 +14,7 @@ type Config struct {
 	DaemonURL    string
 	ArchitectKey string
 	SessionType  SessionType
+	SessionID    string
 	HTTPClient   *http.Client
 	Logger       *slog.Logger
 }
@@ -24,6 +25,7 @@ type Server struct {
 	architectKey string
 	daemonURL    string
 	sessionType  SessionType
+	sessionID    string
 	logger       *slog.Logger
 }
 
@@ -54,6 +56,7 @@ func NewServer(cfg Config) (*Server, error) {
 		architectKey: architectKey,
 		daemonURL:    daemonURL,
 		sessionType:  sessionType,
+		sessionID:    cfg.SessionID,
 		logger:       cfg.Logger,
 	}
 	if server.httpClient == nil {

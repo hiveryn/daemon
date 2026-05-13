@@ -9,6 +9,11 @@ import (
 
 func (s *Server) registerArchitectTools() {
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "concludeSession",
+		Description: "Conclude the architect session. Provide a summary of topics covered, decisions made, tickets created, and any follow-up work.",
+	}, s.handleArchitectConcludeSession)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "readTicket",
 		Description: "Read full ticket details by ID.",
 	}, s.handleReadTicket)
@@ -148,4 +153,46 @@ func (s *Server) handleUpdateTicket(
 	}
 
 	return nil, ticket, nil
+}
+
+func (s *Server) handleConcludeSession(
+	ctx context.Context,
+	_ *mcp.CallToolRequest,
+	input ConcludeSessionInput,
+) (*mcp.CallToolResult, ConcludeSessionOutput, error) {
+	if strings.TrimSpace(input.Body) == "" {
+		return nil, ConcludeSessionOutput{}, newValidationError("body", "is required")
+	}
+
+	if s.sessionID == "" {
+		return nil, ConcludeSessionOutput{}, newInternalError("HIVERYN_SESSION_ID not set")
+	}
+
+	output, err := s.concludeSession(ctx, input)
+	if err != nil {
+		return nil, ConcludeSessionOutput{}, err
+	}
+
+	return nil, output, nil
+}
+
+func (s *Server) handleArchitectConcludeSession(
+	ctx context.Context,
+	_ *mcp.CallToolRequest,
+	input ArchitectConcludeSessionInput,
+) (*mcp.CallToolResult, ConcludeSessionOutput, error) {
+	if strings.TrimSpace(input.Body) == "" {
+		return nil, ConcludeSessionOutput{}, newValidationError("body", "is required")
+	}
+
+	if s.sessionID == "" {
+		return nil, ConcludeSessionOutput{}, newInternalError("HIVERYN_SESSION_ID not set")
+	}
+
+	output, err := s.concludeSession(ctx, ConcludeSessionInput{Body: input.Body})
+	if err != nil {
+		return nil, ConcludeSessionOutput{}, err
+	}
+
+	return nil, output, nil
 }

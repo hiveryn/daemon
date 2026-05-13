@@ -273,6 +273,58 @@ func (s *Server) updateTicket(ctx context.Context, input UpdateTicketInput) (Tic
 	return output, nil
 }
 
+func (s *Server) concludeSession(ctx context.Context, input ConcludeSessionInput) (ConcludeSessionOutput, error) {
+	var output ConcludeSessionOutput
+
+	body := map[string]any{"body": input.Body}
+	if len(input.Commits) > 0 {
+		body["commits"] = input.Commits
+	}
+	if input.Rejected {
+		body["rejected"] = true
+	}
+	if input.RejectionReason != "" {
+		body["rejection_reason"] = input.RejectionReason
+	}
+
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return ConcludeSessionOutput{}, newInternalError(fmt.Sprintf("marshal conclude body: %v", err))
+	}
+
+	u := fmt.Sprintf("%s/api/sessions/%s/conclude", s.daemonURL, url.PathEscape(s.sessionID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return ConcludeSessionOutput{}, fmt.Errorf("build concludeSession request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return ConcludeSessionOutput{}, fmt.Errorf("request concludeSession: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	var env daemonEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return ConcludeSessionOutput{}, newInternalError(fmt.Sprintf("decode daemon response: %v", err))
+	}
+
+	if env.Error != nil {
+		return ConcludeSessionOutput{}, mapDaemonError(env.Error)
+	}
+	if len(env.Data) == 0 {
+		return ConcludeSessionOutput{}, newInternalError("daemon response missing data")
+	}
+	if err := json.Unmarshal(env.Data, &output); err != nil {
+		return ConcludeSessionOutput{}, newInternalError(fmt.Sprintf("decode conclude payload: %v", err))
+	}
+
+	return output, nil
+}
+
 func mapDaemonError(err *domain.ErrorBody) error {
 	if err == nil {
 		return nil

@@ -77,6 +77,7 @@ Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to de
 | `GET` | `/api/sessions` | List sessions; supports `?status=running` |
 | `GET` | `/api/sessions/{id}` | Get one session |
 | `DELETE` | `/api/sessions/{id}` | Kill and delete a session |
+| `POST` | `/api/sessions/{id}/conclude` | Conclude a running session (architect or work) |
 | `GET` | `/api/sessions/{id}/events` | Stream structured session events over SSE |
 | `WS` | `/ws/session/{id}` | Stream PTY output and send terminal input |
 
