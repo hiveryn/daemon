@@ -411,6 +411,269 @@ func TestHandleDeleteTicketNotFound(t *testing.T) {
 	}
 }
 
+func TestHandleEditTicketBodySuccess(t *testing.T) {
+	t.Parallel()
+
+	created := time.Date(2026, 5, 13, 14, 30, 0, 0, time.UTC)
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Fatalf("method = %s", r.Method)
+		}
+		if r.URL.Path != "/api/architects/hiveryn/tickets/edit-me" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if body["oldString"] != "foo" || body["newString"] != "bar" {
+			t.Fatalf("body = %v", body)
+		}
+		writeEnvelope(t, w, http.StatusOK, domain.Ticket{
+			TicketSummary: domain.TicketSummary{
+				ID:         "edit-me",
+				Status:     domain.TicketStatusBacklog,
+				Title:      "Edited Ticket",
+				Repo:       "daemon",
+				Created:    &created,
+				References: []string{},
+				Warnings:   []domain.TicketWarning{},
+			},
+			Body:       "markdown body",
+			Conclusion: nil,
+		})
+	})
+
+	_, output, err := server.handleEditTicketBody(context.Background(), nil, EditTicketBodyInput{
+		ID:        "edit-me",
+		OldString: "foo",
+		NewString: "bar",
+	})
+	if err != nil {
+		t.Fatalf("handleEditTicketBody failed: %v", err)
+	}
+	if output.ID != "edit-me" || output.Title != "Edited Ticket" {
+		t.Fatalf("unexpected output: %#v", output)
+	}
+}
+
+func TestHandleEditTicketBodyMissingID(t *testing.T) {
+	t.Parallel()
+
+	server, err := NewServer(Config{
+		DaemonURL:    "http://127.0.0.1:4200",
+		ArchitectKey: "hiveryn",
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	_, _, err = server.handleEditTicketBody(context.Background(), nil, EditTicketBodyInput{OldString: "foo", NewString: "bar"})
+	toolErr, ok := err.(*ToolError)
+	if !ok {
+		t.Fatalf("expected ToolError, got %T", err)
+	}
+	if toolErr.Code != ErrorCodeValidation {
+		t.Fatalf("code = %q", toolErr.Code)
+	}
+}
+
+func TestHandleEditTicketBodyMissingOldString(t *testing.T) {
+	t.Parallel()
+
+	server, err := NewServer(Config{
+		DaemonURL:    "http://127.0.0.1:4200",
+		ArchitectKey: "hiveryn",
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	_, _, err = server.handleEditTicketBody(context.Background(), nil, EditTicketBodyInput{ID: "edit-me", NewString: "bar"})
+	toolErr, ok := err.(*ToolError)
+	if !ok {
+		t.Fatalf("expected ToolError, got %T", err)
+	}
+	if toolErr.Code != ErrorCodeValidation {
+		t.Fatalf("code = %q", toolErr.Code)
+	}
+}
+
+func TestHandleUpdateTicketSuccessAllFields(t *testing.T) {
+	t.Parallel()
+
+	created := time.Date(2026, 5, 13, 14, 30, 0, 0, time.UTC)
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Fatalf("method = %s", r.Method)
+		}
+		if r.URL.Path != "/api/architects/hiveryn/tickets/update-me/metadata" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if body["title"] != "Updated Title" || body["repo"] != "daemon" {
+			t.Fatalf("body = %v", body)
+		}
+		refs, ok := body["references"].([]any)
+		if !ok || len(refs) != 2 || refs[0] != "ref-1" || refs[1] != "ref-2" {
+			t.Fatalf("references = %v", body["references"])
+		}
+		writeEnvelope(t, w, http.StatusOK, domain.Ticket{
+			TicketSummary: domain.TicketSummary{
+				ID:         "update-me",
+				Status:     domain.TicketStatusBacklog,
+				Title:      "Updated Title",
+				Repo:       "daemon",
+				Created:    &created,
+				References: []string{"ref-1", "ref-2"},
+				Warnings:   []domain.TicketWarning{},
+			},
+			Body:       "body",
+			Conclusion: nil,
+		})
+	})
+
+	_, output, err := server.handleUpdateTicket(context.Background(), nil, UpdateTicketInput{
+		ID:         "update-me",
+		Title:      "Updated Title",
+		Repo:       "daemon",
+		References: []string{"ref-1", "ref-2"},
+	})
+	if err != nil {
+		t.Fatalf("handleUpdateTicket failed: %v", err)
+	}
+	if output.ID != "update-me" || output.Title != "Updated Title" {
+		t.Fatalf("unexpected output: %#v", output)
+	}
+}
+
+func TestHandleUpdateTicketSuccessPartialFields(t *testing.T) {
+	t.Parallel()
+
+	created := time.Date(2026, 5, 13, 14, 30, 0, 0, time.UTC)
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Fatalf("method = %s", r.Method)
+		}
+		if r.URL.Path != "/api/architects/hiveryn/tickets/update-me/metadata" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if _, hasRepo := body["repo"]; hasRepo {
+			t.Fatalf("repo should be absent when empty")
+		}
+		if _, hasRefs := body["references"]; hasRefs {
+			t.Fatalf("references should be absent when empty")
+		}
+		if body["title"] != "Only Title" {
+			t.Fatalf("title = %v", body["title"])
+		}
+		writeEnvelope(t, w, http.StatusOK, domain.Ticket{
+			TicketSummary: domain.TicketSummary{
+				ID:         "update-me",
+				Status:     domain.TicketStatusBacklog,
+				Title:      "Only Title",
+				Created:    &created,
+				References: []string{},
+				Warnings:   []domain.TicketWarning{},
+			},
+			Body:       "body",
+			Conclusion: nil,
+		})
+	})
+
+	_, output, err := server.handleUpdateTicket(context.Background(), nil, UpdateTicketInput{
+		ID:    "update-me",
+		Title: "Only Title",
+	})
+	if err != nil {
+		t.Fatalf("handleUpdateTicket failed: %v", err)
+	}
+	if output.Title != "Only Title" {
+		t.Fatalf("unexpected output: %#v", output)
+	}
+}
+
+func TestHandleUpdateTicketMissingID(t *testing.T) {
+	t.Parallel()
+
+	server, err := NewServer(Config{
+		DaemonURL:    "http://127.0.0.1:4200",
+		ArchitectKey: "hiveryn",
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	_, _, err = server.handleUpdateTicket(context.Background(), nil, UpdateTicketInput{Title: "test"})
+	toolErr, ok := err.(*ToolError)
+	if !ok {
+		t.Fatalf("expected ToolError, got %T", err)
+	}
+	if toolErr.Code != ErrorCodeValidation {
+		t.Fatalf("code = %q", toolErr.Code)
+	}
+}
+
+func TestWorkerReadTicketRegisteredAndFunctional(t *testing.T) {
+	t.Parallel()
+
+	created := time.Date(2026, 5, 13, 14, 30, 0, 0, time.UTC)
+	updated := created.Add(30 * time.Minute)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s", r.Method)
+		}
+		if r.URL.Path != "/api/architects/hiveryn/tickets/worker-ticket" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		writeEnvelope(t, w, http.StatusOK, domain.Ticket{
+			TicketSummary: domain.TicketSummary{
+				ID:            "worker-ticket",
+				Status:        domain.TicketStatusProgress,
+				Title:         "Worker Ticket",
+				Repo:          "daemon",
+				Created:       &created,
+				Updated:       &updated,
+				References:    []string{},
+				HasConclusion: false,
+				Warnings:      []domain.TicketWarning{},
+			},
+			Body:       "worker ticket body",
+			Conclusion: nil,
+		})
+	}))
+	t.Cleanup(ts.Close)
+
+	server, err := NewServer(Config{
+		DaemonURL:    ts.URL,
+		ArchitectKey: "hiveryn",
+		SessionType:  SessionTypeWork,
+		HTTPClient:   ts.Client(),
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+	if server.SessionType() != SessionTypeWork {
+		t.Fatalf("session type = %q, want %q", server.SessionType(), SessionTypeWork)
+	}
+
+	_, output, err := server.handleReadTicket(context.Background(), nil, ReadTicketInput{ID: "worker-ticket"})
+	if err != nil {
+		t.Fatalf("worker handleReadTicket failed: %v", err)
+	}
+	if output.ID != "worker-ticket" || output.Body != "worker ticket body" {
+		t.Fatalf("unexpected output: %#v", output)
+	}
+}
+
 func newTestServer(t *testing.T, handler func(w http.ResponseWriter, r *http.Request)) *Server {
 	t.Helper()
 

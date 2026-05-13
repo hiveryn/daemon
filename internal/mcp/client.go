@@ -172,6 +172,107 @@ func (s *Server) deleteTicket(ctx context.Context, id string) (DeleteTicketOutpu
 	return output, nil
 }
 
+func (s *Server) editTicketBody(ctx context.Context, id, oldString, newString string, replaceAll bool) (TicketOutput, error) {
+	var output TicketOutput
+
+	body := map[string]any{
+		"oldString": oldString,
+		"newString": newString,
+	}
+	if replaceAll {
+		body["replaceAll"] = true
+	}
+
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return TicketOutput{}, newInternalError(fmt.Sprintf("marshal edit ticket body: %v", err))
+	}
+
+	u := fmt.Sprintf("%s/api/architects/%s/tickets/%s", s.daemonURL, url.PathEscape(s.architectKey), url.PathEscape(id))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, u, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return TicketOutput{}, fmt.Errorf("build editTicketBody request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return TicketOutput{}, fmt.Errorf("request editTicketBody: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	var env daemonEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return TicketOutput{}, newInternalError(fmt.Sprintf("decode daemon response: %v", err))
+	}
+
+	if env.Error != nil {
+		return TicketOutput{}, mapDaemonError(env.Error)
+	}
+	if len(env.Data) == 0 {
+		return TicketOutput{}, newInternalError("daemon response missing data")
+	}
+	if err := json.Unmarshal(env.Data, &output); err != nil {
+		return TicketOutput{}, newInternalError(fmt.Sprintf("decode ticket payload: %v", err))
+	}
+
+	return output, nil
+}
+
+func (s *Server) updateTicket(ctx context.Context, input UpdateTicketInput) (TicketOutput, error) {
+	var output TicketOutput
+
+	body := map[string]any{}
+	if input.Title != "" {
+		body["title"] = input.Title
+	}
+	if input.Repo != "" {
+		body["repo"] = input.Repo
+	}
+	if len(input.References) > 0 {
+		body["references"] = input.References
+	}
+
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return TicketOutput{}, newInternalError(fmt.Sprintf("marshal update ticket body: %v", err))
+	}
+
+	u := fmt.Sprintf("%s/api/architects/%s/tickets/%s/metadata", s.daemonURL, url.PathEscape(s.architectKey), url.PathEscape(input.ID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, u, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return TicketOutput{}, fmt.Errorf("build updateTicket request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return TicketOutput{}, fmt.Errorf("request updateTicket: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	var env daemonEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return TicketOutput{}, newInternalError(fmt.Sprintf("decode daemon response: %v", err))
+	}
+
+	if env.Error != nil {
+		return TicketOutput{}, mapDaemonError(env.Error)
+	}
+	if len(env.Data) == 0 {
+		return TicketOutput{}, newInternalError("daemon response missing data")
+	}
+	if err := json.Unmarshal(env.Data, &output); err != nil {
+		return TicketOutput{}, newInternalError(fmt.Sprintf("decode ticket payload: %v", err))
+	}
+
+	return output, nil
+}
+
 func mapDaemonError(err *domain.ErrorBody) error {
 	if err == nil {
 		return nil

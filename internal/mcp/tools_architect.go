@@ -24,6 +24,16 @@ func (s *Server) registerArchitectTools() {
 	}, s.handleCreateWorkTicket)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "editTicketBody",
+		Description: "Perform exact string replacements in a ticket body.",
+	}, s.handleEditTicketBody)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "updateTicket",
+		Description: "Update ticket metadata fields (title, repo, references). Only present fields are updated; omitted fields are left unchanged.",
+	}, s.handleUpdateTicket)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "deleteTicket",
 		Description: "Delete a ticket by ID.",
 	}, s.handleDeleteTicket)
@@ -101,4 +111,41 @@ func (s *Server) handleDeleteTicket(
 	}
 
 	return nil, output, nil
+}
+
+func (s *Server) handleEditTicketBody(
+	ctx context.Context,
+	_ *mcp.CallToolRequest,
+	input EditTicketBodyInput,
+) (*mcp.CallToolResult, TicketOutput, error) {
+	if strings.TrimSpace(input.ID) == "" {
+		return nil, TicketOutput{}, newValidationError("id", "cannot be empty")
+	}
+	if input.OldString == "" {
+		return nil, TicketOutput{}, newValidationError("oldString", "cannot be empty")
+	}
+
+	ticket, err := s.editTicketBody(ctx, input.ID, input.OldString, input.NewString, input.ReplaceAll)
+	if err != nil {
+		return nil, TicketOutput{}, err
+	}
+
+	return nil, ticket, nil
+}
+
+func (s *Server) handleUpdateTicket(
+	ctx context.Context,
+	_ *mcp.CallToolRequest,
+	input UpdateTicketInput,
+) (*mcp.CallToolResult, TicketOutput, error) {
+	if strings.TrimSpace(input.ID) == "" {
+		return nil, TicketOutput{}, newValidationError("id", "cannot be empty")
+	}
+
+	ticket, err := s.updateTicket(ctx, input)
+	if err != nil {
+		return nil, TicketOutput{}, err
+	}
+
+	return nil, ticket, nil
 }

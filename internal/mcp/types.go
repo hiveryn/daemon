@@ -25,6 +25,20 @@ type CreateWorkTicketInput struct {
 	References []string `json:"references,omitempty" jsonschema:"Optional list of ticket IDs to reference"`
 }
 
+type EditTicketBodyInput struct {
+	ID         string `json:"id" jsonschema:"The ticket ID to edit (required)"`
+	OldString  string `json:"oldString" jsonschema:"Text to find in the ticket body (required)"`
+	NewString  string `json:"newString" jsonschema:"Replacement text (required)"`
+	ReplaceAll bool   `json:"replaceAll,omitempty" jsonschema:"Replace all occurrences (default false)"`
+}
+
+type UpdateTicketInput struct {
+	ID         string   `json:"id" jsonschema:"The ticket ID to update (required)"`
+	Title      string   `json:"title,omitempty" jsonschema:"New ticket title (optional)"`
+	Repo       string   `json:"repo,omitempty" jsonschema:"New repo key (optional)"`
+	References []string `json:"references,omitempty" jsonschema:"New references list (optional)"`
+}
+
 type DeleteTicketInput struct {
 	ID string `json:"id" jsonschema:"The ticket ID to delete"`
 }
