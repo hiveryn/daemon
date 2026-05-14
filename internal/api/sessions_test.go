@@ -37,7 +37,7 @@ func TestArchitectSpawnEndpoint(t *testing.T) {
 	if payload["session_id"] != "sess-1" {
 		t.Fatalf("unexpected session id payload: %#v", payload)
 	}
-	if payload["ws_url"] != "ws://example.com/ws/session/sess-1" {
+	if payload["ws_url"] != "ws://example.com/ws/session/sess-1/terminal/main" {
 		t.Fatalf("unexpected ws url payload: %#v", payload)
 	}
 	if service.lastSpawn.ArchitectKey != "hiveryn" || service.lastSpawn.ProfileName != "claude-sonnet" {
@@ -64,7 +64,7 @@ func TestWorkerSpawnEndpoint(t *testing.T) {
 	if payload["session_id"] != "ticket-1-session" {
 		t.Fatalf("unexpected session id: %q", payload["session_id"])
 	}
-	if payload["ws_url"] != "ws://example.com/ws/session/ticket-1-session" {
+	if payload["ws_url"] != "ws://example.com/ws/session/ticket-1-session/terminal/main" {
 		t.Fatalf("unexpected ws url: %q", payload["ws_url"])
 	}
 }
@@ -109,7 +109,7 @@ func TestSessionWebSocketBridge(t *testing.T) {
 
 	attachment := newFakeTerminalAttachment()
 	service := &fakeSessionService{
-		attachTerminal: func(context.Context, string) (domain.TerminalAttachment, error) {
+		attachTerminal: func(context.Context, string, string) (domain.TerminalAttachment, error) {
 			return attachment, nil
 		},
 	}
@@ -117,7 +117,7 @@ func TestSessionWebSocketBridge(t *testing.T) {
 	server := httptest.NewServer(newSessionTestHandler(t, service))
 	defer server.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/session/sess-1"
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/session/sess-1/terminal/main"
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
@@ -174,7 +174,7 @@ type fakeSessionService struct {
 	sessions              []domain.Session
 	lastListFilter        domain.SessionListFilter
 	deletedID             string
-	attachTerminal        func(context.Context, string) (domain.TerminalAttachment, error)
+	attachTerminal        func(context.Context, string, string) (domain.TerminalAttachment, error)
 	getSessionResult      domain.Session
 	concludeResult        domain.ConcludeSessionResult
 	concludeErr           error
@@ -225,9 +225,9 @@ func (f *fakeSessionService) SubscribeSessionEvents(context.Context, string) (do
 	return &fakeEventSubscription{ch: make(chan domain.SessionEvent)}, nil
 }
 
-func (f *fakeSessionService) AttachTerminal(ctx context.Context, id string) (domain.TerminalAttachment, error) {
+func (f *fakeSessionService) AttachTerminal(ctx context.Context, sessionID, name string) (domain.TerminalAttachment, error) {
 	if f.attachTerminal != nil {
-		return f.attachTerminal(ctx, id)
+		return f.attachTerminal(ctx, sessionID, name)
 	}
 	return nil, nil
 }
@@ -248,6 +248,18 @@ func (f *fakeSessionService) ReadRecentConclusion(_ context.Context, architectKe
 
 func (f *fakeSessionService) ListConclusions(_ context.Context, key string, limit int) ([]domain.ConclusionSummary, error) {
 	return nil, nil
+}
+
+func (f *fakeSessionService) CreateTerminal(context.Context, string, domain.CreateTerminalParams) (domain.TerminalInfo, error) {
+	return domain.TerminalInfo{}, nil
+}
+
+func (f *fakeSessionService) ListTerminals(context.Context, string) ([]domain.TerminalInfo, error) {
+	return nil, nil
+}
+
+func (f *fakeSessionService) KillTerminal(context.Context, string, string) error {
+	return nil
 }
 
 type fakeEventSubscription struct {

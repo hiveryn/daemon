@@ -52,8 +52,8 @@ func TestSpawnArchitectSessionMarksReservedSessionFailedWhenTerminalStartFails(t
 	if repo.createdSession.ID == "" {
 		t.Fatal("expected session to be reserved before terminal start")
 	}
-	if terminal.startSpec.ID != repo.createdSession.ID {
-		t.Fatalf("expected terminal to start reserved session %q, got %q", repo.createdSession.ID, terminal.startSpec.ID)
+	if terminal.startSpec.SessionID != repo.createdSession.ID {
+		t.Fatalf("expected terminal to start reserved session %q, got %q", repo.createdSession.ID, terminal.startSpec.SessionID)
 	}
 	if terminal.startSpec.Size.Cols != 132 || terminal.startSpec.Size.Rows != 48 {
 		t.Fatalf("expected terminal start size to use requested dimensions, got %#v", terminal.startSpec.Size)
@@ -129,6 +129,7 @@ func TestConcludeArchitectSessionAppendsEndedEventRawBody(t *testing.T) {
 		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg:          testRuntimeConfig(t),
 		repo:         repo,
+		terminal:     &fakeTerminalManager{},
 		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
 	}
 
@@ -175,6 +176,7 @@ func TestConcludeWorkSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 			},
 			Body: "body",
 		}},
+		terminal:     &fakeTerminalManager{},
 		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
 	}
 
@@ -270,11 +272,19 @@ func (f *fakeTerminalManager) Start(_ context.Context, spec terminalStartSpec) e
 	return f.startErr
 }
 
-func (f *fakeTerminalManager) Attach(context.Context, string) (domain.TerminalAttachment, error) {
+func (f *fakeTerminalManager) Attach(context.Context, string, string) (domain.TerminalAttachment, error) {
 	return nil, nil
 }
 
-func (f *fakeTerminalManager) Kill(context.Context, string) error {
+func (f *fakeTerminalManager) Kill(context.Context, string, string) error {
+	return nil
+}
+
+func (f *fakeTerminalManager) KillBySession(context.Context, string) error {
+	return nil
+}
+
+func (f *fakeTerminalManager) ListBySession(string) []domain.TerminalInfo {
 	return nil
 }
 

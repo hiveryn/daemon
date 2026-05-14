@@ -81,8 +81,11 @@ Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to de
 | `GET` | `/api/sessions/{id}` | Get one session |
 | `DELETE` | `/api/sessions/{id}` | Kill and delete a session |
 | `POST` | `/api/sessions/{id}/conclude` | Conclude a running session (architect or work) |
+| `POST` | `/api/sessions/{id}/terminals` | Create a new user terminal in a session |
+| `GET` | `/api/sessions/{id}/terminals` | List all terminals for a session |
+| `DELETE` | `/api/sessions/{id}/terminals/{name}` | Kill a specific user terminal |
 | `GET` | `/api/sessions/{id}/events` | Stream structured session events over SSE |
-| `WS` | `/ws/session/{id}` | Stream PTY output and send terminal input |
+| `WS` | `/ws/session/{id}/terminal/{name}` | Stream PTY output and send terminal input for a named terminal |
 
 Profile, architect, and repo configuration endpoints are read-only. Edit `~/.hiveryn/config.yaml` directly to change profiles, architects, or repos.
 

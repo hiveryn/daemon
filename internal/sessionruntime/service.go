@@ -169,7 +169,8 @@ func (s *Service) SpawnArchitectSession(ctx context.Context, req domain.SpawnArc
 	)
 
 	if err := s.terminal.Start(ctx, terminalStartSpec{
-		ID:           session.ID,
+		SessionID:    session.ID,
+		Name:         "main",
 		Command:      spec.Command,
 		Args:         append([]string(nil), spec.Args...),
 		Env:          cloneStringMap(spec.Env),
@@ -285,7 +286,8 @@ func (s *Service) SpawnWorkSession(ctx context.Context, req domain.SpawnWorkSess
 	)
 
 	if err := s.terminal.Start(ctx, terminalStartSpec{
-		ID:           session.ID,
+		SessionID:    session.ID,
+		Name:         "main",
 		Command:      spec.Command,
 		Args:         append([]string(nil), spec.Args...),
 		Env:          cloneStringMap(spec.Env),
@@ -512,6 +514,8 @@ func (s *Service) concludeArchitectSession(ctx context.Context, session domain.S
 		return domain.ConcludeSessionResult{}, err
 	}
 
+	_ = s.terminal.KillBySession(ctx, session.ID)
+
 	s.appendAndPublishSessionEnded(ctx, session.ID, "session concluded", map[string]any{"body": params.Body})
 
 	return domain.ConcludeSessionResult{SessionID: session.ID}, nil
@@ -584,6 +588,8 @@ func (s *Service) concludeWorkSession(ctx context.Context, session domain.Sessio
 		return domain.ConcludeSessionResult{}, err
 	}
 
+	_ = s.terminal.KillBySession(ctx, session.ID)
+
 	s.appendAndPublishSessionEnded(ctx, session.ID, "session concluded", map[string]any{
 		"body":             params.Body,
 		"commits":          params.Commits,
@@ -646,7 +652,7 @@ func (s *Service) TerminateSession(ctx context.Context, id string) error {
 		return err
 	}
 
-	if err := s.terminal.Kill(ctx, id); err != nil && !errors.Is(err, errTerminalNotFound) {
+	if err := s.terminal.KillBySession(ctx, id); err != nil && !errors.Is(err, errTerminalNotFound) {
 		return err
 	}
 
@@ -705,11 +711,69 @@ func (s *Service) SubscribeSessionEvents(ctx context.Context, id string) (domain
 	}, nil
 }
 
-func (s *Service) AttachTerminal(ctx context.Context, id string) (domain.TerminalAttachment, error) {
-	if _, err := s.repo.GetSession(ctx, id); err != nil {
+func (s *Service) AttachTerminal(ctx context.Context, sessionID, name string) (domain.TerminalAttachment, error) {
+	if _, err := s.repo.GetSession(ctx, sessionID); err != nil {
 		return nil, err
 	}
-	return s.terminal.Attach(ctx, id)
+	return s.terminal.Attach(ctx, sessionID, name)
+}
+
+func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params domain.CreateTerminalParams) (domain.TerminalInfo, error) {
+	session, err := s.repo.GetSession(ctx, sessionID)
+	if err != nil {
+		return domain.TerminalInfo{}, err
+	}
+	if session.Status != domain.SessionStatusRunning {
+		return domain.TerminalInfo{}, &domain.ValidationError{Field: "session_id", Message: "session is not running"}
+	}
+	if strings.TrimSpace(params.Name) == "" {
+		return domain.TerminalInfo{}, &domain.ValidationError{Field: "name", Message: "is required"}
+	}
+	if strings.TrimSpace(params.Command) == "" {
+		return domain.TerminalInfo{}, &domain.ValidationError{Field: "command", Message: "is required"}
+	}
+
+	architect, ok := s.cfg.Architects[session.ArchitectKey]
+	if !ok {
+		return domain.TerminalInfo{}, &domain.NotFoundError{Resource: "architect", ID: session.ArchitectKey}
+	}
+
+	if err := s.terminal.Start(ctx, terminalStartSpec{
+		SessionID: sessionID,
+		Name:      params.Name,
+		Command:   params.Command,
+		Args:      params.Args,
+		Workdir:   architect.Path,
+		Size:      terminalSize{Cols: defaultPTYCols, Rows: defaultPTYRows},
+	}); err != nil {
+		return domain.TerminalInfo{}, err
+	}
+
+	return domain.TerminalInfo{
+		Name:      params.Name,
+		SessionID: sessionID,
+		Status:    "running",
+	}, nil
+}
+
+func (s *Service) ListTerminals(ctx context.Context, sessionID string) ([]domain.TerminalInfo, error) {
+	if _, err := s.repo.GetSession(ctx, sessionID); err != nil {
+		return nil, err
+	}
+	return s.terminal.ListBySession(sessionID), nil
+}
+
+func (s *Service) KillTerminal(ctx context.Context, sessionID, name string) error {
+	if _, err := s.repo.GetSession(ctx, sessionID); err != nil {
+		return err
+	}
+	if name == "main" {
+		return &domain.ValidationError{Field: "name", Message: "cannot kill the main terminal"}
+	}
+	if err := s.terminal.Kill(ctx, sessionID, name); err != nil && !errors.Is(err, errTerminalNotFound) {
+		return err
+	}
+	return nil
 }
 
 func (s *Service) FailRunningSessions(ctx context.Context) error {
@@ -787,7 +851,7 @@ func (s *Service) handleReceiverEvent(event agentruntime.Event) {
 }
 
 func (s *Service) handleTerminalExit(exit terminalExit) {
-	defer s.cancelReceiverBridge(exit.ID)
+	defer s.cancelReceiverBridge(exit.SessionID)
 
 	status := domain.SessionStatusCompleted
 	message := "process exited successfully"
@@ -796,23 +860,23 @@ func (s *Service) handleTerminalExit(exit terminalExit) {
 		message = exit.Err.Error()
 	}
 
-	if err := s.repo.UpdateSessionStatus(context.Background(), exit.ID, status); err != nil {
-		s.logger.Error("update session status failed", "session_id", exit.ID, "error", err)
+	if err := s.repo.UpdateSessionStatus(context.Background(), exit.SessionID, status); err != nil {
+		s.logger.Error("update session status failed", "session_id", exit.SessionID, "error", err)
 		return
 	}
 
 	event, err := s.repo.AppendSessionEvent(context.Background(), domain.AppendSessionEventParams{
-		SessionID: exit.ID,
+		SessionID: exit.SessionID,
 		Type:      "status",
 		Status:    "ended",
 		Message:   message,
 		At:        time.Now().UTC(),
 	})
 	if err != nil {
-		s.logger.Warn("append process exit event failed", "session_id", exit.ID, "error", err)
+		s.logger.Warn("append process exit event failed", "session_id", exit.SessionID, "error", err)
 		return
 	}
-	s.publishEvent(exit.ID, event)
+	s.publishEvent(exit.SessionID, event)
 }
 
 func (s *Service) markSessionFailed(sessionID, stage string) {

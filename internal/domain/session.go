@@ -142,6 +142,18 @@ type TerminalAttachment interface {
 	Close() error
 }
 
+type TerminalInfo struct {
+	Name      string `json:"name"`
+	SessionID string `json:"session_id"`
+	Status    string `json:"status"`
+}
+
+type CreateTerminalParams struct {
+	Name    string   `json:"name"`
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
+}
+
 type ArchitectConclusion struct {
 	StartedAt   time.Time `json:"started_at"`
 	ConcludedAt time.Time `json:"concluded_at"`
@@ -166,5 +178,8 @@ type SessionService interface {
 	ListSessions(context.Context, SessionListFilter) ([]Session, error)
 	ListSessionEvents(context.Context, string) ([]SessionEvent, error)
 	SubscribeSessionEvents(context.Context, string) (SessionEventSubscription, error)
-	AttachTerminal(context.Context, string) (TerminalAttachment, error)
+	AttachTerminal(context.Context, string, string) (TerminalAttachment, error)
+	CreateTerminal(context.Context, string, CreateTerminalParams) (TerminalInfo, error)
+	ListTerminals(context.Context, string) ([]TerminalInfo, error)
+	KillTerminal(context.Context, string, string) error
 }

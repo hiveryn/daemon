@@ -175,13 +175,16 @@ func (h *sessionsHandler) events(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *sessionsHandler) ws(w http.ResponseWriter, r *http.Request) {
+func (h *sessionsHandler) wsTerminal(w http.ResponseWriter, r *http.Request) {
 	if h.sessions == nil {
 		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
 		return
 	}
 
-	attachment, err := h.sessions.AttachTerminal(r.Context(), r.PathValue("id"))
+	sessionID := r.PathValue("id")
+	terminalName := r.PathValue("name")
+
+	attachment, err := h.sessions.AttachTerminal(r.Context(), sessionID, terminalName)
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
@@ -196,10 +199,6 @@ func (h *sessionsHandler) ws(w http.ResponseWriter, r *http.Request) {
 
 	errCh := make(chan error, 2)
 	go func() {
-		// PTY output is a raw byte stream that may include incomplete UTF-8 sequences
-		// (multi-byte chars split across read chunks) or non-text control bytes.
-		// Use BinaryMessage; TextMessage requires valid UTF-8 per RFC 6455 and the
-		// peer will close with 1007 on the first split codepoint.
 		for chunk := range attachment.Output() {
 			if err := conn.WriteMessage(websocket.BinaryMessage, chunk); err != nil {
 				errCh <- err
@@ -209,13 +208,12 @@ func (h *sessionsHandler) ws(w http.ResponseWriter, r *http.Request) {
 		errCh <- nil
 	}()
 
-	sessionID := r.PathValue("id")
-	h.logger.Info("[ws] attached", "session_id", sessionID)
+	h.logger.Info("[ws] attached", "session_id", sessionID, "terminal", terminalName)
 	go func() {
 		for {
 			messageType, payload, err := conn.ReadMessage()
 			if err != nil {
-				h.logger.Info("[ws] read goroutine exit", "session_id", sessionID, "error", err)
+				h.logger.Info("[ws] read goroutine exit", "session_id", sessionID, "terminal", terminalName, "error", err)
 				errCh <- err
 				return
 			}
@@ -229,19 +227,17 @@ func (h *sessionsHandler) ws(w http.ResponseWriter, r *http.Request) {
 				Rows uint16 `json:"rows"`
 			}
 			if err := json.Unmarshal(payload, &resize); err == nil && resize.Type == "resize" {
-				h.logger.Info("[ws] resize", "session_id", sessionID, "cols", resize.Cols, "rows", resize.Rows)
+				h.logger.Info("[ws] resize", "session_id", sessionID, "terminal", terminalName, "cols", resize.Cols, "rows", resize.Rows)
 				if resize.Cols > 0 && resize.Rows > 0 {
-					// A transient resize failure (e.g. EBADF during teardown) must NOT tear down
-					// the whole WebSocket. Log and continue — input must keep flowing.
 					if err := attachment.Resize(resize.Cols, resize.Rows); err != nil {
-						h.logger.Warn("[ws] resize error (ignored)", "session_id", sessionID, "error", err)
+						h.logger.Warn("[ws] resize error (ignored)", "session_id", sessionID, "terminal", terminalName, "error", err)
 					}
 				}
 				continue
 			}
 
 			if err := attachment.Write(payload); err != nil {
-				h.logger.Info("[ws] write error", "session_id", sessionID, "error", err)
+				h.logger.Info("[ws] write error", "session_id", sessionID, "terminal", terminalName, "error", err)
 				errCh <- err
 				return
 			}
@@ -252,6 +248,61 @@ func (h *sessionsHandler) ws(w http.ResponseWriter, r *http.Request) {
 	case <-r.Context().Done():
 	case <-errCh:
 	}
+}
+
+func (h *sessionsHandler) createTerminal(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
+		return
+	}
+
+	var input domain.CreateTerminalParams
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
+		return
+	}
+
+	terminal, err := h.sessions.CreateTerminal(r.Context(), r.PathValue("id"), input)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusCreated, terminal)
+}
+
+func (h *sessionsHandler) listTerminals(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
+		return
+	}
+
+	terminals, err := h.sessions.ListTerminals(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	if terminals == nil {
+		terminals = []domain.TerminalInfo{}
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string][]domain.TerminalInfo{
+		"terminals": terminals,
+	})
+}
+
+func (h *sessionsHandler) killTerminal(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
+		return
+	}
+
+	if err := h.sessions.KillTerminal(r.Context(), r.PathValue("id"), r.PathValue("name")); err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func decodeJSON(r *http.Request, dst any) error {

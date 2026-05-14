@@ -64,7 +64,7 @@ func (h *architectsHandler) spawn(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, r, http.StatusOK, map[string]string{
 		"session_id": result.Session.ID,
-		"ws_url":     websocketURL(r, "/ws/session/"+result.Session.ID),
+		"ws_url":     websocketURL(r, "/ws/session/"+result.Session.ID+"/terminal/main"),
 	})
 }
 

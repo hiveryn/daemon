@@ -20,17 +20,20 @@ const (
 	outputQueueSize  = 64
 )
 
-var errTerminalNotFound = errors.New("terminal session not found")
+var errTerminalNotFound = errors.New("terminal not found")
 
 type terminalManager interface {
 	Start(context.Context, terminalStartSpec) error
-	Attach(context.Context, string) (domain.TerminalAttachment, error)
-	Kill(context.Context, string) error
+	Attach(context.Context, string, string) (domain.TerminalAttachment, error)
+	Kill(context.Context, string, string) error
+	KillBySession(context.Context, string) error
+	ListBySession(string) []domain.TerminalInfo
 	Shutdown(context.Context) error
 }
 
 type terminalStartSpec struct {
-	ID           string
+	SessionID    string
+	Name         string
 	Command      string
 	Args         []string
 	Env          map[string]string
@@ -46,8 +49,9 @@ type terminalSize struct {
 }
 
 type terminalExit struct {
-	ID  string
-	Err error
+	SessionID string
+	Name      string
+	Err       error
 }
 
 type ptyTerminalManager struct {
@@ -59,6 +63,8 @@ type ptyTerminalManager struct {
 
 type terminalProcess struct {
 	id           string
+	sessionID    string
+	name         string
 	cmd          *exec.Cmd
 	pty          *os.File
 	cleanupPaths []string
@@ -81,6 +87,14 @@ type terminalAttachment struct {
 	close  func() error
 }
 
+func terminalKey(sessionID, name string) string {
+	return sessionID + ":" + name
+}
+
+func sessionPrefix(sessionID string) string {
+	return sessionID + ":"
+}
+
 func newPTYTerminalManager(logger *slog.Logger) *ptyTerminalManager {
 	return &ptyTerminalManager{
 		logger:    logger,
@@ -92,8 +106,11 @@ func (m *ptyTerminalManager) Start(ctx context.Context, spec terminalStartSpec) 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if spec.ID == "" {
+	if spec.SessionID == "" {
 		return fmt.Errorf("missing terminal session ID")
+	}
+	if spec.Name == "" {
+		return fmt.Errorf("missing terminal name")
 	}
 	if spec.Command == "" {
 		return fmt.Errorf("missing terminal command")
@@ -105,7 +122,8 @@ func (m *ptyTerminalManager) Start(ctx context.Context, spec terminalStartSpec) 
 		spec.Size.Rows = defaultPTYRows
 	}
 
-	if err := m.reserve(spec.ID); err != nil {
+	key := terminalKey(spec.SessionID, spec.Name)
+	if err := m.reserve(key); err != nil {
 		return err
 	}
 
@@ -114,31 +132,33 @@ func (m *ptyTerminalManager) Start(ctx context.Context, spec terminalStartSpec) 
 	cmd.Env = mergeProcessEnv(spec.Env)
 
 	m.logger.Info("[pty] start",
-		"session_id", spec.ID,
+		"terminal_key", key,
 		"cols", spec.Size.Cols,
 		"rows", spec.Size.Rows,
 	)
 
 	ptyFile, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: spec.Size.Cols, Rows: spec.Size.Rows})
 	if err != nil {
-		m.remove(spec.ID)
+		m.remove(key)
 		cleanupPaths(spec.CleanupPaths, m.logger)
 		return fmt.Errorf("start pty: %w", err)
 	}
 
 	process := &terminalProcess{
-		id:           spec.ID,
+		id:           key,
+		sessionID:    spec.SessionID,
+		name:         spec.Name,
 		cmd:          cmd,
 		pty:          ptyFile,
 		cleanupPaths: append([]string(nil), spec.CleanupPaths...),
-		logger:       m.logger.With("session_id", spec.ID),
+		logger:       m.logger.With("terminal_key", key),
 		onExit:       spec.OnExit,
 		outputSubs:   map[uint64]chan []byte{},
 		done:         make(chan struct{}),
 	}
 
 	m.mu.Lock()
-	m.processes[spec.ID] = process
+	m.processes[key] = process
 	m.mu.Unlock()
 
 	go m.streamOutput(process)
@@ -146,16 +166,18 @@ func (m *ptyTerminalManager) Start(ctx context.Context, spec terminalStartSpec) 
 	return nil
 }
 
-func (m *ptyTerminalManager) Attach(_ context.Context, id string) (domain.TerminalAttachment, error) {
-	process := m.get(id)
+func (m *ptyTerminalManager) Attach(_ context.Context, sessionID, name string) (domain.TerminalAttachment, error) {
+	key := terminalKey(sessionID, name)
+	process := m.get(key)
 	if process == nil {
-		return nil, &domain.ConflictError{Resource: "session", Field: "status", Message: "session is not running"}
+		return nil, &domain.ConflictError{Resource: "session", Field: "status", Message: "terminal is not running"}
 	}
 	return process.attach()
 }
 
-func (m *ptyTerminalManager) Kill(ctx context.Context, id string) error {
-	process := m.get(id)
+func (m *ptyTerminalManager) Kill(ctx context.Context, sessionID, name string) error {
+	key := terminalKey(sessionID, name)
+	process := m.get(key)
 	if process == nil {
 		return errTerminalNotFound
 	}
@@ -168,6 +190,60 @@ func (m *ptyTerminalManager) Kill(ctx context.Context, id string) error {
 		}
 	}
 	return waitForChannel(ctx, process.done)
+}
+
+func (m *ptyTerminalManager) KillBySession(ctx context.Context, sessionID string) error {
+	prefix := sessionPrefix(sessionID)
+	var processes []*terminalProcess
+
+	m.mu.RLock()
+	for key, process := range m.processes {
+		if process != nil && strings.HasPrefix(key, prefix) {
+			processes = append(processes, process)
+		}
+	}
+	m.mu.RUnlock()
+
+	for _, process := range processes {
+		process.markClosing()
+		process.closePTY()
+		if process.cmd.Process != nil {
+			if err := process.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				process.logger.Warn("kill process during session teardown failed", "error", err)
+			}
+		}
+	}
+
+	var killErr error
+	for _, process := range processes {
+		if err := waitForChannel(ctx, process.done); err != nil && killErr == nil {
+			killErr = err
+		}
+	}
+	return killErr
+}
+
+func (m *ptyTerminalManager) ListBySession(sessionID string) []domain.TerminalInfo {
+	prefix := sessionPrefix(sessionID)
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var terminals []domain.TerminalInfo
+	for _, process := range m.processes {
+		if process != nil && strings.HasPrefix(process.id, prefix) {
+			status := "running"
+			if process.isClosing() {
+				status = "exited"
+			}
+			terminals = append(terminals, domain.TerminalInfo{
+				Name:      process.name,
+				SessionID: process.sessionID,
+				Status:    status,
+			})
+		}
+	}
+	return terminals
 }
 
 func (m *ptyTerminalManager) Shutdown(ctx context.Context) error {
@@ -191,26 +267,26 @@ func (m *ptyTerminalManager) Shutdown(ctx context.Context) error {
 	return shutdownErr
 }
 
-func (m *ptyTerminalManager) reserve(id string) error {
+func (m *ptyTerminalManager) reserve(key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, exists := m.processes[id]; exists {
-		return &domain.ConflictError{Resource: "session", Field: "id", Message: "terminal session already exists"}
+	if _, exists := m.processes[key]; exists {
+		return &domain.ConflictError{Resource: "terminal", Field: "name", Message: "terminal already exists"}
 	}
-	m.processes[id] = nil
+	m.processes[key] = nil
 	return nil
 }
 
-func (m *ptyTerminalManager) get(id string) *terminalProcess {
+func (m *ptyTerminalManager) get(key string) *terminalProcess {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.processes[id]
+	return m.processes[key]
 }
 
-func (m *ptyTerminalManager) remove(id string) {
+func (m *ptyTerminalManager) remove(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.processes, id)
+	delete(m.processes, key)
 }
 
 func (m *ptyTerminalManager) list() []*terminalProcess {
@@ -251,7 +327,7 @@ func (m *ptyTerminalManager) waitForExit(process *terminalProcess) {
 
 	killed := process.isClosing()
 	if !killed && process.onExit != nil {
-		process.onExit(terminalExit{ID: process.id, Err: err})
+		process.onExit(terminalExit{SessionID: process.sessionID, Name: process.name, Err: err})
 	}
 
 	m.remove(process.id)
@@ -262,7 +338,7 @@ func (p *terminalProcess) attach() (domain.TerminalAttachment, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closing || p.pty == nil {
-		return nil, &domain.ConflictError{Resource: "session", Field: "status", Message: "session is closing"}
+		return nil, &domain.ConflictError{Resource: "session", Field: "status", Message: "terminal is closing"}
 	}
 
 	ch := make(chan []byte, len(p.replayBuf)+outputQueueSize)

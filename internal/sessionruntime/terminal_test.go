@@ -59,22 +59,23 @@ func TestPTYTerminalManagerReplaysStartupOutput(t *testing.T) {
 	ctx := context.Background()
 
 	if err := manager.Start(ctx, terminalStartSpec{
-		ID:      "session-1",
-		Command: "/bin/sh",
-		Args:    []string{"-c", "printf boot; sleep 1"},
-		Size:    terminalSize{Cols: 80, Rows: 24},
+		SessionID: "session-1",
+		Name:      "main",
+		Command:   "/bin/sh",
+		Args:      []string{"-c", "printf boot; sleep 1"},
+		Size:      terminalSize{Cols: 80, Rows: 24},
 	}); err != nil {
 		t.Fatalf("start terminal: %v", err)
 	}
 	defer func() {
 		killCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		_ = manager.Kill(killCtx, "session-1")
+		_ = manager.Kill(killCtx, "session-1", "main")
 	}()
 
 	time.Sleep(100 * time.Millisecond)
 
-	attachment, err := manager.Attach(ctx, "session-1")
+	attachment, err := manager.Attach(ctx, "session-1", "main")
 	if err != nil {
 		t.Fatalf("attach terminal: %v", err)
 	}
@@ -93,7 +94,7 @@ func newTestTerminalProcess(t *testing.T) *terminalProcess {
 	t.Cleanup(func() { _ = file.Close() })
 
 	return &terminalProcess{
-		id:         "session-1",
+		id:         terminalKey("session-1", "test"),
 		pty:        file,
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		outputSubs: map[uint64]chan []byte{},
