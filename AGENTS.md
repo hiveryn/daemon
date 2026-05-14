@@ -69,6 +69,7 @@ internal/
 - Config-backed read APIs read from the parsed `config.Config` snapshot, not SQLite.
 - `app/` wires everything together — it's the only package that imports both `store/` and `api/`.
 - `sessionruntime/` owns live process/PTY state and bridges `agentruntime` events into persisted session events.
+- `sessionruntime/` also owns resolved per-session terminal UUIDs and right-pane tab layout state; SQLite stores session metadata, not terminal identity/layout snapshots.
 - `mcp/` stays transport-focused: role-specific tool registration plus HTTP client shims back into daemon APIs. Keep tool handlers out of `cmd/` and avoid filesystem mutations here.
 - `config/` is self-contained. Bootstrap config lives outside SQLite because the server needs it before the DB opens.
 

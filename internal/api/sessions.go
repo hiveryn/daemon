@@ -182,9 +182,9 @@ func (h *sessionsHandler) wsTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sessionID := r.PathValue("id")
-	terminalName := r.PathValue("name")
+	terminalID := r.PathValue("uuid")
 
-	attachment, err := h.sessions.AttachTerminal(r.Context(), sessionID, terminalName)
+	attachment, err := h.sessions.AttachTerminal(r.Context(), sessionID, terminalID)
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
@@ -208,12 +208,12 @@ func (h *sessionsHandler) wsTerminal(w http.ResponseWriter, r *http.Request) {
 		errCh <- nil
 	}()
 
-	h.logger.Info("[ws] attached", "session_id", sessionID, "terminal", terminalName)
+	h.logger.Info("[ws] attached", "session_id", sessionID, "terminal_id", terminalID)
 	go func() {
 		for {
 			messageType, payload, err := conn.ReadMessage()
 			if err != nil {
-				h.logger.Info("[ws] read goroutine exit", "session_id", sessionID, "terminal", terminalName, "error", err)
+				h.logger.Info("[ws] read goroutine exit", "session_id", sessionID, "terminal_id", terminalID, "error", err)
 				errCh <- err
 				return
 			}
@@ -227,17 +227,17 @@ func (h *sessionsHandler) wsTerminal(w http.ResponseWriter, r *http.Request) {
 				Rows uint16 `json:"rows"`
 			}
 			if err := json.Unmarshal(payload, &resize); err == nil && resize.Type == "resize" {
-				h.logger.Info("[ws] resize", "session_id", sessionID, "terminal", terminalName, "cols", resize.Cols, "rows", resize.Rows)
+				h.logger.Info("[ws] resize", "session_id", sessionID, "terminal_id", terminalID, "cols", resize.Cols, "rows", resize.Rows)
 				if resize.Cols > 0 && resize.Rows > 0 {
 					if err := attachment.Resize(resize.Cols, resize.Rows); err != nil {
-						h.logger.Warn("[ws] resize error (ignored)", "session_id", sessionID, "terminal", terminalName, "error", err)
+						h.logger.Warn("[ws] resize error (ignored)", "session_id", sessionID, "terminal_id", terminalID, "error", err)
 					}
 				}
 				continue
 			}
 
 			if err := attachment.Write(payload); err != nil {
-				h.logger.Info("[ws] write error", "session_id", sessionID, "terminal", terminalName, "error", err)
+				h.logger.Info("[ws] write error", "session_id", sessionID, "terminal_id", terminalID, "error", err)
 				errCh <- err
 				return
 			}
@@ -248,6 +248,24 @@ func (h *sessionsHandler) wsTerminal(w http.ResponseWriter, r *http.Request) {
 	case <-r.Context().Done():
 	case <-errCh:
 	}
+}
+
+func (h *sessionsHandler) listTabs(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
+		return
+	}
+
+	tabs, err := h.sessions.ListSessionTabs(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	if tabs == nil {
+		tabs = []domain.SessionTab{}
+	}
+
+	writeJSON(w, r, http.StatusOK, tabs)
 }
 
 func (h *sessionsHandler) createTerminal(w http.ResponseWriter, r *http.Request) {
@@ -298,7 +316,7 @@ func (h *sessionsHandler) killTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.sessions.KillTerminal(r.Context(), r.PathValue("id"), r.PathValue("name")); err != nil {
+	if err := h.sessions.KillTerminal(r.Context(), r.PathValue("id"), r.PathValue("uuid")); err != nil {
 		writeDomainError(w, r, err)
 		return
 	}

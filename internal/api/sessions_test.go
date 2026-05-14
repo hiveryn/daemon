@@ -22,7 +22,8 @@ func TestArchitectSpawnEndpoint(t *testing.T) {
 
 	service := &fakeSessionService{
 		spawnResult: domain.SpawnArchitectSessionResult{
-			Session: domain.Session{ID: "sess-1"},
+			Session:        domain.Session{ID: "sess-1"},
+			MainTerminalID: "term-main-1",
 		},
 	}
 	handler := newSessionTestHandler(t, service)
@@ -37,7 +38,10 @@ func TestArchitectSpawnEndpoint(t *testing.T) {
 	if payload["session_id"] != "sess-1" {
 		t.Fatalf("unexpected session id payload: %#v", payload)
 	}
-	if payload["ws_url"] != "ws://example.com/ws/session/sess-1/terminal/main" {
+	if payload["main_terminal_id"] != "term-main-1" {
+		t.Fatalf("unexpected main terminal id payload: %#v", payload)
+	}
+	if payload["ws_url"] != "ws://example.com/ws/session/sess-1/terminal/term-main-1" {
 		t.Fatalf("unexpected ws url payload: %#v", payload)
 	}
 	if service.lastSpawn.ArchitectKey != "hiveryn" || service.lastSpawn.ProfileName != "claude-sonnet" {
@@ -64,7 +68,10 @@ func TestWorkerSpawnEndpoint(t *testing.T) {
 	if payload["session_id"] != "ticket-1-session" {
 		t.Fatalf("unexpected session id: %q", payload["session_id"])
 	}
-	if payload["ws_url"] != "ws://example.com/ws/session/ticket-1-session/terminal/main" {
+	if payload["main_terminal_id"] != "term-main-1" {
+		t.Fatalf("unexpected main terminal id: %q", payload["main_terminal_id"])
+	}
+	if payload["ws_url"] != "ws://example.com/ws/session/ticket-1-session/terminal/term-main-1" {
 		t.Fatalf("unexpected ws url: %q", payload["ws_url"])
 	}
 }
@@ -74,7 +81,7 @@ func TestSessionsListAndDeleteEndpoints(t *testing.T) {
 
 	service := &fakeSessionService{
 		sessions: []domain.Session{
-			{ID: "sess-1", Status: domain.SessionStatusRunning},
+			{ID: "sess-1", Status: domain.SessionStatusRunning, MainTerminalID: "term-main-1"},
 		},
 	}
 	handler := newSessionTestHandler(t, service)
@@ -90,6 +97,9 @@ func TestSessionsListAndDeleteEndpoints(t *testing.T) {
 	decodeEnvelopeData(t, listBody, &listed)
 	if len(listed.Sessions) != 1 || listed.Sessions[0].ID != "sess-1" {
 		t.Fatalf("unexpected session list payload: %#v", listed)
+	}
+	if listed.Sessions[0].MainTerminalID != "term-main-1" {
+		t.Fatalf("unexpected main terminal id in list payload: %#v", listed.Sessions[0])
 	}
 	if service.lastListFilter.Status != domain.SessionStatusRunning {
 		t.Fatalf("unexpected list filter: %#v", service.lastListFilter)
@@ -117,7 +127,7 @@ func TestSessionWebSocketBridge(t *testing.T) {
 	server := httptest.NewServer(newSessionTestHandler(t, service))
 	defer server.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/session/sess-1/terminal/main"
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/session/sess-1/terminal/term-1"
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
@@ -155,6 +165,35 @@ func TestSessionWebSocketBridge(t *testing.T) {
 	}
 }
 
+func TestSessionTabsEndpoint(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeSessionService{
+		sessionTabs: []domain.SessionTab{
+			{Type: "kanban"},
+			{Type: "terminal", TerminalID: "term-1", Command: "yazi", Status: "running"},
+		},
+	}
+	handler := newSessionTestHandler(t, service)
+
+	status, body := request(t, handler, http.MethodGet, "/api/sessions/sess-1/tabs", nil)
+	if status != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, status, string(body))
+	}
+
+	var tabs []map[string]any
+	decodeEnvelopeData(t, body, &tabs)
+	if len(tabs) != 2 {
+		t.Fatalf("expected 2 tabs, got %#v", tabs)
+	}
+	if tabs[1]["id"] != "term-1" || tabs[1]["command"] != "yazi" || tabs[1]["status"] != "running" {
+		t.Fatalf("unexpected terminal tab payload: %#v", tabs[1])
+	}
+	if _, ok := tabs[1]["terminal_id"]; ok {
+		t.Fatalf("expected tabs payload to use id, got %#v", tabs[1])
+	}
+}
+
 func newSessionTestHandler(t *testing.T, sessions domain.SessionService) http.Handler {
 	t.Helper()
 
@@ -176,6 +215,7 @@ type fakeSessionService struct {
 	deletedID             string
 	attachTerminal        func(context.Context, string, string) (domain.TerminalAttachment, error)
 	getSessionResult      domain.Session
+	sessionTabs           []domain.SessionTab
 	concludeResult        domain.ConcludeSessionResult
 	concludeErr           error
 	lastConcludeSessionID string
@@ -191,7 +231,8 @@ func (f *fakeSessionService) SpawnArchitectSession(_ context.Context, req domain
 
 func (f *fakeSessionService) SpawnWorkSession(_ context.Context, req domain.SpawnWorkSessionRequest) (domain.SpawnWorkSessionResult, error) {
 	return domain.SpawnWorkSessionResult{
-		Session: domain.Session{ID: req.TicketID + "-session"},
+		Session:        domain.Session{ID: req.TicketID + "-session"},
+		MainTerminalID: "term-main-1",
 	}, nil
 }
 
@@ -256,6 +297,10 @@ func (f *fakeSessionService) CreateTerminal(context.Context, string, domain.Crea
 
 func (f *fakeSessionService) ListTerminals(context.Context, string) ([]domain.TerminalInfo, error) {
 	return nil, nil
+}
+
+func (f *fakeSessionService) ListSessionTabs(context.Context, string) ([]domain.SessionTab, error) {
+	return f.sessionTabs, nil
 }
 
 func (f *fakeSessionService) KillTerminal(context.Context, string, string) error {

@@ -45,7 +45,6 @@ type ArchitectConfig struct {
 
 type TabEntry struct {
 	Type    string `yaml:"type"`
-	Name    string `yaml:"name"`
 	Command string `yaml:"command"`
 }
 
@@ -229,24 +228,12 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(sessionType) == "" {
 			return fmt.Errorf("tabs keys must not be blank")
 		}
-		terminalNames := map[string]struct{}{}
 		for i, entry := range c.Tabs[sessionType] {
 			validTypes := map[string]bool{"kanban": true, "event-log": true, "terminal": true}
 			if !validTypes[entry.Type] {
 				return fmt.Errorf("tabs.%s[%d].type %q is invalid; must be kanban, event-log, or terminal", sessionType, i, entry.Type)
 			}
-			if entry.Type == "terminal" {
-				if strings.TrimSpace(entry.Name) == "" {
-					return fmt.Errorf("tabs.%s[%d].name is required for terminal entries", sessionType, i)
-				}
-				if _, exists := terminalNames[entry.Name]; exists {
-					return fmt.Errorf("tabs.%s: duplicate terminal name %q", sessionType, entry.Name)
-				}
-				terminalNames[entry.Name] = struct{}{}
-			} else {
-				if entry.Name != "" {
-					return fmt.Errorf("tabs.%s[%d].name is not allowed for %q entries", sessionType, i, entry.Type)
-				}
+			if entry.Type != "terminal" {
 				if entry.Command != "" {
 					return fmt.Errorf("tabs.%s[%d].command is not allowed for %q entries", sessionType, i, entry.Type)
 				}

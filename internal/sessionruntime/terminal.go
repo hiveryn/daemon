@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 
@@ -18,6 +19,7 @@ import (
 const (
 	replayBufferSize = 64 * 1024
 	outputQueueSize  = 64
+	mainTerminalName = "main"
 )
 
 var errTerminalNotFound = errors.New("terminal not found")
@@ -33,6 +35,7 @@ type terminalManager interface {
 
 type terminalStartSpec struct {
 	SessionID    string
+	TerminalID   string
 	Name         string
 	Command      string
 	Args         []string
@@ -49,9 +52,10 @@ type terminalSize struct {
 }
 
 type terminalExit struct {
-	SessionID string
-	Name      string
-	Err       error
+	SessionID  string
+	TerminalID string
+	Name       string
+	Err        error
 }
 
 type ptyTerminalManager struct {
@@ -62,9 +66,11 @@ type ptyTerminalManager struct {
 }
 
 type terminalProcess struct {
-	id           string
+	key          string
+	terminalID   string
 	sessionID    string
 	name         string
+	command      string
 	cmd          *exec.Cmd
 	pty          *os.File
 	cleanupPaths []string
@@ -87,8 +93,8 @@ type terminalAttachment struct {
 	close  func() error
 }
 
-func terminalKey(sessionID, name string) string {
-	return sessionID + ":" + name
+func terminalKey(sessionID, terminalID string) string {
+	return sessionID + ":" + terminalID
 }
 
 func sessionPrefix(sessionID string) string {
@@ -109,8 +115,8 @@ func (m *ptyTerminalManager) Start(ctx context.Context, spec terminalStartSpec) 
 	if spec.SessionID == "" {
 		return fmt.Errorf("missing terminal session ID")
 	}
-	if spec.Name == "" {
-		return fmt.Errorf("missing terminal name")
+	if spec.TerminalID == "" {
+		return fmt.Errorf("missing terminal ID")
 	}
 	if spec.Command == "" {
 		return fmt.Errorf("missing terminal command")
@@ -122,7 +128,7 @@ func (m *ptyTerminalManager) Start(ctx context.Context, spec terminalStartSpec) 
 		spec.Size.Rows = defaultPTYRows
 	}
 
-	key := terminalKey(spec.SessionID, spec.Name)
+	key := terminalKey(spec.SessionID, spec.TerminalID)
 	if err := m.reserve(key); err != nil {
 		return err
 	}
@@ -133,6 +139,7 @@ func (m *ptyTerminalManager) Start(ctx context.Context, spec terminalStartSpec) 
 
 	m.logger.Info("[pty] start",
 		"terminal_key", key,
+		"terminal_id", spec.TerminalID,
 		"cols", spec.Size.Cols,
 		"rows", spec.Size.Rows,
 	)
@@ -145,9 +152,11 @@ func (m *ptyTerminalManager) Start(ctx context.Context, spec terminalStartSpec) 
 	}
 
 	process := &terminalProcess{
-		id:           key,
+		key:          key,
+		terminalID:   spec.TerminalID,
 		sessionID:    spec.SessionID,
 		name:         spec.Name,
+		command:      spec.Command,
 		cmd:          cmd,
 		pty:          ptyFile,
 		cleanupPaths: append([]string(nil), spec.CleanupPaths...),
@@ -166,8 +175,8 @@ func (m *ptyTerminalManager) Start(ctx context.Context, spec terminalStartSpec) 
 	return nil
 }
 
-func (m *ptyTerminalManager) Attach(_ context.Context, sessionID, name string) (domain.TerminalAttachment, error) {
-	key := terminalKey(sessionID, name)
+func (m *ptyTerminalManager) Attach(_ context.Context, sessionID, terminalID string) (domain.TerminalAttachment, error) {
+	key := terminalKey(sessionID, terminalID)
 	process := m.get(key)
 	if process == nil {
 		return nil, &domain.ConflictError{Resource: "session", Field: "status", Message: "terminal is not running"}
@@ -175,8 +184,8 @@ func (m *ptyTerminalManager) Attach(_ context.Context, sessionID, name string) (
 	return process.attach()
 }
 
-func (m *ptyTerminalManager) Kill(ctx context.Context, sessionID, name string) error {
-	key := terminalKey(sessionID, name)
+func (m *ptyTerminalManager) Kill(ctx context.Context, sessionID, terminalID string) error {
+	key := terminalKey(sessionID, terminalID)
 	process := m.get(key)
 	if process == nil {
 		return errTerminalNotFound
@@ -231,18 +240,22 @@ func (m *ptyTerminalManager) ListBySession(sessionID string) []domain.TerminalIn
 
 	var terminals []domain.TerminalInfo
 	for _, process := range m.processes {
-		if process != nil && strings.HasPrefix(process.id, prefix) {
+		if process != nil && strings.HasPrefix(process.key, prefix) {
 			status := "running"
 			if process.isClosing() {
 				status = "exited"
 			}
 			terminals = append(terminals, domain.TerminalInfo{
-				Name:      process.name,
-				SessionID: process.sessionID,
-				Status:    status,
+				TerminalID: process.terminalID,
+				SessionID:  process.sessionID,
+				Command:    process.command,
+				Status:     status,
 			})
 		}
 	}
+	sort.Slice(terminals, func(i, j int) bool {
+		return terminals[i].TerminalID < terminals[j].TerminalID
+	})
 	return terminals
 }
 
@@ -271,7 +284,7 @@ func (m *ptyTerminalManager) reserve(key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, exists := m.processes[key]; exists {
-		return &domain.ConflictError{Resource: "terminal", Field: "name", Message: "terminal already exists"}
+		return &domain.ConflictError{Resource: "terminal", Field: "terminal_id", Message: "terminal already exists"}
 	}
 	m.processes[key] = nil
 	return nil
@@ -327,10 +340,10 @@ func (m *ptyTerminalManager) waitForExit(process *terminalProcess) {
 
 	killed := process.isClosing()
 	if !killed && process.onExit != nil {
-		process.onExit(terminalExit{SessionID: process.sessionID, Name: process.name, Err: err})
+		process.onExit(terminalExit{SessionID: process.sessionID, TerminalID: process.terminalID, Name: process.name, Err: err})
 	}
 
-	m.remove(process.id)
+	m.remove(process.key)
 	close(process.done)
 }
 

@@ -92,7 +92,7 @@ func TestLoadAllFiles(t *testing.T) {
 	writeYAML(t, filepath.Join(configDir, tabsFileName), map[string][]TabEntry{
 		"architect": {
 			{Type: "kanban"},
-			{Type: "terminal", Name: "shell"},
+			{Type: "terminal", Command: "yazi"},
 		},
 	})
 
@@ -197,7 +197,7 @@ func TestValidateRejectsInvalidTabType(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsTerminalWithoutName(t *testing.T) {
+func TestValidateAllowsUnnamedTerminalTabs(t *testing.T) {
 	t.Parallel()
 
 	err := Config{
@@ -208,16 +208,16 @@ func TestValidateRejectsTerminalWithoutName(t *testing.T) {
 		Architects:  map[string]ArchitectConfig{},
 		Tabs: map[string][]TabEntry{
 			"worker": {
-				{Type: "terminal", Name: ""},
+				{Type: "terminal"},
 			},
 		},
 	}.Validate()
-	if err == nil {
-		t.Fatal("expected terminal name validation error")
+	if err != nil {
+		t.Fatalf("expected unnamed terminal tabs to be valid, got %v", err)
 	}
 }
 
-func TestValidateRejectsDuplicateTerminalNames(t *testing.T) {
+func TestValidateAllowsDuplicateTerminalCommands(t *testing.T) {
 	t.Parallel()
 
 	err := Config{
@@ -228,33 +228,13 @@ func TestValidateRejectsDuplicateTerminalNames(t *testing.T) {
 		Architects:  map[string]ArchitectConfig{},
 		Tabs: map[string][]TabEntry{
 			"architect": {
-				{Type: "terminal", Name: "shell"},
-				{Type: "terminal", Name: "shell"},
+				{Type: "terminal", Command: "yazi"},
+				{Type: "terminal", Command: "yazi"},
 			},
 		},
 	}.Validate()
-	if err == nil {
-		t.Fatal("expected duplicate terminal name validation error")
-	}
-}
-
-func TestValidateRejectsNonTerminalWithName(t *testing.T) {
-	t.Parallel()
-
-	err := Config{
-		Port:        DefaultPort,
-		BindAddress: DefaultBindAddress,
-		LogLevel:    DefaultLogLevel,
-		Variants:    map[string]VariantConfig{},
-		Architects:  map[string]ArchitectConfig{},
-		Tabs: map[string][]TabEntry{
-			"architect": {
-				{Type: "kanban", Name: "my-kanban"},
-			},
-		},
-	}.Validate()
-	if err == nil {
-		t.Fatal("expected non-terminal name rejection error")
+	if err != nil {
+		t.Fatalf("expected duplicate terminal commands to be valid, got %v", err)
 	}
 }
 

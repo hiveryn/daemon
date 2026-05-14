@@ -76,18 +76,15 @@ architect:
   - type: kanban
   - type: event-log
   - type: terminal
-    name: lazygit
     command: lazygit
   - type: terminal
-    name: shell
 
 work:
   - type: event-log
   - type: terminal
-    name: shell
 ```
 
-Terminal entries require a unique `name` within the session type. Entries without `command` default to the user's shell. When a session spawns, the daemon auto-creates PTY terminals for every `type: terminal` entry in the matching session type section.
+Terminal entries only support `type` and optional `command`. Entries without `command` default to the user's shell. When a session spawns, the daemon auto-creates PTY terminals for every `type: terminal` entry in the matching session type section and assigns each terminal a UUID.
 
 ## Data
 
@@ -124,13 +121,16 @@ Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to de
 | `GET` | `/api/sessions/{id}` | Get one session |
 | `DELETE` | `/api/sessions/{id}` | Kill and delete a session |
 | `POST` | `/api/sessions/{id}/conclude` | Conclude a running session (architect or work) |
+| `GET` | `/api/sessions/{id}/tabs` | Get the resolved right-pane tab layout for a session |
 | `POST` | `/api/sessions/{id}/terminals` | Create a new user terminal in a session |
 | `GET` | `/api/sessions/{id}/terminals` | List all terminals for a session |
-| `DELETE` | `/api/sessions/{id}/terminals/{name}` | Kill a specific user terminal |
+| `DELETE` | `/api/sessions/{id}/terminals/{uuid}` | Kill a specific user terminal by UUID |
 | `GET` | `/api/sessions/{id}/events` | Stream structured session events over SSE |
-| `WS` | `/ws/session/{id}/terminal/{name}` | Stream PTY output and send terminal input for a named terminal |
+| `WS` | `/ws/session/{id}/terminal/{uuid}` | Stream PTY output and send terminal input for a terminal UUID |
 
 Profile, architect, repo, and tab configuration endpoints are read-only. Edit `~/.hiveryn/*.yaml` directly to change variants, architects, repos, or tabs.
+
+Session responses include `main_terminal_id` so the desktop can reconnect the main agent PTY. `GET /api/sessions/{id}/tabs` returns the canonical right-pane layout using `type`, `id`, `command`, and `status` for terminal tabs.
 
 All responses use a standard envelope:
 

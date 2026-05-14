@@ -206,6 +206,211 @@ func TestConcludeWorkSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 	}
 }
 
+func TestCreateTerminalGeneratesUUID(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.createdSession = domain.Session{
+		ID:           "sess-1",
+		ArchitectKey: "hiveryn",
+		Status:       domain.SessionStatusRunning,
+	}
+	terminal := &fakeTerminalManager{}
+	service := &Service{
+		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:            testRuntimeConfig(t),
+		repo:           repo,
+		terminal:       terminal,
+		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels:  map[string]func(){},
+		terminalStates: map[string]sessionTerminalState{},
+	}
+
+	info, err := service.CreateTerminal(context.Background(), "sess-1", domain.CreateTerminalParams{Command: "yazi"})
+	if err != nil {
+		t.Fatalf("CreateTerminal failed: %v", err)
+	}
+	if info.TerminalID == "" {
+		t.Fatal("expected generated terminal ID")
+	}
+	if info.Command != "yazi" || info.Status != "running" {
+		t.Fatalf("unexpected terminal info %#v", info)
+	}
+	if got := terminal.firstStartSpec(); got.TerminalID != info.TerminalID || got.Command != "yazi" {
+		t.Fatalf("unexpected start spec %#v", got)
+	}
+	tabs, err := service.ListSessionTabs(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("ListSessionTabs failed: %v", err)
+	}
+	if len(tabs) != 1 || tabs[0].TerminalID != info.TerminalID || tabs[0].Command != "yazi" || tabs[0].Status != "running" {
+		t.Fatalf("unexpected tabs after create %#v", tabs)
+	}
+}
+
+func TestKillTerminalRejectsMainTerminalID(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.createdSession = domain.Session{ID: "sess-1", Status: domain.SessionStatusRunning}
+	service := &Service{
+		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repo:           repo,
+		terminal:       &fakeTerminalManager{},
+		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels:  map[string]func(){},
+		terminalStates: map[string]sessionTerminalState{"sess-1": {mainTerminalID: "term-main-1"}},
+	}
+
+	err := service.KillTerminal(context.Background(), "sess-1", "term-main-1")
+	if err == nil {
+		t.Fatal("expected main terminal kill to be rejected")
+	}
+	if vErr, ok := err.(*domain.ValidationError); !ok || vErr.Field != "terminal_id" {
+		t.Fatalf("expected validation error for id, got %T %#v", err, err)
+	}
+}
+
+func TestKillTerminalRemovesUserCreatedTab(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.createdSession = domain.Session{ID: "sess-1", Status: domain.SessionStatusRunning}
+	terminal := &fakeTerminalManager{terminals: []domain.TerminalInfo{{TerminalID: "term-1", SessionID: "sess-1", Command: "yazi", Status: "running"}}}
+	service := &Service{
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repo:          repo,
+		terminal:      terminal,
+		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels: map[string]func(){},
+		terminalStates: map[string]sessionTerminalState{
+			"sess-1": {
+				tabs: []sessionTabState{{
+					tab:          domain.SessionTab{Type: "terminal", TerminalID: "term-1", Command: "yazi", Status: "running"},
+					removeOnExit: true,
+				}},
+			},
+		},
+	}
+
+	if err := service.KillTerminal(context.Background(), "sess-1", "term-1"); err != nil {
+		t.Fatalf("KillTerminal failed: %v", err)
+	}
+	tabs, err := service.ListSessionTabs(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("ListSessionTabs failed: %v", err)
+	}
+	if len(tabs) != 0 {
+		t.Fatalf("expected user-created tab to be removed, got %#v", tabs)
+	}
+}
+
+func TestKillTerminalKeepsConfiguredTabExited(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.createdSession = domain.Session{ID: "sess-1", Status: domain.SessionStatusRunning}
+	terminal := &fakeTerminalManager{terminals: []domain.TerminalInfo{{TerminalID: "term-1", SessionID: "sess-1", Command: "yazi", Status: "running"}}}
+	service := &Service{
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repo:          repo,
+		terminal:      terminal,
+		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels: map[string]func(){},
+		terminalStates: map[string]sessionTerminalState{
+			"sess-1": {
+				tabs: []sessionTabState{{
+					tab: domain.SessionTab{Type: "terminal", TerminalID: "term-1", Command: "yazi", Status: "running"},
+				}},
+			},
+		},
+	}
+
+	if err := service.KillTerminal(context.Background(), "sess-1", "term-1"); err != nil {
+		t.Fatalf("KillTerminal failed: %v", err)
+	}
+	tabs, err := service.ListSessionTabs(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("ListSessionTabs failed: %v", err)
+	}
+	if len(tabs) != 1 || tabs[0].Status != "exited" || tabs[0].TerminalID != "term-1" {
+		t.Fatalf("expected configured terminal tab to persist as exited, got %#v", tabs)
+	}
+}
+
+func TestAuxTerminalExitRemovesUserCreatedTab(t *testing.T) {
+	t.Parallel()
+
+	service := &Service{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		terminalStates: map[string]sessionTerminalState{
+			"sess-1": {
+				tabs: []sessionTabState{{
+					tab:          domain.SessionTab{Type: "terminal", TerminalID: "term-1", Command: "yazi", Status: "running"},
+					removeOnExit: true,
+				}},
+			},
+		},
+	}
+
+	service.handleAuxTerminalExit(terminalExit{SessionID: "sess-1", TerminalID: "term-1"})
+	if tabs := service.sessionTabs("sess-1"); len(tabs) != 0 {
+		t.Fatalf("expected user-created terminal tab to be removed on exit, got %#v", tabs)
+	}
+}
+
+func TestListSessionTabsResolvesTerminalStatus(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.createdSession = domain.Session{ID: "sess-1", Status: domain.SessionStatusRunning}
+	service := &Service{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repo:   repo,
+		terminal: &fakeTerminalManager{terminals: []domain.TerminalInfo{
+			{TerminalID: "term-1", SessionID: "sess-1", Command: "yazi", Status: "running"},
+		}},
+		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels: map[string]func(){},
+		terminalStates: map[string]sessionTerminalState{
+			"sess-1": {
+				tabs: []sessionTabState{{tab: domain.SessionTab{Type: "kanban"}}, {tab: domain.SessionTab{Type: "terminal", TerminalID: "term-1", Command: "yazi"}}},
+			},
+		},
+	}
+
+	tabs, err := service.ListSessionTabs(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("ListSessionTabs failed: %v", err)
+	}
+	if len(tabs) != 2 {
+		t.Fatalf("expected 2 tabs, got %#v", tabs)
+	}
+	if tabs[1].Status != "running" || tabs[1].TerminalID != "term-1" {
+		t.Fatalf("unexpected terminal tab %#v", tabs[1])
+	}
+}
+
+func TestListSessionsHydratesMainTerminalID(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.listedSessions = []domain.Session{{ID: "sess-1", Status: domain.SessionStatusRunning}}
+	service := &Service{
+		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repo:           repo,
+		terminalStates: map[string]sessionTerminalState{"sess-1": {mainTerminalID: "term-main-1"}},
+	}
+
+	sessions, err := service.ListSessions(context.Background(), domain.SessionListFilter{Status: domain.SessionStatusRunning})
+	if err != nil {
+		t.Fatalf("ListSessions failed: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].MainTerminalID != "term-main-1" {
+		t.Fatalf("expected hydrated main terminal id, got %#v", sessions)
+	}
+}
+
 func testRuntimeConfig(t *testing.T) config.Config {
 	t.Helper()
 
@@ -265,10 +470,20 @@ func (fakeAdapter) NormalizeEvent(context.Context, []byte) (*agentruntime.Event,
 type fakeTerminalManager struct {
 	startErr   error
 	startSpecs []terminalStartSpec
+	terminals  []domain.TerminalInfo
+	killed     []string
 }
 
 func (f *fakeTerminalManager) Start(_ context.Context, spec terminalStartSpec) error {
 	f.startSpecs = append(f.startSpecs, spec)
+	if f.startErr == nil {
+		f.terminals = append(f.terminals, domain.TerminalInfo{
+			TerminalID: spec.TerminalID,
+			SessionID:  spec.SessionID,
+			Command:    spec.Command,
+			Status:     "running",
+		})
+	}
 	return f.startErr
 }
 
@@ -283,7 +498,14 @@ func (f *fakeTerminalManager) Attach(context.Context, string, string) (domain.Te
 	return nil, nil
 }
 
-func (f *fakeTerminalManager) Kill(context.Context, string, string) error {
+func (f *fakeTerminalManager) Kill(_ context.Context, sessionID, id string) error {
+	f.killed = append(f.killed, sessionID+":"+id)
+	for i, terminal := range f.terminals {
+		if terminal.SessionID == sessionID && terminal.TerminalID == id {
+			f.terminals = append(f.terminals[:i], f.terminals[i+1:]...)
+			break
+		}
+	}
 	return nil
 }
 
@@ -291,8 +513,14 @@ func (f *fakeTerminalManager) KillBySession(context.Context, string) error {
 	return nil
 }
 
-func (f *fakeTerminalManager) ListBySession(string) []domain.TerminalInfo {
-	return nil
+func (f *fakeTerminalManager) ListBySession(sessionID string) []domain.TerminalInfo {
+	terminals := make([]domain.TerminalInfo, 0, len(f.terminals))
+	for _, terminal := range f.terminals {
+		if terminal.SessionID == sessionID {
+			terminals = append(terminals, terminal)
+		}
+	}
+	return terminals
 }
 
 func (f *fakeTerminalManager) Shutdown(context.Context) error {
@@ -301,6 +529,7 @@ func (f *fakeTerminalManager) Shutdown(context.Context) error {
 
 type fakeSessionRepository struct {
 	createdSession domain.Session
+	listedSessions []domain.Session
 	updatedStatus  domain.SessionStatus
 	appendedEvents []domain.AppendSessionEventParams
 }
@@ -326,7 +555,10 @@ func (f *fakeSessionRepository) GetSession(context.Context, string) (domain.Sess
 }
 
 func (f *fakeSessionRepository) ListSessions(context.Context, domain.SessionListFilter) ([]domain.Session, error) {
-	return nil, nil
+	if f.listedSessions == nil {
+		return nil, nil
+	}
+	return append([]domain.Session(nil), f.listedSessions...), nil
 }
 
 func (f *fakeSessionRepository) UpdateSessionStatus(_ context.Context, id string, status domain.SessionStatus) error {

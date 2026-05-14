@@ -52,12 +52,25 @@ type Service struct {
 
 	bridgeMu      sync.Mutex
 	bridgeCancels map[string]func()
+
+	terminalStateMu sync.RWMutex
+	terminalStates  map[string]sessionTerminalState
 }
 
 type eventSubscription struct {
 	ch     <-chan domain.SessionEvent
 	close  func()
 	closed sync.Once
+}
+
+type sessionTerminalState struct {
+	mainTerminalID string
+	tabs           []sessionTabState
+}
+
+type sessionTabState struct {
+	tab          domain.SessionTab
+	removeOnExit bool
 }
 
 func New(ctx context.Context, cfg config.Config, repo domain.SessionRepository, tickets domain.TicketService, logger *slog.Logger, baseURL string) (*Service, error) {
@@ -90,6 +103,7 @@ func New(ctx context.Context, cfg config.Config, repo domain.SessionRepository, 
 		terminal:       newPTYTerminalManager(logger),
 		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
 		bridgeCancels:  map[string]func(){},
+		terminalStates: map[string]sessionTerminalState{},
 	}, nil
 }
 
@@ -168,9 +182,11 @@ func (s *Service) SpawnArchitectSession(ctx context.Context, req domain.SpawnArc
 		"command", spec.Command,
 	)
 
+	mainTerminalID := uuid.NewString()
 	if err := s.terminal.Start(ctx, terminalStartSpec{
 		SessionID:    session.ID,
-		Name:         "main",
+		TerminalID:   mainTerminalID,
+		Name:         mainTerminalName,
 		Command:      spec.Command,
 		Args:         append([]string(nil), spec.Args...),
 		Env:          cloneStringMap(spec.Env),
@@ -184,9 +200,12 @@ func (s *Service) SpawnArchitectSession(ctx context.Context, req domain.SpawnArc
 		return domain.SpawnArchitectSessionResult{}, err
 	}
 
-	s.startAutoTerminals(ctx, session, spec.Workdir, spec.Env, terminalSize{Cols: req.Cols, Rows: req.Rows}, spec.CleanupPaths)
+	s.storeSessionTerminalState(session.ID, sessionTerminalState{
+		mainTerminalID: mainTerminalID,
+		tabs:           s.startAutoTerminals(ctx, session, spec.Workdir, spec.Env, terminalSize{Cols: req.Cols, Rows: req.Rows}, spec.CleanupPaths),
+	})
 
-	return domain.SpawnArchitectSessionResult{Session: session}, nil
+	return domain.SpawnArchitectSessionResult{Session: session, MainTerminalID: mainTerminalID}, nil
 }
 
 func (s *Service) SpawnWorkSession(ctx context.Context, req domain.SpawnWorkSessionRequest) (domain.SpawnWorkSessionResult, error) {
@@ -287,9 +306,11 @@ func (s *Service) SpawnWorkSession(ctx context.Context, req domain.SpawnWorkSess
 		"command", spec.Command,
 	)
 
+	mainTerminalID := uuid.NewString()
 	if err := s.terminal.Start(ctx, terminalStartSpec{
 		SessionID:    session.ID,
-		Name:         "main",
+		TerminalID:   mainTerminalID,
+		Name:         mainTerminalName,
 		Command:      spec.Command,
 		Args:         append([]string(nil), spec.Args...),
 		Env:          cloneStringMap(spec.Env),
@@ -303,7 +324,10 @@ func (s *Service) SpawnWorkSession(ctx context.Context, req domain.SpawnWorkSess
 		return domain.SpawnWorkSessionResult{}, err
 	}
 
-	s.startAutoTerminals(ctx, session, spec.Workdir, spec.Env, terminalSize{Cols: req.Cols, Rows: req.Rows}, spec.CleanupPaths)
+	s.storeSessionTerminalState(session.ID, sessionTerminalState{
+		mainTerminalID: mainTerminalID,
+		tabs:           s.startAutoTerminals(ctx, session, spec.Workdir, spec.Env, terminalSize{Cols: req.Cols, Rows: req.Rows}, spec.CleanupPaths),
+	})
 
 	if _, err := s.tickets.MoveTicket(ctx, architect.Path, req.TicketID, domain.MoveTicketParams{
 		To: domain.TicketStatusProgress,
@@ -311,7 +335,7 @@ func (s *Service) SpawnWorkSession(ctx context.Context, req domain.SpawnWorkSess
 		s.logger.Error("failed to move ticket to progress", "ticket_id", req.TicketID, "error", err)
 	}
 
-	return domain.SpawnWorkSessionResult{Session: session}, nil
+	return domain.SpawnWorkSessionResult{Session: session, MainTerminalID: mainTerminalID}, nil
 }
 
 func setupRequestForAgent(agentKind agentruntime.AgentKind, endpoint string, env map[string]string) agentruntime.SetupRequest {
@@ -662,15 +686,27 @@ func (s *Service) TerminateSession(ctx context.Context, id string) error {
 
 	s.cancelReceiverBridge(id)
 	s.closeEventSubscribers(id)
+	s.removeSessionTerminalState(id)
 	return s.repo.DeleteSession(ctx, id)
 }
 
 func (s *Service) GetSession(ctx context.Context, id string) (domain.Session, error) {
-	return s.repo.GetSession(ctx, id)
+	session, err := s.repo.GetSession(ctx, id)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	return s.hydrateSession(session), nil
 }
 
 func (s *Service) ListSessions(ctx context.Context, filter domain.SessionListFilter) ([]domain.Session, error) {
-	return s.repo.ListSessions(ctx, filter)
+	sessions, err := s.repo.ListSessions(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	for i := range sessions {
+		sessions[i] = s.hydrateSession(sessions[i])
+	}
+	return sessions, nil
 }
 
 func (s *Service) ListSessionEvents(ctx context.Context, id string) ([]domain.SessionEvent, error) {
@@ -715,11 +751,11 @@ func (s *Service) SubscribeSessionEvents(ctx context.Context, id string) (domain
 	}, nil
 }
 
-func (s *Service) AttachTerminal(ctx context.Context, sessionID, name string) (domain.TerminalAttachment, error) {
+func (s *Service) AttachTerminal(ctx context.Context, sessionID, terminalID string) (domain.TerminalAttachment, error) {
 	if _, err := s.repo.GetSession(ctx, sessionID); err != nil {
 		return nil, err
 	}
-	return s.terminal.Attach(ctx, sessionID, name)
+	return s.terminal.Attach(ctx, sessionID, terminalID)
 }
 
 func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params domain.CreateTerminalParams) (domain.TerminalInfo, error) {
@@ -730,9 +766,6 @@ func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params d
 	if session.Status != domain.SessionStatusRunning {
 		return domain.TerminalInfo{}, &domain.ValidationError{Field: "session_id", Message: "session is not running"}
 	}
-	if strings.TrimSpace(params.Name) == "" {
-		return domain.TerminalInfo{}, &domain.ValidationError{Field: "name", Message: "is required"}
-	}
 	if strings.TrimSpace(params.Command) == "" {
 		return domain.TerminalInfo{}, &domain.ValidationError{Field: "command", Message: "is required"}
 	}
@@ -742,21 +775,34 @@ func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params d
 		return domain.TerminalInfo{}, &domain.NotFoundError{Resource: "architect", ID: session.ArchitectKey}
 	}
 
+	terminalID := uuid.NewString()
 	if err := s.terminal.Start(ctx, terminalStartSpec{
-		SessionID: sessionID,
-		Name:      params.Name,
-		Command:   params.Command,
-		Args:      params.Args,
-		Workdir:   architect.Path,
-		Size:      terminalSize{Cols: defaultPTYCols, Rows: defaultPTYRows},
+		SessionID:  sessionID,
+		TerminalID: terminalID,
+		Command:    params.Command,
+		Args:       params.Args,
+		Workdir:    architect.Path,
+		Size:       terminalSize{Cols: defaultPTYCols, Rows: defaultPTYRows},
+		OnExit:     s.handleAuxTerminalExit,
 	}); err != nil {
 		return domain.TerminalInfo{}, err
 	}
 
+	s.appendSessionTab(sessionID, sessionTabState{
+		tab: domain.SessionTab{
+			Type:       "terminal",
+			TerminalID: terminalID,
+			Command:    params.Command,
+			Status:     "running",
+		},
+		removeOnExit: true,
+	})
+
 	return domain.TerminalInfo{
-		Name:      params.Name,
-		SessionID: sessionID,
-		Status:    "running",
+		TerminalID: terminalID,
+		SessionID:  sessionID,
+		Command:    params.Command,
+		Status:     "running",
 	}, nil
 }
 
@@ -767,16 +813,49 @@ func (s *Service) ListTerminals(ctx context.Context, sessionID string) ([]domain
 	return s.terminal.ListBySession(sessionID), nil
 }
 
-func (s *Service) KillTerminal(ctx context.Context, sessionID, name string) error {
+func (s *Service) ListSessionTabs(ctx context.Context, sessionID string) ([]domain.SessionTab, error) {
+	if _, err := s.repo.GetSession(ctx, sessionID); err != nil {
+		return nil, err
+	}
+
+	tabs := s.sessionTabs(sessionID)
+	if tabs == nil {
+		return []domain.SessionTab{}, nil
+	}
+
+	terminals := s.terminal.ListBySession(sessionID)
+	byTerminalID := make(map[string]domain.TerminalInfo, len(terminals))
+	for _, terminal := range terminals {
+		byTerminalID[terminal.TerminalID] = terminal
+	}
+
+	for i := range tabs {
+		if tabs[i].Type != "terminal" {
+			continue
+		}
+		tabs[i].Status = "exited"
+		if terminal, ok := byTerminalID[tabs[i].TerminalID]; ok {
+			tabs[i].Status = terminal.Status
+			if terminal.Command != "" {
+				tabs[i].Command = terminal.Command
+			}
+		}
+	}
+
+	return tabs, nil
+}
+
+func (s *Service) KillTerminal(ctx context.Context, sessionID, terminalID string) error {
 	if _, err := s.repo.GetSession(ctx, sessionID); err != nil {
 		return err
 	}
-	if name == "main" {
-		return &domain.ValidationError{Field: "name", Message: "cannot kill the main terminal"}
+	if s.mainTerminalID(sessionID) == terminalID {
+		return &domain.ValidationError{Field: "terminal_id", Message: "cannot kill the main terminal"}
 	}
-	if err := s.terminal.Kill(ctx, sessionID, name); err != nil && !errors.Is(err, errTerminalNotFound) {
+	if err := s.terminal.Kill(ctx, sessionID, terminalID); err != nil && !errors.Is(err, errTerminalNotFound) {
 		return err
 	}
+	s.removeSessionTabOnTerminalClose(sessionID, terminalID)
 	return nil
 }
 
@@ -881,6 +960,10 @@ func (s *Service) handleTerminalExit(exit terminalExit) {
 		return
 	}
 	s.publishEvent(exit.SessionID, event)
+}
+
+func (s *Service) handleAuxTerminalExit(exit terminalExit) {
+	s.removeSessionTabOnTerminalClose(exit.SessionID, exit.TerminalID)
 }
 
 func (s *Service) markSessionFailed(sessionID, stage string) {
@@ -1073,37 +1156,135 @@ func defaultShell() string {
 	return "bash"
 }
 
-func (s *Service) startAutoTerminals(ctx context.Context, session domain.Session, workdir string, env map[string]string, size terminalSize, cleanupPaths []string) {
+func (s *Service) startAutoTerminals(ctx context.Context, session domain.Session, workdir string, env map[string]string, size terminalSize, cleanupPaths []string) []sessionTabState {
 	tabs, ok := s.cfg.Tabs[session.SessionType]
 	if !ok || len(tabs) == 0 {
-		return
+		return nil
 	}
+	layout := make([]sessionTabState, 0, len(tabs))
 	for _, tab := range tabs {
 		if tab.Type != "terminal" {
+			layout = append(layout, sessionTabState{tab: domain.SessionTab{Type: tab.Type}})
 			continue
 		}
+		terminalID := uuid.NewString()
 		cmd := tab.Command
 		if cmd == "" {
 			cmd = defaultShell()
 		}
+		status := "running"
 		err := s.terminal.Start(ctx, terminalStartSpec{
 			SessionID:    session.ID,
-			Name:         tab.Name,
+			TerminalID:   terminalID,
 			Command:      cmd,
 			Env:          cloneStringMap(env),
 			Workdir:      workdir,
 			Size:         size,
 			CleanupPaths: append([]string(nil), cleanupPaths...),
-			OnExit:       nil,
+			OnExit:       s.handleAuxTerminalExit,
 		})
 		if err != nil {
+			status = "exited"
 			s.logger.Warn("[spawn] auto-create terminal failed",
 				"session_id", session.ID,
-				"terminal_name", tab.Name,
+				"terminal_id", terminalID,
+				"command", cmd,
 				"error", err,
 			)
 		}
+		layout = append(layout, sessionTabState{tab: domain.SessionTab{Type: tab.Type, TerminalID: terminalID, Command: cmd, Status: status}})
 	}
+	return layout
+}
+
+func (s *Service) storeSessionTerminalState(sessionID string, state sessionTerminalState) {
+	s.terminalStateMu.Lock()
+	defer s.terminalStateMu.Unlock()
+	if s.terminalStates == nil {
+		s.terminalStates = map[string]sessionTerminalState{}
+	}
+	s.terminalStates[sessionID] = sessionTerminalState{
+		mainTerminalID: state.mainTerminalID,
+		tabs:           cloneSessionTabStates(state.tabs),
+	}
+}
+
+func (s *Service) sessionTabs(sessionID string) []domain.SessionTab {
+	s.terminalStateMu.RLock()
+	defer s.terminalStateMu.RUnlock()
+	state, ok := s.terminalStates[sessionID]
+	if !ok {
+		return nil
+	}
+	return cloneSessionTabs(state.tabs)
+}
+
+func (s *Service) mainTerminalID(sessionID string) string {
+	s.terminalStateMu.RLock()
+	defer s.terminalStateMu.RUnlock()
+	return s.terminalStates[sessionID].mainTerminalID
+}
+
+func (s *Service) removeSessionTerminalState(sessionID string) {
+	s.terminalStateMu.Lock()
+	defer s.terminalStateMu.Unlock()
+	delete(s.terminalStates, sessionID)
+}
+
+func (s *Service) appendSessionTab(sessionID string, tab sessionTabState) {
+	s.terminalStateMu.Lock()
+	defer s.terminalStateMu.Unlock()
+	state := s.terminalStates[sessionID]
+	state.tabs = append(state.tabs, cloneSessionTabState(tab))
+	s.terminalStates[sessionID] = state
+}
+
+func (s *Service) removeSessionTabOnTerminalClose(sessionID, terminalID string) {
+	s.terminalStateMu.Lock()
+	defer s.terminalStateMu.Unlock()
+	state, ok := s.terminalStates[sessionID]
+	if !ok {
+		return
+	}
+	for i, tab := range state.tabs {
+		if tab.tab.TerminalID != terminalID || !tab.removeOnExit {
+			continue
+		}
+		state.tabs = append(state.tabs[:i], state.tabs[i+1:]...)
+		s.terminalStates[sessionID] = state
+		return
+	}
+}
+
+func cloneSessionTabs(tabs []sessionTabState) []domain.SessionTab {
+	if len(tabs) == 0 {
+		return nil
+	}
+	cloned := make([]domain.SessionTab, len(tabs))
+	for i, tab := range tabs {
+		cloned[i] = tab.tab
+	}
+	return cloned
+}
+
+func cloneSessionTabStates(tabs []sessionTabState) []sessionTabState {
+	if len(tabs) == 0 {
+		return nil
+	}
+	cloned := make([]sessionTabState, len(tabs))
+	for i, tab := range tabs {
+		cloned[i] = cloneSessionTabState(tab)
+	}
+	return cloned
+}
+
+func cloneSessionTabState(tab sessionTabState) sessionTabState {
+	return sessionTabState{tab: tab.tab, removeOnExit: tab.removeOnExit}
+}
+
+func (s *Service) hydrateSession(session domain.Session) domain.Session {
+	session.MainTerminalID = s.mainTerminalID(session.ID)
+	return session
 }
 
 func yamlNodeTime(node *yaml.Node, key string) time.Time {

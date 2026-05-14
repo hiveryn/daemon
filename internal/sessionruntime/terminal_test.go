@@ -40,7 +40,8 @@ func TestTerminalProcessReplaysBeforeResizeOutput(t *testing.T) {
 	defer func() { _ = slave.Close() }()
 
 	process := &terminalProcess{
-		id:         terminalKey("session-1", "test"),
+		key:        terminalKey("session-1", "term-1"),
+		terminalID: "term-1",
 		pty:        master,
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		outputSubs: map[uint64]chan []byte{},
@@ -103,23 +104,24 @@ func TestPTYTerminalManagerReplaysStartupOutput(t *testing.T) {
 	ctx := context.Background()
 
 	if err := manager.Start(ctx, terminalStartSpec{
-		SessionID: "session-1",
-		Name:      "main",
-		Command:   "/bin/sh",
-		Args:      []string{"-c", "printf boot; sleep 1"},
-		Size:      terminalSize{Cols: 80, Rows: 24},
+		SessionID:  "session-1",
+		TerminalID: "term-main-1",
+		Name:       mainTerminalName,
+		Command:    "/bin/sh",
+		Args:       []string{"-c", "printf boot; sleep 1"},
+		Size:       terminalSize{Cols: 80, Rows: 24},
 	}); err != nil {
 		t.Fatalf("start terminal: %v", err)
 	}
 	defer func() {
 		killCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		_ = manager.Kill(killCtx, "session-1", "main")
+		_ = manager.Kill(killCtx, "session-1", "term-main-1")
 	}()
 
 	time.Sleep(100 * time.Millisecond)
 
-	attachment, err := manager.Attach(ctx, "session-1", "main")
+	attachment, err := manager.Attach(ctx, "session-1", "term-main-1")
 	if err != nil {
 		t.Fatalf("attach terminal: %v", err)
 	}
@@ -138,7 +140,8 @@ func newTestTerminalProcess(t *testing.T) *terminalProcess {
 	t.Cleanup(func() { _ = file.Close() })
 
 	return &terminalProcess{
-		id:         terminalKey("session-1", "test"),
+		key:        terminalKey("session-1", "term-1"),
+		terminalID: "term-1",
 		pty:        file,
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		outputSubs: map[uint64]chan []byte{},

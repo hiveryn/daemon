@@ -22,17 +22,18 @@ const (
 )
 
 type Session struct {
-	ID           string        `json:"id"`
-	ProfileName  string        `json:"profile_name"`
-	ArchitectKey string        `json:"architect_key"`
-	SessionType  string        `json:"session_type"`
-	Prompt       string        `json:"prompt"`
-	Instructions string        `json:"instructions"`
-	Status       SessionStatus `json:"status"`
-	TicketID     string        `json:"ticket_id,omitempty"`
-	NativeID     string        `json:"native_id,omitempty"`
-	CreatedAt    time.Time     `json:"created_at"`
-	UpdatedAt    time.Time     `json:"updated_at"`
+	ID             string        `json:"id"`
+	ProfileName    string        `json:"profile_name"`
+	ArchitectKey   string        `json:"architect_key"`
+	SessionType    string        `json:"session_type"`
+	Prompt         string        `json:"prompt"`
+	Instructions   string        `json:"instructions"`
+	Status         SessionStatus `json:"status"`
+	TicketID       string        `json:"ticket_id,omitempty"`
+	NativeID       string        `json:"native_id,omitempty"`
+	MainTerminalID string        `json:"main_terminal_id,omitempty"`
+	CreatedAt      time.Time     `json:"created_at"`
+	UpdatedAt      time.Time     `json:"updated_at"`
 }
 
 type SessionEvent struct {
@@ -114,7 +115,8 @@ type SpawnArchitectSessionRequest struct {
 }
 
 type SpawnArchitectSessionResult struct {
-	Session Session
+	Session        Session
+	MainTerminalID string `json:"main_terminal_id"`
 }
 
 type SpawnWorkSessionRequest struct {
@@ -127,7 +129,8 @@ type SpawnWorkSessionRequest struct {
 }
 
 type SpawnWorkSessionResult struct {
-	Session Session
+	Session        Session
+	MainTerminalID string `json:"main_terminal_id"`
 }
 
 type SessionEventSubscription interface {
@@ -143,15 +146,22 @@ type TerminalAttachment interface {
 }
 
 type TerminalInfo struct {
-	Name      string `json:"name"`
-	SessionID string `json:"session_id"`
-	Status    string `json:"status"`
+	TerminalID string `json:"terminal_id"`
+	SessionID  string `json:"session_id"`
+	Command    string `json:"command"`
+	Status     string `json:"status"`
 }
 
 type CreateTerminalParams struct {
-	Name    string   `json:"name"`
 	Command string   `json:"command"`
 	Args    []string `json:"args,omitempty"`
+}
+
+type SessionTab struct {
+	Type       string `json:"type"`
+	TerminalID string `json:"id,omitempty"`
+	Command    string `json:"command,omitempty"`
+	Status     string `json:"status,omitempty"`
 }
 
 type ArchitectConclusion struct {
@@ -181,5 +191,6 @@ type SessionService interface {
 	AttachTerminal(context.Context, string, string) (TerminalAttachment, error)
 	CreateTerminal(context.Context, string, CreateTerminalParams) (TerminalInfo, error)
 	ListTerminals(context.Context, string) ([]TerminalInfo, error)
+	ListSessionTabs(context.Context, string) ([]SessionTab, error)
 	KillTerminal(context.Context, string, string) error
 }
