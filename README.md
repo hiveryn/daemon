@@ -29,7 +29,7 @@ hiverynd mcp --daemon-url http://127.0.0.1:4201 --architect-key hiveryn
 
 ## Configuration
 
-The daemon reads four YAML files from `~/.hiveryn/` on startup. Only `config.yaml` is required; the others default to empty when missing.
+The daemon reads five YAML files from `~/.hiveryn/` on startup. Only `config.yaml` is required; the others default to empty when missing.
 
 ### `config.yaml` — daemon core
 
@@ -86,6 +86,40 @@ work:
 
 Terminal entries only support `type` and optional `command`. Entries without `command` default to the user's shell. When a session spawns, the daemon auto-creates PTY terminals for every `type: terminal` entry in the matching session type section and assigns each terminal a UUID.
 
+### `shortcuts.yaml` — keybindings
+
+```yaml
+global:
+  focus-left:    "Cmd+Shift+h"
+  focus-right:   "Cmd+Shift+l"
+  focus-down:    "Cmd+Shift+j"
+  focus-up:      "Cmd+Shift+k"
+  focus-main:    "Cmd+1"
+  first-session: "Cmd+Shift+0"
+  prev-session:  "Cmd+Shift+["
+  next-session:  "Cmd+Shift+]"
+  close-tab:     "Cmd+w"
+  new-terminal:  "Cmd+t"
+  quit:          "q"
+
+kanban:
+  left:    "h"
+  right:   "l"
+  down:    "j"
+  up:      "k"
+  open:    "o"
+  spawn:   "s"
+  refresh: "r"
+
+event-log:
+  down: "j"
+  up:   "k"
+  open: "o"
+  copy: "c"
+```
+
+Maps are two-level: top-level keys are sections (`global`, `kanban`, `event-log`, etc.), each containing `action: keybinding` pairs. Missing sections or actions fall back to hardcoded daemon defaults. Keybinding string format is the desktop's concern.
+
 ## Data
 
 Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to delete — it will be recreated on next start. Variants, architects, repo mappings, and tab layouts live in `~/.hiveryn/*.yaml`. Your architect workspace (tickets, conclusions) is stored separately as markdown files and is never affected.
@@ -117,6 +151,7 @@ Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to de
 | `GET` | `/api/architects/{key}/conclusions/{id}` | Read a conclusion by ID |
 | `GET` | `/api/architects/{key}/repos` | List repos for an architect |
 | `GET` | `/api/architects/{key}/repos/{repoKey}` | Get one architect repo by key |
+| `GET` | `/api/config/shortcuts` | Get resolved shortcuts config (global + per-pane keybindings) |
 | `GET` | `/api/sessions` | List sessions; supports `?status=running` |
 | `GET` | `/api/sessions/{id}` | Get one session |
 | `DELETE` | `/api/sessions/{id}` | Kill and delete a session |

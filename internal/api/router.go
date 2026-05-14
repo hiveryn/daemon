@@ -43,6 +43,11 @@ type reposHandler struct {
 	logger *slog.Logger
 }
 
+type shortcutsHandler struct {
+	config config.Config
+	logger *slog.Logger
+}
+
 type sessionsHandler struct {
 	logger           *slog.Logger
 	sessions         domain.SessionService
@@ -87,6 +92,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	gh := &architectGroupsHandler{config: deps.Config, logger: deps.Logger}
 	ah := &architectsHandler{config: deps.Config, logger: deps.Logger, sessions: deps.Sessions}
 	rh := &reposHandler{config: deps.Config, logger: deps.Logger}
+	sch := &shortcutsHandler{config: deps.Config, logger: deps.Logger}
 	sh := &sessionsHandler{logger: deps.Logger, sessions: deps.Sessions}
 	th := &ticketsHandler{config: deps.Config, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
 	eh := &architectEventsHandler{config: deps.Config, logger: deps.Logger, hub: deps.ArchitectEvents}
@@ -121,6 +127,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("POST /api/architects/{key}/tickets/{id}/spawn", th.spawn)
 	mux.HandleFunc("GET /api/architects/{key}/repos", rh.list)
 	mux.HandleFunc("GET /api/architects/{key}/repos/{repoKey}", rh.get)
+	mux.HandleFunc("GET /api/config/shortcuts", sch.get)
 	mux.HandleFunc("GET /api/architects/{key}/events", eh.events)
 	mux.HandleFunc("GET /api/sessions", sh.list)
 	mux.HandleFunc("GET /api/sessions/{id}", sh.get)

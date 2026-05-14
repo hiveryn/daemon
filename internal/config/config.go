@@ -20,15 +20,17 @@ const (
 	variantsFileName   = "variants.yaml"
 	architectsFileName = "architects.yaml"
 	tabsFileName       = "tabs.yaml"
+	shortcutsFileName  = "shortcuts.yaml"
 )
 
 type Config struct {
-	Port        int                        `yaml:"port"`
-	BindAddress string                     `yaml:"bind_address"`
-	LogLevel    string                     `yaml:"log_level"`
-	Variants    map[string]VariantConfig   `yaml:"-"`
-	Architects  map[string]ArchitectConfig `yaml:"-"`
-	Tabs        map[string][]TabEntry      `yaml:"-"`
+	Port        int                          `yaml:"port"`
+	BindAddress string                       `yaml:"bind_address"`
+	LogLevel    string                       `yaml:"log_level"`
+	Variants    map[string]VariantConfig     `yaml:"-"`
+	Architects  map[string]ArchitectConfig   `yaml:"-"`
+	Tabs        map[string][]TabEntry        `yaml:"-"`
+	Shortcuts   map[string]map[string]string `yaml:"-"`
 }
 
 type VariantConfig struct {
@@ -48,6 +50,39 @@ type TabEntry struct {
 	Command string `yaml:"command"`
 }
 
+func defaultShortcuts() map[string]map[string]string {
+	return map[string]map[string]string{
+		"global": {
+			"focus-left":    "Cmd+Shift+h",
+			"focus-right":   "Cmd+Shift+l",
+			"focus-down":    "Cmd+Shift+j",
+			"focus-up":      "Cmd+Shift+k",
+			"focus-main":    "Cmd+1",
+			"first-session": "Cmd+Shift+0",
+			"prev-session":  "Cmd+Shift+[",
+			"next-session":  "Cmd+Shift+]",
+			"close-tab":     "Cmd+w",
+			"new-terminal":  "Cmd+t",
+			"quit":          "q",
+		},
+		"kanban": {
+			"left":    "h",
+			"right":   "l",
+			"down":    "j",
+			"up":      "k",
+			"open":    "o",
+			"spawn":   "s",
+			"refresh": "r",
+		},
+		"event-log": {
+			"down": "j",
+			"up":   "k",
+			"open": "o",
+			"copy": "c",
+		},
+	}
+}
+
 func Default() Config {
 	return Config{
 		Port:        DefaultPort,
@@ -56,6 +91,7 @@ func Default() Config {
 		Variants:    map[string]VariantConfig{},
 		Architects:  map[string]ArchitectConfig{},
 		Tabs:        map[string][]TabEntry{},
+		Shortcuts:   defaultShortcuts(),
 	}
 }
 
@@ -106,6 +142,10 @@ func Load(path string) (Config, error) {
 
 	if err := loadOptionalFile(filepath.Join(configDir, tabsFileName), &cfg.Tabs); err != nil {
 		return Config{}, fmt.Errorf("load tabs: %w", err)
+	}
+
+	if err := loadOptionalFile(filepath.Join(configDir, shortcutsFileName), &cfg.Shortcuts); err != nil {
+		return Config{}, fmt.Errorf("load shortcuts: %w", err)
 	}
 
 	cfg.normalize()
@@ -281,6 +321,22 @@ func (c *Config) normalize() {
 	for sessionType, entries := range c.Tabs {
 		if entries == nil {
 			c.Tabs[sessionType] = []TabEntry{}
+		}
+	}
+	if c.Shortcuts == nil {
+		c.Shortcuts = defaultShortcuts()
+		return
+	}
+	for section, defaults := range defaultShortcuts() {
+		bindings, ok := c.Shortcuts[section]
+		if !ok {
+			bindings = make(map[string]string, len(defaults))
+			c.Shortcuts[section] = bindings
+		}
+		for action, key := range defaults {
+			if _, exists := bindings[action]; !exists {
+				bindings[action] = key
+			}
 		}
 	}
 }
