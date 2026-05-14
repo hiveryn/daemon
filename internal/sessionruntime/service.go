@@ -103,7 +103,7 @@ func (s *Service) SpawnArchitectSession(ctx context.Context, req domain.SpawnArc
 		return domain.SpawnArchitectSessionResult{}, &domain.NotFoundError{Resource: "architect", ID: req.ArchitectKey}
 	}
 
-	profile, ok := s.cfg.AgentProfiles[req.ProfileName]
+	profile, ok := s.cfg.Variants[req.ProfileName]
 	if !ok {
 		return domain.SpawnArchitectSessionResult{}, &domain.NotFoundError{Resource: "agent_profile", ID: req.ProfileName}
 	}
@@ -220,7 +220,7 @@ func (s *Service) SpawnWorkSession(ctx context.Context, req domain.SpawnWorkSess
 		return domain.SpawnWorkSessionResult{}, &domain.ValidationError{Field: "mode", Message: "only 'normal' mode is supported"}
 	}
 
-	profile, ok := s.cfg.AgentProfiles[req.ProfileName]
+	profile, ok := s.cfg.Variants[req.ProfileName]
 	if !ok {
 		return domain.SpawnWorkSessionResult{}, &domain.NotFoundError{Resource: "agent_profile", ID: req.ProfileName}
 	}

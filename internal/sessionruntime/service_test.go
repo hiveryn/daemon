@@ -210,7 +210,7 @@ func testRuntimeConfig(t *testing.T) config.Config {
 	t.Helper()
 
 	return config.Config{
-		AgentProfiles: map[string]config.AgentProfileConfig{
+		Variants: map[string]config.VariantConfig{
 			"codex": {
 				Agent: "codex",
 				Env: map[string]string{
@@ -510,7 +510,7 @@ func assertMCPServer(t *testing.T, servers []agentruntime.MCPServerConfig, sessi
 
 func testRuntimeConfigWithPaths(architectPath, repoPath string) config.Config {
 	return config.Config{
-		AgentProfiles: map[string]config.AgentProfileConfig{
+		Variants: map[string]config.VariantConfig{
 			"codex": {
 				Agent: "codex",
 				Env: map[string]string{

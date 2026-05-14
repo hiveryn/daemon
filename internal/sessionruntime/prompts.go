@@ -56,7 +56,7 @@ func loadArchitectPrompts(architectKey string, architect config.ArchitectConfig,
 		TicketList:       "(ticket system not yet implemented)",
 		Sessions:         "(session history not yet implemented)",
 		Repos:            renderRepos(architect.Repos),
-		Variants:         strings.Join(configKeys(cfg.AgentProfiles), ", "),
+		Variants:         strings.Join(configKeys(cfg.Variants), ", "),
 		CurrentDate:      time.Now().UTC().Format(time.RFC3339),
 		LastConclusionID: "",
 	})

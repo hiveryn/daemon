@@ -6,7 +6,7 @@
 
 The daemon is the **single mutation and event hub** for Hiveryn. Every state change — whether initiated by the desktop app, an MCP tool call from a running agent, or a lifecycle event from `agentruntime` — flows through the daemon. It owns:
 
-- **Local state**: bootstrap config in `~/.hiveryn/config.yaml`; SQLite for sessions, terminal buffers, and runtime events.
+- **Local state**: bootstrap config in `~/.hiveryn/config.yaml` (plus `variants.yaml`, `architects.yaml`, `tabs.yaml`); SQLite for sessions, terminal buffers, and runtime events.
 - **Agent lifecycle**: spawn, kill, and track agent processes through daemon-owned ptys; delegate launch/config synthesis to `agentruntime`.
 - **Filesystem mutations**: read/write architect folder markdown (tickets, conclusions, collabs). The architect folder is the shared source of truth; the daemon's SQLite is local-only.
 - **MCP tools**: exposed by the daemon so running agents can mutate project state (create tickets, conclude sessions) without direct filesystem access.
@@ -53,7 +53,7 @@ internal/
   app/                dependency wiring, startup/shutdown orchestration
   archevents/         in-memory publish/subscribe hub for architect-scoped SSE events
   architectfs/        architect folder filesystem operations (ticket CRUD, frontmatter, body edits)
-  config/             bootstrap config (~/.hiveryn/config.yaml) — port, bind_address, profiles, architects
+  config/             bootstrap config (~/.hiveryn/{config,variants,architects,tabs}.yaml) — port, bind_address, variants, architects, tabs
   domain/             shared envelope/error/session types — zero imports of store/api
   mcp/                stdio MCP server; registers role-scoped tools and translates tool calls into daemon HTTP API requests
   server/             HTTP server lifecycle (Listen, Shutdown) — thin wrapper around net/http
@@ -96,7 +96,7 @@ Each resource is self-contained across four packages — no cross-contamination.
 - SQLite uses `SetMaxOpenConns(1)` (single-writer). Busy timeout is 5 seconds.
 - Never log secrets from profiles, env configs, or MCP configurations.
 - PTY/process handles stay in memory under `sessionruntime`; SQLite stores session metadata and structured events only.
-- The architect folder's markdown is the source of truth for tickets and conclusions. `~/.hiveryn/config.yaml` is the source of truth for profiles, architects, and repo mappings. SQLite stores runtime state only.
+- The architect folder's markdown is the source of truth for tickets and conclusions. `~/.hiveryn/config.yaml` is the source of truth for daemon core settings. `~/.hiveryn/variants.yaml`, `~/.hiveryn/architects.yaml`, and `~/.hiveryn/tabs.yaml` are the source of truth for variants, architects, repo mappings, and tab layouts. SQLite stores runtime state only.
 - All API responses use a standard envelope (`domain.Envelope`) with `data`/`error` (mutually exclusive), `logs`, `commands`, and `meta.request_id`. Handlers write via `writeJSON(w, r, ...)` and `writeError(w, r, ...)` — envelope wrapping is automatic.
 
 ## Error handling

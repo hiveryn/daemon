@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoadCreatesDefaultConfigWhenMissing(t *testing.T) {
@@ -16,8 +18,9 @@ func TestLoadCreatesDefaultConfigWhenMissing(t *testing.T) {
 		t.Fatalf("load config: %v", err)
 	}
 
-	if !reflect.DeepEqual(cfg, Default()) {
-		t.Fatalf("expected default config, got %#v", cfg)
+	expected := Default()
+	if !reflect.DeepEqual(cfg, expected) {
+		t.Fatalf("expected %#v, got %#v", expected, cfg)
 	}
 
 	data, err := os.ReadFile(path)
@@ -29,32 +32,18 @@ func TestLoadCreatesDefaultConfigWhenMissing(t *testing.T) {
 	}
 }
 
-func TestSaveAndLoadYAML(t *testing.T) {
+func TestSaveAndLoadCoreConfig(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	configDir := t.TempDir()
+	path := filepath.Join(configDir, configFileName)
 	input := Config{
 		Port:        4312,
 		BindAddress: "127.0.0.1",
 		LogLevel:    "debug",
-		AgentProfiles: map[string]AgentProfileConfig{
-			"codex-personal": {
-				Agent: "codex",
-				Args:  []string{"--dangerously-bypass-approvals-and-sandbox"},
-				Env: map[string]string{
-					"CODEX_HOME": "/Users/kareem/.codex-personal",
-				},
-			},
-		},
-		Architects: map[string]ArchitectConfig{
-			"hiveryn": {
-				Path:  "/Users/kareem/architects/hiveryn",
-				Group: "personal",
-				Repos: map[string]string{
-					"daemon": "/Users/kareem/hiveryn/daemon",
-				},
-			},
-		},
+		Variants:    map[string]VariantConfig{},
+		Architects:  map[string]ArchitectConfig{},
+		Tabs:        map[string][]TabEntry{},
 	}
 
 	if err := input.Save(path); err != nil {
@@ -66,8 +55,87 @@ func TestSaveAndLoadYAML(t *testing.T) {
 		t.Fatalf("load config: %v", err)
 	}
 
-	if !reflect.DeepEqual(loaded, input) {
-		t.Fatalf("expected %#v, got %#v", input, loaded)
+	if loaded.Port != input.Port || loaded.BindAddress != input.BindAddress || loaded.LogLevel != input.LogLevel {
+		t.Fatalf("core fields mismatch: expected port=%d addr=%s level=%s, got port=%d addr=%s level=%s",
+			input.Port, input.BindAddress, input.LogLevel,
+			loaded.Port, loaded.BindAddress, loaded.LogLevel)
+	}
+}
+
+func TestLoadAllFiles(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+
+	writeYAML(t, filepath.Join(configDir, configFileName), map[string]interface{}{
+		"port":         4201,
+		"bind_address": "127.0.0.1",
+		"log_level":    "info",
+	})
+
+	writeYAML(t, filepath.Join(configDir, variantsFileName), map[string]VariantConfig{
+		"codex-personal": {
+			Agent: "codex",
+			Args:  []string{"--dangerously-bypass-approvals-and-sandbox"},
+			Env:   map[string]string{"CODEX_HOME": "/Users/kareem/.codex-personal"},
+		},
+	})
+
+	writeYAML(t, filepath.Join(configDir, architectsFileName), map[string]ArchitectConfig{
+		"hiveryn": {
+			Path:  "/Users/kareem/architects/hiveryn",
+			Group: "personal",
+			Repos: map[string]string{"daemon": "/Users/kareem/hiveryn/daemon"},
+		},
+	})
+
+	writeYAML(t, filepath.Join(configDir, tabsFileName), map[string][]TabEntry{
+		"architect": {
+			{Type: "kanban"},
+			{Type: "terminal", Name: "shell"},
+		},
+	})
+
+	cfg, err := Load(filepath.Join(configDir, configFileName))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if len(cfg.Variants) != 1 || cfg.Variants["codex-personal"].Agent != "codex" {
+		t.Fatalf("expected 1 variant, got %d", len(cfg.Variants))
+	}
+	if len(cfg.Architects) != 1 || cfg.Architects["hiveryn"].Group != "personal" {
+		t.Fatalf("expected 1 architect, got %d", len(cfg.Architects))
+	}
+	if len(cfg.Tabs) != 1 || len(cfg.Tabs["architect"]) != 2 {
+		t.Fatalf("expected 2 tabs for architect, got %d", len(cfg.Tabs["architect"]))
+	}
+}
+
+func TestLoadMissingOptionalFiles(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+
+	writeYAML(t, filepath.Join(configDir, configFileName), map[string]interface{}{
+		"port":         4201,
+		"bind_address": "127.0.0.1",
+		"log_level":    "info",
+	})
+
+	cfg, err := Load(filepath.Join(configDir, configFileName))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if len(cfg.Variants) != 0 {
+		t.Fatalf("expected empty variants when file missing, got %d", len(cfg.Variants))
+	}
+	if len(cfg.Architects) != 0 {
+		t.Fatalf("expected empty architects when file missing, got %d", len(cfg.Architects))
+	}
+	if len(cfg.Tabs) != 0 {
+		t.Fatalf("expected empty tabs when file missing, got %d", len(cfg.Tabs))
 	}
 }
 
@@ -75,11 +143,12 @@ func TestValidateRejectsNonLocalBindAddress(t *testing.T) {
 	t.Parallel()
 
 	err := Config{
-		Port:          DefaultPort,
-		BindAddress:   "0.0.0.0",
-		LogLevel:      DefaultLogLevel,
-		AgentProfiles: map[string]AgentProfileConfig{},
-		Architects:    map[string]ArchitectConfig{},
+		Port:        DefaultPort,
+		BindAddress: "0.0.0.0",
+		LogLevel:    DefaultLogLevel,
+		Variants:    map[string]VariantConfig{},
+		Architects:  map[string]ArchitectConfig{},
+		Tabs:        map[string][]TabEntry{},
 	}.Validate()
 	if err == nil {
 		t.Fatal("expected bind_address validation error")
@@ -90,10 +159,10 @@ func TestValidateRejectsBlankArchitectGroup(t *testing.T) {
 	t.Parallel()
 
 	err := Config{
-		Port:          DefaultPort,
-		BindAddress:   DefaultBindAddress,
-		LogLevel:      DefaultLogLevel,
-		AgentProfiles: map[string]AgentProfileConfig{},
+		Port:        DefaultPort,
+		BindAddress: DefaultBindAddress,
+		LogLevel:    DefaultLogLevel,
+		Variants:    map[string]VariantConfig{},
 		Architects: map[string]ArchitectConfig{
 			"hiveryn": {
 				Path:  "/Users/kareem/architects/hiveryn",
@@ -101,8 +170,139 @@ func TestValidateRejectsBlankArchitectGroup(t *testing.T) {
 				Repos: map[string]string{},
 			},
 		},
+		Tabs: map[string][]TabEntry{},
 	}.Validate()
 	if err == nil {
 		t.Fatal("expected architect group validation error")
+	}
+}
+
+func TestValidateRejectsInvalidTabType(t *testing.T) {
+	t.Parallel()
+
+	err := Config{
+		Port:        DefaultPort,
+		BindAddress: DefaultBindAddress,
+		LogLevel:    DefaultLogLevel,
+		Variants:    map[string]VariantConfig{},
+		Architects:  map[string]ArchitectConfig{},
+		Tabs: map[string][]TabEntry{
+			"architect": {
+				{Type: "invalid"},
+			},
+		},
+	}.Validate()
+	if err == nil {
+		t.Fatal("expected tab type validation error")
+	}
+}
+
+func TestValidateRejectsTerminalWithoutName(t *testing.T) {
+	t.Parallel()
+
+	err := Config{
+		Port:        DefaultPort,
+		BindAddress: DefaultBindAddress,
+		LogLevel:    DefaultLogLevel,
+		Variants:    map[string]VariantConfig{},
+		Architects:  map[string]ArchitectConfig{},
+		Tabs: map[string][]TabEntry{
+			"worker": {
+				{Type: "terminal", Name: ""},
+			},
+		},
+	}.Validate()
+	if err == nil {
+		t.Fatal("expected terminal name validation error")
+	}
+}
+
+func TestValidateRejectsDuplicateTerminalNames(t *testing.T) {
+	t.Parallel()
+
+	err := Config{
+		Port:        DefaultPort,
+		BindAddress: DefaultBindAddress,
+		LogLevel:    DefaultLogLevel,
+		Variants:    map[string]VariantConfig{},
+		Architects:  map[string]ArchitectConfig{},
+		Tabs: map[string][]TabEntry{
+			"architect": {
+				{Type: "terminal", Name: "shell"},
+				{Type: "terminal", Name: "shell"},
+			},
+		},
+	}.Validate()
+	if err == nil {
+		t.Fatal("expected duplicate terminal name validation error")
+	}
+}
+
+func TestValidateRejectsNonTerminalWithName(t *testing.T) {
+	t.Parallel()
+
+	err := Config{
+		Port:        DefaultPort,
+		BindAddress: DefaultBindAddress,
+		LogLevel:    DefaultLogLevel,
+		Variants:    map[string]VariantConfig{},
+		Architects:  map[string]ArchitectConfig{},
+		Tabs: map[string][]TabEntry{
+			"architect": {
+				{Type: "kanban", Name: "my-kanban"},
+			},
+		},
+	}.Validate()
+	if err == nil {
+		t.Fatal("expected non-terminal name rejection error")
+	}
+}
+
+func TestValidateRejectsNonTerminalWithCommand(t *testing.T) {
+	t.Parallel()
+
+	err := Config{
+		Port:        DefaultPort,
+		BindAddress: DefaultBindAddress,
+		LogLevel:    DefaultLogLevel,
+		Variants:    map[string]VariantConfig{},
+		Architects:  map[string]ArchitectConfig{},
+		Tabs: map[string][]TabEntry{
+			"architect": {
+				{Type: "event-log", Command: "ls"},
+			},
+		},
+	}.Validate()
+	if err == nil {
+		t.Fatal("expected non-terminal command rejection error")
+	}
+}
+
+func TestValidateRejectsBlankTabSessionType(t *testing.T) {
+	t.Parallel()
+
+	err := Config{
+		Port:        DefaultPort,
+		BindAddress: DefaultBindAddress,
+		LogLevel:    DefaultLogLevel,
+		Variants:    map[string]VariantConfig{},
+		Architects:  map[string]ArchitectConfig{},
+		Tabs: map[string][]TabEntry{
+			"": {},
+		},
+	}.Validate()
+	if err == nil {
+		t.Fatal("expected blank tab session type validation error")
+	}
+}
+
+func writeYAML(t *testing.T, path string, v interface{}) {
+	t.Helper()
+	data, err := yaml.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal %q: %v", path, err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write %q: %v", path, err)
 	}
 }

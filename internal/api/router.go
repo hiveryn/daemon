@@ -139,10 +139,10 @@ func NewHandler(deps Dependencies) http.Handler {
 }
 
 func listAgentProfiles(cfg config.Config) []agentProfileResponse {
-	names := configKeys(cfg.AgentProfiles)
+	names := configKeys(cfg.Variants)
 	profiles := make([]agentProfileResponse, 0, len(names))
 	for _, name := range names {
-		profile := cfg.AgentProfiles[name]
+		profile := cfg.Variants[name]
 		profiles = append(profiles, agentProfileResponse{
 			Name:  name,
 			Agent: profile.Agent,
@@ -154,7 +154,7 @@ func listAgentProfiles(cfg config.Config) []agentProfileResponse {
 }
 
 func getAgentProfile(cfg config.Config, name string) (agentProfileResponse, bool) {
-	profile, ok := cfg.AgentProfiles[name]
+	profile, ok := cfg.Variants[name]
 	if !ok {
 		return agentProfileResponse{}, false
 	}

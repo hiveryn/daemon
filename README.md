@@ -22,33 +22,76 @@ go run ./cmd/hiverynd
 The daemon binary also exposes an MCP stdio subcommand for agent-launched tool access:
 
 ```bash
-hiverynd mcp --daemon-url http://127.0.0.1:4200 --architect-key hiveryn
+hiverynd mcp --daemon-url http://127.0.0.1:4201 --architect-key hiveryn
 ```
 
 `hiverynd mcp` is intended to be spawned by `agentruntime`; session scoping comes from `HIVERYN_SESSION_TYPE` (`architect` or `work`).
 
 ## Configuration
 
-The daemon reads `~/.hiveryn/config.yaml` on startup. If the file doesn't exist, it creates a default file.
+The daemon reads four YAML files from `~/.hiveryn/` on startup. Only `config.yaml` is required; the others default to empty when missing.
+
+### `config.yaml` — daemon core
 
 ```yaml
-port: 4200
+port: 4201
 bind_address: 127.0.0.1
 log_level: info
-
-agent_profiles: {}
-architects: {}
 ```
 
 | Field | Default |
 |---|---|
-| `port` | `4200` |
+| `port` | `4201` |
 | `bind_address` | `127.0.0.1` (localhost only) |
 | `log_level` | `info` |
 
+### `variants.yaml` — agent variants
+
+```yaml
+claude-sonnet:
+  agent: claude
+  args: [--model, claude-sonnet-4-6]
+codex-personal:
+  agent: codex
+  args: [--dangerously-bypass-approvals-and-sandbox]
+  env:
+    CODEX_HOME: /Users/kareem/.codex-personal
+```
+
+### `architects.yaml` — architect definitions
+
+```yaml
+hiveryn:
+  path: /Users/kareem/architects/hiveryn
+  group: personal
+  repos:
+    daemon: /Users/kareem/hiveryn/daemon
+    desktop: /Users/kareem/hiveryn/desktop
+```
+
+### `tabs.yaml` — tab layout per session type
+
+```yaml
+architect:
+  - type: kanban
+  - type: event-log
+  - type: terminal
+    name: lazygit
+    command: lazygit
+  - type: terminal
+    name: shell
+
+worker:
+  - type: event-log
+  - type: terminal
+    name: shell
+```
+
+Terminal entries require a unique `name` within the session type. Entries without `command` default to the user's shell.
+
 ## Data
 
-Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to delete — it will be recreated on next start. Profiles, architects, and repo mappings live in `~/.hiveryn/config.yaml`. Your architect workspace (tickets, conclusions) is stored separately as markdown files and is never affected.
+Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to delete — it will be recreated on next start. Variants, architects, repo mappings, and tab layouts live in `~/.hiveryn/*.yaml`. Your architect workspace (tickets, conclusions) is stored separately as markdown files and is never affected.
 
 ## API
 
@@ -87,7 +130,7 @@ Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to de
 | `GET` | `/api/sessions/{id}/events` | Stream structured session events over SSE |
 | `WS` | `/ws/session/{id}/terminal/{name}` | Stream PTY output and send terminal input for a named terminal |
 
-Profile, architect, and repo configuration endpoints are read-only. Edit `~/.hiveryn/config.yaml` directly to change profiles, architects, or repos.
+Profile, architect, repo, and tab configuration endpoints are read-only. Edit `~/.hiveryn/*.yaml` directly to change variants, architects, repos, or tabs.
 
 All responses use a standard envelope:
 

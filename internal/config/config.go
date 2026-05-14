@@ -12,22 +12,26 @@ import (
 )
 
 const (
-	DefaultPort        = 4200
+	DefaultPort        = 4201
 	DefaultBindAddress = "127.0.0.1"
 	DefaultLogLevel    = "info"
 	configDirName      = ".hiveryn"
 	configFileName     = "config.yaml"
+	variantsFileName   = "variants.yaml"
+	architectsFileName = "architects.yaml"
+	tabsFileName       = "tabs.yaml"
 )
 
 type Config struct {
-	Port          int                           `yaml:"port"`
-	BindAddress   string                        `yaml:"bind_address"`
-	LogLevel      string                        `yaml:"log_level"`
-	AgentProfiles map[string]AgentProfileConfig `yaml:"agent_profiles"`
-	Architects    map[string]ArchitectConfig    `yaml:"architects"`
+	Port        int                        `yaml:"port"`
+	BindAddress string                     `yaml:"bind_address"`
+	LogLevel    string                     `yaml:"log_level"`
+	Variants    map[string]VariantConfig   `yaml:"-"`
+	Architects  map[string]ArchitectConfig `yaml:"-"`
+	Tabs        map[string][]TabEntry      `yaml:"-"`
 }
 
-type AgentProfileConfig struct {
+type VariantConfig struct {
 	Agent string            `yaml:"agent"`
 	Args  []string          `yaml:"args"`
 	Env   map[string]string `yaml:"env"`
@@ -39,13 +43,20 @@ type ArchitectConfig struct {
 	Repos map[string]string `yaml:"repos"`
 }
 
+type TabEntry struct {
+	Type    string `yaml:"type"`
+	Name    string `yaml:"name"`
+	Command string `yaml:"command"`
+}
+
 func Default() Config {
 	return Config{
-		Port:          DefaultPort,
-		BindAddress:   DefaultBindAddress,
-		LogLevel:      DefaultLogLevel,
-		AgentProfiles: map[string]AgentProfileConfig{},
-		Architects:    map[string]ArchitectConfig{},
+		Port:        DefaultPort,
+		BindAddress: DefaultBindAddress,
+		LogLevel:    DefaultLogLevel,
+		Variants:    map[string]VariantConfig{},
+		Architects:  map[string]ArchitectConfig{},
+		Tabs:        map[string][]TabEntry{},
 	}
 }
 
@@ -67,10 +78,11 @@ func Load(path string) (Config, error) {
 		}
 	}
 
+	cfg := Default()
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			cfg := Default()
 			if err := cfg.Save(path); err != nil {
 				return Config{}, err
 			}
@@ -79,9 +91,22 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("read config %q: %w", path, err)
 	}
 
-	cfg := Default()
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("decode YAML config %q: %w", path, err)
+	}
+
+	configDir := filepath.Dir(path)
+
+	if err := loadOptionalFile(filepath.Join(configDir, variantsFileName), &cfg.Variants); err != nil {
+		return Config{}, fmt.Errorf("load variants: %w", err)
+	}
+
+	if err := loadOptionalFile(filepath.Join(configDir, architectsFileName), &cfg.Architects); err != nil {
+		return Config{}, fmt.Errorf("load architects: %w", err)
+	}
+
+	if err := loadOptionalFile(filepath.Join(configDir, tabsFileName), &cfg.Tabs); err != nil {
+		return Config{}, fmt.Errorf("load tabs: %w", err)
 	}
 
 	cfg.normalize()
@@ -90,6 +115,26 @@ func Load(path string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func loadOptionalFile(path string, target interface{}) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read %q: %w", path, err)
+	}
+	if err := yaml.Unmarshal(data, target); err != nil {
+		return fmt.Errorf("decode YAML %q: %w", path, err)
+	}
+	return nil
+}
+
+type coreConfig struct {
+	Port        int    `yaml:"port"`
+	BindAddress string `yaml:"bind_address"`
+	LogLevel    string `yaml:"log_level"`
 }
 
 func (c Config) Save(path string) error {
@@ -110,7 +155,13 @@ func (c Config) Save(path string) error {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 
-	data, err := yaml.Marshal(c)
+	core := coreConfig{
+		Port:        c.Port,
+		BindAddress: c.BindAddress,
+		LogLevel:    c.LogLevel,
+	}
+
+	data, err := yaml.Marshal(core)
 	if err != nil {
 		return fmt.Errorf("marshal config %q: %w", path, err)
 	}
@@ -135,18 +186,18 @@ func (c Config) Validate() error {
 		return fmt.Errorf("log_level is required")
 	}
 
-	profileNames := sortedKeys(c.AgentProfiles)
-	for _, name := range profileNames {
+	variantNames := sortedKeys(c.Variants)
+	for _, name := range variantNames {
 		if strings.TrimSpace(name) == "" {
-			return fmt.Errorf("agent_profiles keys must not be blank")
+			return fmt.Errorf("variants keys must not be blank")
 		}
-		profile := c.AgentProfiles[name]
-		if strings.TrimSpace(profile.Agent) == "" {
-			return fmt.Errorf("agent_profiles.%s.agent is required", name)
+		variant := c.Variants[name]
+		if strings.TrimSpace(variant.Agent) == "" {
+			return fmt.Errorf("variants.%s.agent is required", name)
 		}
-		for key := range profile.Env {
+		for key := range variant.Env {
 			if strings.TrimSpace(key) == "" {
-				return fmt.Errorf("agent_profiles.%s.env keys must not be blank", name)
+				return fmt.Errorf("variants.%s.env keys must not be blank", name)
 			}
 		}
 	}
@@ -173,6 +224,36 @@ func (c Config) Validate() error {
 		}
 	}
 
+	sessionTypes := sortedKeys(c.Tabs)
+	for _, sessionType := range sessionTypes {
+		if strings.TrimSpace(sessionType) == "" {
+			return fmt.Errorf("tabs keys must not be blank")
+		}
+		terminalNames := map[string]struct{}{}
+		for i, entry := range c.Tabs[sessionType] {
+			validTypes := map[string]bool{"kanban": true, "event-log": true, "terminal": true}
+			if !validTypes[entry.Type] {
+				return fmt.Errorf("tabs.%s[%d].type %q is invalid; must be kanban, event-log, or terminal", sessionType, i, entry.Type)
+			}
+			if entry.Type == "terminal" {
+				if strings.TrimSpace(entry.Name) == "" {
+					return fmt.Errorf("tabs.%s[%d].name is required for terminal entries", sessionType, i)
+				}
+				if _, exists := terminalNames[entry.Name]; exists {
+					return fmt.Errorf("tabs.%s: duplicate terminal name %q", sessionType, entry.Name)
+				}
+				terminalNames[entry.Name] = struct{}{}
+			} else {
+				if entry.Name != "" {
+					return fmt.Errorf("tabs.%s[%d].name is not allowed for %q entries", sessionType, i, entry.Type)
+				}
+				if entry.Command != "" {
+					return fmt.Errorf("tabs.%s[%d].command is not allowed for %q entries", sessionType, i, entry.Type)
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -186,17 +267,17 @@ func (c *Config) normalize() {
 	if strings.TrimSpace(c.LogLevel) == "" {
 		c.LogLevel = DefaultLogLevel
 	}
-	if c.AgentProfiles == nil {
-		c.AgentProfiles = map[string]AgentProfileConfig{}
+	if c.Variants == nil {
+		c.Variants = map[string]VariantConfig{}
 	}
-	for name, profile := range c.AgentProfiles {
-		if profile.Args == nil {
-			profile.Args = []string{}
+	for name, variant := range c.Variants {
+		if variant.Args == nil {
+			variant.Args = []string{}
 		}
-		if profile.Env == nil {
-			profile.Env = map[string]string{}
+		if variant.Env == nil {
+			variant.Env = map[string]string{}
 		}
-		c.AgentProfiles[name] = profile
+		c.Variants[name] = variant
 	}
 	if c.Architects == nil {
 		c.Architects = map[string]ArchitectConfig{}
@@ -206,6 +287,14 @@ func (c *Config) normalize() {
 			architect.Repos = map[string]string{}
 		}
 		c.Architects[key] = architect
+	}
+	if c.Tabs == nil {
+		c.Tabs = map[string][]TabEntry{}
+	}
+	for sessionType, entries := range c.Tabs {
+		if entries == nil {
+			c.Tabs[sessionType] = []TabEntry{}
+		}
 	}
 }
 

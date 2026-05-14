@@ -115,7 +115,7 @@ func testConfig() config.Config {
 		Port:        4200,
 		BindAddress: "127.0.0.1",
 		LogLevel:    "debug",
-		AgentProfiles: map[string]config.AgentProfileConfig{
+		Variants: map[string]config.VariantConfig{
 			"codex-personal": {
 				Agent: "codex",
 				Args:  []string{"--dangerously-bypass-approvals-and-sandbox"},
