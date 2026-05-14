@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	replayChunkLimit = 256
+	replayBufferSize = 64 * 1024
 	outputQueueSize  = 64
 )
 
@@ -76,7 +76,7 @@ type terminalProcess struct {
 	cleanupOnce sync.Once
 	outputNext  uint64
 	outputSubs  map[uint64]chan []byte
-	replayBuf   [][]byte
+	replayBuf   []byte
 	done        chan struct{}
 }
 
@@ -341,13 +341,13 @@ func (p *terminalProcess) attach() (domain.TerminalAttachment, error) {
 		return nil, &domain.ConflictError{Resource: "session", Field: "status", Message: "terminal is closing"}
 	}
 
-	ch := make(chan []byte, len(p.replayBuf)+outputQueueSize)
+	ch := make(chan []byte, outputQueueSize)
 	p.outputNext++
 	subID := p.outputNext
-	p.outputSubs[subID] = ch
-	for _, chunk := range p.replayBuf {
-		ch <- append([]byte(nil), chunk...)
+	if len(p.replayBuf) > 0 {
+		ch <- append([]byte(nil), p.replayBuf...)
 	}
+	p.outputSubs[subID] = ch
 
 	return &terminalAttachment{
 		output: ch,
@@ -412,14 +412,13 @@ func (p *terminalProcess) broadcast(chunk []byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	replayChunk := append([]byte(nil), chunk...)
-	p.replayBuf = append(p.replayBuf, replayChunk)
-	if len(p.replayBuf) > replayChunkLimit {
-		p.replayBuf = p.replayBuf[len(p.replayBuf)-replayChunkLimit:]
+	p.replayBuf = append(p.replayBuf, chunk...)
+	if len(p.replayBuf) > replayBufferSize {
+		p.replayBuf = p.replayBuf[len(p.replayBuf)-replayBufferSize:]
 	}
 
 	for id, ch := range p.outputSubs {
-		payload := append([]byte(nil), replayChunk...)
+		payload := append([]byte(nil), chunk...)
 		select {
 		case ch <- payload:
 		default:

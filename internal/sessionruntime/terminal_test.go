@@ -7,6 +7,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/creack/pty"
 )
 
 func TestTerminalProcessReplaysBufferedOutputToLateAttach(t *testing.T) {
@@ -25,6 +27,48 @@ func TestTerminalProcessReplaysBufferedOutputToLateAttach(t *testing.T) {
 
 	process.broadcast([]byte("next"))
 	assertOutputChunk(t, attachment.Output(), "next")
+}
+
+func TestTerminalProcessReplaysBeforeResizeOutput(t *testing.T) {
+	t.Parallel()
+
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatalf("open pty: %v", err)
+	}
+	defer func() { _ = master.Close() }()
+	defer func() { _ = slave.Close() }()
+
+	process := &terminalProcess{
+		id:         terminalKey("session-1", "test"),
+		pty:        master,
+		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		outputSubs: map[uint64]chan []byte{},
+		done:       make(chan struct{}),
+	}
+	process.broadcast([]byte("replay"))
+
+	attachment, err := process.attach()
+	if err != nil {
+		t.Fatalf("attach terminal: %v", err)
+	}
+	defer func() { _ = attachment.Close() }()
+
+	resizeDone := make(chan error, 1)
+	go func() {
+		if err := attachment.Resize(120, 40); err != nil {
+			resizeDone <- err
+			return
+		}
+		process.broadcast([]byte("redraw"))
+		resizeDone <- nil
+	}()
+
+	if err := <-resizeDone; err != nil {
+		t.Fatalf("resize terminal: %v", err)
+	}
+	assertOutputChunk(t, attachment.Output(), "replay")
+	assertOutputChunk(t, attachment.Output(), "redraw")
 }
 
 func TestTerminalProcessClosesSlowSubscriberWhenQueueIsFull(t *testing.T) {
