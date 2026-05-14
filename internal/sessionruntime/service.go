@@ -184,6 +184,8 @@ func (s *Service) SpawnArchitectSession(ctx context.Context, req domain.SpawnArc
 		return domain.SpawnArchitectSessionResult{}, err
 	}
 
+	s.startAutoTerminals(ctx, session, spec.Workdir, spec.Env, terminalSize{Cols: req.Cols, Rows: req.Rows}, spec.CleanupPaths)
+
 	return domain.SpawnArchitectSessionResult{Session: session}, nil
 }
 
@@ -300,6 +302,8 @@ func (s *Service) SpawnWorkSession(ctx context.Context, req domain.SpawnWorkSess
 		s.markSessionFailed(session.ID, "terminal start")
 		return domain.SpawnWorkSessionResult{}, err
 	}
+
+	s.startAutoTerminals(ctx, session, spec.Workdir, spec.Env, terminalSize{Cols: req.Cols, Rows: req.Rows}, spec.CleanupPaths)
 
 	if _, err := s.tickets.MoveTicket(ctx, architect.Path, req.TicketID, domain.MoveTicketParams{
 		To: domain.TicketStatusProgress,
@@ -1060,6 +1064,46 @@ func yamlNodeString(node *yaml.Node, key string) string {
 		}
 	}
 	return ""
+}
+
+func defaultShell() string {
+	if s := os.Getenv("SHELL"); s != "" {
+		return s
+	}
+	return "bash"
+}
+
+func (s *Service) startAutoTerminals(ctx context.Context, session domain.Session, workdir string, env map[string]string, size terminalSize, cleanupPaths []string) {
+	tabs, ok := s.cfg.Tabs[session.SessionType]
+	if !ok || len(tabs) == 0 {
+		return
+	}
+	for _, tab := range tabs {
+		if tab.Type != "terminal" {
+			continue
+		}
+		cmd := tab.Command
+		if cmd == "" {
+			cmd = defaultShell()
+		}
+		err := s.terminal.Start(ctx, terminalStartSpec{
+			SessionID:    session.ID,
+			Name:         tab.Name,
+			Command:      cmd,
+			Env:          cloneStringMap(env),
+			Workdir:      workdir,
+			Size:         size,
+			CleanupPaths: append([]string(nil), cleanupPaths...),
+			OnExit:       nil,
+		})
+		if err != nil {
+			s.logger.Warn("[spawn] auto-create terminal failed",
+				"session_id", session.ID,
+				"terminal_name", tab.Name,
+				"error", err,
+			)
+		}
+	}
 }
 
 func yamlNodeTime(node *yaml.Node, key string) time.Time {

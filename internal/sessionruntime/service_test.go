@@ -52,11 +52,11 @@ func TestSpawnArchitectSessionMarksReservedSessionFailedWhenTerminalStartFails(t
 	if repo.createdSession.ID == "" {
 		t.Fatal("expected session to be reserved before terminal start")
 	}
-	if terminal.startSpec.SessionID != repo.createdSession.ID {
-		t.Fatalf("expected terminal to start reserved session %q, got %q", repo.createdSession.ID, terminal.startSpec.SessionID)
+	if terminal.firstStartSpec().SessionID != repo.createdSession.ID {
+		t.Fatalf("expected terminal to start reserved session %q, got %q", repo.createdSession.ID, terminal.firstStartSpec().SessionID)
 	}
-	if terminal.startSpec.Size.Cols != 132 || terminal.startSpec.Size.Rows != 48 {
-		t.Fatalf("expected terminal start size to use requested dimensions, got %#v", terminal.startSpec.Size)
+	if terminal.firstStartSpec().Size.Cols != 132 || terminal.firstStartSpec().Size.Rows != 48 {
+		t.Fatalf("expected terminal start size to use requested dimensions, got %#v", terminal.firstStartSpec().Size)
 	}
 	if repo.updatedStatus != domain.SessionStatusFailed {
 		t.Fatalf("expected reserved session to be marked failed, got %q", repo.updatedStatus)
@@ -263,13 +263,20 @@ func (fakeAdapter) NormalizeEvent(context.Context, []byte) (*agentruntime.Event,
 }
 
 type fakeTerminalManager struct {
-	startErr  error
-	startSpec terminalStartSpec
+	startErr   error
+	startSpecs []terminalStartSpec
 }
 
 func (f *fakeTerminalManager) Start(_ context.Context, spec terminalStartSpec) error {
-	f.startSpec = spec
+	f.startSpecs = append(f.startSpecs, spec)
 	return f.startErr
+}
+
+func (f *fakeTerminalManager) firstStartSpec() terminalStartSpec {
+	if len(f.startSpecs) > 0 {
+		return f.startSpecs[0]
+	}
+	return terminalStartSpec{}
 }
 
 func (f *fakeTerminalManager) Attach(context.Context, string, string) (domain.TerminalAttachment, error) {

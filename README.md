@@ -81,13 +81,13 @@ architect:
   - type: terminal
     name: shell
 
-worker:
+work:
   - type: event-log
   - type: terminal
     name: shell
 ```
 
-Terminal entries require a unique `name` within the session type. Entries without `command` default to the user's shell.
+Terminal entries require a unique `name` within the session type. Entries without `command` default to the user's shell. When a session spawns, the daemon auto-creates PTY terminals for every `type: terminal` entry in the matching session type section.
 
 ## Data
 
