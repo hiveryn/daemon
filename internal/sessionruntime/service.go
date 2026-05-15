@@ -598,6 +598,18 @@ func (s *Service) ListConclusions(ctx context.Context, architectKey string, limi
 }
 
 func (s *Service) concludeArchitectSession(ctx context.Context, session domain.Session, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
+	activeWorkerSessionIDs, err := s.activeWorkerSessionIDs(ctx, session.ArchitectKey, session.ID)
+	if err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+	if len(activeWorkerSessionIDs) > 0 {
+		return domain.ConcludeSessionResult{}, &domain.ConflictError{
+			Resource: "session",
+			Field:    "architect_key",
+			Message:  fmt.Sprintf("Cannot conclude architect session: %d worker session(s) still active: %s", len(activeWorkerSessionIDs), strings.Join(activeWorkerSessionIDs, ", ")),
+		}
+	}
+
 	architect, ok := s.cfg.Architects[session.ArchitectKey]
 	if !ok {
 		return domain.ConcludeSessionResult{}, &domain.NotFoundError{Resource: "architect", ID: session.ArchitectKey}
@@ -634,6 +646,30 @@ func (s *Service) concludeArchitectSession(ctx context.Context, session domain.S
 	s.cleanupDeletedSession(session.ID)
 
 	return domain.ConcludeSessionResult{SessionID: session.ID, ArchitectKey: session.ArchitectKey}, nil
+}
+
+func (s *Service) activeWorkerSessionIDs(ctx context.Context, architectKey, excludedSessionID string) ([]string, error) {
+	sessions, err := s.repo.ListSessions(ctx, domain.SessionListFilter{Status: domain.SessionStatusRunning})
+	if err != nil {
+		return nil, fmt.Errorf("list running sessions for architect conclude: %w", err)
+	}
+
+	ids := make([]string, 0, len(sessions))
+	for _, candidate := range sessions {
+		if candidate.ID == excludedSessionID {
+			continue
+		}
+		if candidate.ArchitectKey != architectKey {
+			continue
+		}
+		if candidate.SessionType != string(domain.SessionTypeWork) {
+			continue
+		}
+		ids = append(ids, candidate.ID)
+	}
+
+	sort.Strings(ids)
+	return ids, nil
 }
 
 func (s *Service) concludeWorkSession(ctx context.Context, session domain.Session, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {

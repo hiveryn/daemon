@@ -97,6 +97,7 @@ Each resource is self-contained across four packages — no cross-contamination.
 - SQLite uses `SetMaxOpenConns(1)` (single-writer). Busy timeout is 5 seconds.
 - Never log secrets from profiles, env configs, or MCP configurations.
 - PTY/process handles stay in memory under `sessionruntime`; SQLite stores session metadata and structured events only.
+- Architect sessions must not conclude while same-architect work sessions are still running; return a `Conflict` with the active worker session IDs instead of orphaning PTYs.
 - The architect folder's markdown is the source of truth for tickets and conclusions. `~/.hiveryn/config.yaml` is the source of truth for daemon core settings. `~/.hiveryn/variants.yaml`, `~/.hiveryn/architects.yaml`, `~/.hiveryn/tabs.yaml`, and `~/.hiveryn/shortcuts.yaml` are the source of truth for variants, architects, repo mappings, tab layouts, and shortcuts. SQLite stores runtime state only.
 - All API responses use a standard envelope (`domain.Envelope`) with `data`/`error` (mutually exclusive), `logs`, `commands`, and `meta.request_id`. Handlers write via `writeJSON(w, r, ...)` and `writeError(w, r, ...)` — envelope wrapping is automatic.
 

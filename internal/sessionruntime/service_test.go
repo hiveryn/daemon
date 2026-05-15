@@ -154,6 +154,80 @@ func TestConcludeArchitectSessionAppendsEndedEventRawBody(t *testing.T) {
 	}
 }
 
+func TestConcludeArchitectSessionConflictsWhenWorkerSessionsStillRunning(t *testing.T) {
+	t.Parallel()
+
+	architectPath := t.TempDir()
+	operations := []string{}
+	repo := newFakeSessionRepository()
+	repo.operations = &operations
+	repo.createdSession = domain.Session{
+		ID:           "sess-architect",
+		ProfileName:  "codex",
+		ArchitectKey: "hiveryn",
+		SessionType:  string(domain.SessionTypeArchitect),
+		Status:       domain.SessionStatusRunning,
+		CreatedAt:    time.Date(2026, 5, 13, 15, 0, 0, 0, time.UTC),
+	}
+	repo.listedSessions = []domain.Session{
+		{
+			ID:           "sess-work-2",
+			ArchitectKey: "hiveryn",
+			SessionType:  string(domain.SessionTypeWork),
+			Status:       domain.SessionStatusRunning,
+		},
+		{
+			ID:           "sess-work-1",
+			ArchitectKey: "hiveryn",
+			SessionType:  string(domain.SessionTypeWork),
+			Status:       domain.SessionStatusRunning,
+		},
+		{
+			ID:           "sess-other-architect",
+			ArchitectKey: "other",
+			SessionType:  string(domain.SessionTypeWork),
+			Status:       domain.SessionStatusRunning,
+		},
+		{
+			ID:           "sess-collab",
+			ArchitectKey: "hiveryn",
+			SessionType:  string(domain.SessionTypeCollab),
+			Status:       domain.SessionStatusRunning,
+		},
+	}
+	service := &Service{
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:          testRuntimeConfigWithPaths(architectPath, t.TempDir()),
+		repo:         repo,
+		terminal:     &fakeTerminalManager{operations: &operations},
+		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
+	}
+
+	_, err := service.ConcludeSession(context.Background(), "sess-architect", domain.ConcludeSessionParams{
+		Body: "architect conclusion",
+	})
+	if err == nil {
+		t.Fatal("expected conflict error")
+	}
+
+	var conflict *domain.ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("expected conflict error, got %v", err)
+	}
+	if got, want := conflict.Message, "Cannot conclude architect session: 2 worker session(s) still active: sess-work-1, sess-work-2"; got != want {
+		t.Fatalf("expected conflict message %q, got %q", want, got)
+	}
+	if repo.lastListFilter.Status != domain.SessionStatusRunning {
+		t.Fatalf("expected running-session filter, got %#v", repo.lastListFilter)
+	}
+	if len(operations) != 0 {
+		t.Fatalf("expected no conclude operations on conflict, got %#v", operations)
+	}
+	if _, statErr := os.Stat(filepath.Join(architectPath, "architect-sessions")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected no architect conclusion directory on conflict, got %v", statErr)
+	}
+}
+
 func TestConcludeWorkSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 	t.Parallel()
 
@@ -544,6 +618,7 @@ func (f *fakeTerminalManager) Shutdown(context.Context) error {
 type fakeSessionRepository struct {
 	createdSession domain.Session
 	listedSessions []domain.Session
+	lastListFilter domain.SessionListFilter
 	updatedStatus  domain.SessionStatus
 	appendedEvents []domain.AppendSessionEventParams
 	operations     *[]string
@@ -571,7 +646,8 @@ func (f *fakeSessionRepository) GetSession(context.Context, string) (domain.Sess
 	return f.createdSession, nil
 }
 
-func (f *fakeSessionRepository) ListSessions(context.Context, domain.SessionListFilter) ([]domain.Session, error) {
+func (f *fakeSessionRepository) ListSessions(_ context.Context, filter domain.SessionListFilter) ([]domain.Session, error) {
+	f.lastListFilter = filter
 	if f.listedSessions == nil {
 		return nil, nil
 	}

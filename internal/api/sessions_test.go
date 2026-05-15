@@ -599,6 +599,22 @@ func TestConcludeSessionAlreadyCompleted(t *testing.T) {
 	}
 }
 
+func TestConcludeSessionArchitectConflictWhenWorkersStillRunning(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeSessionService{
+		concludeErr: &domain.ConflictError{Resource: "session", Field: "architect_key", Message: "Cannot conclude architect session: 2 worker session(s) still active: sess-work-1, sess-work-2"},
+	}
+	handler := newSessionTestHandler(t, service)
+
+	status, body := requestJSON(t, handler, http.MethodPost, "/api/sessions/sess-architect/conclude", map[string]any{
+		"body": "done",
+	})
+	if status != http.StatusConflict {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusConflict, status, string(body))
+	}
+}
+
 func TestConcludeSessionWorkerMissingCommits(t *testing.T) {
 	t.Parallel()
 

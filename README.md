@@ -154,7 +154,7 @@ Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to de
 | `GET` | `/api/config/shortcuts` | Get resolved shortcuts config (global + per-pane keybindings) |
 | `GET` | `/api/sessions` | List sessions; supports `?status=running` |
 | `GET` | `/api/sessions/{id}` | Get one session |
-| `POST` | `/api/sessions/{id}/conclude` | Conclude a running session, publish `ended`, kill its PTY, and delete its SQLite row |
+| `POST` | `/api/sessions/{id}/conclude` | Conclude a running session, publish `ended`, kill its PTY, and delete its SQLite row; architect conclude returns `CONFLICT` if same-architect work sessions are still running |
 | `GET` | `/api/sessions/{id}/tabs` | Get the resolved right-pane tab layout for a session |
 | `POST` | `/api/sessions/{id}/terminals` | Create a new user terminal in a session |
 | `GET` | `/api/sessions/{id}/terminals` | List all terminals for a session |
@@ -165,6 +165,8 @@ Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to de
 Profile, architect, repo, and tab configuration endpoints are read-only. Edit `~/.hiveryn/*.yaml` directly to change variants, architects, repos, or tabs.
 
 Session responses include `main_terminal_id` so the desktop can reconnect the main agent PTY. `GET /api/sessions/{id}/tabs` returns the canonical right-pane layout using `type`, `id`, `command`, and `status` for terminal tabs.
+
+Concluding an architect session fails fast with `CONFLICT` while worker sessions for the same `architect_key` are still `running`; the error message lists the blocking session IDs.
 
 All responses use a standard envelope:
 
