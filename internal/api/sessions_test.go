@@ -76,7 +76,7 @@ func TestWorkerSpawnEndpoint(t *testing.T) {
 	}
 }
 
-func TestSessionsListAndDeleteEndpoints(t *testing.T) {
+func TestSessionsListAndDeleteEndpointRemoved(t *testing.T) {
 	t.Parallel()
 
 	service := &fakeSessionService{
@@ -106,11 +106,8 @@ func TestSessionsListAndDeleteEndpoints(t *testing.T) {
 	}
 
 	deleteStatus, _ := request(t, handler, http.MethodDelete, "/api/sessions/sess-1", nil)
-	if deleteStatus != http.StatusNoContent {
-		t.Fatalf("expected delete status %d, got %d", http.StatusNoContent, deleteStatus)
-	}
-	if service.deletedID != "sess-1" {
-		t.Fatalf("unexpected deleted session id %q", service.deletedID)
+	if deleteStatus != http.StatusMethodNotAllowed {
+		t.Fatalf("expected delete status %d, got %d", http.StatusMethodNotAllowed, deleteStatus)
 	}
 }
 
@@ -212,7 +209,6 @@ type fakeSessionService struct {
 	lastSpawn             domain.SpawnArchitectSessionRequest
 	sessions              []domain.Session
 	lastListFilter        domain.SessionListFilter
-	deletedID             string
 	attachTerminal        func(context.Context, string, string) (domain.TerminalAttachment, error)
 	getSessionResult      domain.Session
 	sessionTabs           []domain.SessionTab
@@ -234,11 +230,6 @@ func (f *fakeSessionService) SpawnWorkSession(_ context.Context, req domain.Spaw
 		Session:        domain.Session{ID: req.TicketID + "-session"},
 		MainTerminalID: "term-main-1",
 	}, nil
-}
-
-func (f *fakeSessionService) TerminateSession(_ context.Context, id string) error {
-	f.deletedID = id
-	return nil
 }
 
 func (f *fakeSessionService) GetSession(_ context.Context, id string) (domain.Session, error) {
@@ -471,7 +462,7 @@ func TestConcludeSessionArchitectSuccess(t *testing.T) {
 	t.Parallel()
 
 	service := &fakeSessionService{
-		concludeResult: domain.ConcludeSessionResult{SessionID: "sess-1"},
+		concludeResult: domain.ConcludeSessionResult{SessionID: "sess-1", ArchitectKey: "hiveryn"},
 		getSessionResult: domain.Session{
 			ID:           "sess-1",
 			ArchitectKey: "hiveryn",
@@ -509,7 +500,7 @@ func TestConcludeSessionWorkerSuccess(t *testing.T) {
 
 	hub := archevents.New()
 	service := &fakeSessionService{
-		concludeResult: domain.ConcludeSessionResult{SessionID: "sess-1", TicketID: "ticket-1"},
+		concludeResult: domain.ConcludeSessionResult{SessionID: "sess-1", ArchitectKey: "hiveryn", TicketID: "ticket-1"},
 		getSessionResult: domain.Session{
 			ID:           "sess-1",
 			ArchitectKey: "hiveryn",

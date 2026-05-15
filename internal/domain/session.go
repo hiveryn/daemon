@@ -103,8 +103,9 @@ type ConcludeSessionParams struct {
 }
 
 type ConcludeSessionResult struct {
-	SessionID string `json:"session_id"`
-	TicketID  string `json:"ticket_id,omitempty"`
+	SessionID    string `json:"session_id"`
+	ArchitectKey string `json:"architect_key"`
+	TicketID     string `json:"ticket_id,omitempty"`
 }
 
 type SpawnArchitectSessionRequest struct {
@@ -183,7 +184,6 @@ type SessionService interface {
 	ReadConclusion(context.Context, string, string) (ArchitectConclusion, error)
 	ReadRecentConclusion(context.Context, string) (ArchitectConclusion, error)
 	ListConclusions(context.Context, string, int) ([]ConclusionSummary, error)
-	TerminateSession(context.Context, string) error
 	GetSession(context.Context, string) (Session, error)
 	ListSessions(context.Context, SessionListFilter) ([]Session, error)
 	ListSessionEvents(context.Context, string) ([]SessionEvent, error)

@@ -620,11 +620,20 @@ func (s *Service) concludeArchitectSession(ctx context.Context, session domain.S
 		return domain.ConcludeSessionResult{}, err
 	}
 
-	_ = s.terminal.KillBySession(ctx, session.ID)
+	if err := s.appendAndPublishSessionEnded(ctx, session.ID, "session concluded", map[string]any{"body": params.Body}); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
 
-	s.appendAndPublishSessionEnded(ctx, session.ID, "session concluded", map[string]any{"body": params.Body})
+	if err := s.terminal.KillBySession(ctx, session.ID); err != nil && !errors.Is(err, errTerminalNotFound) {
+		return domain.ConcludeSessionResult{}, fmt.Errorf("kill session terminal: %w", err)
+	}
 
-	return domain.ConcludeSessionResult{SessionID: session.ID}, nil
+	if err := s.repo.DeleteSession(ctx, session.ID); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+	s.cleanupDeletedSession(session.ID)
+
+	return domain.ConcludeSessionResult{SessionID: session.ID, ArchitectKey: session.ArchitectKey}, nil
 }
 
 func (s *Service) concludeWorkSession(ctx context.Context, session domain.Session, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
@@ -694,19 +703,28 @@ func (s *Service) concludeWorkSession(ctx context.Context, session domain.Sessio
 		return domain.ConcludeSessionResult{}, err
 	}
 
-	_ = s.terminal.KillBySession(ctx, session.ID)
-
-	s.appendAndPublishSessionEnded(ctx, session.ID, "session concluded", map[string]any{
+	if err := s.appendAndPublishSessionEnded(ctx, session.ID, "session concluded", map[string]any{
 		"body":             params.Body,
 		"commits":          params.Commits,
 		"rejected":         params.Rejected,
 		"rejection_reason": params.RejectionReason,
-	})
+	}); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
 
-	return domain.ConcludeSessionResult{SessionID: session.ID, TicketID: session.TicketID}, nil
+	if err := s.terminal.KillBySession(ctx, session.ID); err != nil && !errors.Is(err, errTerminalNotFound) {
+		return domain.ConcludeSessionResult{}, fmt.Errorf("kill session terminal: %w", err)
+	}
+
+	if err := s.repo.DeleteSession(ctx, session.ID); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+	s.cleanupDeletedSession(session.ID)
+
+	return domain.ConcludeSessionResult{SessionID: session.ID, ArchitectKey: session.ArchitectKey, TicketID: session.TicketID}, nil
 }
 
-func (s *Service) appendAndPublishSessionEnded(ctx context.Context, sessionID, message string, raw map[string]any) {
+func (s *Service) appendAndPublishSessionEnded(ctx context.Context, sessionID, message string, raw map[string]any) error {
 	event, err := s.repo.AppendSessionEvent(ctx, domain.AppendSessionEventParams{
 		SessionID: sessionID,
 		Type:      "status",
@@ -716,10 +734,10 @@ func (s *Service) appendAndPublishSessionEnded(ctx context.Context, sessionID, m
 		At:        time.Now().UTC(),
 	})
 	if err != nil {
-		s.logger.Warn("append session ended event failed", "session_id", sessionID, "error", err)
-		return
+		return fmt.Errorf("append session ended event: %w", err)
 	}
 	s.publishEvent(sessionID, event)
+	return nil
 }
 
 func validateCommitSHA(ctx context.Context, repoPath, sha string) error {
@@ -762,10 +780,17 @@ func (s *Service) TerminateSession(ctx context.Context, id string) error {
 		return err
 	}
 
+	if err := s.repo.DeleteSession(ctx, id); err != nil {
+		return err
+	}
+	s.cleanupDeletedSession(id)
+	return nil
+}
+
+func (s *Service) cleanupDeletedSession(id string) {
 	s.cancelReceiverBridge(id)
 	s.closeEventSubscribers(id)
 	s.removeSessionTerminalState(id)
-	return s.repo.DeleteSession(ctx, id)
 }
 
 func (s *Service) GetSession(ctx context.Context, id string) (domain.Session, error) {

@@ -116,7 +116,9 @@ func TestSpawnArchitectSessionFailsWhenSetupFails(t *testing.T) {
 func TestConcludeArchitectSessionAppendsEndedEventRawBody(t *testing.T) {
 	t.Parallel()
 
+	operations := []string{}
 	repo := newFakeSessionRepository()
+	repo.operations = &operations
 	repo.createdSession = domain.Session{
 		ID:           "sess-architect",
 		ProfileName:  "codex",
@@ -129,7 +131,7 @@ func TestConcludeArchitectSessionAppendsEndedEventRawBody(t *testing.T) {
 		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg:          testRuntimeConfig(t),
 		repo:         repo,
-		terminal:     &fakeTerminalManager{},
+		terminal:     &fakeTerminalManager{operations: &operations},
 		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
 	}
 
@@ -147,6 +149,9 @@ func TestConcludeArchitectSessionAppendsEndedEventRawBody(t *testing.T) {
 	if event.Status != "ended" {
 		t.Fatalf("expected ended event, got %#v", event)
 	}
+	if got, want := strings.Join(operations, ","), "end,event,kill,delete"; got != want {
+		t.Fatalf("expected conclude operation order %q, got %q", want, got)
+	}
 }
 
 func TestConcludeWorkSessionAppendsEndedEventRawConclusionData(t *testing.T) {
@@ -156,7 +161,9 @@ func TestConcludeWorkSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 	repoPath := t.TempDir()
 	commit := createTestGitCommit(t, repoPath)
 	created := time.Date(2026, 5, 13, 15, 30, 0, 0, time.UTC)
+	operations := []string{}
 	repo := newFakeSessionRepository()
+	repo.operations = &operations
 	repo.createdSession = domain.Session{
 		ID:           "sess-work",
 		ProfileName:  "codex",
@@ -176,7 +183,7 @@ func TestConcludeWorkSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 			},
 			Body: "body",
 		}},
-		terminal:     &fakeTerminalManager{},
+		terminal:     &fakeTerminalManager{operations: &operations},
 		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
 	}
 
@@ -203,6 +210,9 @@ func TestConcludeWorkSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 	}
 	if event.Raw["rejection_reason"] != "needs another pass" {
 		t.Fatalf("expected raw rejection reason in ended event, got %#v", event.Raw)
+	}
+	if got, want := strings.Join(operations, ","), "end,event,kill,delete"; got != want {
+		t.Fatalf("expected conclude operation order %q, got %q", want, got)
 	}
 }
 
@@ -472,6 +482,7 @@ type fakeTerminalManager struct {
 	startSpecs []terminalStartSpec
 	terminals  []domain.TerminalInfo
 	killed     []string
+	operations *[]string
 }
 
 func (f *fakeTerminalManager) Start(_ context.Context, spec terminalStartSpec) error {
@@ -510,6 +521,9 @@ func (f *fakeTerminalManager) Kill(_ context.Context, sessionID, id string) erro
 }
 
 func (f *fakeTerminalManager) KillBySession(context.Context, string) error {
+	if f.operations != nil {
+		*f.operations = append(*f.operations, "kill")
+	}
 	return nil
 }
 
@@ -532,6 +546,7 @@ type fakeSessionRepository struct {
 	listedSessions []domain.Session
 	updatedStatus  domain.SessionStatus
 	appendedEvents []domain.AppendSessionEventParams
+	operations     *[]string
 }
 
 func newFakeSessionRepository() *fakeSessionRepository {
@@ -576,10 +591,16 @@ func (f *fakeSessionRepository) UpdateSessionNativeID(context.Context, string, s
 }
 
 func (f *fakeSessionRepository) EndSession(context.Context, string) error {
+	if f.operations != nil {
+		*f.operations = append(*f.operations, "end")
+	}
 	return nil
 }
 
 func (f *fakeSessionRepository) DeleteSession(context.Context, string) error {
+	if f.operations != nil {
+		*f.operations = append(*f.operations, "delete")
+	}
 	return nil
 }
 
@@ -588,6 +609,9 @@ func (f *fakeSessionRepository) ListSessionEvents(context.Context, string) ([]do
 }
 
 func (f *fakeSessionRepository) AppendSessionEvent(_ context.Context, params domain.AppendSessionEventParams) (domain.SessionEvent, error) {
+	if f.operations != nil {
+		*f.operations = append(*f.operations, "event")
+	}
 	f.appendedEvents = append(f.appendedEvents, params)
 	return domain.SessionEvent{
 		SessionID: params.SessionID,

@@ -154,8 +154,7 @@ Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to de
 | `GET` | `/api/config/shortcuts` | Get resolved shortcuts config (global + per-pane keybindings) |
 | `GET` | `/api/sessions` | List sessions; supports `?status=running` |
 | `GET` | `/api/sessions/{id}` | Get one session |
-| `DELETE` | `/api/sessions/{id}` | Kill and delete a session |
-| `POST` | `/api/sessions/{id}/conclude` | Conclude a running session (architect or work) |
+| `POST` | `/api/sessions/{id}/conclude` | Conclude a running session, publish `ended`, kill its PTY, and delete its SQLite row |
 | `GET` | `/api/sessions/{id}/tabs` | Get the resolved right-pane tab layout for a session |
 | `POST` | `/api/sessions/{id}/terminals` | Create a new user terminal in a session |
 | `GET` | `/api/sessions/{id}/terminals` | List all terminals for a session |

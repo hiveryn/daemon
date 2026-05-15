@@ -81,10 +81,9 @@ func (h *sessionsHandler) conclude(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if result.TicketID != "" && h.publishArchitect != nil {
-		session, _ := h.sessions.GetSession(r.Context(), r.PathValue("id"))
-		h.publishArchitect(session.ArchitectKey, domain.ArchitectEvent{
+		h.publishArchitect(result.ArchitectKey, domain.ArchitectEvent{
 			Type:         "workspace_changed",
-			ArchitectKey: session.ArchitectKey,
+			ArchitectKey: result.ArchitectKey,
 			Reason:       "ticket_concluded",
 			TicketID:     result.TicketID,
 			At:           time.Now().UTC(),
@@ -96,19 +95,6 @@ func (h *sessionsHandler) conclude(w http.ResponseWriter, r *http.Request) {
 		"session_id": result.SessionID,
 		"ticket_id":  result.TicketID,
 	})
-}
-
-func (h *sessionsHandler) delete(w http.ResponseWriter, r *http.Request) {
-	if h.sessions == nil {
-		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
-		return
-	}
-
-	if err := h.sessions.TerminateSession(r.Context(), r.PathValue("id")); err != nil {
-		writeDomainError(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *sessionsHandler) events(w http.ResponseWriter, r *http.Request) {
