@@ -147,63 +147,23 @@ func (s *Service) SpawnArchitectSession(ctx context.Context, req domain.SpawnArc
 		return domain.SpawnArchitectSessionResult{}, err
 	}
 
-	adapter := s.adapters[agentKind]
-	if _, err := adapter.EnsureSetup(ctx, setupRequestForAgent(agentKind, s.baseURL+ingestPathPrefix, profile.Env)); err != nil {
-		s.markSessionFailed(session.ID, "ensure setup")
-		return domain.SpawnArchitectSessionResult{}, fmt.Errorf("ensure %s setup: %w", agentKind, err)
-	}
-	mcpServers, err := s.mcpServersForSession(domain.SessionTypeArchitect, req.ArchitectKey, session.ID)
-	if err != nil {
-		s.markSessionFailed(session.ID, "resolve mcp server")
-		return domain.SpawnArchitectSessionResult{}, err
-	}
-	spec, err := adapter.PrepareLaunch(ctx, agentruntime.StartRequest{
-		ID:           session.ID,
-		Agent:        agentKind,
+	s.logger.Info("[spawn] starting architect PTY",
+		"session_id", session.ID,
+		"requested_cols", req.Cols,
+		"requested_rows", req.Rows,
+	)
+
+	mainTerminalID, err := s.launchSession(ctx, session, profile, agentKind, agentruntime.StartRequest{
 		Prompt:       kickoffContent,
 		Instructions: systemContent,
 		Workdir:      architect.Path,
 		Args:         append([]string(nil), profile.Args...),
 		Env:          cloneStringMap(profile.Env),
-		MCPServers:   mcpServers,
-	})
+	}, terminalSize{Cols: req.Cols, Rows: req.Rows})
 	if err != nil {
-		s.markSessionFailed(session.ID, "prepare launch")
-		return domain.SpawnArchitectSessionResult{}, fmt.Errorf("prepare launch: %w", err)
+		s.markSessionFailed(session.ID, "launch")
+		return domain.SpawnArchitectSessionResult{}, fmt.Errorf("launch architect session: %w", err)
 	}
-
-	cancelBridge := s.startReceiverBridge(session.ID)
-	s.storeBridgeCancel(session.ID, cancelBridge)
-
-	s.logger.Info("[spawn] starting PTY",
-		"session_id", session.ID,
-		"requested_cols", req.Cols,
-		"requested_rows", req.Rows,
-		"command", spec.Command,
-	)
-
-	mainTerminalID := uuid.NewString()
-	if err := s.terminal.Start(ctx, terminalStartSpec{
-		SessionID:    session.ID,
-		TerminalID:   mainTerminalID,
-		Name:         mainTerminalName,
-		Command:      spec.Command,
-		Args:         append([]string(nil), spec.Args...),
-		Env:          cloneStringMap(spec.Env),
-		Workdir:      spec.Workdir,
-		Size:         terminalSize{Cols: req.Cols, Rows: req.Rows},
-		CleanupPaths: append([]string(nil), spec.CleanupPaths...),
-		OnExit:       s.handleTerminalExit,
-	}); err != nil {
-		s.cancelReceiverBridge(session.ID)
-		s.markSessionFailed(session.ID, "terminal start")
-		return domain.SpawnArchitectSessionResult{}, err
-	}
-
-	s.storeSessionTerminalState(session.ID, sessionTerminalState{
-		mainTerminalID: mainTerminalID,
-		tabs:           s.startAutoTerminals(ctx, session, spec.Workdir, spec.Env, terminalSize{Cols: req.Cols, Rows: req.Rows}, spec.CleanupPaths),
-	})
 
 	return domain.SpawnArchitectSessionResult{Session: session, MainTerminalID: mainTerminalID}, nil
 }
@@ -271,63 +231,22 @@ func (s *Service) SpawnWorkSession(ctx context.Context, req domain.SpawnWorkSess
 		return domain.SpawnWorkSessionResult{}, err
 	}
 
-	adapter := s.adapters[agentKind]
-	if _, err := adapter.EnsureSetup(ctx, setupRequestForAgent(agentKind, s.baseURL+ingestPathPrefix, profile.Env)); err != nil {
-		s.markSessionFailed(session.ID, "ensure setup")
-		return domain.SpawnWorkSessionResult{}, fmt.Errorf("ensure %s setup: %w", agentKind, err)
-	}
-	mcpServers, err := s.mcpServersForSession(domain.SessionTypeWork, req.ArchitectKey, session.ID)
-	if err != nil {
-		s.markSessionFailed(session.ID, "resolve mcp server")
-		return domain.SpawnWorkSessionResult{}, err
-	}
-
-	spec, err := adapter.PrepareLaunch(ctx, agentruntime.StartRequest{
-		ID:         session.ID,
-		Agent:      agentKind,
-		Prompt:     kickoffContent,
-		Workdir:    repoPath,
-		Args:       append([]string(nil), profile.Args...),
-		Env:        cloneStringMap(profile.Env),
-		MCPServers: mcpServers,
-	})
-	if err != nil {
-		s.markSessionFailed(session.ID, "prepare launch")
-		return domain.SpawnWorkSessionResult{}, fmt.Errorf("prepare launch: %w", err)
-	}
-
-	cancelBridge := s.startReceiverBridge(session.ID)
-	s.storeBridgeCancel(session.ID, cancelBridge)
-
 	s.logger.Info("[spawn] starting worker PTY",
 		"session_id", session.ID,
 		"ticket_id", req.TicketID,
 		"repo_path", repoPath,
-		"command", spec.Command,
 	)
 
-	mainTerminalID := uuid.NewString()
-	if err := s.terminal.Start(ctx, terminalStartSpec{
-		SessionID:    session.ID,
-		TerminalID:   mainTerminalID,
-		Name:         mainTerminalName,
-		Command:      spec.Command,
-		Args:         append([]string(nil), spec.Args...),
-		Env:          cloneStringMap(spec.Env),
-		Workdir:      spec.Workdir,
-		Size:         terminalSize{Cols: req.Cols, Rows: req.Rows},
-		CleanupPaths: append([]string(nil), spec.CleanupPaths...),
-		OnExit:       s.handleTerminalExit,
-	}); err != nil {
-		s.cancelReceiverBridge(session.ID)
-		s.markSessionFailed(session.ID, "terminal start")
-		return domain.SpawnWorkSessionResult{}, err
+	mainTerminalID, err := s.launchSession(ctx, session, profile, agentKind, agentruntime.StartRequest{
+		Prompt:  kickoffContent,
+		Workdir: repoPath,
+		Args:    append([]string(nil), profile.Args...),
+		Env:     cloneStringMap(profile.Env),
+	}, terminalSize{Cols: req.Cols, Rows: req.Rows})
+	if err != nil {
+		s.markSessionFailed(session.ID, "launch")
+		return domain.SpawnWorkSessionResult{}, fmt.Errorf("launch worker session: %w", err)
 	}
-
-	s.storeSessionTerminalState(session.ID, sessionTerminalState{
-		mainTerminalID: mainTerminalID,
-		tabs:           s.startAutoTerminals(ctx, session, spec.Workdir, spec.Env, terminalSize{Cols: req.Cols, Rows: req.Rows}, spec.CleanupPaths),
-	})
 
 	if _, err := s.tickets.MoveTicket(ctx, architect.Path, req.TicketID, domain.MoveTicketParams{
 		To: domain.TicketStatusProgress,
@@ -370,6 +289,165 @@ func hookCommandForAgent(agentKind agentruntime.AgentKind, endpoint string) agen
 	default:
 		return agentruntime.HookCommand{Endpoint: endpoint}
 	}
+}
+
+func (s *Service) launchSession(ctx context.Context, session domain.Session, profile config.VariantConfig, agentKind agentruntime.AgentKind, startReq agentruntime.StartRequest, size terminalSize) (string, error) {
+	startReq.ID = session.ID
+	startReq.Agent = agentKind
+
+	adapter := s.adapters[agentKind]
+	if _, err := adapter.EnsureSetup(ctx, setupRequestForAgent(agentKind, s.baseURL+ingestPathPrefix, profile.Env)); err != nil {
+		return "", fmt.Errorf("ensure %s setup: %w", agentKind, err)
+	}
+
+	sessionType := domain.SessionType(session.SessionType)
+	mcpServers, err := s.mcpServersForSession(sessionType, session.ArchitectKey, session.ID)
+	if err != nil {
+		return "", err
+	}
+	startReq.MCPServers = mcpServers
+
+	spec, err := adapter.PrepareLaunch(ctx, startReq)
+	if err != nil {
+		return "", fmt.Errorf("prepare launch: %w", err)
+	}
+
+	cancelBridge := s.startReceiverBridge(session.ID)
+	s.storeBridgeCancel(session.ID, cancelBridge)
+
+	mainTerminalID := uuid.NewString()
+	if err := s.terminal.Start(ctx, terminalStartSpec{
+		SessionID:    session.ID,
+		TerminalID:   mainTerminalID,
+		Name:         mainTerminalName,
+		Command:      spec.Command,
+		Args:         append([]string(nil), spec.Args...),
+		Env:          cloneStringMap(spec.Env),
+		Workdir:      spec.Workdir,
+		Size:         size,
+		CleanupPaths: append([]string(nil), spec.CleanupPaths...),
+		OnExit:       s.handleTerminalExit,
+	}); err != nil {
+		s.cancelReceiverBridge(session.ID)
+		return "", err
+	}
+
+	s.storeSessionTerminalState(session.ID, sessionTerminalState{
+		mainTerminalID: mainTerminalID,
+		tabs:           s.startAutoTerminals(ctx, session, spec.Workdir, spec.Env, size, spec.CleanupPaths),
+	})
+
+	s.logger.Info("[launch] started agent PTY",
+		"session_id", session.ID,
+		"session_type", session.SessionType,
+		"command", spec.Command,
+	)
+
+	return mainTerminalID, nil
+}
+
+func (s *Service) RestoreRunningSessions(ctx context.Context) error {
+	sessions, err := s.repo.ListSessions(ctx, domain.SessionListFilter{Status: domain.SessionStatusRunning})
+	if err != nil {
+		return fmt.Errorf("list running sessions for restore: %w", err)
+	}
+
+	if len(sessions) == 0 {
+		return nil
+	}
+
+	s.logger.Info("restoring running sessions", "count", len(sessions))
+
+	for _, session := range sessions {
+		if err := s.restoreSession(ctx, session); err != nil {
+			s.logger.Info("session restore failed",
+				"session_id", session.ID,
+				"session_type", session.SessionType,
+				"architect_key", session.ArchitectKey,
+				"error", err,
+			)
+		} else {
+			s.logger.Info("session restored",
+				"session_id", session.ID,
+				"session_type", session.SessionType,
+				"architect_key", session.ArchitectKey,
+			)
+		}
+	}
+
+	return nil
+}
+
+func (s *Service) restoreSession(ctx context.Context, session domain.Session) error {
+	architect, ok := s.cfg.Architects[session.ArchitectKey]
+	if !ok {
+		s.markSessionFailed(session.ID, "restore: architect not found in config")
+		return fmt.Errorf("architect %q not found in architects.yaml", session.ArchitectKey)
+	}
+
+	profile, ok := s.cfg.Variants[session.ProfileName]
+	if !ok {
+		s.markSessionFailed(session.ID, "restore: agent profile not found in config")
+		return fmt.Errorf("agent profile %q not found in variants.yaml", session.ProfileName)
+	}
+
+	agentKind, err := parseAgentKind(profile.Agent)
+	if err != nil {
+		s.markSessionFailed(session.ID, "restore: unsupported agent")
+		return fmt.Errorf("unsupported agent %q", profile.Agent)
+	}
+
+	if session.NativeID == "" {
+		s.markSessionFailed(session.ID, "restore: no native_id")
+		return errors.New("session has no native ID — cannot resume")
+	}
+
+	var workdir string
+	switch domain.SessionType(session.SessionType) {
+	case domain.SessionTypeArchitect:
+		workdir = architect.Path
+	case domain.SessionTypeWork:
+		if session.TicketID == "" {
+			s.markSessionFailed(session.ID, "restore: work session has no ticket_id")
+			return errors.New("work session has no ticket ID")
+		}
+		ticket, err := s.tickets.GetTicket(ctx, architect.Path, session.TicketID)
+		if err != nil {
+			s.markSessionFailed(session.ID, "restore: ticket not found")
+			return fmt.Errorf("ticket %q not found: %w", session.TicketID, err)
+		}
+		if ticket.Repo == "" {
+			s.markSessionFailed(session.ID, "restore: ticket has no repo key")
+			return errors.New("ticket has no repo key")
+		}
+		repoPath, ok := architect.Repos[ticket.Repo]
+		if !ok {
+			s.markSessionFailed(session.ID, "restore: repo not configured")
+			return fmt.Errorf("repo key %q not configured in architect repos", ticket.Repo)
+		}
+		if err := validateRepoPath(repoPath); err != nil {
+			s.markSessionFailed(session.ID, "restore: invalid repo path")
+			return err
+		}
+		workdir = repoPath
+	default:
+		s.markSessionFailed(session.ID, "restore: unsupported session type")
+		return fmt.Errorf("unsupported session type %q", session.SessionType)
+	}
+
+	if _, err := s.launchSession(ctx, session, profile, agentKind, agentruntime.StartRequest{
+		Instructions: session.Instructions,
+		Workdir:      workdir,
+		Args:         append([]string(nil), profile.Args...),
+		Env:          cloneStringMap(profile.Env),
+		Resume:       true,
+		ResumeID:     session.NativeID,
+	}, terminalSize{Cols: defaultPTYCols, Rows: defaultPTYRows}); err != nil {
+		s.markSessionFailed(session.ID, "restore: launch")
+		return fmt.Errorf("launch session: %w", err)
+	}
+
+	return nil
 }
 
 func (s *Service) ConcludeSession(ctx context.Context, id string, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
@@ -867,9 +945,6 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	terminalErr := s.terminal.Shutdown(ctx)
 	s.cancelReceiverBridges()
 	s.closeEventSubscribers("")
-	if err := s.repo.FailRunningSessions(ctx); err != nil {
-		return err
-	}
 	return terminalErr
 }
 

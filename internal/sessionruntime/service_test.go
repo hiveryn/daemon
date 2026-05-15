@@ -543,9 +543,11 @@ func (f *fakeSessionRepository) CreateSession(_ context.Context, params domain.C
 		ID:           params.ID,
 		ProfileName:  params.ProfileName,
 		ArchitectKey: params.ArchitectKey,
+		SessionType:  params.SessionType,
 		Prompt:       params.Prompt,
 		Instructions: params.Instructions,
 		Status:       params.Status,
+		TicketID:     params.TicketID,
 	}
 	return f.createdSession, nil
 }

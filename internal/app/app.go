@@ -49,7 +49,7 @@ func Run(configPath, databasePath string) error {
 	if err != nil {
 		return err
 	}
-	if err := service.FailRunningSessions(ctx); err != nil {
+	if err := service.RestoreRunningSessions(ctx); err != nil {
 		return err
 	}
 	architectHub := archevents.New()
