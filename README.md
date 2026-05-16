@@ -166,9 +166,9 @@ Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to de
 
 Profile, architect, repo, and tab configuration endpoints are read-only. Edit `~/.hiveryn/*.yaml` directly to change variants, architects, repos, or tabs.
 
-Session responses include `main_terminal_id` so the desktop can reconnect the main agent PTY. `GET /api/sessions/{id}/tabs` returns the canonical right-pane layout using `type`, `id`, `command`, and `status` for terminal tabs. `POST /api/sessions/{id}/terminals` accepts an empty JSON object and always launches the session's default shell in the resolved session workdir.
+Session responses include `main_terminal_id` so the desktop can reconnect the main agent PTY. If the main agent PTY exits unexpectedly, the daemon automatically resumes the running session from its stored `native_id`, emits a `main_terminal_resumed` session event with the new `main_terminal_id`, and leaves the session status unchanged. `GET /api/sessions/{id}/tabs` returns the canonical right-pane layout using `type`, `id`, `command`, and `status` for terminal tabs. `POST /api/sessions/{id}/terminals` accepts an empty JSON object and always launches the session's default shell in the resolved session workdir.
 
-Concluding an architect session fails fast with `CONFLICT` while worker sessions for the same `architect_key` are still `running`; the error message lists the blocking session IDs.
+Only `POST /api/sessions/{id}/conclude` legitimately ends a session. Concluding an architect session fails fast with `CONFLICT` while worker sessions for the same `architect_key` are still `running`; the error message lists the blocking session IDs.
 
 All responses use a standard envelope:
 

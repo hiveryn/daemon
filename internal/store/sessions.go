@@ -130,22 +130,13 @@ func (s *SessionStore) UpdateSessionNativeID(ctx context.Context, id, nativeID s
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE sessions
 		SET native_id = ?, updated_at = datetime('now')
-		WHERE id = ? AND COALESCE(native_id, '') = ''
+		WHERE id = ?
 	`, nullIfEmpty(nativeID), id)
 	if err != nil {
 		return fmt.Errorf("update session native id %s: %w", id, err)
 	}
 
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected for session native id %s: %w", id, err)
-	}
-	if rows == 0 {
-		if _, err := s.GetSession(ctx, id); err != nil {
-			return err
-		}
-	}
-	return nil
+	return ensureRowsAffected(result, "session", id)
 }
 
 func (s *SessionStore) DeleteSession(ctx context.Context, id string) error {

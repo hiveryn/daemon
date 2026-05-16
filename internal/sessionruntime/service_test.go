@@ -3,6 +3,7 @@ package sessionruntime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -113,6 +114,38 @@ func TestSpawnArchitectSessionFailsWhenSetupFails(t *testing.T) {
 	}
 }
 
+func TestRestoreRunningSessionsReturnsResumeFailure(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.listedSessions = []domain.Session{{
+		ID:           "sess-1",
+		ProfileName:  "codex",
+		ArchitectKey: "hiveryn",
+		SessionType:  string(domain.SessionTypeArchitect),
+		Status:       domain.SessionStatusRunning,
+	}}
+	service := &Service{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:    testRuntimeConfig(t),
+		repo:   repo,
+	}
+
+	err := service.RestoreRunningSessions(context.Background())
+	if err == nil {
+		t.Fatal("expected restore failure")
+	}
+	if !strings.Contains(err.Error(), "session has no native ID") {
+		t.Fatalf("expected native id restore error, got %v", err)
+	}
+	if repo.updatedStatus != "" {
+		t.Fatalf("expected restore failure to leave session status unchanged, got %q", repo.updatedStatus)
+	}
+	if repo.lastListFilter.Status != domain.SessionStatusRunning {
+		t.Fatalf("expected running-session filter, got %#v", repo.lastListFilter)
+	}
+}
+
 func TestConcludeArchitectSessionAppendsEndedEventRawBody(t *testing.T) {
 	t.Parallel()
 
@@ -145,6 +178,9 @@ func TestConcludeArchitectSessionAppendsEndedEventRawBody(t *testing.T) {
 	event := repo.lastAppendedEvent(t)
 	if event.Raw["body"] != "architect conclusion" {
 		t.Fatalf("expected raw body in ended event, got %#v", event.Raw)
+	}
+	if event.Raw["lifecycle"] != "concluded" {
+		t.Fatalf("expected concluded lifecycle in ended event, got %#v", event.Raw)
 	}
 	if event.Status != "ended" {
 		t.Fatalf("expected ended event, got %#v", event)
@@ -274,6 +310,9 @@ func TestConcludeWorkSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 	event := repo.lastAppendedEvent(t)
 	if event.Raw["body"] != "worker conclusion" {
 		t.Fatalf("expected raw body in ended event, got %#v", event.Raw)
+	}
+	if event.Raw["lifecycle"] != "concluded" {
+		t.Fatalf("expected concluded lifecycle in ended event, got %#v", event.Raw)
 	}
 	commits, ok := event.Raw["commits"].([]string)
 	if !ok || len(commits) != 1 || commits[0] != commit {
@@ -566,6 +605,139 @@ func TestListSessionsHydratesMainTerminalID(t *testing.T) {
 	if len(sessions) != 1 || sessions[0].MainTerminalID != "term-main-1" {
 		t.Fatalf("expected hydrated main terminal id, got %#v", sessions)
 	}
+}
+
+func TestHandleTerminalExitResumesMainTerminal(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.createdSession = domain.Session{
+		ID:           "sess-1",
+		ProfileName:  "codex",
+		ArchitectKey: "hiveryn",
+		SessionType:  string(domain.SessionTypeArchitect),
+		Status:       domain.SessionStatusRunning,
+		NativeID:     "native-1",
+		Instructions: "system prompt",
+	}
+	adapter := &fakeAdapter{}
+	terminal := &fakeTerminalManager{}
+	oldBridgeCancelled := false
+	service := &Service{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:    testRuntimeConfig(t),
+		repo:   repo,
+		receiver: ingest.NewReceiver(
+			adapter,
+		),
+		adapters: map[agentruntime.AgentKind]agentruntime.Adapter{
+			agentruntime.AgentCodex: adapter,
+		},
+		terminal:      terminal,
+		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels: map[string]func(){"sess-1": func() { oldBridgeCancelled = true }},
+		terminalStates: map[string]sessionTerminalState{
+			"sess-1": {
+				mainTerminalID: "term-main-old",
+				tabs: []sessionTabState{{
+					tab: domain.SessionTab{Type: "terminal", TerminalID: "term-extra", Command: "yazi", Status: "running"},
+				}},
+			},
+		},
+	}
+
+	service.handleTerminalExit(terminalExit{SessionID: "sess-1", TerminalID: "term-main-old", Err: errors.New("process exited")})
+
+	if !oldBridgeCancelled {
+		t.Fatal("expected previous receiver bridge to be cancelled")
+	}
+	if len(terminal.startSpecs) != 1 {
+		t.Fatalf("expected resumed main terminal start, got %#v", terminal.startSpecs)
+	}
+	startSpec := terminal.firstStartSpec()
+	if startSpec.SessionID != "sess-1" || startSpec.Name != mainTerminalName {
+		t.Fatalf("unexpected start spec %#v", startSpec)
+	}
+	if startSpec.TerminalID == "term-main-old" || startSpec.TerminalID == "" {
+		t.Fatalf("expected a new main terminal id, got %#v", startSpec)
+	}
+	if !adapter.launchRequest.Resume || adapter.launchRequest.ResumeID != "native-1" {
+		t.Fatalf("expected resume launch request, got %#v", adapter.launchRequest)
+	}
+	if adapter.launchRequest.Instructions != "system prompt" {
+		t.Fatalf("expected resume to keep session instructions, got %#v", adapter.launchRequest)
+	}
+	if repo.updatedStatus != "" {
+		t.Fatalf("expected resumed session to stay running, got status update %q", repo.updatedStatus)
+	}
+
+	state := service.terminalStates["sess-1"]
+	if state.mainTerminalID != startSpec.TerminalID {
+		t.Fatalf("expected terminal state to point at resumed terminal %q, got %#v", startSpec.TerminalID, state)
+	}
+	if len(state.tabs) != 1 || state.tabs[0].tab.TerminalID != "term-extra" {
+		t.Fatalf("expected existing tabs to be preserved, got %#v", state.tabs)
+	}
+
+	event := repo.lastAppendedEvent(t)
+	if event.Type != "main_terminal_resumed" {
+		t.Fatalf("expected main terminal resumed event, got %#v", event)
+	}
+	if event.Raw["main_terminal_id"] != startSpec.TerminalID {
+		t.Fatalf("expected resumed event terminal id %q, got %#v", startSpec.TerminalID, event.Raw)
+	}
+	if event.Raw["previous_terminal_id"] != "term-main-old" {
+		t.Fatalf("expected resumed event previous terminal id, got %#v", event.Raw)
+	}
+	if event.Raw["exit_error"] != "process exited" {
+		t.Fatalf("expected resumed event exit error, got %#v", event.Raw)
+	}
+	if service.bridgeCancels["sess-1"] == nil {
+		t.Fatal("expected a replacement receiver bridge")
+	}
+}
+
+func TestHandleTerminalExitPanicsWhenResumeFails(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.createdSession = domain.Session{
+		ID:           "sess-1",
+		ProfileName:  "codex",
+		ArchitectKey: "hiveryn",
+		SessionType:  string(domain.SessionTypeArchitect),
+		Status:       domain.SessionStatusRunning,
+	}
+	adapter := &fakeAdapter{}
+	service := &Service{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:    testRuntimeConfig(t),
+		repo:   repo,
+		receiver: ingest.NewReceiver(
+			adapter,
+		),
+		adapters: map[agentruntime.AgentKind]agentruntime.Adapter{
+			agentruntime.AgentCodex: adapter,
+		},
+		terminal:      &fakeTerminalManager{},
+		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels: map[string]func(){},
+		terminalStates: map[string]sessionTerminalState{
+			"sess-1": {mainTerminalID: "term-main-old"},
+		},
+	}
+
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			t.Fatal("expected terminal exit resume failure to panic")
+		}
+		if !strings.Contains(fmt.Sprint(recovered), "session has no native ID") {
+			t.Fatalf("expected panic to include resume error, got %v", recovered)
+		}
+	}()
+
+	service.handleTerminalExit(terminalExit{SessionID: "sess-1", TerminalID: "term-main-old"})
 }
 
 func testRuntimeConfig(t *testing.T) config.Config {

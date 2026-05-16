@@ -117,3 +117,37 @@ func TestSessionStoreAllowsOneRunningWorkSessionPerTicket(t *testing.T) {
 		t.Fatalf("create completed work session for same ticket: %v", err)
 	}
 }
+
+func TestSessionStoreUpdatesNativeID(t *testing.T) {
+	t.Parallel()
+
+	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	store := NewSessionStore(db)
+	if _, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID:           "session-1",
+		ProfileName:  "opencode",
+		ArchitectKey: "hiveryn",
+		SessionType:  string(domain.SessionTypeArchitect),
+		Status:       domain.SessionStatusRunning,
+		NativeID:     "first-native-id",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	if err := store.UpdateSessionNativeID(context.Background(), "session-1", "primary-native-id"); err != nil {
+		t.Fatalf("update native id: %v", err)
+	}
+
+	session, err := store.GetSession(context.Background(), "session-1")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if session.NativeID != "primary-native-id" {
+		t.Fatalf("expected updated native id, got %q", session.NativeID)
+	}
+}
