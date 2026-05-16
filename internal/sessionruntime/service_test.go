@@ -297,12 +297,15 @@ func TestCreateTerminalGeneratesUUID(t *testing.T) {
 	repo.createdSession = domain.Session{
 		ID:           "sess-1",
 		ArchitectKey: "hiveryn",
+		SessionType:  string(domain.SessionTypeArchitect),
 		Status:       domain.SessionStatusRunning,
 	}
 	terminal := &fakeTerminalManager{}
+	cfg := testRuntimeConfig(t)
+	cfg.Shell = "/bin/zsh"
 	service := &Service{
 		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg:            testRuntimeConfig(t),
+		cfg:            cfg,
 		repo:           repo,
 		terminal:       terminal,
 		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
@@ -310,26 +313,96 @@ func TestCreateTerminalGeneratesUUID(t *testing.T) {
 		terminalStates: map[string]sessionTerminalState{},
 	}
 
-	info, err := service.CreateTerminal(context.Background(), "sess-1", domain.CreateTerminalParams{Command: "yazi"})
+	info, err := service.CreateTerminal(context.Background(), "sess-1", domain.CreateTerminalParams{})
 	if err != nil {
 		t.Fatalf("CreateTerminal failed: %v", err)
 	}
 	if info.TerminalID == "" {
 		t.Fatal("expected generated terminal ID")
 	}
-	if info.Command != "yazi" || info.Status != "running" {
+	if info.Command != "/bin/zsh" || info.Status != "running" {
 		t.Fatalf("unexpected terminal info %#v", info)
 	}
-	if got := terminal.firstStartSpec(); got.TerminalID != info.TerminalID || got.Command != "yazi" {
+	if got := terminal.firstStartSpec(); got.TerminalID != info.TerminalID || got.Command != "/bin/zsh" {
 		t.Fatalf("unexpected start spec %#v", got)
 	}
 	tabs, err := service.ListSessionTabs(context.Background(), "sess-1")
 	if err != nil {
 		t.Fatalf("ListSessionTabs failed: %v", err)
 	}
-	if len(tabs) != 1 || tabs[0].TerminalID != info.TerminalID || tabs[0].Command != "yazi" || tabs[0].Status != "running" {
+	if len(tabs) != 1 || tabs[0].TerminalID != info.TerminalID || tabs[0].Command != "/bin/zsh" || tabs[0].Status != "running" {
 		t.Fatalf("unexpected tabs after create %#v", tabs)
 	}
+}
+
+func TestCreateTerminalUsesWorkSessionRepoAndConfiguredShell(t *testing.T) {
+	t.Parallel()
+
+	architectPath := t.TempDir()
+	repoPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoPath, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+
+	repo := newFakeSessionRepository()
+	repo.createdSession = domain.Session{
+		ID:           "sess-1",
+		ArchitectKey: "hiveryn",
+		SessionType:  string(domain.SessionTypeWork),
+		TicketID:     "ticket-1",
+		Status:       domain.SessionStatusRunning,
+	}
+	terminal := &fakeTerminalManager{}
+	service := &Service{
+		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:            config.Config{Shell: "/bin/zsh", Architects: map[string]config.ArchitectConfig{"hiveryn": {Path: architectPath, Group: "personal", Repos: map[string]string{"daemon": repoPath}}}},
+		repo:           repo,
+		tickets:        &fakeTicketService{ticket: domain.Ticket{TicketSummary: domain.TicketSummary{ID: "ticket-1", Repo: "daemon"}}},
+		terminal:       terminal,
+		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels:  map[string]func(){},
+		terminalStates: map[string]sessionTerminalState{},
+	}
+
+	info, err := service.CreateTerminal(context.Background(), "sess-1", domain.CreateTerminalParams{})
+	if err != nil {
+		t.Fatalf("CreateTerminal failed: %v", err)
+	}
+	if info.Command != "/bin/zsh" {
+		t.Fatalf("expected configured shell command, got %#v", info)
+	}
+	if got := terminal.firstStartSpec(); got.Command != "/bin/zsh" || got.Workdir != repoPath || len(got.Args) != 0 {
+		t.Fatalf("unexpected start spec %#v", got)
+	}
+	if terminal.firstStartSpec().TerminalID != info.TerminalID {
+		t.Fatalf("expected terminal ID %q in start spec, got %q", info.TerminalID, terminal.firstStartSpec().TerminalID)
+	}
+}
+
+func TestDefaultShellResolutionOrder(t *testing.T) {
+	t.Run("config overrides env", func(t *testing.T) {
+		t.Setenv("SHELL", "/bin/fish")
+		service := &Service{cfg: config.Config{Shell: "/bin/zsh"}}
+		if got := service.defaultShell(); got != "/bin/zsh" {
+			t.Fatalf("defaultShell() = %q, want /bin/zsh", got)
+		}
+	})
+
+	t.Run("env used when config unset", func(t *testing.T) {
+		t.Setenv("SHELL", "/bin/fish")
+		service := &Service{}
+		if got := service.defaultShell(); got != "/bin/fish" {
+			t.Fatalf("defaultShell() = %q, want /bin/fish", got)
+		}
+	})
+
+	t.Run("bash fallback", func(t *testing.T) {
+		t.Setenv("SHELL", "")
+		service := &Service{}
+		if got := service.defaultShell(); got != "bash" {
+			t.Fatalf("defaultShell() = %q, want bash", got)
+		}
+	})
 }
 
 func TestKillTerminalRejectsMainTerminalID(t *testing.T) {

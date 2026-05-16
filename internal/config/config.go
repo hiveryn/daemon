@@ -27,6 +27,7 @@ type Config struct {
 	Port        int                          `yaml:"port"`
 	BindAddress string                       `yaml:"bind_address"`
 	LogLevel    string                       `yaml:"log_level"`
+	Shell       string                       `yaml:"shell,omitempty"`
 	Variants    map[string]VariantConfig     `yaml:"-"`
 	Architects  map[string]ArchitectConfig   `yaml:"-"`
 	Tabs        map[string][]TabEntry        `yaml:"-"`
@@ -174,6 +175,7 @@ type coreConfig struct {
 	Port        int    `yaml:"port"`
 	BindAddress string `yaml:"bind_address"`
 	LogLevel    string `yaml:"log_level"`
+	Shell       string `yaml:"shell,omitempty"`
 }
 
 func (c Config) Save(path string) error {
@@ -198,6 +200,7 @@ func (c Config) Save(path string) error {
 		Port:        c.Port,
 		BindAddress: c.BindAddress,
 		LogLevel:    c.LogLevel,
+		Shell:       c.Shell,
 	}
 
 	data, err := yaml.Marshal(core)
@@ -285,6 +288,7 @@ func (c Config) Validate() error {
 }
 
 func (c *Config) normalize() {
+	c.Shell = strings.TrimSpace(c.Shell)
 	if c.Port == 0 {
 		c.Port = DefaultPort
 	}

@@ -402,37 +402,10 @@ func (s *Service) restoreSession(ctx context.Context, session domain.Session) er
 		return errors.New("session has no native ID — cannot resume")
 	}
 
-	var workdir string
-	switch domain.SessionType(session.SessionType) {
-	case domain.SessionTypeArchitect:
-		workdir = architect.Path
-	case domain.SessionTypeWork:
-		if session.TicketID == "" {
-			s.markSessionFailed(session.ID, "restore: work session has no ticket_id")
-			return errors.New("work session has no ticket ID")
-		}
-		ticket, err := s.tickets.GetTicket(ctx, architect.Path, session.TicketID)
-		if err != nil {
-			s.markSessionFailed(session.ID, "restore: ticket not found")
-			return fmt.Errorf("ticket %q not found: %w", session.TicketID, err)
-		}
-		if ticket.Repo == "" {
-			s.markSessionFailed(session.ID, "restore: ticket has no repo key")
-			return errors.New("ticket has no repo key")
-		}
-		repoPath, ok := architect.Repos[ticket.Repo]
-		if !ok {
-			s.markSessionFailed(session.ID, "restore: repo not configured")
-			return fmt.Errorf("repo key %q not configured in architect repos", ticket.Repo)
-		}
-		if err := validateRepoPath(repoPath); err != nil {
-			s.markSessionFailed(session.ID, "restore: invalid repo path")
-			return err
-		}
-		workdir = repoPath
-	default:
-		s.markSessionFailed(session.ID, "restore: unsupported session type")
-		return fmt.Errorf("unsupported session type %q", session.SessionType)
+	workdir, err := s.resolveSessionWorkdir(ctx, session, architect)
+	if err != nil {
+		s.markSessionFailed(session.ID, "restore: resolve workdir")
+		return err
 	}
 
 	if _, err := s.launchSession(ctx, session, profile, agentKind, agentruntime.StartRequest{
@@ -897,7 +870,7 @@ func (s *Service) AttachTerminal(ctx context.Context, sessionID, terminalID stri
 	return s.terminal.Attach(ctx, sessionID, terminalID)
 }
 
-func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params domain.CreateTerminalParams) (domain.TerminalInfo, error) {
+func (s *Service) CreateTerminal(ctx context.Context, sessionID string, _ domain.CreateTerminalParams) (domain.TerminalInfo, error) {
 	session, err := s.repo.GetSession(ctx, sessionID)
 	if err != nil {
 		return domain.TerminalInfo{}, err
@@ -905,22 +878,24 @@ func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params d
 	if session.Status != domain.SessionStatusRunning {
 		return domain.TerminalInfo{}, &domain.ValidationError{Field: "session_id", Message: "session is not running"}
 	}
-	if strings.TrimSpace(params.Command) == "" {
-		return domain.TerminalInfo{}, &domain.ValidationError{Field: "command", Message: "is required"}
-	}
 
 	architect, ok := s.cfg.Architects[session.ArchitectKey]
 	if !ok {
 		return domain.TerminalInfo{}, &domain.NotFoundError{Resource: "architect", ID: session.ArchitectKey}
 	}
+	workdir, err := s.resolveSessionWorkdir(ctx, session, architect)
+	if err != nil {
+		return domain.TerminalInfo{}, err
+	}
+
+	command := s.defaultShell()
 
 	terminalID := uuid.NewString()
 	if err := s.terminal.Start(ctx, terminalStartSpec{
 		SessionID:  sessionID,
 		TerminalID: terminalID,
-		Command:    params.Command,
-		Args:       params.Args,
-		Workdir:    architect.Path,
+		Command:    command,
+		Workdir:    workdir,
 		Size:       terminalSize{Cols: defaultPTYCols, Rows: defaultPTYRows},
 		OnExit:     s.handleAuxTerminalExit,
 	}); err != nil {
@@ -931,7 +906,7 @@ func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params d
 		tab: domain.SessionTab{
 			Type:       "terminal",
 			TerminalID: terminalID,
-			Command:    params.Command,
+			Command:    command,
 			Status:     "running",
 		},
 		removeOnExit: true,
@@ -940,7 +915,7 @@ func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params d
 	return domain.TerminalInfo{
 		TerminalID: terminalID,
 		SessionID:  sessionID,
-		Command:    params.Command,
+		Command:    command,
 		Status:     "running",
 	}, nil
 }
@@ -1285,9 +1260,41 @@ func yamlNodeString(node *yaml.Node, key string) string {
 	return ""
 }
 
-func defaultShell() string {
-	if s := os.Getenv("SHELL"); s != "" {
-		return s
+func (s *Service) resolveSessionWorkdir(ctx context.Context, session domain.Session, architect config.ArchitectConfig) (string, error) {
+	switch domain.SessionType(session.SessionType) {
+	case domain.SessionTypeArchitect:
+		return architect.Path, nil
+	case domain.SessionTypeWork:
+		if session.TicketID == "" {
+			return "", errors.New("work session has no ticket ID")
+		}
+		ticket, err := s.tickets.GetTicket(ctx, architect.Path, session.TicketID)
+		if err != nil {
+			return "", fmt.Errorf("get ticket %q: %w", session.TicketID, err)
+		}
+		if ticket.Repo == "" {
+			return "", errors.New("ticket has no repo key")
+		}
+		repoPath, ok := architect.Repos[ticket.Repo]
+		if !ok {
+			return "", fmt.Errorf("repo key %q not configured in architect repos", ticket.Repo)
+		}
+		if err := validateRepoPath(repoPath); err != nil {
+			return "", err
+		}
+		return repoPath, nil
+	default:
+		return "", fmt.Errorf("unsupported session type %q", session.SessionType)
+	}
+
+}
+
+func (s *Service) defaultShell() string {
+	if shell := strings.TrimSpace(s.cfg.Shell); shell != "" {
+		return shell
+	}
+	if shell := strings.TrimSpace(os.Getenv("SHELL")); shell != "" {
+		return shell
 	}
 	return "bash"
 }
@@ -1306,7 +1313,7 @@ func (s *Service) startAutoTerminals(ctx context.Context, session domain.Session
 		terminalID := uuid.NewString()
 		cmd := tab.Command
 		if cmd == "" {
-			cmd = defaultShell()
+			cmd = s.defaultShell()
 		}
 		status := "running"
 		err := s.terminal.Start(ctx, terminalStartSpec{

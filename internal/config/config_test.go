@@ -41,6 +41,7 @@ func TestSaveAndLoadCoreConfig(t *testing.T) {
 		Port:        4312,
 		BindAddress: "127.0.0.1",
 		LogLevel:    "debug",
+		Shell:       "/bin/zsh",
 		Variants:    map[string]VariantConfig{},
 		Architects:  map[string]ArchitectConfig{},
 		Tabs:        map[string][]TabEntry{},
@@ -55,10 +56,10 @@ func TestSaveAndLoadCoreConfig(t *testing.T) {
 		t.Fatalf("load config: %v", err)
 	}
 
-	if loaded.Port != input.Port || loaded.BindAddress != input.BindAddress || loaded.LogLevel != input.LogLevel {
-		t.Fatalf("core fields mismatch: expected port=%d addr=%s level=%s, got port=%d addr=%s level=%s",
-			input.Port, input.BindAddress, input.LogLevel,
-			loaded.Port, loaded.BindAddress, loaded.LogLevel)
+	if loaded.Port != input.Port || loaded.BindAddress != input.BindAddress || loaded.LogLevel != input.LogLevel || loaded.Shell != input.Shell {
+		t.Fatalf("core fields mismatch: expected port=%d addr=%s level=%s shell=%s, got port=%d addr=%s level=%s shell=%s",
+			input.Port, input.BindAddress, input.LogLevel, input.Shell,
+			loaded.Port, loaded.BindAddress, loaded.LogLevel, loaded.Shell)
 	}
 }
 
@@ -71,6 +72,7 @@ func TestLoadAllFiles(t *testing.T) {
 		"port":         4201,
 		"bind_address": "127.0.0.1",
 		"log_level":    "info",
+		"shell":        "/bin/zsh",
 	})
 
 	writeYAML(t, filepath.Join(configDir, variantsFileName), map[string]VariantConfig{
@@ -109,6 +111,9 @@ func TestLoadAllFiles(t *testing.T) {
 	}
 	if len(cfg.Tabs) != 1 || len(cfg.Tabs["architect"]) != 2 {
 		t.Fatalf("expected 2 tabs for architect, got %d", len(cfg.Tabs["architect"]))
+	}
+	if cfg.Shell != "/bin/zsh" {
+		t.Fatalf("expected shell to load, got %q", cfg.Shell)
 	}
 }
 

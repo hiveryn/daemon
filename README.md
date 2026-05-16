@@ -34,6 +34,7 @@ The daemon reads five YAML files from `~/.hiveryn/` on startup. Only `config.yam
 ### `config.yaml` — daemon core
 
 ```yaml
+shell: /bin/zsh
 port: 4201
 bind_address: 127.0.0.1
 log_level: info
@@ -41,6 +42,7 @@ log_level: info
 
 | Field | Default |
 |---|---|
+| `shell` | `$SHELL`, then `bash` |
 | `port` | `4201` |
 | `bind_address` | `127.0.0.1` (localhost only) |
 | `log_level` | `info` |
@@ -156,7 +158,7 @@ Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to de
 | `GET` | `/api/sessions/{id}` | Get one session |
 | `POST` | `/api/sessions/{id}/conclude` | Conclude a running session, publish `ended`, kill its PTY, and delete its SQLite row; architect conclude returns `CONFLICT` if same-architect work sessions are still running |
 | `GET` | `/api/sessions/{id}/tabs` | Get the resolved right-pane tab layout for a session |
-| `POST` | `/api/sessions/{id}/terminals` | Create a new user terminal in a session |
+| `POST` | `/api/sessions/{id}/terminals` | Create a new user terminal in a session using the resolved default shell |
 | `GET` | `/api/sessions/{id}/terminals` | List all terminals for a session |
 | `DELETE` | `/api/sessions/{id}/terminals/{uuid}` | Kill a specific user terminal by UUID |
 | `GET` | `/api/sessions/{id}/events` | Stream structured session events over SSE |
@@ -164,7 +166,7 @@ Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to de
 
 Profile, architect, repo, and tab configuration endpoints are read-only. Edit `~/.hiveryn/*.yaml` directly to change variants, architects, repos, or tabs.
 
-Session responses include `main_terminal_id` so the desktop can reconnect the main agent PTY. `GET /api/sessions/{id}/tabs` returns the canonical right-pane layout using `type`, `id`, `command`, and `status` for terminal tabs.
+Session responses include `main_terminal_id` so the desktop can reconnect the main agent PTY. `GET /api/sessions/{id}/tabs` returns the canonical right-pane layout using `type`, `id`, `command`, and `status` for terminal tabs. `POST /api/sessions/{id}/terminals` accepts an empty JSON object and always launches the session's default shell in the resolved session workdir.
 
 Concluding an architect session fails fast with `CONFLICT` while worker sessions for the same `architect_key` are still `running`; the error message lists the blocking session IDs.
 

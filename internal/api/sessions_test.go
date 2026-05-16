@@ -191,6 +191,46 @@ func TestSessionTabsEndpoint(t *testing.T) {
 	}
 }
 
+func TestCreateTerminalEndpointAllowsEmptyBody(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeSessionService{
+		createTerminalResult: domain.TerminalInfo{TerminalID: "term-1", SessionID: "sess-1", Command: "/bin/zsh", Status: "running"},
+	}
+	handler := newSessionTestHandler(t, service)
+
+	status, body := request(t, handler, http.MethodPost, "/api/sessions/sess-1/terminals", strings.NewReader(`{}`))
+	if status != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, status, string(body))
+	}
+	if service.lastCreateTerminalID != "sess-1" {
+		t.Fatalf("unexpected session id %q", service.lastCreateTerminalID)
+	}
+	if service.lastCreateTerminal != (domain.CreateTerminalParams{}) {
+		t.Fatalf("expected empty create terminal params, got %#v", service.lastCreateTerminal)
+	}
+
+	var terminal domain.TerminalInfo
+	decodeEnvelopeData(t, body, &terminal)
+	if terminal.TerminalID != "term-1" || terminal.Command != "/bin/zsh" {
+		t.Fatalf("unexpected terminal payload %#v", terminal)
+	}
+}
+
+func TestCreateTerminalEndpointRejectsCommandField(t *testing.T) {
+	t.Parallel()
+
+	handler := newSessionTestHandler(t, &fakeSessionService{})
+
+	status, body := request(t, handler, http.MethodPost, "/api/sessions/sess-1/terminals", strings.NewReader(`{"command":"yazi"}`))
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, status, string(body))
+	}
+	if !strings.Contains(string(body), "unknown field") {
+		t.Fatalf("expected unknown field error, got %s", string(body))
+	}
+}
+
 func newSessionTestHandler(t *testing.T, sessions domain.SessionService) http.Handler {
 	t.Helper()
 
@@ -210,6 +250,10 @@ type fakeSessionService struct {
 	sessions              []domain.Session
 	lastListFilter        domain.SessionListFilter
 	attachTerminal        func(context.Context, string, string) (domain.TerminalAttachment, error)
+	createTerminalResult  domain.TerminalInfo
+	createTerminalErr     error
+	lastCreateTerminalID  string
+	lastCreateTerminal    domain.CreateTerminalParams
 	getSessionResult      domain.Session
 	sessionTabs           []domain.SessionTab
 	concludeResult        domain.ConcludeSessionResult
@@ -282,8 +326,10 @@ func (f *fakeSessionService) ListConclusions(_ context.Context, key string, limi
 	return nil, nil
 }
 
-func (f *fakeSessionService) CreateTerminal(context.Context, string, domain.CreateTerminalParams) (domain.TerminalInfo, error) {
-	return domain.TerminalInfo{}, nil
+func (f *fakeSessionService) CreateTerminal(_ context.Context, id string, params domain.CreateTerminalParams) (domain.TerminalInfo, error) {
+	f.lastCreateTerminalID = id
+	f.lastCreateTerminal = params
+	return f.createTerminalResult, f.createTerminalErr
 }
 
 func (f *fakeSessionService) ListTerminals(context.Context, string) ([]domain.TerminalInfo, error) {

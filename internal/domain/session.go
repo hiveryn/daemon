@@ -153,10 +153,7 @@ type TerminalInfo struct {
 	Status     string `json:"status"`
 }
 
-type CreateTerminalParams struct {
-	Command string   `json:"command"`
-	Args    []string `json:"args,omitempty"`
-}
+type CreateTerminalParams struct{}
 
 type SessionTab struct {
 	Type       string `json:"type"`
