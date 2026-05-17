@@ -126,6 +126,8 @@ Maps are two-level: top-level keys are sections (`global`, `kanban`, `event-log`
 
 Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to delete — it will be recreated on next start. Variants, architects, repo mappings, and tab layouts live in `~/.hiveryn/*.yaml`. Your architect workspace (tickets, conclusions) is stored separately as markdown files and is never affected.
 
+The daemon also writes append-only structured JSONL logs to `~/.hiveryn/logs/daemon.jsonl` and `~/.hiveryn/logs/requests.jsonl`. `daemon.jsonl` contains app/runtime logs with source location metadata; `requests.jsonl` contains one JSON object per HTTP request/response, including the response envelope for JSON API calls.
+
 ## API
 
 | Method | Path | Description |

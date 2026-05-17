@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -16,19 +17,32 @@ import (
 	"github.com/hiveryn/daemon/internal/archevents"
 	"github.com/hiveryn/daemon/internal/architectfs"
 	"github.com/hiveryn/daemon/internal/config"
+	"github.com/hiveryn/daemon/internal/logging"
 	"github.com/hiveryn/daemon/internal/server"
 	"github.com/hiveryn/daemon/internal/sessionruntime"
 	"github.com/hiveryn/daemon/internal/store"
 )
 
 func Run(configPath, databasePath string) error {
+	logManager, err := logging.New(config.DefaultLogLevel)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := logManager.Close(); closeErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to close log files: %v\n", closeErr)
+		}
+	}()
+
+	logger := logManager.AppLogger()
+	slog.SetDefault(logger)
+
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
 	}
 
-	logger, err := newLogger(cfg.LogLevel)
-	if err != nil {
+	if err := logManager.SetLevel(cfg.LogLevel); err != nil {
 		return err
 	}
 
@@ -57,6 +71,7 @@ func Run(configPath, databasePath string) error {
 	handler := api.NewHandler(api.Dependencies{
 		Config:          cfg,
 		Logger:          logger,
+		RequestLogger:   logManager.RequestLogger(),
 		Sessions:        service,
 		Tickets:         ticketService,
 		IngestHandler:   service.IngestHandler(),
@@ -92,15 +107,6 @@ func Run(configPath, databasePath string) error {
 
 	logger.Info("daemon stopped")
 	return nil
-}
-
-func newLogger(level string) (*slog.Logger, error) {
-	var slogLevel slog.Level
-	if err := slogLevel.UnmarshalText([]byte(level)); err != nil {
-		return nil, err
-	}
-	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slogLevel})
-	return slog.New(handler), nil
 }
 
 func baseURL(cfg config.Config) string {

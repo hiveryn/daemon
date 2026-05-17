@@ -9,6 +9,7 @@ import (
 	"github.com/hiveryn/daemon/internal/archevents"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
+	"github.com/hiveryn/daemon/internal/logging"
 )
 
 const ingestRoutePrefix = "/internal/agentruntime"
@@ -16,6 +17,7 @@ const ingestRoutePrefix = "/internal/agentruntime"
 type Dependencies struct {
 	Config          config.Config
 	Logger          *slog.Logger
+	RequestLogger   *logging.RequestLogger
 	Sessions        domain.SessionService
 	Tickets         domain.TicketService
 	IngestHandler   http.Handler
@@ -142,7 +144,7 @@ func NewHandler(deps Dependencies) http.Handler {
 		mux.Handle(ingestRoutePrefix+"/", deps.IngestHandler)
 	}
 
-	return requestID(recovery(accessLog(deps.Logger, mux)))
+	return requestID(accessLog(deps.Logger, deps.RequestLogger, recovery(mux)))
 }
 
 func listAgentProfiles(cfg config.Config) []agentProfileResponse {

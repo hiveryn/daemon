@@ -55,6 +55,7 @@ internal/
   architectfs/        architect folder filesystem operations (ticket CRUD, frontmatter, body edits)
   config/             bootstrap config (~/.hiveryn/{config,variants,architects,tabs,shortcuts}.yaml) — port, bind_address, log_level, shell, variants, architects, tabs, shortcuts
   domain/             shared envelope/error/session types — zero imports of store/api
+  logging/            structured JSONL app/request logging to ~/.hiveryn/logs/*.jsonl
   mcp/                stdio MCP server; registers role-scoped tools and translates tool calls into daemon HTTP API requests
   server/             HTTP server lifecycle (Listen, Shutdown) — thin wrapper around net/http
   api/                HTTP handlers, routing, middleware (request ID, recovery, access logging), JSON helpers
@@ -70,6 +71,7 @@ internal/
 - `app/` wires everything together — it's the only package that imports both `store/` and `api/`.
 - `sessionruntime/` owns live process/PTY state and bridges `agentruntime` events into persisted session events.
 - `sessionruntime/` also owns resolved per-session terminal UUIDs and right-pane tab layout state; SQLite stores session metadata, not terminal identity/layout snapshots.
+- `logging/` owns append-only JSONL sinks and schema shaping for app logs and request logs. Middleware and services should emit structured fields, not hand-built JSON strings.
 - `mcp/` stays transport-focused: role-specific tool registration plus HTTP client shims back into daemon APIs. Keep tool handlers out of `cmd/` and avoid filesystem mutations here.
 - `config/` is self-contained. Bootstrap config lives outside SQLite because the server needs it before the DB opens.
 
@@ -94,6 +96,7 @@ Each resource is self-contained across four packages — no cross-contamination.
 - One repository file per table/aggregate in `store/`. One handler file per resource in `api/`.
 - Migrations are idempotent, versioned, and run inside a transaction per file.
 - Access logging, panic recovery, and request IDs are enforced by middleware — not per-handler.
+- Structured daemon logs live in `~/.hiveryn/logs/daemon.jsonl`; request logs live in `~/.hiveryn/logs/requests.jsonl`. Keep every record as single-line valid JSON.
 - SQLite uses `SetMaxOpenConns(1)` (single-writer). Busy timeout is 5 seconds.
 - Never log secrets from profiles, env configs, or MCP configurations.
 - PTY/process handles stay in memory under `sessionruntime`; SQLite stores session metadata and structured events only.
