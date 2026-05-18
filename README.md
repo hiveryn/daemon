@@ -58,7 +58,12 @@ codex-personal:
   args: [--dangerously-bypass-approvals-and-sandbox]
   env:
     CODEX_HOME: /Users/kareem/.codex-personal
+deep-personal:
+  agent: opencode
+  args: [--model, gpt-5]
 ```
+
+For architect sessions using `agent: opencode`, the daemon defines a named OpenCode agent automatically from `prompts/architect/SYSTEM.md`, using the architect key as the agent name and passing `--agent <architect_key>` at launch. Do not put `--agent` in OpenCode architect variant args; the daemon treats that as a launch error. Worker OpenCode sessions do not define a named agent.
 
 ### `architects.yaml` — architect definitions
 

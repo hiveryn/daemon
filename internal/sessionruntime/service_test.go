@@ -697,6 +697,46 @@ func TestHandleTerminalExitResumesMainTerminal(t *testing.T) {
 	}
 }
 
+func TestHandleTerminalExitResumesOpenCodeArchitectNamedAgent(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.createdSession = domain.Session{
+		ID:           "sess-1",
+		ProfileName:  "opencode",
+		ArchitectKey: "hiveryn",
+		SessionType:  string(domain.SessionTypeArchitect),
+		Status:       domain.SessionStatusRunning,
+		NativeID:     "native-1",
+		Instructions: "system prompt",
+	}
+	adapter := &fakeAdapter{}
+	service := &Service{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:    testRuntimeConfig(t),
+		repo:   repo,
+		receiver: ingest.NewReceiver(
+			adapter,
+		),
+		adapters: map[agentruntime.AgentKind]agentruntime.Adapter{
+			agentruntime.AgentOpenCode: adapter,
+		},
+		terminal:      &fakeTerminalManager{},
+		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels: map[string]func(){"sess-1": func() {}},
+		terminalStates: map[string]sessionTerminalState{
+			"sess-1": {mainTerminalID: "term-main-old"},
+		},
+	}
+
+	service.handleTerminalExit(terminalExit{SessionID: "sess-1", TerminalID: "term-main-old", Err: errors.New("process exited")})
+
+	if !adapter.launchRequest.Resume || adapter.launchRequest.ResumeID != "native-1" {
+		t.Fatalf("expected resume launch request, got %#v", adapter.launchRequest)
+	}
+	assertOpenCodeArchitectAgentConfig(t, adapter.launchRequest, "hiveryn", "system prompt")
+}
+
 func TestHandleTerminalExitPanicsWhenResumeFails(t *testing.T) {
 	t.Parallel()
 
@@ -750,6 +790,9 @@ func testRuntimeConfig(t *testing.T) config.Config {
 				Env: map[string]string{
 					"CODEX_HOME": "/custom/codex",
 				},
+			},
+			"opencode": {
+				Agent: "opencode",
 			},
 		},
 		Architects: map[string]config.ArchitectConfig{
@@ -1025,6 +1068,76 @@ func TestSpawnArchitectSessionAddsMCPServer(t *testing.T) {
 	assertMCPServer(t, adapter.launchRequest.MCPServers, domain.SessionTypeArchitect)
 }
 
+func TestSpawnArchitectSessionOpenCodeDefinesNamedAgent(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	adapter := &fakeAdapter{}
+	service := &Service{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:    testRuntimeConfig(t),
+		repo:   repo,
+		receiver: ingest.NewReceiver(
+			adapter,
+		),
+		adapters: map[agentruntime.AgentKind]agentruntime.Adapter{
+			agentruntime.AgentOpenCode: adapter,
+		},
+		terminal:       &fakeTerminalManager{},
+		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels:  map[string]func(){},
+		baseURL:        "http://127.0.0.1:4200",
+		executablePath: func() (string, error) { return "/tmp/hiverynd", nil },
+	}
+
+	if _, err := service.SpawnArchitectSession(context.Background(), domain.SpawnArchitectSessionRequest{
+		ArchitectKey: "hiveryn",
+		ProfileName:  "opencode",
+	}); err != nil {
+		t.Fatalf("SpawnArchitectSession failed: %v", err)
+	}
+
+	assertOpenCodeArchitectAgentConfig(t, adapter.launchRequest, "hiveryn", repo.createdSession.Instructions)
+}
+
+func TestSpawnArchitectSessionOpenCodeFailsWhenProfileAlreadySetsAgentFlag(t *testing.T) {
+	t.Parallel()
+
+	cfg := testRuntimeConfig(t)
+	cfg.Variants["opencode"] = config.VariantConfig{Agent: "opencode", Args: []string{"--agent", "custom"}}
+
+	repo := newFakeSessionRepository()
+	adapter := &fakeAdapter{}
+	service := &Service{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:    cfg,
+		repo:   repo,
+		receiver: ingest.NewReceiver(
+			adapter,
+		),
+		adapters: map[agentruntime.AgentKind]agentruntime.Adapter{
+			agentruntime.AgentOpenCode: adapter,
+		},
+		terminal:      &fakeTerminalManager{},
+		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels: map[string]func(){},
+	}
+
+	_, err := service.SpawnArchitectSession(context.Background(), domain.SpawnArchitectSessionRequest{
+		ArchitectKey: "hiveryn",
+		ProfileName:  "opencode",
+	})
+	if err == nil {
+		t.Fatal("expected architect OpenCode launch to fail when --agent is preset")
+	}
+	if !strings.Contains(err.Error(), "must not include --agent") {
+		t.Fatalf("expected --agent validation error, got %v", err)
+	}
+	if repo.updatedStatus != domain.SessionStatusFailed {
+		t.Fatalf("expected reserved session to be marked failed, got %q", repo.updatedStatus)
+	}
+}
+
 func TestSpawnWorkSessionAddsMCPServer(t *testing.T) {
 	t.Parallel()
 
@@ -1062,6 +1175,77 @@ func TestSpawnWorkSessionAddsMCPServer(t *testing.T) {
 	}
 
 	assertMCPServer(t, adapter.launchRequest.MCPServers, domain.SessionTypeWork)
+}
+
+func TestSpawnWorkSessionOpenCodeDoesNotDefineNamedAgent(t *testing.T) {
+	t.Parallel()
+
+	architectPath := t.TempDir()
+	repoPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoPath, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	created := time.Date(2026, 5, 13, 14, 30, 0, 0, time.UTC)
+	adapter := &fakeAdapter{}
+	service := &Service{
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:     testRuntimeConfigWithPaths(architectPath, repoPath),
+		repo:    newFakeSessionRepository(),
+		tickets: &fakeTicketService{ticket: domain.Ticket{TicketSummary: domain.TicketSummary{ID: "ticket-1", Title: "Ticket", Repo: "daemon", Status: domain.TicketStatusBacklog, Created: &created, Updated: &created, References: []string{}, Warnings: []domain.TicketWarning{}}, Body: "body"}},
+		receiver: ingest.NewReceiver(
+			adapter,
+		),
+		adapters: map[agentruntime.AgentKind]agentruntime.Adapter{
+			agentruntime.AgentOpenCode: adapter,
+		},
+		terminal:       &fakeTerminalManager{},
+		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels:  map[string]func(){},
+		baseURL:        "http://127.0.0.1:4200",
+		executablePath: func() (string, error) { return "/tmp/hiverynd", nil },
+	}
+
+	if _, err := service.SpawnWorkSession(context.Background(), domain.SpawnWorkSessionRequest{
+		ArchitectKey: "hiveryn",
+		TicketID:     "ticket-1",
+		ProfileName:  "opencode",
+	}); err != nil {
+		t.Fatalf("SpawnWorkSession failed: %v", err)
+	}
+
+	if hasArgFlag(adapter.launchRequest.Args, "--agent") {
+		t.Fatalf("worker OpenCode args unexpectedly include --agent: %#v", adapter.launchRequest.Args)
+	}
+	if len(adapter.launchRequest.OpenCodeAgentConfig) != 0 {
+		t.Fatalf("worker OpenCode unexpectedly defined named agent config: %#v", adapter.launchRequest.OpenCodeAgentConfig)
+	}
+}
+
+func assertOpenCodeArchitectAgentConfig(t *testing.T, req agentruntime.StartRequest, architectKey, systemPrompt string) {
+	t.Helper()
+
+	if req.Instructions != "" {
+		t.Fatalf("expected architect OpenCode instructions to move into named agent config, got %#v", req)
+	}
+	if len(req.Args) < 2 || req.Args[0] != "--agent" || req.Args[1] != architectKey {
+		t.Fatalf("expected args to start with --agent %s, got %#v", architectKey, req.Args)
+	}
+	entry, ok := req.OpenCodeAgentConfig[architectKey]
+	if !ok {
+		t.Fatalf("expected named OpenCode agent config for %q, got %#v", architectKey, req.OpenCodeAgentConfig)
+	}
+	if entry.Description != "Hiveryn architect" {
+		t.Fatalf("expected architect description, got %#v", entry)
+	}
+	if entry.Mode != "primary" {
+		t.Fatalf("expected primary mode, got %#v", entry)
+	}
+	if entry.Prompt != systemPrompt {
+		t.Fatalf("expected architect system prompt in named agent config, got %#v", entry)
+	}
+	if entry.Permission != nil {
+		t.Fatalf("expected no permission config, got %#v", entry)
+	}
 }
 
 func assertMCPServer(t *testing.T, servers []agentruntime.MCPServerConfig, sessionType domain.SessionType) {
@@ -1102,6 +1286,9 @@ func testRuntimeConfigWithPaths(architectPath, repoPath string) config.Config {
 				Env: map[string]string{
 					"CODEX_HOME": "/custom/codex",
 				},
+			},
+			"opencode": {
+				Agent: "opencode",
 			},
 		},
 		Architects: map[string]config.ArchitectConfig{

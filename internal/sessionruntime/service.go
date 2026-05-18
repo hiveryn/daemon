@@ -391,6 +391,10 @@ func (s *Service) prepareLaunchSpec(ctx context.Context, session domain.Session,
 	startReq.ID = session.ID
 	startReq.Agent = agentKind
 
+	if err := configureOpenCodeArchitectAgent(session, agentKind, &startReq); err != nil {
+		return agentruntime.LaunchSpec{}, err
+	}
+
 	adapter := s.adapters[agentKind]
 	if _, err := adapter.EnsureSetup(ctx, setupRequestForAgent(agentKind, s.baseURL+ingestPathPrefix, profile.Env)); err != nil {
 		return agentruntime.LaunchSpec{}, fmt.Errorf("ensure %s setup: %w", agentKind, err)
@@ -409,6 +413,47 @@ func (s *Service) prepareLaunchSpec(ctx context.Context, session domain.Session,
 	}
 
 	return spec, nil
+}
+
+func configureOpenCodeArchitectAgent(session domain.Session, agentKind agentruntime.AgentKind, startReq *agentruntime.StartRequest) error {
+	if agentKind != agentruntime.AgentOpenCode || session.SessionType != string(domain.SessionTypeArchitect) {
+		return nil
+	}
+	if strings.TrimSpace(session.ArchitectKey) == "" {
+		return errors.New("architect OpenCode session missing architect key")
+	}
+	if hasArgFlag(startReq.Args, "--agent") {
+		return fmt.Errorf("architect OpenCode session profile args must not include --agent; daemon manages the agent selection for architect %q", session.ArchitectKey)
+	}
+
+	architectKey := session.ArchitectKey
+	startReq.Args = append([]string{"--agent", architectKey}, startReq.Args...)
+	startReq.OpenCodeAgentConfig = map[string]agentruntime.OpenCodeAgentConfig{
+		architectKey: {
+			Description: architectAgentDescription(architectKey),
+			Mode:        "primary",
+			Prompt:      startReq.Instructions,
+		},
+	}
+	startReq.Instructions = ""
+
+	return nil
+}
+
+func architectAgentDescription(architectKey string) string {
+	if architectKey == "" {
+		return "architect"
+	}
+	return strings.ToUpper(architectKey[:1]) + architectKey[1:] + " architect"
+}
+
+func hasArgFlag(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == flag {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) resolveSessionLaunchContext(ctx context.Context, session domain.Session) (config.VariantConfig, agentruntime.AgentKind, string, error) {
