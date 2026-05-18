@@ -12,4 +12,9 @@ func (s *Server) registerWorkTools() {
 		Name:        "readTicket",
 		Description: "Read full ticket details by ID.",
 	}, s.handleReadTicket)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "createWorkTicket",
+		Description: "Create a new work ticket in the backlog. Returns the created Ticket.",
+	}, s.handleCreateWorkTicket)
 }
