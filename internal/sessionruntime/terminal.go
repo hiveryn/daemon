@@ -1,6 +1,7 @@
 package sessionruntime
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -21,6 +22,75 @@ const (
 	outputQueueSize  = 64
 	mainTerminalName = "main"
 )
+
+// decModeState tracks DEC private modes a TUI sets once at startup and never
+// re-sends. The replay buffer is a 64 KB ring; once a long-running TUI's
+// output exceeds that, its initial \e[?1049h (alt screen) and
+// \e[?1000h/\e[?1002h/\e[?1003h/\e[?1006h (mouse) bytes are evicted. Any new
+// xterm client then attaches in a terminal with mouse mode OFF — clicks and
+// scrolls silently fail because xterm's MouseService never sees the
+// enable-mouse-events flag flip. We watch every chunk for these mode-setting
+// sequences and replay the live mode state on each attach.
+type decModeState struct {
+	mouse1003 bool // all-motion mouse reporting (\e[?1003h)
+	mouse1002 bool // button+drag reporting (\e[?1002h)
+	mouse1000 bool // X10 button-only reporting (\e[?1000h)
+	mouse1006 bool // SGR extended encoding (\e[?1006h)
+	altScreen bool // alternate screen + saved cursor (\e[?1049h)
+}
+
+// restoreSeq returns the bytes needed to restore this state in a fresh
+// terminal. Empty when no special modes are active.
+func (m *decModeState) restoreSeq() []byte {
+	var buf []byte
+	if m.altScreen {
+		buf = append(buf, []byte("\x1b[?1049h")...)
+	}
+	// Mouse tracking modes are mutually exclusive — pick the highest enabled.
+	switch {
+	case m.mouse1003:
+		buf = append(buf, []byte("\x1b[?1003h")...)
+	case m.mouse1002:
+		buf = append(buf, []byte("\x1b[?1002h")...)
+	case m.mouse1000:
+		buf = append(buf, []byte("\x1b[?1000h")...)
+	}
+	if m.mouse1006 {
+		buf = append(buf, []byte("\x1b[?1006h")...)
+	}
+	return buf
+}
+
+// scanDECModes mutates m to reflect mode changes contained in chunk. Looks
+// for exact byte sequences; sequences split across the 4 KB chunk boundary
+// can theoretically be missed but in practice never are for the short
+// CSI ? N h/l forms we care about.
+func (m *decModeState) scanDECModes(chunk []byte) {
+	if bytes.Contains(chunk, []byte("\x1b[?1049h")) {
+		m.altScreen = true
+	} else if bytes.Contains(chunk, []byte("\x1b[?1049l")) {
+		m.altScreen = false
+	}
+	switch {
+	case bytes.Contains(chunk, []byte("\x1b[?1003h")):
+		m.mouse1003, m.mouse1002, m.mouse1000 = true, false, false
+	case bytes.Contains(chunk, []byte("\x1b[?1003l")):
+		m.mouse1003 = false
+	case bytes.Contains(chunk, []byte("\x1b[?1002h")):
+		m.mouse1003, m.mouse1002, m.mouse1000 = false, true, false
+	case bytes.Contains(chunk, []byte("\x1b[?1002l")):
+		m.mouse1002 = false
+	case bytes.Contains(chunk, []byte("\x1b[?1000h")):
+		m.mouse1003, m.mouse1002, m.mouse1000 = false, false, true
+	case bytes.Contains(chunk, []byte("\x1b[?1000l")):
+		m.mouse1000 = false
+	}
+	if bytes.Contains(chunk, []byte("\x1b[?1006h")) {
+		m.mouse1006 = true
+	} else if bytes.Contains(chunk, []byte("\x1b[?1006l")) {
+		m.mouse1006 = false
+	}
+}
 
 var errTerminalNotFound = errors.New("terminal not found")
 
@@ -83,6 +153,7 @@ type terminalProcess struct {
 	outputNext  uint64
 	outputSubs  map[uint64]chan []byte
 	replayBuf   []byte
+	decModes    decModeState
 	done        chan struct{}
 }
 
@@ -369,9 +440,31 @@ func (p *terminalProcess) attach() (domain.TerminalAttachment, error) {
 	ch := make(chan []byte, outputQueueSize)
 	p.outputNext++
 	subID := p.outputNext
+
+	// 1. Replay buffer paints the visible screen content.
 	if len(p.replayBuf) > 0 {
 		ch <- append([]byte(nil), p.replayBuf...)
 	}
+
+	// 2. Live DEC mode state, sent AFTER replay so it wins over any
+	//    intermediate disable bytes still inside the replay window.
+	//    This is the actual fix for the regression where mouse events stop
+	//    working in long-running TUIs (lazygit, opencode, claude) — the
+	//    mouse-enable bytes get evicted from replayBuf after ~64 KB of
+	//    redraws, but the TUI never re-emits them.
+	if restore := p.decModes.restoreSeq(); len(restore) > 0 {
+		p.logger.Info("[pty] replaying DEC mode state on attach",
+			"sub_id", subID,
+			"bytes", len(restore),
+			"alt_screen", p.decModes.altScreen,
+			"mouse1003", p.decModes.mouse1003,
+			"mouse1002", p.decModes.mouse1002,
+			"mouse1000", p.decModes.mouse1000,
+			"mouse1006", p.decModes.mouse1006,
+		)
+		ch <- restore
+	}
+
 	p.outputSubs[subID] = ch
 
 	return &terminalAttachment{
@@ -440,6 +533,21 @@ func (p *terminalProcess) broadcast(chunk []byte) {
 	p.replayBuf = append(p.replayBuf, chunk...)
 	if len(p.replayBuf) > replayBufferSize {
 		p.replayBuf = p.replayBuf[len(p.replayBuf)-replayBufferSize:]
+	}
+
+	// Sample mode-setting bytes before they age out of replayBuf. This is
+	// what makes attach() able to restore mouse/alt-screen state even after
+	// the TUI's startup bytes have been overwritten by hours of redraws.
+	before := p.decModes
+	p.decModes.scanDECModes(chunk)
+	if before != p.decModes {
+		p.logger.Info("[pty] DEC mode state changed",
+			"alt_screen", p.decModes.altScreen,
+			"mouse1003", p.decModes.mouse1003,
+			"mouse1002", p.decModes.mouse1002,
+			"mouse1000", p.decModes.mouse1000,
+			"mouse1006", p.decModes.mouse1006,
+		)
 	}
 
 	for id, ch := range p.outputSubs {
