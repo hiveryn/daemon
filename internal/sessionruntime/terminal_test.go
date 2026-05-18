@@ -1,15 +1,54 @@
 package sessionruntime
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/creack/pty"
 )
+
+func TestPTYTerminalManagerLogsExecutionSpec(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	manager := newPTYTerminalManager(slog.New(slog.NewJSONHandler(&logs, nil)))
+
+	err := manager.Start(context.Background(), terminalStartSpec{
+		SessionID:  "session-1",
+		TerminalID: "term-main-1",
+		Name:       mainTerminalName,
+		Command:    "hiveryn-command-that-does-not-exist",
+		Args:       []string{"--flag", "value"},
+		Env:        map[string]string{"HIVERYN_TEST_EXEC_LOG": "visible"},
+		Workdir:    t.TempDir(),
+		Size:       terminalSize{Cols: 80, Rows: 24},
+	})
+	if err == nil {
+		t.Fatal("expected missing command to fail")
+	}
+
+	logOutput := logs.String()
+	for _, want := range []string{
+		`"msg":"[pty] exec"`,
+		`"terminal_key":"session-1:term-main-1"`,
+		`"terminal_id":"term-main-1"`,
+		`"command":"hiveryn-command-that-does-not-exist"`,
+		`"args":["--flag","value"]`,
+		`"argv":["hiveryn-command-that-does-not-exist","--flag","value"]`,
+		`HIVERYN_TEST_EXEC_LOG=visible`,
+		`"workdir":`,
+	} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("expected log output to contain %s, got:\n%s", want, logOutput)
+		}
+	}
+}
 
 func TestTerminalProcessReplaysBufferedOutputToLateAttach(t *testing.T) {
 	t.Parallel()

@@ -133,9 +133,21 @@ func (m *ptyTerminalManager) Start(ctx context.Context, spec terminalStartSpec) 
 		return err
 	}
 
+	argv := append([]string{spec.Command}, spec.Args...)
+	env := mergeProcessEnv(spec.Env)
+	m.logger.Info("[pty] exec",
+		"terminal_key", key,
+		"terminal_id", spec.TerminalID,
+		"command", spec.Command,
+		"args", spec.Args,
+		"argv", argv,
+		"env", env,
+		"workdir", spec.Workdir,
+	)
+
 	cmd := exec.Command(spec.Command, spec.Args...)
 	cmd.Dir = spec.Workdir
-	cmd.Env = mergeProcessEnv(spec.Env)
+	cmd.Env = env
 
 	m.logger.Info("[pty] start",
 		"terminal_key", key,
