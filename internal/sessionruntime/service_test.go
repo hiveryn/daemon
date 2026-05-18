@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hiveryn/agentruntime"
+	aropencode "github.com/hiveryn/agentruntime/adapter/opencode"
 	"github.com/hiveryn/agentruntime/ingest"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
@@ -839,6 +840,30 @@ func (fakeAdapter) NormalizeEvent(context.Context, []byte) (*agentruntime.Event,
 	return nil, nil
 }
 
+type fakePrepareLaunchAdapter struct {
+	delegate agentruntime.Adapter
+}
+
+func (f *fakePrepareLaunchAdapter) Agent() agentruntime.AgentKind {
+	return f.delegate.Agent()
+}
+
+func (f *fakePrepareLaunchAdapter) PrepareLaunch(ctx context.Context, req agentruntime.StartRequest) (agentruntime.LaunchSpec, error) {
+	return f.delegate.PrepareLaunch(ctx, req)
+}
+
+func (f *fakePrepareLaunchAdapter) EnsureSetup(context.Context, agentruntime.SetupRequest) (agentruntime.SetupResult, error) {
+	return agentruntime.SetupResult{}, nil
+}
+
+func (f *fakePrepareLaunchAdapter) RemoveSetup(context.Context, agentruntime.SetupRequest) (agentruntime.SetupResult, error) {
+	return agentruntime.SetupResult{}, nil
+}
+
+func (f *fakePrepareLaunchAdapter) NormalizeEvent(context.Context, []byte) (*agentruntime.Event, error) {
+	return nil, nil
+}
+
 type fakeTerminalManager struct {
 	startErr   error
 	startSpecs []terminalStartSpec
@@ -1098,6 +1123,49 @@ func TestSpawnArchitectSessionOpenCodeDefinesNamedAgent(t *testing.T) {
 	}
 
 	assertOpenCodeArchitectAgentConfig(t, adapter.launchRequest, "hiveryn", repo.createdSession.Instructions)
+}
+
+func TestSpawnArchitectSessionOpenCodeLaunchSpecOmitNilAgentPermission(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	adapter := &fakePrepareLaunchAdapter{delegate: aropencode.New(aropencode.DefaultOptions())}
+	terminal := &fakeTerminalManager{}
+	service := &Service{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:    testRuntimeConfig(t),
+		repo:   repo,
+		receiver: ingest.NewReceiver(
+			adapter,
+		),
+		adapters: map[agentruntime.AgentKind]agentruntime.Adapter{
+			agentruntime.AgentOpenCode: adapter,
+		},
+		terminal:       terminal,
+		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels:  map[string]func(){},
+		baseURL:        "http://127.0.0.1:4200",
+		executablePath: func() (string, error) { return "/tmp/hiverynd", nil },
+	}
+
+	if _, err := service.SpawnArchitectSession(context.Background(), domain.SpawnArchitectSessionRequest{
+		ArchitectKey: "hiveryn",
+		ProfileName:  "opencode",
+	}); err != nil {
+		t.Fatalf("SpawnArchitectSession failed: %v", err)
+	}
+
+	spec := terminal.firstStartSpec()
+	if !hasArgFlag(spec.Args, "--agent") || !hasArgFlag(spec.Args, "--prompt") {
+		t.Fatalf("expected opencode args to include --prompt and --agent, got %#v", spec.Args)
+	}
+	configContent := spec.Env["OPENCODE_CONFIG_CONTENT"]
+	if !strings.Contains(configContent, `"hiveryn"`) {
+		t.Fatalf("expected generated OpenCode config to define hiveryn agent, got %s", configContent)
+	}
+	if strings.Contains(configContent, `"permission":null`) {
+		t.Fatalf("nil agent permission must be omitted for OpenCode compatibility, got %s", configContent)
+	}
 }
 
 func TestSpawnArchitectSessionOpenCodeFailsWhenProfileAlreadySetsAgentFlag(t *testing.T) {
