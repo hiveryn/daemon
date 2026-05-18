@@ -147,8 +147,8 @@ func TestTicketsAPIValidationAndNotFound(t *testing.T) {
 		"title":      "bad refs",
 		"references": []string{"missing-ticket"},
 	})
-	if status != http.StatusBadRequest {
-		t.Fatalf("expected broken references validation status %d, got %d: %s", http.StatusBadRequest, status, string(body))
+	if status != http.StatusCreated {
+		t.Fatalf("expected broken references to succeed (201), got %d: %s", status, string(body))
 	}
 
 	status, body = requestJSON(t, handler, http.MethodPatch, "/api/architects/hiveryn/tickets/2026-05-12-0900-edit/metadata", map[string]any{
@@ -156,7 +156,7 @@ func TestTicketsAPIValidationAndNotFound(t *testing.T) {
 		"references": []string{"missing-ticket"},
 	})
 	if status != http.StatusBadRequest {
-		t.Fatalf("expected metadata validation status %d, got %d: %s", http.StatusBadRequest, status, string(body))
+		t.Fatalf("expected empty title validation status %d, got %d: %s", http.StatusBadRequest, status, string(body))
 	}
 
 	status, body = requestJSON(t, handler, http.MethodPatch, "/api/architects/hiveryn/tickets/2026-05-12-0900-edit", map[string]any{

@@ -20,6 +20,7 @@ const (
 
 	warningDoneWithoutConclusion = "DONE_WITHOUT_CONCLUSION"
 	warningConclusionOutsideDone = "CONCLUSION_OUTSIDE_DONE"
+	warningBrokenReference        = "BROKEN_REFERENCE"
 )
 
 type TicketService struct{}
@@ -72,15 +73,8 @@ func (s *TicketService) CreateTicket(_ context.Context, architectPath string, pa
 		now = time.Now().UTC()
 	}
 
-	entries, err := scanTickets(architectPath)
-	if err != nil {
-		return domain.Ticket{}, err
-	}
 	references, err := normalizeReferences(params.References)
 	if err != nil {
-		return domain.Ticket{}, err
-	}
-	if err := validateTicketReferences("new ticket", references, ticketIDs(entries)); err != nil {
 		return domain.Ticket{}, err
 	}
 
@@ -157,12 +151,6 @@ func (s *TicketService) UpdateTicketMetadata(_ context.Context, architectPath, i
 		return domain.Ticket{}, err
 	}
 
-	entries, err := scanTickets(architectPath)
-	if err != nil {
-		return domain.Ticket{}, err
-	}
-	ids := ticketIDs(entries)
-
 	if params.Title != nil {
 		title := strings.TrimSpace(*params.Title)
 		if title == "" {
@@ -183,9 +171,6 @@ func (s *TicketService) UpdateTicketMetadata(_ context.Context, architectPath, i
 	if params.References != nil {
 		references, err := normalizeReferences(*params.References)
 		if err != nil {
-			return domain.Ticket{}, err
-		}
-		if err := validateTicketReferences(id, references, ids); err != nil {
 			return domain.Ticket{}, err
 		}
 		setNodeStrings(entry.document.Metadata, "references", references)
@@ -354,9 +339,7 @@ func scanTickets(architectPath string) (map[domain.TicketStatus][]ticketEntry, e
 		}
 		entries[status] = statusEntries
 	}
-	if err := validateAllTicketReferences(entries); err != nil {
-		return nil, err
-	}
+	validateAllTicketReferences(entries)
 	return entries, nil
 }
 
@@ -654,16 +637,21 @@ func readConclusion(path string) (*domain.TicketConclusion, error) {
 	}, nil
 }
 
-func validateAllTicketReferences(entries map[domain.TicketStatus][]ticketEntry) error {
+func validateAllTicketReferences(entries map[domain.TicketStatus][]ticketEntry) {
 	ids := ticketIDs(entries)
 	for _, status := range []domain.TicketStatus{domain.TicketStatusBacklog, domain.TicketStatusProgress, domain.TicketStatusDone} {
-		for _, entry := range entries[status] {
-			if err := validateTicketReferences(entry.id, entry.metadata.References, ids); err != nil {
-				return err
+		for i := range entries[status] {
+			entry := &entries[status][i]
+			for _, ref := range entry.metadata.References {
+				if _, ok := ids[ref]; !ok {
+					entry.warnings = append(entry.warnings, domain.TicketWarning{
+						Code:    warningBrokenReference,
+						Message: "references unknown ticket " + ref,
+					})
+				}
 			}
 		}
 	}
-	return nil
 }
 
 func ticketIDs(entries map[domain.TicketStatus][]ticketEntry) map[string]struct{} {
@@ -674,16 +662,6 @@ func ticketIDs(entries map[domain.TicketStatus][]ticketEntry) map[string]struct{
 		}
 	}
 	return ids
-}
-
-func validateTicketReferences(ticketID string, references []string, validIDs map[string]struct{}) error {
-	for _, reference := range references {
-		if _, ok := validIDs[reference]; ok {
-			continue
-		}
-		return &domain.ValidationError{Field: "references", Message: "contains unknown ticket reference " + reference + " in ticket " + ticketID}
-	}
-	return nil
 }
 
 func normalizeReferences(references []string) ([]string, error) {

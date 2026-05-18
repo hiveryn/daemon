@@ -227,22 +227,36 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		root := t.TempDir()
 		writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-refs", "---\ntitle: Refs\nreferences:\n  - missing-ticket\n---\n\nbody\n")
 
-		_, err := NewTicketService().ListTickets(context.Background(), root)
-		var validationErr *domain.ValidationError
-		if !errors.As(err, &validationErr) || validationErr.Field != "references" {
-			t.Fatalf("expected references validation error, got %v", err)
+		board, err := NewTicketService().ListTickets(context.Background(), root)
+		if err != nil {
+			t.Fatalf("expected ListTickets to succeed, got: %v", err)
+		}
+		if len(board.Backlog) != 1 {
+			t.Fatalf("expected 1 backlog ticket, got %d", len(board.Backlog))
+		}
+		ticket := board.Backlog[0]
+		if len(ticket.Warnings) != 1 || ticket.Warnings[0].Code != warningBrokenReference {
+			t.Fatalf("expected 1 BROKEN_REFERENCE warning, got %#v", ticket.Warnings)
+		}
+		if !strings.Contains(ticket.Warnings[0].Message, "missing-ticket") {
+			t.Fatalf("expected warning message to mention missing-ticket, got %q", ticket.Warnings[0].Message)
 		}
 	})
 
 	t.Run("broken references on create", func(t *testing.T) {
 		root := t.TempDir()
-		_, err := NewTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{
+		ticket, err := NewTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{
 			Title:      "Bad refs",
 			References: []string{"missing-ticket"},
 		})
-		var validationErr *domain.ValidationError
-		if !errors.As(err, &validationErr) || validationErr.Field != "references" {
-			t.Fatalf("expected references validation error, got %v", err)
+		if err != nil {
+			t.Fatalf("expected CreateTicket to succeed, got: %v", err)
+		}
+		if ticket.Title != "Bad refs" {
+			t.Fatalf("expected title Bad refs, got %q", ticket.Title)
+		}
+		if len(ticket.References) != 1 || ticket.References[0] != "missing-ticket" {
+			t.Fatalf("expected reference to be stored, got %#v", ticket.References)
 		}
 	})
 
@@ -251,10 +265,12 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-update", "---\ntitle: Update\n---\n\nbody\n")
 		references := []string{"missing-ticket"}
 
-		_, err := NewTicketService().UpdateTicketMetadata(context.Background(), root, "2026-05-12-0900-update", domain.UpdateTicketMetadataParams{References: &references})
-		var validationErr *domain.ValidationError
-		if !errors.As(err, &validationErr) || validationErr.Field != "references" {
-			t.Fatalf("expected references validation error, got %v", err)
+		ticket, err := NewTicketService().UpdateTicketMetadata(context.Background(), root, "2026-05-12-0900-update", domain.UpdateTicketMetadataParams{References: &references})
+		if err != nil {
+			t.Fatalf("expected UpdateTicketMetadata to succeed, got: %v", err)
+		}
+		if len(ticket.References) != 1 || ticket.References[0] != "missing-ticket" {
+			t.Fatalf("expected reference to be stored, got %#v", ticket.References)
 		}
 	})
 
