@@ -95,6 +95,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	ah := &architectsHandler{config: deps.Config, logger: deps.Logger, sessions: deps.Sessions}
 	rh := &reposHandler{config: deps.Config, logger: deps.Logger}
 	sch := &shortcutsHandler{config: deps.Config, logger: deps.Logger}
+	dch := &desktopConfigHandler{config: deps.Config}
 	sh := &sessionsHandler{logger: deps.Logger, sessions: deps.Sessions}
 	th := &ticketsHandler{config: deps.Config, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
 	eh := &architectEventsHandler{config: deps.Config, logger: deps.Logger, hub: deps.ArchitectEvents}
@@ -130,6 +131,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/architects/{key}/repos", rh.list)
 	mux.HandleFunc("GET /api/architects/{key}/repos/{repoKey}", rh.get)
 	mux.HandleFunc("GET /api/config/shortcuts", sch.get)
+	mux.HandleFunc("GET /api/config/desktop", dch.get)
 	mux.HandleFunc("GET /api/architects/{key}/events", eh.events)
 	mux.HandleFunc("GET /api/sessions", sh.list)
 	mux.HandleFunc("GET /api/sessions/{id}", sh.get)

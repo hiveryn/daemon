@@ -100,6 +100,23 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+func TestDesktopConfig(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(t)
+
+	status, body := request(t, handler, http.MethodGet, "/api/config/desktop", nil)
+	if status != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, status, string(body))
+	}
+
+	var payload desktopConfigResponse
+	decodeEnvelopeData(t, body, &payload)
+	if payload.HealthPollIntervalMS != 1000 {
+		t.Fatalf("expected health poll interval 1000ms, got %d", payload.HealthPollIntervalMS)
+	}
+}
+
 func newTestHandler(t *testing.T) http.Handler {
 	t.Helper()
 
@@ -112,9 +129,10 @@ func newTestHandler(t *testing.T) http.Handler {
 
 func testConfig() config.Config {
 	return config.Config{
-		Port:        4200,
-		BindAddress: "127.0.0.1",
-		LogLevel:    "debug",
+		Port:                      4200,
+		BindAddress:               "127.0.0.1",
+		LogLevel:                  "debug",
+		DesktopHealthPollInterval: "1s",
 		Variants: map[string]config.VariantConfig{
 			"codex-personal": {
 				Agent: "codex",

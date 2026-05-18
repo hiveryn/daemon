@@ -38,13 +38,14 @@ func TestSaveAndLoadCoreConfig(t *testing.T) {
 	configDir := t.TempDir()
 	path := filepath.Join(configDir, configFileName)
 	input := Config{
-		Port:        4312,
-		BindAddress: "127.0.0.1",
-		LogLevel:    "debug",
-		Shell:       "/bin/zsh",
-		Variants:    map[string]VariantConfig{},
-		Architects:  map[string]ArchitectConfig{},
-		Tabs:        map[string][]TabEntry{},
+		Port:                      4312,
+		BindAddress:               "127.0.0.1",
+		LogLevel:                  "debug",
+		Shell:                     "/bin/zsh",
+		DesktopHealthPollInterval: "2500ms",
+		Variants:                  map[string]VariantConfig{},
+		Architects:                map[string]ArchitectConfig{},
+		Tabs:                      map[string][]TabEntry{},
 	}
 
 	if err := input.Save(path); err != nil {
@@ -56,10 +57,10 @@ func TestSaveAndLoadCoreConfig(t *testing.T) {
 		t.Fatalf("load config: %v", err)
 	}
 
-	if loaded.Port != input.Port || loaded.BindAddress != input.BindAddress || loaded.LogLevel != input.LogLevel || loaded.Shell != input.Shell {
-		t.Fatalf("core fields mismatch: expected port=%d addr=%s level=%s shell=%s, got port=%d addr=%s level=%s shell=%s",
-			input.Port, input.BindAddress, input.LogLevel, input.Shell,
-			loaded.Port, loaded.BindAddress, loaded.LogLevel, loaded.Shell)
+	if loaded.Port != input.Port || loaded.BindAddress != input.BindAddress || loaded.LogLevel != input.LogLevel || loaded.Shell != input.Shell || loaded.DesktopHealthPollInterval != input.DesktopHealthPollInterval {
+		t.Fatalf("core fields mismatch: expected port=%d addr=%s level=%s shell=%s interval=%s, got port=%d addr=%s level=%s shell=%s interval=%s",
+			input.Port, input.BindAddress, input.LogLevel, input.Shell, input.DesktopHealthPollInterval,
+			loaded.Port, loaded.BindAddress, loaded.LogLevel, loaded.Shell, loaded.DesktopHealthPollInterval)
 	}
 }
 
@@ -69,10 +70,11 @@ func TestLoadAllFiles(t *testing.T) {
 	configDir := t.TempDir()
 
 	writeYAML(t, filepath.Join(configDir, configFileName), map[string]interface{}{
-		"port":         4201,
-		"bind_address": "127.0.0.1",
-		"log_level":    "info",
-		"shell":        "/bin/zsh",
+		"port":                         4201,
+		"bind_address":                 "127.0.0.1",
+		"log_level":                    "info",
+		"shell":                        "/bin/zsh",
+		"desktop_health_poll_interval": "3s",
 	})
 
 	writeYAML(t, filepath.Join(configDir, variantsFileName), map[string]VariantConfig{
@@ -115,6 +117,9 @@ func TestLoadAllFiles(t *testing.T) {
 	if cfg.Shell != "/bin/zsh" {
 		t.Fatalf("expected shell to load, got %q", cfg.Shell)
 	}
+	if cfg.DesktopHealthPollInterval != "3s" {
+		t.Fatalf("expected desktop health poll interval to load, got %q", cfg.DesktopHealthPollInterval)
+	}
 }
 
 func TestLoadMissingOptionalFiles(t *testing.T) {
@@ -141,6 +146,40 @@ func TestLoadMissingOptionalFiles(t *testing.T) {
 	}
 	if len(cfg.Tabs) != 0 {
 		t.Fatalf("expected empty tabs when file missing, got %d", len(cfg.Tabs))
+	}
+}
+
+func TestValidateRejectsInvalidDesktopHealthPollInterval(t *testing.T) {
+	t.Parallel()
+
+	err := Config{
+		Port:                      DefaultPort,
+		BindAddress:               DefaultBindAddress,
+		LogLevel:                  DefaultLogLevel,
+		DesktopHealthPollInterval: "nope",
+		Variants:                  map[string]VariantConfig{},
+		Architects:                map[string]ArchitectConfig{},
+		Tabs:                      map[string][]TabEntry{},
+	}.Validate()
+	if err == nil {
+		t.Fatal("expected desktop health poll interval validation error")
+	}
+}
+
+func TestValidateRejectsNonPositiveDesktopHealthPollInterval(t *testing.T) {
+	t.Parallel()
+
+	err := Config{
+		Port:                      DefaultPort,
+		BindAddress:               DefaultBindAddress,
+		LogLevel:                  DefaultLogLevel,
+		DesktopHealthPollInterval: "0s",
+		Variants:                  map[string]VariantConfig{},
+		Architects:                map[string]ArchitectConfig{},
+		Tabs:                      map[string][]TabEntry{},
+	}.Validate()
+	if err == nil {
+		t.Fatal("expected non-positive desktop health poll interval validation error")
 	}
 }
 

@@ -7,31 +7,34 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	DefaultPort        = 4201
-	DefaultBindAddress = "127.0.0.1"
-	DefaultLogLevel    = "info"
-	configDirName      = ".hiveryn"
-	configFileName     = "config.yaml"
-	variantsFileName   = "variants.yaml"
-	architectsFileName = "architects.yaml"
-	tabsFileName       = "tabs.yaml"
-	shortcutsFileName  = "shortcuts.yaml"
+	DefaultPort                      = 4201
+	DefaultBindAddress               = "127.0.0.1"
+	DefaultLogLevel                  = "info"
+	DefaultDesktopHealthPollInterval = "1s"
+	configDirName                    = ".hiveryn"
+	configFileName                   = "config.yaml"
+	variantsFileName                 = "variants.yaml"
+	architectsFileName               = "architects.yaml"
+	tabsFileName                     = "tabs.yaml"
+	shortcutsFileName                = "shortcuts.yaml"
 )
 
 type Config struct {
-	Port        int                          `yaml:"port"`
-	BindAddress string                       `yaml:"bind_address"`
-	LogLevel    string                       `yaml:"log_level"`
-	Shell       string                       `yaml:"shell,omitempty"`
-	Variants    map[string]VariantConfig     `yaml:"-"`
-	Architects  map[string]ArchitectConfig   `yaml:"-"`
-	Tabs        map[string][]TabEntry        `yaml:"-"`
-	Shortcuts   map[string]map[string]string `yaml:"-"`
+	Port                      int                          `yaml:"port"`
+	BindAddress               string                       `yaml:"bind_address"`
+	LogLevel                  string                       `yaml:"log_level"`
+	Shell                     string                       `yaml:"shell,omitempty"`
+	DesktopHealthPollInterval string                       `yaml:"desktop_health_poll_interval,omitempty"`
+	Variants                  map[string]VariantConfig     `yaml:"-"`
+	Architects                map[string]ArchitectConfig   `yaml:"-"`
+	Tabs                      map[string][]TabEntry        `yaml:"-"`
+	Shortcuts                 map[string]map[string]string `yaml:"-"`
 }
 
 type VariantConfig struct {
@@ -86,13 +89,14 @@ func defaultShortcuts() map[string]map[string]string {
 
 func Default() Config {
 	return Config{
-		Port:        DefaultPort,
-		BindAddress: DefaultBindAddress,
-		LogLevel:    DefaultLogLevel,
-		Variants:    map[string]VariantConfig{},
-		Architects:  map[string]ArchitectConfig{},
-		Tabs:        map[string][]TabEntry{},
-		Shortcuts:   defaultShortcuts(),
+		Port:                      DefaultPort,
+		BindAddress:               DefaultBindAddress,
+		LogLevel:                  DefaultLogLevel,
+		DesktopHealthPollInterval: DefaultDesktopHealthPollInterval,
+		Variants:                  map[string]VariantConfig{},
+		Architects:                map[string]ArchitectConfig{},
+		Tabs:                      map[string][]TabEntry{},
+		Shortcuts:                 defaultShortcuts(),
 	}
 }
 
@@ -172,10 +176,11 @@ func loadOptionalFile(path string, target interface{}) error {
 }
 
 type coreConfig struct {
-	Port        int    `yaml:"port"`
-	BindAddress string `yaml:"bind_address"`
-	LogLevel    string `yaml:"log_level"`
-	Shell       string `yaml:"shell,omitempty"`
+	Port                      int    `yaml:"port"`
+	BindAddress               string `yaml:"bind_address"`
+	LogLevel                  string `yaml:"log_level"`
+	Shell                     string `yaml:"shell,omitempty"`
+	DesktopHealthPollInterval string `yaml:"desktop_health_poll_interval,omitempty"`
 }
 
 func (c Config) Save(path string) error {
@@ -197,10 +202,11 @@ func (c Config) Save(path string) error {
 	}
 
 	core := coreConfig{
-		Port:        c.Port,
-		BindAddress: c.BindAddress,
-		LogLevel:    c.LogLevel,
-		Shell:       c.Shell,
+		Port:                      c.Port,
+		BindAddress:               c.BindAddress,
+		LogLevel:                  c.LogLevel,
+		Shell:                     c.Shell,
+		DesktopHealthPollInterval: c.DesktopHealthPollInterval,
 	}
 
 	data, err := yaml.Marshal(core)
@@ -226,6 +232,19 @@ func (c Config) Validate() error {
 
 	if strings.TrimSpace(c.LogLevel) == "" {
 		return fmt.Errorf("log_level is required")
+	}
+
+	rawInterval := strings.TrimSpace(c.DesktopHealthPollInterval)
+	if rawInterval == "" {
+		rawInterval = DefaultDesktopHealthPollInterval
+	}
+
+	interval, err := time.ParseDuration(rawInterval)
+	if err != nil {
+		return fmt.Errorf("desktop_health_poll_interval must be a valid duration: %w", err)
+	}
+	if interval <= 0 {
+		return fmt.Errorf("desktop_health_poll_interval must be greater than 0")
 	}
 
 	variantNames := sortedKeys(c.Variants)
@@ -298,6 +317,10 @@ func (c *Config) normalize() {
 	if strings.TrimSpace(c.LogLevel) == "" {
 		c.LogLevel = DefaultLogLevel
 	}
+	c.DesktopHealthPollInterval = strings.TrimSpace(c.DesktopHealthPollInterval)
+	if c.DesktopHealthPollInterval == "" {
+		c.DesktopHealthPollInterval = DefaultDesktopHealthPollInterval
+	}
 	if c.Variants == nil {
 		c.Variants = map[string]VariantConfig{}
 	}
@@ -343,6 +366,14 @@ func (c *Config) normalize() {
 			}
 		}
 	}
+}
+
+func (c Config) DesktopHealthPollIntervalDuration() time.Duration {
+	interval, err := time.ParseDuration(c.DesktopHealthPollInterval)
+	if err != nil {
+		panic(fmt.Sprintf("invalid desktop_health_poll_interval %q after validation: %v", c.DesktopHealthPollInterval, err))
+	}
+	return interval
 }
 
 func isLoopbackHost(host string) bool {
