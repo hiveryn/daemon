@@ -210,6 +210,22 @@ func TestTicketResponsesAlwaysIncludeCollections(t *testing.T) {
 		}
 		assertJSONArrayRaw(t, conclusion, "commits")
 	})
+
+	t.Run("legacy flat-string conclusion commits serialize as structured objects", func(t *testing.T) {
+		writeTicketFixture(t, root, domain.TicketStatusDone, "2026-05-12-1001-legacy-conclusion", "---\ntitle: Legacy conclusion\nrepo: daemon\n---\n\ndone\n")
+		dir := filepath.Join(root, "tickets", string(domain.TicketStatusDone), "2026-05-12-1001-legacy-conclusion")
+		if err := os.WriteFile(filepath.Join(dir, "conclusion.md"), []byte("---\nstarted_at: 2026-05-12T10:00:00Z\nconcluded_at: 2026-05-12T10:30:00Z\nrejected: false\ncommits:\n  - abc123\n---\n\nsummary\n"), 0o644); err != nil {
+			t.Fatalf("write conclusion: %v", err)
+		}
+
+		_, body := request(t, handler, http.MethodGet, "/api/architects/hiveryn/tickets/2026-05-12-1001-legacy-conclusion", nil)
+		ticket := envelopeDataMap(t, body)
+		conclusion, _ := ticket["conclusion"].(map[string]any)
+		if conclusion == nil {
+			t.Fatal("expected non-null conclusion")
+		}
+		assertCommitRefsJSON(t, conclusion, "commits", []domain.CommitRef{{SHA: "abc123", Repo: "daemon"}})
+	})
 }
 
 func firstBoardSummary(t *testing.T, body []byte) map[string]any {
@@ -259,6 +275,30 @@ func assertJSONArrayRaw(t *testing.T, obj map[string]any, key string) {
 		t.Fatalf("expected key %q to be a non-null JSON array, but it was null", key)
 	}
 	// ensure empty arrays are non-nil (just checked above)
+}
+
+func assertCommitRefsJSON(t *testing.T, obj map[string]any, key string, want []domain.CommitRef) {
+	t.Helper()
+	val, exists := obj[key]
+	if !exists {
+		t.Fatalf("expected key %q to be present in JSON object, but it was omitted", key)
+	}
+	arr, ok := val.([]any)
+	if !ok {
+		t.Fatalf("expected key %q to be a JSON array, got type %T with value %v", key, val, val)
+	}
+	if len(arr) != len(want) {
+		t.Fatalf("expected %d commit refs, got %d (%#v)", len(want), len(arr), arr)
+	}
+	for i, item := range arr {
+		commit, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("expected commit ref object at index %d, got %T (%#v)", i, item, item)
+		}
+		if commit["sha"] != want[i].SHA || commit["repo"] != want[i].Repo {
+			t.Fatalf("unexpected commit ref at index %d: %#v", i, commit)
+		}
+	}
 }
 
 func assertJSONNull(t *testing.T, obj map[string]any, key string) {

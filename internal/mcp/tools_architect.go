@@ -178,6 +178,14 @@ func (s *Server) handleConcludeSession(
 	if strings.TrimSpace(input.Body) == "" {
 		return nil, ConcludeSessionOutput{}, newValidationError("body", "is required")
 	}
+	for _, commit := range input.Commits {
+		if strings.TrimSpace(commit.SHA) == "" {
+			return nil, ConcludeSessionOutput{}, newValidationError("commits", "commit sha is required")
+		}
+		if strings.TrimSpace(commit.Repo) == "" {
+			return nil, ConcludeSessionOutput{}, newValidationError("commits", "commit repo is required")
+		}
+	}
 
 	if s.sessionID == "" {
 		return nil, ConcludeSessionOutput{}, newInternalError("HIVERYN_SESSION_ID not set")

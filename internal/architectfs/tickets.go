@@ -20,7 +20,7 @@ const (
 
 	warningDoneWithoutConclusion = "DONE_WITHOUT_CONCLUSION"
 	warningConclusionOutsideDone = "CONCLUSION_OUTSIDE_DONE"
-	warningBrokenReference        = "BROKEN_REFERENCE"
+	warningBrokenReference       = "BROKEN_REFERENCE"
 )
 
 type TicketService struct{}
@@ -248,9 +248,20 @@ func newConclusionDocument(conclusion domain.TicketConclusion) MarkdownDocument 
 		setNodeString(meta, "rejection_reason", conclusion.RejectionReason)
 	}
 	if len(conclusion.Commits) > 0 {
-		setNodeStrings(meta, "commits", conclusion.Commits)
+		setNodeCommitRefs(meta, "commits", conclusion.Commits)
 	}
 	return MarkdownDocument{Metadata: meta, Body: conclusion.Body}
+}
+
+func setNodeCommitRefs(node *yaml.Node, key string, commits []domain.CommitRef) {
+	sequence := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	for _, commit := range commits {
+		entry := newMappingNode()
+		setNodeString(entry, "sha", commit.SHA)
+		setNodeString(entry, "repo", commit.Repo)
+		sequence.Content = append(sequence.Content, entry)
+	}
+	setMappingValue(node, key, sequence)
 }
 
 func (s *TicketService) MoveTicket(_ context.Context, architectPath, id string, params domain.MoveTicketParams) (domain.Ticket, error) {
@@ -319,7 +330,7 @@ func (e ticketEntry) ticket() domain.Ticket {
 	}
 	if e.conclusion != nil {
 		conclusion := *e.conclusion
-		conclusion.Commits = nonNilStrings(conclusion.Commits)
+		conclusion.Commits = nonNilCommitRefs(conclusion.Commits)
 		t.Conclusion = &conclusion
 	}
 	return t
@@ -426,7 +437,7 @@ func loadTicketEntry(architectPath string, status domain.TicketStatus, id string
 
 	conclusionPath := filepath.Join(dir, conclusionFileName)
 	if _, err := os.Stat(conclusionPath); err == nil {
-		conclusion, err := readConclusion(conclusionPath)
+		conclusion, err := readConclusion(conclusionPath, metadata.Repo)
 		if err != nil {
 			return ticketEntry{}, err
 		}
@@ -529,6 +540,15 @@ func nonNilStrings(s []string) []string {
 	return cloned
 }
 
+func nonNilCommitRefs(commits []domain.CommitRef) []domain.CommitRef {
+	if commits == nil {
+		return []domain.CommitRef{}
+	}
+	cloned := make([]domain.CommitRef, len(commits))
+	copy(cloned, commits)
+	return cloned
+}
+
 func cloneWarnings(warnings []domain.TicketWarning) []domain.TicketWarning {
 	cloned := make([]domain.TicketWarning, len(warnings))
 	copy(cloned, warnings)
@@ -596,7 +616,7 @@ func newTicketDocument(metadata ticketMetadata, body string) MarkdownDocument {
 	return MarkdownDocument{Metadata: meta, Body: body}
 }
 
-func readConclusion(path string) (*domain.TicketConclusion, error) {
+func readConclusion(path, ticketRepo string) (*domain.TicketConclusion, error) {
 	doc, err := ReadMarkdownDocument(path)
 	if err != nil {
 		return nil, err
@@ -611,10 +631,13 @@ func readConclusion(path string) (*domain.TicketConclusion, error) {
 		Profile         string    `yaml:"profile"`
 		Rejected        bool      `yaml:"rejected"`
 		RejectionReason string    `yaml:"rejection_reason"`
-		Commits         []string  `yaml:"commits"`
 	}
 	if err := doc.Metadata.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("decode ticket conclusion frontmatter: %w", err)
+	}
+	commits, err := parseConclusionCommitRefs(doc.Metadata, ticketRepo)
+	if err != nil {
+		return nil, err
 	}
 	if raw.StartedAt.IsZero() {
 		return nil, &domain.ValidationError{Field: "started_at", Message: "is required in conclusion.md"}
@@ -632,9 +655,60 @@ func readConclusion(path string) (*domain.TicketConclusion, error) {
 		Profile:         raw.Profile,
 		Rejected:        raw.Rejected,
 		RejectionReason: raw.RejectionReason,
-		Commits:         nonNilStrings(raw.Commits),
+		Commits:         commits,
 		Body:            doc.Body,
 	}, nil
+}
+
+func parseConclusionCommitRefs(meta *yaml.Node, ticketRepo string) ([]domain.CommitRef, error) {
+	commitsNode := mappingValue(meta, "commits")
+	if commitsNode == nil {
+		return []domain.CommitRef{}, nil
+	}
+	if commitsNode.Kind != yaml.SequenceNode {
+		return nil, &domain.ValidationError{Field: "commits", Message: "must be a YAML sequence in conclusion.md"}
+	}
+
+	commits := make([]domain.CommitRef, 0, len(commitsNode.Content))
+	for _, item := range commitsNode.Content {
+		switch item.Kind {
+		case yaml.ScalarNode:
+			if strings.TrimSpace(item.Value) == "" {
+				return nil, &domain.ValidationError{Field: "commits", Message: "commit sha cannot be empty in conclusion.md"}
+			}
+			commits = append(commits, domain.CommitRef{SHA: item.Value, Repo: ticketRepo})
+		case yaml.MappingNode:
+			var commit domain.CommitRef
+			if err := item.Decode(&commit); err != nil {
+				return nil, fmt.Errorf("decode commit entry in conclusion.md: %w", err)
+			}
+			if strings.TrimSpace(commit.SHA) == "" {
+				return nil, &domain.ValidationError{Field: "commits", Message: "commit sha cannot be empty in conclusion.md"}
+			}
+			if strings.TrimSpace(commit.Repo) == "" {
+				return nil, &domain.ValidationError{Field: "commits", Message: "commit repo cannot be empty in conclusion.md"}
+			}
+			commits = append(commits, commit)
+		default:
+			return nil, &domain.ValidationError{Field: "commits", Message: "must contain only strings or {sha, repo} objects in conclusion.md"}
+		}
+	}
+	if commits == nil {
+		return []domain.CommitRef{}, nil
+	}
+	return commits, nil
+}
+
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
 }
 
 func validateAllTicketReferences(entries map[domain.TicketStatus][]ticketEntry) {

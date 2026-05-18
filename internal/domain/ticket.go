@@ -40,14 +40,14 @@ type TicketSummary struct {
 }
 
 type TicketConclusion struct {
-	StartedAt       time.Time `json:"started_at"`
-	ConcludedAt     time.Time `json:"concluded_at"`
-	Agent           string    `json:"agent,omitempty"`
-	Profile         string    `json:"profile,omitempty"`
-	Rejected        bool      `json:"rejected"`
-	RejectionReason string    `json:"rejection_reason,omitempty"`
-	Commits         []string  `json:"commits"`
-	Body            string    `json:"body"`
+	StartedAt       time.Time   `json:"started_at"`
+	ConcludedAt     time.Time   `json:"concluded_at"`
+	Agent           string      `json:"agent,omitempty"`
+	Profile         string      `json:"profile,omitempty"`
+	Rejected        bool        `json:"rejected"`
+	RejectionReason string      `json:"rejection_reason,omitempty"`
+	Commits         []CommitRef `json:"commits"`
+	Body            string      `json:"body"`
 }
 
 type Ticket struct {

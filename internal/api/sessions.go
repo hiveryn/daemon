@@ -59,10 +59,10 @@ func (h *sessionsHandler) conclude(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input struct {
-		Body            string   `json:"body"`
-		Commits         []string `json:"commits,omitempty"`
-		Rejected        bool     `json:"rejected,omitempty"`
-		RejectionReason string   `json:"rejection_reason,omitempty"`
+		Body            string             `json:"body"`
+		Commits         []domain.CommitRef `json:"commits,omitempty"`
+		Rejected        bool               `json:"rejected,omitempty"`
+		RejectionReason string             `json:"rejection_reason,omitempty"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)

@@ -177,6 +177,40 @@ Session responses include `main_terminal_id` so the desktop can reconnect the ma
 
 Only `POST /api/sessions/{id}/conclude` legitimately ends a session. Concluding an architect session fails fast with `CONFLICT` while worker sessions for the same `architect_key` are still `running`; the error message lists the blocking session IDs.
 
+`POST /api/sessions/{id}/conclude` now requires structured commit refs in requests for work sessions. `repo` is the configured repo key from `architects.yaml`, not a filesystem path.
+
+Request:
+
+```json
+{
+  "body": "Implemented multi-repo conclusion support.",
+  "commits": [
+    {"sha": "abc123", "repo": "daemon"},
+    {"sha": "def456", "repo": "desktop"}
+  ],
+  "rejected": false,
+  "rejection_reason": ""
+}
+```
+
+Ticket/conclusion output always returns the structured shape, including when reading older `conclusion.md` files that stored commits as flat SHA arrays:
+
+```json
+{
+  "started_at": "2026-05-18T14:00:00Z",
+  "concluded_at": "2026-05-18T14:30:00Z",
+  "agent": "codex",
+  "profile": "codex",
+  "rejected": false,
+  "rejection_reason": "",
+  "commits": [
+    {"sha": "abc123", "repo": "daemon"},
+    {"sha": "def456", "repo": "desktop"}
+  ],
+  "body": "Implemented multi-repo conclusion support."
+}
+```
+
 All responses use a standard envelope:
 
 ```json

@@ -269,8 +269,10 @@ func TestConcludeWorkSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 	t.Parallel()
 
 	architectPath := t.TempDir()
-	repoPath := t.TempDir()
-	commit := createTestGitCommit(t, repoPath)
+	daemonRepoPath := t.TempDir()
+	desktopRepoPath := t.TempDir()
+	daemonCommit := createTestGitCommit(t, daemonRepoPath)
+	desktopCommit := createTestGitCommit(t, desktopRepoPath)
 	created := time.Date(2026, 5, 13, 15, 30, 0, 0, time.UTC)
 	operations := []string{}
 	repo := newFakeSessionRepository()
@@ -284,9 +286,16 @@ func TestConcludeWorkSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 		TicketID:     "ticket-1",
 		CreatedAt:    created,
 	}
+	cfg := testRuntimeConfigWithPaths(architectPath, daemonRepoPath)
+	cfg.Architects["hiveryn"] = config.ArchitectConfig{
+		Path:  architectPath,
+		Group: "personal",
+		Repos: map[string]string{"daemon": daemonRepoPath, "desktop": desktopRepoPath},
+	}
+
 	service := &Service{
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg:    testRuntimeConfigWithPaths(architectPath, repoPath),
+		cfg:    cfg,
 		repo:   repo,
 		tickets: &fakeTicketService{ticket: domain.Ticket{
 			TicketSummary: domain.TicketSummary{
@@ -300,7 +309,7 @@ func TestConcludeWorkSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 
 	_, err := service.ConcludeSession(context.Background(), "sess-work", domain.ConcludeSessionParams{
 		Body:            "worker conclusion",
-		Commits:         []string{commit},
+		Commits:         []domain.CommitRef{{SHA: daemonCommit, Repo: "daemon"}, {SHA: desktopCommit, Repo: "desktop"}},
 		Rejected:        true,
 		RejectionReason: "needs another pass",
 	})
@@ -315,8 +324,8 @@ func TestConcludeWorkSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 	if event.Raw["lifecycle"] != "concluded" {
 		t.Fatalf("expected concluded lifecycle in ended event, got %#v", event.Raw)
 	}
-	commits, ok := event.Raw["commits"].([]string)
-	if !ok || len(commits) != 1 || commits[0] != commit {
+	commits, ok := event.Raw["commits"].([]domain.CommitRef)
+	if !ok || len(commits) != 2 || commits[0] != (domain.CommitRef{SHA: daemonCommit, Repo: "daemon"}) || commits[1] != (domain.CommitRef{SHA: desktopCommit, Repo: "desktop"}) {
 		t.Fatalf("expected raw commits in ended event, got %#v", event.Raw["commits"])
 	}
 	if event.Raw["rejected"] != true {

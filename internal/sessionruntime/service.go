@@ -763,19 +763,14 @@ func (s *Service) concludeWorkSession(ctx context.Context, session domain.Sessio
 	if repoKey == "" {
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "repo", Message: "ticket has no repo key"}
 	}
-	repoPath, ok := architect.Repos[repoKey]
+	_, ok = architect.Repos[repoKey]
 	if !ok {
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "repo", Message: "repo key " + repoKey + " not configured in architect repos"}
 	}
 
-	for _, sha := range params.Commits {
-		sha = strings.TrimSpace(sha)
-		if sha == "" {
-			return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "commits", Message: "commit SHA cannot be empty"}
-		}
-		if err := validateCommitSHA(ctx, repoPath, sha); err != nil {
-			return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "commits", Message: "commit " + sha + " not found in repo " + repoKey + ": " + err.Error()}
-		}
+	resolvedCommits, err := resolveConclusionCommitRefs(ctx, architect.Repos, params.Commits)
+	if err != nil {
+		return domain.ConcludeSessionResult{}, err
 	}
 
 	now := time.Now().UTC()
@@ -786,7 +781,7 @@ func (s *Service) concludeWorkSession(ctx context.Context, session domain.Sessio
 		Profile:         session.ProfileName,
 		Rejected:        params.Rejected,
 		RejectionReason: params.RejectionReason,
-		Commits:         params.Commits,
+		Commits:         resolvedCommits,
 		Body:            params.Body,
 	}
 
@@ -800,7 +795,7 @@ func (s *Service) concludeWorkSession(ctx context.Context, session domain.Sessio
 
 	if err := s.appendAndPublishSessionEnded(ctx, session.ID, "session concluded", map[string]any{
 		"body":             params.Body,
-		"commits":          params.Commits,
+		"commits":          resolvedCommits,
 		"rejected":         params.Rejected,
 		"rejection_reason": params.RejectionReason,
 	}); err != nil {
@@ -855,6 +850,33 @@ func validateCommitSHA(ctx context.Context, repoPath, sha string) error {
 		return fmt.Errorf("expected commit type, got %s", objType)
 	}
 	return nil
+}
+
+func resolveConclusionCommitRefs(ctx context.Context, repos map[string]string, commits []domain.CommitRef) ([]domain.CommitRef, error) {
+	resolved := make([]domain.CommitRef, 0, len(commits))
+	for _, commit := range commits {
+		sha := strings.TrimSpace(commit.SHA)
+		if sha == "" {
+			return nil, &domain.ValidationError{Field: "commits", Message: "commit SHA cannot be empty"}
+		}
+
+		repoKey := strings.TrimSpace(commit.Repo)
+		if repoKey == "" {
+			return nil, &domain.ValidationError{Field: "commits", Message: "commit repo cannot be empty"}
+		}
+
+		repoPath, ok := repos[repoKey]
+		if !ok {
+			return nil, &domain.ValidationError{Field: "commits", Message: "repo key " + repoKey + " not configured in architect repos"}
+		}
+
+		if err := validateCommitSHA(ctx, repoPath, sha); err != nil {
+			return nil, &domain.ValidationError{Field: "commits", Message: "commit " + sha + " not found in repo " + repoKey + ": " + err.Error()}
+		}
+
+		resolved = append(resolved, domain.CommitRef{SHA: sha, Repo: repoKey})
+	}
+	return resolved, nil
 }
 
 const conclusionFileName = "conclusion.md"

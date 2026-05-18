@@ -567,7 +567,7 @@ func TestConcludeSessionWorkerSuccess(t *testing.T) {
 
 	status, body := requestJSON(t, handler, http.MethodPost, "/api/sessions/sess-1/conclude", map[string]any{
 		"body":    "Implemented feature X.",
-		"commits": []string{"abc123"},
+		"commits": []any{map[string]any{"sha": "abc123", "repo": "daemon"}},
 	})
 	if status != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, status, string(body))
@@ -580,6 +580,29 @@ func TestConcludeSessionWorkerSuccess(t *testing.T) {
 	}
 	if payload["ticket_id"] != "ticket-1" {
 		t.Fatalf("expected ticket_id=ticket-1, got %#v", payload)
+	}
+	if len(service.lastConcludeParams.Commits) != 1 || service.lastConcludeParams.Commits[0] != (domain.CommitRef{SHA: "abc123", Repo: "daemon"}) {
+		t.Fatalf("expected object commit ref payload, got %#v", service.lastConcludeParams.Commits)
+	}
+}
+
+func TestConcludeSessionWorkerRejectsFlatStringCommitArray(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeSessionService{
+		concludeResult: domain.ConcludeSessionResult{SessionID: "sess-1", ArchitectKey: "hiveryn", TicketID: "ticket-1"},
+	}
+	handler := newSessionTestHandler(t, service)
+
+	status, body := requestJSON(t, handler, http.MethodPost, "/api/sessions/sess-1/conclude", map[string]any{
+		"body":    "Implemented feature X.",
+		"commits": []string{"abc123"},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, status, string(body))
+	}
+	if service.lastConcludeSessionID != "" {
+		t.Fatalf("expected decode failure before service call, got %#v", service.lastConcludeParams)
 	}
 }
 

@@ -46,6 +46,38 @@ func TestTicketServiceListAndGet(t *testing.T) {
 	if ticket.Conclusion == nil || ticket.Conclusion.Agent != "codex" || ticket.Body != "Done body\n" {
 		t.Fatalf("unexpected ticket detail: %#v", ticket)
 	}
+	if len(ticket.Conclusion.Commits) != 1 || ticket.Conclusion.Commits[0] != (domain.CommitRef{SHA: "abc1234", Repo: "daemon"}) {
+		t.Fatalf("expected legacy flat commit to resolve against ticket repo, got %#v", ticket.Conclusion.Commits)
+	}
+}
+
+func TestTicketServiceConcludeTicketWritesStructuredCommitRefs(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeTicketFile(t, root, domain.TicketStatusProgress, "2026-05-12-1300-structured-write", "---\ntitle: Structured write\nrepo: daemon\n---\n\nbody\n")
+
+	service := NewTicketService()
+	_, err := service.ConcludeTicket(context.Background(), root, "2026-05-12-1300-structured-write", domain.TicketConclusion{
+		StartedAt:   time.Date(2026, 5, 12, 13, 0, 0, 0, time.UTC),
+		ConcludedAt: time.Date(2026, 5, 12, 13, 30, 0, 0, time.UTC),
+		Commits:     []domain.CommitRef{{SHA: "abc123", Repo: "daemon"}, {SHA: "def456", Repo: "desktop"}},
+		Body:        "summary",
+	})
+	if err != nil {
+		t.Fatalf("ConcludeTicket: %v", err)
+	}
+
+	content := readFile(t, filepath.Join(root, ticketsDirName, string(domain.TicketStatusDone), "2026-05-12-1300-structured-write", conclusionFileName))
+	if !strings.Contains(content, "sha: abc123") || !strings.Contains(content, "repo: daemon") {
+		t.Fatalf("expected structured daemon commit in conclusion, got:\n%s", content)
+	}
+	if !strings.Contains(content, "sha: def456") || !strings.Contains(content, "repo: desktop") {
+		t.Fatalf("expected structured desktop commit in conclusion, got:\n%s", content)
+	}
+	if strings.Contains(content, "\n  - abc123\n") || strings.Contains(content, "\n  - def456\n") {
+		t.Fatalf("expected structured commit objects instead of flat strings, got:\n%s", content)
+	}
 }
 
 func TestTicketServiceCreateCollisionAndEditPreservesUnknownFrontmatter(t *testing.T) {

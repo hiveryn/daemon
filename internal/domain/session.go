@@ -97,7 +97,7 @@ type SessionRepository interface {
 
 type ConcludeSessionParams struct {
 	Body            string
-	Commits         []string
+	Commits         []CommitRef
 	Rejected        bool
 	RejectionReason string
 }

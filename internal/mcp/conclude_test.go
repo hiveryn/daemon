@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -49,6 +50,16 @@ func TestHandleConcludeSessionWorkerSuccess(t *testing.T) {
 		if r.URL.Path != "/api/sessions/sess-2/conclude" {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
+		var body struct {
+			Commits []domain.CommitRef `json:"commits"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		wantCommits := []domain.CommitRef{{SHA: "abc123", Repo: "daemon"}, {SHA: "def456", Repo: "desktop"}}
+		if len(body.Commits) != len(wantCommits) || body.Commits[0] != wantCommits[0] || body.Commits[1] != wantCommits[1] {
+			t.Fatalf("unexpected commits payload: %#v", body.Commits)
+		}
 		writeEnvelope(t, w, http.StatusOK, map[string]any{
 			"success":    true,
 			"session_id": "sess-2",
@@ -59,7 +70,7 @@ func TestHandleConcludeSessionWorkerSuccess(t *testing.T) {
 
 	_, output, err := server.handleConcludeSession(context.Background(), nil, ConcludeSessionInput{
 		Body:    "Implemented feature.",
-		Commits: []string{"abc123"},
+		Commits: []domain.CommitRef{{SHA: "abc123", Repo: "daemon"}, {SHA: "def456", Repo: "desktop"}},
 	})
 	if err != nil {
 		t.Fatalf("handleConcludeSession failed: %v", err)
@@ -159,6 +170,31 @@ func TestHandleConcludeSessionDaemonError(t *testing.T) {
 	}
 }
 
+func TestHandleConcludeSessionRejectsCommitWithoutRepo(t *testing.T) {
+	t.Parallel()
+
+	server, err := NewServer(Config{
+		DaemonURL:    "http://127.0.0.1:4200",
+		ArchitectKey: "hiveryn",
+		SessionID:    "sess-1",
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	_, _, err = server.handleConcludeSession(context.Background(), nil, ConcludeSessionInput{
+		Body:    "done",
+		Commits: []domain.CommitRef{{SHA: "abc123"}},
+	})
+	toolErr, ok := err.(*ToolError)
+	if !ok {
+		t.Fatalf("expected ToolError, got %T", err)
+	}
+	if toolErr.Code != ErrorCodeValidation {
+		t.Fatalf("code = %q, want %q", toolErr.Code, ErrorCodeValidation)
+	}
+}
+
 func TestSessionIDPassedToMCPServer(t *testing.T) {
 	t.Parallel()
 
@@ -201,7 +237,7 @@ func TestWorkerSessionRegistersConcludeTool(t *testing.T) {
 
 	_, _, err = server.handleConcludeSession(context.Background(), nil, ConcludeSessionInput{
 		Body:    "Worker concluded.",
-		Commits: []string{"def456"},
+		Commits: []domain.CommitRef{{SHA: "def456", Repo: "daemon"}},
 	})
 	if err != nil {
 		t.Fatalf("worker concludeSession failed: %v", err)
