@@ -27,48 +27,6 @@ func (h *architectsHandler) get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, architect)
 }
 
-func (h *architectsHandler) spawn(w http.ResponseWriter, r *http.Request) {
-	if h.sessions == nil {
-		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
-		return
-	}
-
-	key := r.PathValue("key")
-	var request struct {
-		ProfileName string `json:"profile_name"`
-		Cols        uint16 `json:"cols,omitempty"`
-		Rows        uint16 `json:"rows,omitempty"`
-	}
-	if err := decodeJSON(r, &request); err != nil {
-		writeError(w, r, http.StatusBadRequest, "VALIDATION", err.Error(), nil)
-		return
-	}
-
-	h.logger.Info("[spawn] request",
-		"architect_key", key,
-		"profile_name", request.ProfileName,
-		"cols", request.Cols,
-		"rows", request.Rows,
-	)
-
-	result, err := h.sessions.SpawnArchitectSession(r.Context(), domain.SpawnArchitectSessionRequest{
-		ArchitectKey: key,
-		ProfileName:  request.ProfileName,
-		Cols:         request.Cols,
-		Rows:         request.Rows,
-	})
-	if err != nil {
-		writeDomainError(w, r, err)
-		return
-	}
-
-	writeJSON(w, r, http.StatusOK, map[string]string{
-		"session_id":       result.Session.ID,
-		"main_terminal_id": result.MainTerminalID,
-		"ws_url":           websocketURL(r, "/ws/session/"+result.Session.ID+"/terminal/"+result.MainTerminalID),
-	})
-}
-
 func (h *architectsHandler) listConclusions(w http.ResponseWriter, r *http.Request) {
 	if h.sessions == nil {
 		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)

@@ -91,7 +91,7 @@ work:
   - type: terminal
 ```
 
-Terminal entries only support `type` and optional `command`. Entries without `command` default to the user's shell. When a session spawns, the daemon auto-creates PTY terminals for every `type: terminal` entry in the matching session type section and assigns each terminal a UUID.
+Terminal entries only support `type` and optional `command`. Entries without `command` default to the user's shell. When a session run starts, the daemon auto-creates PTY terminals for every `type: terminal` entry in the matching session type section and assigns each terminal a UUID.
 
 ### `shortcuts.yaml` — keybindings
 
@@ -145,7 +145,6 @@ The daemon also writes append-only structured JSONL logs to `~/.hiveryn/logs/dae
 | `GET` | `/api/architect-groups/{name}` | Get one architect group by name |
 | `GET` | `/api/architects` | List configured architects |
 | `GET` | `/api/architects/{key}` | Get one configured architect by key |
-| `POST` | `/api/architects/{key}/spawn` | Spawn an architect session using an agent profile |
 | `GET` | `/api/architects/{key}/tickets` | List ticket board columns; supports `?status=backlog\|progress\|done` and `?limit=N` |
 | `POST` | `/api/architects/{key}/tickets` | Create a backlog ticket in the architect folder |
 | `GET` | `/api/architects/{key}/tickets/{id}` | Get one filesystem-backed ticket by ID |
@@ -153,7 +152,6 @@ The daemon also writes append-only structured JSONL logs to `~/.hiveryn/logs/dae
 | `PATCH` | `/api/architects/{key}/tickets/{id}/metadata` | Update ticket frontmatter (`title`, `repo`, `references`) |
 | `DELETE` | `/api/architects/{key}/tickets/{id}` | Delete a ticket folder and its contents |
 | `POST` | `/api/architects/{key}/tickets/{id}/move?to=...` | Move a ticket between backlog, progress, and done |
-| `POST` | `/api/architects/{key}/tickets/{id}/spawn` | Spawn a worker session for a ticket (backlog → progress) |
 | `GET` | `/api/architects/{key}/events` | Stream architect-scoped workspace_changed SSE hints |
 | `GET` | `/api/architects/{key}/conclusions` | List recent conclusions (IDs + timestamps); supports `?limit=N` |
 | `GET` | `/api/architects/{key}/conclusions/recent` | Read the most recent architect session conclusion |
@@ -161,21 +159,23 @@ The daemon also writes append-only structured JSONL logs to `~/.hiveryn/logs/dae
 | `GET` | `/api/architects/{key}/repos` | List repos for an architect |
 | `GET` | `/api/architects/{key}/repos/{repoKey}` | Get one architect repo by key |
 | `GET` | `/api/config/shortcuts` | Get resolved shortcuts config (global + per-pane keybindings) |
-| `GET` | `/api/sessions` | List sessions; supports `?status=running` |
-| `GET` | `/api/sessions/{id}` | Get one session |
-| `POST` | `/api/sessions/{id}/conclude` | Conclude a running session, publish `ended`, kill its PTY, and delete its SQLite row; architect conclude returns `CONFLICT` if same-architect work sessions are still running |
-| `GET` | `/api/sessions/{id}/tabs` | Get the resolved right-pane tab layout for a session |
-| `POST` | `/api/sessions/{id}/terminals` | Create a new user terminal in a session using the resolved default shell |
-| `GET` | `/api/sessions/{id}/terminals` | List all terminals for a session |
+| `POST` | `/api/sessions` | Create a durable session intent for architect planning or ticket work |
+| `GET` | `/api/sessions` | List session intents with their current run, if any |
+| `GET` | `/api/sessions/{id}` | Get one session intent |
+| `POST` | `/api/sessions/{id}/runs` | Start a run for a session intent using an agent profile; work runs move the ticket backlog → progress on successful launch |
+| `POST` | `/api/sessions/{id}/conclude` | Conclude an intent's running run, publish `ended`, kill its PTYs, and delete the intent row; architect conclude returns `CONFLICT` if same-architect work sessions are still running |
+| `GET` | `/api/sessions/{id}/tabs` | Get the resolved right-pane tab layout for a session intent's current run |
+| `POST` | `/api/sessions/{id}/terminals` | Create a new user terminal in a session intent's current run using the resolved default shell |
+| `GET` | `/api/sessions/{id}/terminals` | List all terminals for a session intent's current run |
 | `DELETE` | `/api/sessions/{id}/terminals/{uuid}` | Kill a specific user terminal by UUID |
-| `GET` | `/api/sessions/{id}/events` | Stream structured session events over SSE |
+| `GET` | `/api/sessions/{id}/events` | Stream structured session intent events over SSE |
 | `WS` | `/ws/session/{id}/terminal/{uuid}` | Stream PTY output and send terminal input for a terminal UUID |
 
 Profile, architect, repo, and tab configuration endpoints are read-only. Edit `~/.hiveryn/*.yaml` directly to change variants, architects, repos, or tabs.
 
-Session responses include `main_terminal_id` so the desktop can reconnect the main agent PTY. If the main agent PTY exits unexpectedly, the daemon automatically resumes the running session from its stored `native_id`, emits a `main_terminal_resumed` session event with the new `main_terminal_id`, and leaves the session status unchanged. `GET /api/sessions/{id}/tabs` returns the canonical right-pane layout using `type`, `id`, `command`, and `status` for terminal tabs. `POST /api/sessions/{id}/terminals` accepts an empty JSON object and always launches the session's default shell in the resolved session workdir.
+Session responses expose a durable intent plus its current run, if any. `POST /api/sessions/{id}/runs` returns the created `run`, its `main_terminal_id`, and a `ws_url` so the desktop can attach immediately. If the main agent PTY exits unexpectedly, the daemon automatically resumes the running run from its stored `native_id`, emits a `main_terminal_resumed` session event with the new `main_terminal_id`, and leaves the run status as `running`; restore failures mark the run `restore_failed` and abort daemon startup. `GET /api/sessions/{id}/tabs` returns the canonical right-pane layout using `type`, `id`, `command`, and `status` for terminal tabs. `POST /api/sessions/{id}/terminals` accepts an empty JSON object and always launches the session's default shell in the current run workdir.
 
-Only `POST /api/sessions/{id}/conclude` legitimately ends a session. Concluding an architect session fails fast with `CONFLICT` while worker sessions for the same `architect_key` are still `running`; the error message lists the blocking session IDs.
+Only `POST /api/sessions/{id}/conclude` legitimately ends a session. Concluding an architect intent fails fast with `CONFLICT` while worker intents for the same `architect_key` still have a `running` run; the error message lists the blocking intent IDs.
 
 `POST /api/sessions/{id}/conclude` now requires structured commit refs in requests for work sessions. `repo` is the configured repo key from `architects.yaml`, not a filesystem path.
 

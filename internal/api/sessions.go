@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -15,25 +14,41 @@ var wsUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+func (h *sessionsHandler) createIntent(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
+		return
+	}
+
+	var input domain.CreateSessionIntentRequest
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
+		return
+	}
+
+	intent, err := h.sessions.CreateIntent(r.Context(), input)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusCreated, intent)
+}
+
 func (h *sessionsHandler) list(w http.ResponseWriter, r *http.Request) {
 	if h.sessions == nil {
 		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
 		return
 	}
 
-	filter := domain.SessionListFilter{}
-	if status := strings.TrimSpace(r.URL.Query().Get("status")); status != "" {
-		filter.Status = domain.SessionStatus(status)
-	}
-
-	sessions, err := h.sessions.ListSessions(r.Context(), filter)
+	intents, err := h.sessions.ListIntents(r.Context())
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string][]domain.Session{
-		"sessions": sessions,
+	writeJSON(w, r, http.StatusOK, map[string][]domain.SessionIntent{
+		"sessions": intents,
 	})
 }
 
@@ -43,13 +58,55 @@ func (h *sessionsHandler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := h.sessions.GetSession(r.Context(), r.PathValue("id"))
+	intent, err := h.sessions.GetIntent(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
 	}
 
-	writeJSON(w, r, http.StatusOK, session)
+	writeJSON(w, r, http.StatusOK, intent)
+}
+
+func (h *sessionsHandler) createRun(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
+		return
+	}
+
+	var input domain.CreateSessionRunRequest
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
+		return
+	}
+
+	result, err := h.sessions.CreateRun(r.Context(), r.PathValue("id"), input)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	if h.publishArchitect != nil {
+		intent, intentErr := h.sessions.GetIntent(r.Context(), r.PathValue("id"))
+		if intentErr != nil {
+			writeDomainError(w, r, intentErr)
+			return
+		}
+		if intent.SessionType == domain.SessionTypeWork {
+			h.publishArchitect(intent.ArchitectKey, domain.ArchitectEvent{
+				Type:         "workspace_changed",
+				ArchitectKey: intent.ArchitectKey,
+				Reason:       "ticket_moved",
+				TicketID:     intent.TicketID,
+				At:           time.Now().UTC(),
+			})
+		}
+	}
+
+	writeJSON(w, r, http.StatusCreated, map[string]any{
+		"run":              result.Run,
+		"main_terminal_id": result.MainTerminalID,
+		"ws_url":           websocketURL(r, "/ws/session/"+r.PathValue("id")+"/terminal/"+result.MainTerminalID),
+	})
 }
 
 func (h *sessionsHandler) conclude(w http.ResponseWriter, r *http.Request) {

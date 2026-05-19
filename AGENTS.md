@@ -70,18 +70,18 @@ internal/
 - Config-backed read APIs read from the parsed `config.Config` snapshot, not SQLite.
 - `app/` wires everything together — it's the only package that imports both `store/` and `api/`.
 - `sessionruntime/` owns live process/PTY state and bridges `agentruntime` events into persisted session events.
-- `sessionruntime/` also owns resolved per-session terminal UUIDs and right-pane tab layout state; SQLite stores session metadata, not terminal identity/layout snapshots.
+- `sessionruntime/` also owns resolved per-intent terminal UUIDs and right-pane tab layout state for the current run; SQLite stores durable `session_intents`, `session_runs`, and structured events, not terminal identity/layout snapshots.
 - `logging/` owns append-only JSONL sinks and schema shaping for app logs and request logs. Middleware and services should emit structured fields, not hand-built JSON strings.
 - `mcp/` stays transport-focused: role-specific tool registration plus HTTP client shims back into daemon APIs. Keep tool handlers out of `cmd/` and avoid filesystem mutations here.
 - `config/` is self-contained. Bootstrap config lives outside SQLite because the server needs it before the DB opens.
 
 ## Adding a new resource
 
-Example: adding a SQLite-backed `sessions` table and API.
+Example: adding a SQLite-backed session resource.
 
-1. **Domain** (`internal/domain/session.go`): `Session` struct, `SessionRepository` interface, any enums or validation errors.
+1. **Domain** (`internal/domain/session.go`): `SessionIntent` / `SessionRun` structs, `SessionRepository` interface, any enums or validation errors.
 2. **Migration** (`internal/store/migrations/0002_<resource>.sql`): CREATE TABLE. Add to `migrationFiles` slice in `internal/store/migrate.go`.
-3. **Repository** (`internal/store/sessions.go`): `SessionStore` struct implementing `domain.SessionRepository` with SQLite queries.
+3. **Repository** (`internal/store/intents.go`, `internal/store/runs.go`): `SessionStore` methods implementing `domain.SessionRepository` with SQLite queries.
 4. **API** (`internal/api/sessions.go`): handlers using `domain.SessionRepository` interface. Use Go 1.24 method-pattern routing (`"POST /api/sessions"`).
 5. **Routes** (`internal/api/router.go`): register handler methods in `NewHandler`.
 6. **Wiring** (`internal/app/app.go`): instantiate the new store, pass the repo to the handler.
@@ -101,7 +101,7 @@ Each resource is self-contained across four packages — no cross-contamination.
 - Never log secrets from profiles, env configs, or MCP configurations.
 - PTY/process handles stay in memory under `sessionruntime`; SQLite stores session metadata and structured events only.
 - Architect sessions must not conclude while same-architect work sessions are still running; return a `Conflict` with the active worker session IDs instead of orphaning PTYs.
-- The only legitimate session end is `concludeSession`. Any unexpected main agent PTY exit must auto-resume from the stored `native_id`, publish the new `main_terminal_id`, and leave session status as `running`; resume failures should crash loudly.
+- The only legitimate session end is `concludeSession`. Any unexpected main agent PTY exit must auto-resume the current run from the stored `native_id`, publish the new `main_terminal_id`, and leave run status as `running`; restore failures must mark the run `restore_failed` and crash loudly.
 - Architect sessions launched with `AgentOpenCode` must define a named `StartRequest.OpenCodeAgentConfig` entry keyed by `architect_key`, use the architect system prompt as that agent's `Prompt`, and prepend `--agent <architect_key>` to launch args. Worker OpenCode sessions must not define a named agent, and architect OpenCode profile args must not include `--agent` because the daemon owns that flag.
 - Work-session conclusion commit metadata is stored and returned as structured `{sha, repo}` entries, where `repo` is the architect repo key from config. Legacy conclusion markdown that stored flat SHA arrays must remain readable and resolve those SHAs against the ticket's repo key.
 - The architect folder's markdown is the source of truth for tickets and conclusions. `~/.hiveryn/config.yaml` is the source of truth for daemon core settings, including the default terminal shell. `~/.hiveryn/variants.yaml`, `~/.hiveryn/architects.yaml`, `~/.hiveryn/tabs.yaml`, and `~/.hiveryn/shortcuts.yaml` are the source of truth for variants, architects, repo mappings, tab layouts, and shortcuts. SQLite stores runtime state only.
