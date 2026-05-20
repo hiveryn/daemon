@@ -169,6 +169,24 @@ func TestPTYTerminalManagerReplaysStartupOutput(t *testing.T) {
 	assertOutputChunk(t, attachment.Output(), "boot")
 }
 
+func TestMergeProcessEnvSetsPWDToWorkdir(t *testing.T) {
+	t.Parallel()
+
+	workdir := t.TempDir()
+	env := mergeProcessEnv(map[string]string{
+		"PWD":              "/wrong/workdir",
+		"HIVERYN_TEST_ENV": "visible",
+	}, workdir)
+
+	got := envMap(env)
+	if got["PWD"] != workdir {
+		t.Fatalf("expected PWD %q, got %q", workdir, got["PWD"])
+	}
+	if got["HIVERYN_TEST_ENV"] != "visible" {
+		t.Fatalf("expected extra env to be preserved, got %q", got["HIVERYN_TEST_ENV"])
+	}
+}
+
 func newTestTerminalProcess(t *testing.T) *terminalProcess {
 	t.Helper()
 
@@ -186,6 +204,17 @@ func newTestTerminalProcess(t *testing.T) *terminalProcess {
 		outputSubs: map[uint64]chan []byte{},
 		done:       make(chan struct{}),
 	}
+}
+
+func envMap(env []string) map[string]string {
+	out := map[string]string{}
+	for _, item := range env {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			out[key] = value
+		}
+	}
+	return out
 }
 
 func assertOutputChunk(t *testing.T, output <-chan []byte, want string) {

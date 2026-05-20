@@ -205,7 +205,7 @@ func (m *ptyTerminalManager) Start(ctx context.Context, spec terminalStartSpec) 
 	}
 
 	argv := append([]string{spec.Command}, spec.Args...)
-	env := mergeProcessEnv(spec.Env)
+	env := mergeProcessEnv(spec.Env, spec.Workdir)
 	m.logger.Info("[pty] exec",
 		"terminal_key", key,
 		"terminal_id", spec.TerminalID,
@@ -623,7 +623,7 @@ func waitForChannel(ctx context.Context, ch <-chan struct{}) error {
 	}
 }
 
-func mergeProcessEnv(extra map[string]string) []string {
+func mergeProcessEnv(extra map[string]string, workdir string) []string {
 	env := map[string]string{}
 	for _, item := range os.Environ() {
 		key, value, ok := strings.Cut(item, "=")
@@ -634,6 +634,9 @@ func mergeProcessEnv(extra map[string]string) []string {
 	}
 	for key, value := range extra {
 		env[key] = value
+	}
+	if workdir != "" {
+		env["PWD"] = workdir
 	}
 
 	out := make([]string, 0, len(env))
