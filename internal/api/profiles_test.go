@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
+	"gopkg.in/yaml.v3"
 )
 
 func TestAgentProfilesReadOnlyAPI(t *testing.T) {
@@ -125,6 +127,55 @@ func newTestHandler(t *testing.T) http.Handler {
 		Config: testConfig(),
 		Logger: logger,
 	})
+}
+
+func newReloadingTestHandler(t *testing.T, cfgPath string, tickets domain.TicketService) http.Handler {
+	t.Helper()
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	source, err := config.NewArchitectsReloadingSource(cfgPath, cfg)
+	if err != nil {
+		t.Fatalf("create config source: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return NewHandler(Dependencies{
+		Config:       cfg,
+		ConfigSource: source,
+		Logger:       logger,
+		Tickets:      tickets,
+	})
+}
+
+func writeReloadingConfigFiles(t *testing.T, configDir string, architects map[string]config.ArchitectConfig) string {
+	t.Helper()
+
+	path := filepath.Join(configDir, "config.yaml")
+	writeYAMLConfigFile(t, path, map[string]any{
+		"port":         4201,
+		"bind_address": "127.0.0.1",
+		"log_level":    "debug",
+	})
+	writeYAMLConfigFile(t, filepath.Join(configDir, "variants.yaml"), map[string]config.VariantConfig{
+		"codex-personal": {Agent: "codex"},
+	})
+	writeYAMLConfigFile(t, filepath.Join(configDir, "architects.yaml"), architects)
+	return path
+}
+
+func writeYAMLConfigFile(t *testing.T, path string, v any) {
+	t.Helper()
+
+	content, err := yaml.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal yaml %q: %v", path, err)
+	}
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("write %q: %v", path, err)
+	}
 }
 
 func testConfig() config.Config {

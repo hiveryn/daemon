@@ -16,6 +16,7 @@ const ingestRoutePrefix = "/internal/agentruntime"
 
 type Dependencies struct {
 	Config          config.Config
+	ConfigSource    config.Source
 	Logger          *slog.Logger
 	RequestLogger   *logging.RequestLogger
 	Sessions        domain.SessionService
@@ -25,29 +26,34 @@ type Dependencies struct {
 }
 
 type profilesHandler struct {
-	config config.Config
-	logger *slog.Logger
+	config       config.Config
+	configSource config.Source
+	logger       *slog.Logger
 }
 
 type architectGroupsHandler struct {
-	config config.Config
-	logger *slog.Logger
+	config       config.Config
+	configSource config.Source
+	logger       *slog.Logger
 }
 
 type architectsHandler struct {
-	config   config.Config
-	logger   *slog.Logger
-	sessions domain.SessionService
+	config       config.Config
+	configSource config.Source
+	logger       *slog.Logger
+	sessions     domain.SessionService
 }
 
 type reposHandler struct {
-	config config.Config
-	logger *slog.Logger
+	config       config.Config
+	configSource config.Source
+	logger       *slog.Logger
 }
 
 type shortcutsHandler struct {
-	config config.Config
-	logger *slog.Logger
+	config       config.Config
+	configSource config.Source
+	logger       *slog.Logger
 }
 
 type sessionsHandler struct {
@@ -58,6 +64,7 @@ type sessionsHandler struct {
 
 type ticketsHandler struct {
 	config           config.Config
+	configSource     config.Source
 	logger           *slog.Logger
 	sessions         domain.SessionService
 	tickets          domain.TicketService
@@ -90,15 +97,15 @@ type repoResponse struct {
 
 func NewHandler(deps Dependencies) http.Handler {
 	mux := http.NewServeMux()
-	ph := &profilesHandler{config: deps.Config, logger: deps.Logger}
-	gh := &architectGroupsHandler{config: deps.Config, logger: deps.Logger}
-	ah := &architectsHandler{config: deps.Config, logger: deps.Logger, sessions: deps.Sessions}
-	rh := &reposHandler{config: deps.Config, logger: deps.Logger}
-	sch := &shortcutsHandler{config: deps.Config, logger: deps.Logger}
+	ph := &profilesHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
+	gh := &architectGroupsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
+	ah := &architectsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions}
+	rh := &reposHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
+	sch := &shortcutsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
 	dch := &desktopConfigHandler{config: deps.Config}
 	sh := &sessionsHandler{logger: deps.Logger, sessions: deps.Sessions}
-	th := &ticketsHandler{config: deps.Config, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
-	eh := &architectEventsHandler{config: deps.Config, logger: deps.Logger, hub: deps.ArchitectEvents}
+	th := &ticketsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
+	eh := &architectEventsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, hub: deps.ArchitectEvents}
 
 	if deps.ArchitectEvents != nil {
 		hub := deps.ArchitectEvents
@@ -162,6 +169,13 @@ func listAgentProfiles(cfg config.Config) []agentProfileResponse {
 		})
 	}
 	return profiles
+}
+
+func currentConfig(static config.Config, source config.Source) (config.Config, error) {
+	if source == nil {
+		return static.Clone(), nil
+	}
+	return source.Current()
 }
 
 func getAgentProfile(cfg config.Config, name string) (agentProfileResponse, bool) {

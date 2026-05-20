@@ -29,7 +29,7 @@ hiverynd mcp --daemon-url http://127.0.0.1:4201 --architect-key hiveryn
 
 ## Configuration
 
-The daemon reads five YAML files from `~/.hiveryn/` on startup. Only `config.yaml` is required; the others default to empty when missing.
+The daemon reads five YAML files from `~/.hiveryn/`. Only `config.yaml` is required; the others default to empty when missing. `architects.yaml` is reloaded on demand for architect/repo lookups, so new architect and repo mappings do not require a daemon restart.
 
 ### `config.yaml` — daemon core
 
@@ -171,7 +171,7 @@ The daemon also writes append-only structured JSONL logs to `~/.hiveryn/logs/dae
 | `GET` | `/api/sessions/{id}/events` | Stream structured session intent events over SSE |
 | `WS` | `/ws/session/{id}/terminal/{uuid}` | Stream PTY output and send terminal input for a terminal UUID |
 
-Profile, architect, repo, and tab configuration endpoints are read-only. Edit `~/.hiveryn/*.yaml` directly to change variants, architects, repos, or tabs.
+Profile, architect, repo, and tab configuration endpoints are read-only. Edit `~/.hiveryn/*.yaml` directly to change variants, architects, repos, or tabs. `architects.yaml` changes apply to architect/repo reads plus new ticket/session operations without restarting the daemon.
 
 Session responses expose a durable intent plus its current run, if any. `POST /api/sessions/{id}/runs` returns the created `run`, its `main_terminal_id`, and a `ws_url` so the desktop can attach immediately. If the main agent PTY exits unexpectedly, the daemon automatically resumes the running run from its stored `native_id`, emits a `main_terminal_resumed` session event with the new `main_terminal_id`, and leaves the run status as `running`; restore failures mark the run `restore_failed` and abort daemon startup. `GET /api/sessions/{id}/tabs` returns the canonical right-pane layout using `type`, `id`, `command`, and `status` for terminal tabs. `POST /api/sessions/{id}/terminals` accepts an empty JSON object and always launches the session's default shell in the current run workdir.
 

@@ -67,7 +67,7 @@ internal/
 
 - `domain/` must not import `store/`, `api/`, or `server/`. It defines the contract everything else depends on.
 - `store/` implements repository interfaces from `domain/` where runtime state is persisted in SQLite.
-- Config-backed read APIs read from the parsed `config.Config` snapshot, not SQLite.
+- Config-backed read APIs read from `config/`, not SQLite. Architect/repo lookups must come from the current `architects.yaml` view so new architect and repo mappings apply without a daemon restart.
 - `app/` wires everything together — it's the only package that imports both `store/` and `api/`.
 - `sessionruntime/` owns live process/PTY state and bridges `agentruntime` events into persisted session events.
 - `sessionruntime/` also owns resolved per-intent terminal UUIDs and right-pane tab layout state for the current run; SQLite stores durable `session_intents`, `session_runs`, and structured events, not terminal identity/layout snapshots.
@@ -104,7 +104,7 @@ Each resource is self-contained across four packages — no cross-contamination.
 - The only legitimate session end is `concludeSession`. Any unexpected main agent PTY exit must auto-resume the current run from the stored `native_id`, publish the new `main_terminal_id`, and leave run status as `running`; restore failures must mark the run `restore_failed` and crash loudly.
 - Architect sessions launched with `AgentOpenCode` must define a named `StartRequest.OpenCodeAgentConfig` entry keyed by `architect_key`, use the architect system prompt as that agent's `Prompt`, and prepend `--agent <architect_key>` to launch args. Worker OpenCode sessions must not define a named agent, and architect OpenCode profile args must not include `--agent` because the daemon owns that flag.
 - Work-session conclusion commit metadata is stored and returned as structured `{sha, repo}` entries, where `repo` is the architect repo key from config. Legacy conclusion markdown that stored flat SHA arrays must remain readable and resolve those SHAs against the ticket's repo key.
-- The architect folder's markdown is the source of truth for tickets and conclusions. `~/.hiveryn/config.yaml` is the source of truth for daemon core settings, including the default terminal shell. `~/.hiveryn/variants.yaml`, `~/.hiveryn/architects.yaml`, `~/.hiveryn/tabs.yaml`, and `~/.hiveryn/shortcuts.yaml` are the source of truth for variants, architects, repo mappings, tab layouts, and shortcuts. SQLite stores runtime state only.
+- The architect folder's markdown is the source of truth for tickets and conclusions. `~/.hiveryn/config.yaml` is the source of truth for daemon core settings, including the default terminal shell. `~/.hiveryn/variants.yaml`, `~/.hiveryn/architects.yaml`, `~/.hiveryn/tabs.yaml`, and `~/.hiveryn/shortcuts.yaml` are the source of truth for variants, architects, repo mappings, tab layouts, and shortcuts. `architects.yaml` changes must be picked up without a daemon restart; SQLite stores runtime state only.
 - All API responses use a standard envelope (`domain.Envelope`) with `data`/`error` (mutually exclusive), `logs`, `commands`, and `meta.request_id`. Handlers write via `writeJSON(w, r, ...)` and `writeError(w, r, ...)` — envelope wrapping is automatic.
 
 ## Error handling

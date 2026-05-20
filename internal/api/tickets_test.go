@@ -228,6 +228,51 @@ func TestTicketResponsesAlwaysIncludeCollections(t *testing.T) {
 	})
 }
 
+func TestTicketCreateReloadsRepoMappingsFromArchitectsFile(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+	architectPath := t.TempDir()
+	cfgPath := writeReloadingConfigFiles(t, configDir, map[string]config.ArchitectConfig{
+		"hiveryn": {
+			Path:  architectPath,
+			Group: "personal",
+			Repos: map[string]string{"daemon": "/tmp/daemon"},
+		},
+	})
+	handler := newReloadingTestHandler(t, cfgPath, architectfs.NewTicketService())
+
+	status, body := requestJSON(t, handler, http.MethodPost, "/api/architects/hiveryn/tickets", map[string]any{
+		"title": "Needs desktop repo",
+		"repo":  "desktop",
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected initial status %d, got %d: %s", http.StatusBadRequest, status, string(body))
+	}
+
+	writeYAMLConfigFile(t, filepath.Join(configDir, "architects.yaml"), map[string]config.ArchitectConfig{
+		"hiveryn": {
+			Path:  architectPath,
+			Group: "personal",
+			Repos: map[string]string{"daemon": "/tmp/daemon", "desktop": "/tmp/desktop"},
+		},
+	})
+
+	status, body = requestJSON(t, handler, http.MethodPost, "/api/architects/hiveryn/tickets", map[string]any{
+		"title": "Needs desktop repo",
+		"repo":  "desktop",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("expected reloaded status %d, got %d: %s", http.StatusCreated, status, string(body))
+	}
+
+	var ticket domain.Ticket
+	decodeEnvelopeData(t, body, &ticket)
+	if ticket.Repo != "desktop" {
+		t.Fatalf("expected created ticket to keep reloaded repo, got %#v", ticket)
+	}
+}
+
 func firstBoardSummary(t *testing.T, body []byte) map[string]any {
 	t.Helper()
 	board := envelopeDataMap(t, body)

@@ -2,7 +2,10 @@ package api
 
 import (
 	"net/http"
+	"path/filepath"
 	"testing"
+
+	"github.com/hiveryn/daemon/internal/config"
 )
 
 func TestArchitectsReadOnlyAPI(t *testing.T) {
@@ -161,5 +164,61 @@ func TestArchitectAndRepoNotFound(t *testing.T) {
 		if status != http.StatusNotFound {
 			t.Fatalf("expected %s to return %d, got %d: %s", path, http.StatusNotFound, status, string(body))
 		}
+	}
+}
+
+func TestArchitectsAPIReloadsArchitectsFile(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+	hiverynPath := t.TempDir()
+	lithoPath := t.TempDir()
+	cfgPath := writeReloadingConfigFiles(t, configDir, map[string]config.ArchitectConfig{
+		"hiveryn": {
+			Path:  hiverynPath,
+			Group: "personal",
+			Repos: map[string]string{"daemon": "/tmp/daemon"},
+		},
+	})
+	handler := newReloadingTestHandler(t, cfgPath, nil)
+
+	status, body := request(t, handler, http.MethodGet, "/api/architects", nil)
+	if status != http.StatusOK {
+		t.Fatalf("expected initial status %d, got %d: %s", http.StatusOK, status, string(body))
+	}
+	var initial struct {
+		Architects []architectResponse `json:"architects"`
+	}
+	decodeEnvelopeData(t, body, &initial)
+	if len(initial.Architects) != 1 || initial.Architects[0].Key != "hiveryn" {
+		t.Fatalf("unexpected initial architects: %#v", initial.Architects)
+	}
+
+	writeYAMLConfigFile(t, filepath.Join(configDir, "architects.yaml"), map[string]config.ArchitectConfig{
+		"hiveryn": {
+			Path:  hiverynPath,
+			Group: "personal",
+			Repos: map[string]string{"daemon": "/tmp/daemon"},
+		},
+		"litho": {
+			Path:  lithoPath,
+			Group: "personal",
+			Repos: map[string]string{"app": "/tmp/lithoapp"},
+		},
+	})
+
+	status, body = request(t, handler, http.MethodGet, "/api/architects", nil)
+	if status != http.StatusOK {
+		t.Fatalf("expected reloaded status %d, got %d: %s", http.StatusOK, status, string(body))
+	}
+	var reloaded struct {
+		Architects []architectResponse `json:"architects"`
+	}
+	decodeEnvelopeData(t, body, &reloaded)
+	if len(reloaded.Architects) != 2 {
+		t.Fatalf("expected 2 architects after reload, got %#v", reloaded.Architects)
+	}
+	if reloaded.Architects[1].Key != "litho" {
+		t.Fatalf("expected litho architect after reload, got %#v", reloaded.Architects)
 	}
 }

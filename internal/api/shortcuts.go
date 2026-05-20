@@ -3,7 +3,12 @@ package api
 import "net/http"
 
 func (h *shortcutsHandler) get(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, r, http.StatusOK, cloneShortcuts(h.config.Shortcuts))
+	cfg, err := currentConfig(h.config, h.configSource)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, cloneShortcuts(cfg.Shortcuts))
 }
 
 func cloneShortcuts(src map[string]map[string]string) map[string]map[string]string {

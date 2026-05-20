@@ -37,6 +37,19 @@ type Config struct {
 	Shortcuts                 map[string]map[string]string `yaml:"-"`
 }
 
+type Source interface {
+	Current() (Config, error)
+}
+
+type staticSource struct {
+	cfg Config
+}
+
+type architectsReloadingSource struct {
+	path string
+	base Config
+}
+
 type VariantConfig struct {
 	Agent string            `yaml:"agent"`
 	Args  []string          `yaml:"args"`
@@ -109,13 +122,27 @@ func DefaultPath() (string, error) {
 	return filepath.Join(homeDir, configDirName, configFileName), nil
 }
 
+func StaticSource(cfg Config) Source {
+	return staticSource{cfg: cfg.Clone()}
+}
+
+func NewArchitectsReloadingSource(path string, base Config) (Source, error) {
+	resolvedPath, err := resolvePath(path)
+	if err != nil {
+		return nil, err
+	}
+
+	return architectsReloadingSource{
+		path: resolvedPath,
+		base: base.Clone(),
+	}, nil
+}
+
 func Load(path string) (Config, error) {
-	if path == "" {
-		var err error
-		path, err = DefaultPath()
-		if err != nil {
-			return Config{}, err
-		}
+	var err error
+	path, err = resolvePath(path)
+	if err != nil {
+		return Config{}, err
 	}
 
 	cfg := Default()
@@ -161,6 +188,33 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+func (c Config) Clone() Config {
+	cloned := c
+	cloned.Variants = cloneVariantConfigs(c.Variants)
+	cloned.Architects = cloneArchitectConfigs(c.Architects)
+	cloned.Tabs = cloneTabs(c.Tabs)
+	cloned.Shortcuts = cloneShortcuts(c.Shortcuts)
+	return cloned
+}
+
+func (s staticSource) Current() (Config, error) {
+	return s.cfg.Clone(), nil
+}
+
+func (s architectsReloadingSource) Current() (Config, error) {
+	cfg := s.base.Clone()
+	architects, err := loadArchitects(filepath.Dir(s.path))
+	if err != nil {
+		return Config{}, fmt.Errorf("reload architects: %w", err)
+	}
+	cfg.Architects = architects
+	cfg.normalize()
+	if err := cfg.Validate(); err != nil {
+		return Config{}, fmt.Errorf("validate config after architects reload: %w", err)
+	}
+	return cfg, nil
+}
+
 func loadOptionalFile(path string, target interface{}) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -173,6 +227,14 @@ func loadOptionalFile(path string, target interface{}) error {
 		return fmt.Errorf("decode YAML %q: %w", path, err)
 	}
 	return nil
+}
+
+func loadArchitects(configDir string) (map[string]ArchitectConfig, error) {
+	architects := map[string]ArchitectConfig{}
+	if err := loadOptionalFile(filepath.Join(configDir, architectsFileName), &architects); err != nil {
+		return nil, err
+	}
+	return architects, nil
 }
 
 type coreConfig struct {
@@ -376,6 +438,13 @@ func (c Config) DesktopHealthPollIntervalDuration() time.Duration {
 	return interval
 }
 
+func resolvePath(path string) (string, error) {
+	if path != "" {
+		return path, nil
+	}
+	return DefaultPath()
+}
+
 func isLoopbackHost(host string) bool {
 	host = strings.TrimSpace(host)
 	if host == "localhost" {
@@ -393,4 +462,67 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func cloneVariantConfigs(src map[string]VariantConfig) map[string]VariantConfig {
+	if len(src) == 0 {
+		return map[string]VariantConfig{}
+	}
+	dst := make(map[string]VariantConfig, len(src))
+	for name, variant := range src {
+		dst[name] = VariantConfig{
+			Agent: variant.Agent,
+			Args:  append([]string(nil), variant.Args...),
+			Env:   cloneStringMap(variant.Env),
+		}
+	}
+	return dst
+}
+
+func cloneArchitectConfigs(src map[string]ArchitectConfig) map[string]ArchitectConfig {
+	if len(src) == 0 {
+		return map[string]ArchitectConfig{}
+	}
+	dst := make(map[string]ArchitectConfig, len(src))
+	for key, architect := range src {
+		dst[key] = ArchitectConfig{
+			Path:  architect.Path,
+			Group: architect.Group,
+			Repos: cloneStringMap(architect.Repos),
+		}
+	}
+	return dst
+}
+
+func cloneTabs(src map[string][]TabEntry) map[string][]TabEntry {
+	if len(src) == 0 {
+		return map[string][]TabEntry{}
+	}
+	dst := make(map[string][]TabEntry, len(src))
+	for sessionType, entries := range src {
+		dst[sessionType] = append([]TabEntry(nil), entries...)
+	}
+	return dst
+}
+
+func cloneShortcuts(src map[string]map[string]string) map[string]map[string]string {
+	if len(src) == 0 {
+		return map[string]map[string]string{}
+	}
+	dst := make(map[string]map[string]string, len(src))
+	for section, bindings := range src {
+		dst[section] = cloneStringMap(bindings)
+	}
+	return dst
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return map[string]string{}
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }

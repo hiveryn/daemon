@@ -46,6 +46,11 @@ func Run(configPath, databasePath string) error {
 		return err
 	}
 
+	configSource, err := config.NewArchitectsReloadingSource(configPath, cfg)
+	if err != nil {
+		return err
+	}
+
 	ctx := context.Background()
 	db, err := store.Open(ctx, databasePath)
 	if err != nil {
@@ -59,7 +64,7 @@ func Run(configPath, databasePath string) error {
 
 	sessionStore := store.NewSessionStore(db)
 	ticketService := architectfs.NewTicketService()
-	service, err := sessionruntime.New(ctx, cfg, sessionStore, ticketService, logger, baseURL(cfg))
+	service, err := sessionruntime.New(ctx, cfg, configSource, sessionStore, ticketService, logger, baseURL(cfg))
 	if err != nil {
 		return err
 	}
@@ -70,6 +75,7 @@ func Run(configPath, databasePath string) error {
 
 	handler := api.NewHandler(api.Dependencies{
 		Config:          cfg,
+		ConfigSource:    configSource,
 		Logger:          logger,
 		RequestLogger:   logManager.RequestLogger(),
 		Sessions:        service,

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
@@ -16,7 +17,13 @@ func (h *ticketsHandler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	architectPath, ok := getArchitectPath(h.config, r.PathValue("key"))
+	cfg, err := currentConfig(h.config, h.configSource)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	architectPath, ok := getArchitectPath(cfg, r.PathValue("key"))
 	if !ok {
 		writeArchitectNotFound(w, r, r.PathValue("key"))
 		return
@@ -79,7 +86,13 @@ func (h *ticketsHandler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	architectPath, ok := getArchitectPath(h.config, r.PathValue("key"))
+	cfg, err := currentConfig(h.config, h.configSource)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	architectPath, ok := getArchitectPath(cfg, r.PathValue("key"))
 	if !ok {
 		writeArchitectNotFound(w, r, r.PathValue("key"))
 		return
@@ -99,9 +112,16 @@ func (h *ticketsHandler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	architectPath, ok := getArchitectPath(h.config, r.PathValue("key"))
+	cfg, err := currentConfig(h.config, h.configSource)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	architectKey := r.PathValue("key")
+	architectPath, ok := getArchitectPath(cfg, architectKey)
 	if !ok {
-		writeArchitectNotFound(w, r, r.PathValue("key"))
+		writeArchitectNotFound(w, r, architectKey)
 		return
 	}
 
@@ -116,19 +136,9 @@ func (h *ticketsHandler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	architectKey := r.PathValue("key")
-	if request.Repo != "" {
-		architect, ok := h.config.Architects[architectKey]
-		if !ok {
-			writeArchitectNotFound(w, r, architectKey)
-			return
-		}
-		if _, ok := architect.Repos[request.Repo]; !ok {
-			writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation),
-				fmt.Sprintf("repo key '%s' not found in architect config", request.Repo),
-				map[string]string{"field": "repo"})
-			return
-		}
+	if err := validateConfiguredRepo(cfg, architectKey, request.Repo); err != nil {
+		writeDomainError(w, r, err)
+		return
 	}
 
 	ticket, err := h.tickets.CreateTicket(r.Context(), architectPath, domain.CreateTicketParams{
@@ -160,7 +170,13 @@ func (h *ticketsHandler) edit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	architectPath, ok := getArchitectPath(h.config, r.PathValue("key"))
+	cfg, err := currentConfig(h.config, h.configSource)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	architectPath, ok := getArchitectPath(cfg, r.PathValue("key"))
 	if !ok {
 		writeArchitectNotFound(w, r, r.PathValue("key"))
 		return
@@ -204,9 +220,16 @@ func (h *ticketsHandler) updateMetadata(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	architectPath, ok := getArchitectPath(h.config, r.PathValue("key"))
+	cfg, err := currentConfig(h.config, h.configSource)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	architectKey := r.PathValue("key")
+	architectPath, ok := getArchitectPath(cfg, architectKey)
 	if !ok {
-		writeArchitectNotFound(w, r, r.PathValue("key"))
+		writeArchitectNotFound(w, r, architectKey)
 		return
 	}
 
@@ -218,6 +241,13 @@ func (h *ticketsHandler) updateMetadata(w http.ResponseWriter, r *http.Request) 
 	if err := decodeJSON(r, &request); err != nil {
 		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), err.Error(), nil)
 		return
+	}
+
+	if request.Repo != nil {
+		if err := validateConfiguredRepo(cfg, architectKey, *request.Repo); err != nil {
+			writeDomainError(w, r, err)
+			return
+		}
 	}
 
 	ticket, err := h.tickets.UpdateTicketMetadata(r.Context(), architectPath, r.PathValue("id"), domain.UpdateTicketMetadataParams{
@@ -248,7 +278,13 @@ func (h *ticketsHandler) delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	architectPath, ok := getArchitectPath(h.config, r.PathValue("key"))
+	cfg, err := currentConfig(h.config, h.configSource)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	architectPath, ok := getArchitectPath(cfg, r.PathValue("key"))
 	if !ok {
 		writeArchitectNotFound(w, r, r.PathValue("key"))
 		return
@@ -276,7 +312,13 @@ func (h *ticketsHandler) move(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	architectPath, ok := getArchitectPath(h.config, r.PathValue("key"))
+	cfg, err := currentConfig(h.config, h.configSource)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	architectPath, ok := getArchitectPath(cfg, r.PathValue("key"))
 	if !ok {
 		writeArchitectNotFound(w, r, r.PathValue("key"))
 		return
@@ -298,6 +340,22 @@ func (h *ticketsHandler) move(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, r, http.StatusOK, ticket)
+}
+
+func validateConfiguredRepo(cfg config.Config, architectKey, repoKey string) error {
+	repoKey = strings.TrimSpace(repoKey)
+	if repoKey == "" {
+		return nil
+	}
+
+	architect, ok := cfg.Architects[architectKey]
+	if !ok {
+		return &domain.NotFoundError{Resource: "architect", ID: architectKey}
+	}
+	if _, ok := architect.Repos[repoKey]; !ok {
+		return &domain.ValidationError{Field: "repo", Message: fmt.Sprintf("repo key '%s' not found in architect config", repoKey)}
+	}
+	return nil
 }
 
 func writeArchitectNotFound(w http.ResponseWriter, r *http.Request, key string) {

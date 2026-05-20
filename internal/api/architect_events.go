@@ -12,9 +12,10 @@ import (
 )
 
 type architectEventsHandler struct {
-	config config.Config
-	logger *slog.Logger
-	hub    *archevents.Hub
+	config       config.Config
+	configSource config.Source
+	logger       *slog.Logger
+	hub          *archevents.Hub
 }
 
 func (h *architectEventsHandler) events(w http.ResponseWriter, r *http.Request) {
@@ -30,7 +31,12 @@ func (h *architectEventsHandler) events(w http.ResponseWriter, r *http.Request) 
 	}
 
 	key := r.PathValue("key")
-	if _, ok := getArchitect(h.config, key, false); !ok {
+	cfg, err := currentConfig(h.config, h.configSource)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	if _, ok := getArchitect(cfg, key, false); !ok {
 		writeArchitectNotFound(w, r, key)
 		return
 	}

@@ -36,6 +36,7 @@ const (
 type Service struct {
 	logger         *slog.Logger
 	cfg            config.Config
+	configSource   config.Source
 	repo           domain.SessionRepository
 	tickets        domain.TicketService
 	baseURL        string
@@ -74,7 +75,11 @@ type sessionTabState struct {
 	removeOnExit bool
 }
 
-func New(ctx context.Context, cfg config.Config, repo domain.SessionRepository, tickets domain.TicketService, logger *slog.Logger, baseURL string) (*Service, error) {
+func New(ctx context.Context, cfg config.Config, configSource config.Source, repo domain.SessionRepository, tickets domain.TicketService, logger *slog.Logger, baseURL string) (*Service, error) {
+	if configSource == nil {
+		configSource = config.StaticSource(cfg)
+	}
+
 	claudeAdapter := claude.New(claude.DefaultOptions())
 	codexAdapter := artcodex.New(artcodex.DefaultOptions())
 	openCodeAdapter := opencode.New(opencode.DefaultOptions())
@@ -94,6 +99,7 @@ func New(ctx context.Context, cfg config.Config, repo domain.SessionRepository, 
 	return &Service{
 		logger:         logger,
 		cfg:            cfg,
+		configSource:   configSource,
 		repo:           repo,
 		tickets:        tickets,
 		baseURL:        baseURL,
@@ -112,8 +118,33 @@ func (s *Service) IngestHandler() http.Handler {
 	return s.ingestHTTP
 }
 
+func (s *Service) currentConfig() (config.Config, error) {
+	if s.configSource == nil {
+		return s.cfg.Clone(), nil
+	}
+	return s.configSource.Current()
+}
+
+func (s *Service) currentArchitect(key string) (config.ArchitectConfig, error) {
+	cfg, err := s.currentConfig()
+	if err != nil {
+		return config.ArchitectConfig{}, err
+	}
+
+	architect, ok := cfg.Architects[key]
+	if !ok {
+		return config.ArchitectConfig{}, &domain.NotFoundError{Resource: "architect", ID: key}
+	}
+	return architect, nil
+}
+
 func (s *Service) CreateIntent(ctx context.Context, req domain.CreateSessionIntentRequest) (domain.SessionIntent, error) {
-	architect, ok := s.cfg.Architects[req.ArchitectKey]
+	cfg, err := s.currentConfig()
+	if err != nil {
+		return domain.SessionIntent{}, err
+	}
+
+	architect, ok := cfg.Architects[req.ArchitectKey]
 	if !ok {
 		return domain.SessionIntent{}, &domain.NotFoundError{Resource: "architect", ID: req.ArchitectKey}
 	}
@@ -123,7 +154,7 @@ func (s *Service) CreateIntent(ctx context.Context, req domain.CreateSessionInte
 		if strings.TrimSpace(req.TicketID) != "" {
 			return domain.SessionIntent{}, &domain.ValidationError{Field: "ticket_id", Message: "architect intents do not accept a ticket ID"}
 		}
-		systemContent, kickoffContent, err := loadArchitectPrompts(req.ArchitectKey, architect, s.cfg)
+		systemContent, kickoffContent, err := loadArchitectPrompts(req.ArchitectKey, architect, cfg)
 		if err != nil {
 			return domain.SessionIntent{}, err
 		}
@@ -156,7 +187,7 @@ func (s *Service) CreateIntent(ctx context.Context, req domain.CreateSessionInte
 		if err := validateRepoPath(repoPath); err != nil {
 			return domain.SessionIntent{}, err
 		}
-		kickoffContent, err := loadWorkerPrompt(req.ArchitectKey, architect, s.cfg, ticket)
+		kickoffContent, err := loadWorkerPrompt(req.ArchitectKey, architect, cfg, ticket)
 		if err != nil {
 			return domain.SessionIntent{}, err
 		}
@@ -178,12 +209,17 @@ func (s *Service) CreateRun(ctx context.Context, intentID string, req domain.Cre
 		return domain.CreateSessionRunResult{}, err
 	}
 
-	architect, ok := s.cfg.Architects[intent.ArchitectKey]
+	cfg, err := s.currentConfig()
+	if err != nil {
+		return domain.CreateSessionRunResult{}, err
+	}
+
+	architect, ok := cfg.Architects[intent.ArchitectKey]
 	if !ok {
 		return domain.CreateSessionRunResult{}, &domain.NotFoundError{Resource: "architect", ID: intent.ArchitectKey}
 	}
 
-	profile, ok := s.cfg.Variants[req.ProfileName]
+	profile, ok := cfg.Variants[req.ProfileName]
 	if !ok {
 		return domain.CreateSessionRunResult{}, &domain.NotFoundError{Resource: "agent_profile", ID: req.ProfileName}
 	}
@@ -457,10 +493,15 @@ func hasArgFlag(args []string, flag string) bool {
 }
 
 func (s *Service) resolveStoredRunLaunchContext(intent domain.SessionIntent, run domain.SessionRun) (config.VariantConfig, agentruntime.AgentKind, error) {
-	if _, ok := s.cfg.Architects[intent.ArchitectKey]; !ok {
+	cfg, err := s.currentConfig()
+	if err != nil {
+		return config.VariantConfig{}, "", err
+	}
+
+	if _, ok := cfg.Architects[intent.ArchitectKey]; !ok {
 		return config.VariantConfig{}, "", fmt.Errorf("architect %q not found in architects.yaml", intent.ArchitectKey)
 	}
-	if _, ok := s.cfg.Variants[run.ProfileName]; !ok {
+	if _, ok := cfg.Variants[run.ProfileName]; !ok {
 		return config.VariantConfig{}, "", fmt.Errorf("agent profile %q not found in variants.yaml", run.ProfileName)
 	}
 	if run.ProfileSnapshot == nil {
@@ -536,9 +577,9 @@ func (s *Service) ConcludeSession(ctx context.Context, id string, params domain.
 }
 
 func (s *Service) ReadConclusion(ctx context.Context, architectKey, id string) (domain.ArchitectConclusion, error) {
-	architect, ok := s.cfg.Architects[architectKey]
-	if !ok {
-		return domain.ArchitectConclusion{}, &domain.NotFoundError{Resource: "architect", ID: architectKey}
+	architect, err := s.currentArchitect(architectKey)
+	if err != nil {
+		return domain.ArchitectConclusion{}, err
 	}
 
 	conclusionPath := filepath.Join(architect.Path, "architect-sessions", id, conclusionFileName)
@@ -567,9 +608,9 @@ func parseArchitectConclusion(doc architectfs.MarkdownDocument) (domain.Architec
 }
 
 func (s *Service) ReadRecentConclusion(ctx context.Context, architectKey string) (domain.ArchitectConclusion, error) {
-	architect, ok := s.cfg.Architects[architectKey]
-	if !ok {
-		return domain.ArchitectConclusion{}, &domain.NotFoundError{Resource: "architect", ID: architectKey}
+	architect, err := s.currentArchitect(architectKey)
+	if err != nil {
+		return domain.ArchitectConclusion{}, err
 	}
 
 	sessionsDir := filepath.Join(architect.Path, "architect-sessions")
@@ -610,9 +651,9 @@ func (s *Service) ReadRecentConclusion(ctx context.Context, architectKey string)
 }
 
 func (s *Service) ListConclusions(ctx context.Context, architectKey string, limit int) ([]domain.ConclusionSummary, error) {
-	architect, ok := s.cfg.Architects[architectKey]
-	if !ok {
-		return nil, &domain.NotFoundError{Resource: "architect", ID: architectKey}
+	architect, err := s.currentArchitect(architectKey)
+	if err != nil {
+		return nil, err
 	}
 
 	if limit <= 0 {
@@ -672,9 +713,9 @@ func (s *Service) concludeArchitectSession(ctx context.Context, intent domain.Se
 		}
 	}
 
-	architect, ok := s.cfg.Architects[intent.ArchitectKey]
-	if !ok {
-		return domain.ConcludeSessionResult{}, &domain.NotFoundError{Resource: "architect", ID: intent.ArchitectKey}
+	architect, err := s.currentArchitect(intent.ArchitectKey)
+	if err != nil {
+		return domain.ConcludeSessionResult{}, err
 	}
 
 	folderName := intent.CreatedAt.UTC().Format("2006-01-02-1504")
@@ -752,9 +793,9 @@ func (s *Service) concludeWorkSession(ctx context.Context, intent domain.Session
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_id", Message: "work session has no ticket ID"}
 	}
 
-	architect, ok := s.cfg.Architects[intent.ArchitectKey]
-	if !ok {
-		return domain.ConcludeSessionResult{}, &domain.NotFoundError{Resource: "architect", ID: intent.ArchitectKey}
+	architect, err := s.currentArchitect(intent.ArchitectKey)
+	if err != nil {
+		return domain.ConcludeSessionResult{}, err
 	}
 
 	ticket, err := s.tickets.GetTicket(ctx, architect.Path, intent.TicketID)
@@ -769,7 +810,7 @@ func (s *Service) concludeWorkSession(ctx context.Context, intent domain.Session
 	if repoKey == "" {
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "repo", Message: "ticket has no repo key"}
 	}
-	_, ok = architect.Repos[repoKey]
+	_, ok := architect.Repos[repoKey]
 	if !ok {
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "repo", Message: "repo key " + repoKey + " not configured in architect repos"}
 	}
@@ -1389,7 +1430,6 @@ func yamlNodeString(node *yaml.Node, key string) string {
 	}
 	return ""
 }
-
 
 func snapshotVariant(profile config.VariantConfig) domain.AgentProfileSnapshot {
 	return domain.AgentProfileSnapshot{

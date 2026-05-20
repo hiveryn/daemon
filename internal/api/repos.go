@@ -3,8 +3,13 @@ package api
 import "net/http"
 
 func (h *reposHandler) list(w http.ResponseWriter, r *http.Request) {
+	cfg, err := currentConfig(h.config, h.configSource)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
 	architectKey := r.PathValue("key")
-	repos, ok := listRepos(h.config, architectKey)
+	repos, ok := listRepos(cfg, architectKey)
 	if !ok {
 		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "architect "+architectKey+" not found", map[string]string{
 			"resource": "architect",
@@ -16,9 +21,14 @@ func (h *reposHandler) list(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *reposHandler) get(w http.ResponseWriter, r *http.Request) {
+	cfg, err := currentConfig(h.config, h.configSource)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
 	architectKey := r.PathValue("key")
 	repoKey := r.PathValue("repoKey")
-	repo, architectExists, repoExists := getRepo(h.config, architectKey, repoKey)
+	repo, architectExists, repoExists := getRepo(cfg, architectKey, repoKey)
 	if !architectExists {
 		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "architect "+architectKey+" not found", map[string]string{
 			"resource": "architect",

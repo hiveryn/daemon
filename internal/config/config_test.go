@@ -149,6 +149,73 @@ func TestLoadMissingOptionalFiles(t *testing.T) {
 	}
 }
 
+func TestArchitectsReloadingSourcePicksUpFileChanges(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+	path := filepath.Join(configDir, configFileName)
+
+	writeYAML(t, path, map[string]any{
+		"port":         4201,
+		"bind_address": "127.0.0.1",
+		"log_level":    "info",
+	})
+	writeYAML(t, filepath.Join(configDir, variantsFileName), map[string]VariantConfig{
+		"codex": {Agent: "codex"},
+	})
+	writeYAML(t, filepath.Join(configDir, architectsFileName), map[string]ArchitectConfig{
+		"hiveryn": {
+			Path:  "/tmp/hiveryn",
+			Group: "personal",
+			Repos: map[string]string{"daemon": "/tmp/daemon"},
+		},
+	})
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	source, err := NewArchitectsReloadingSource(path, cfg)
+	if err != nil {
+		t.Fatalf("new source: %v", err)
+	}
+
+	reloaded, err := source.Current()
+	if err != nil {
+		t.Fatalf("current config: %v", err)
+	}
+	if _, ok := reloaded.Architects["litho"]; ok {
+		t.Fatalf("unexpected architect before reload: %#v", reloaded.Architects)
+	}
+
+	writeYAML(t, filepath.Join(configDir, architectsFileName), map[string]ArchitectConfig{
+		"hiveryn": {
+			Path:  "/tmp/hiveryn",
+			Group: "personal",
+			Repos: map[string]string{"daemon": "/tmp/daemon", "desktop": "/tmp/desktop"},
+		},
+		"litho": {
+			Path:  "/tmp/litho",
+			Group: "personal",
+			Repos: map[string]string{"app": "/tmp/lithoapp"},
+		},
+	})
+
+	reloaded, err = source.Current()
+	if err != nil {
+		t.Fatalf("current config after update: %v", err)
+	}
+	if _, ok := reloaded.Architects["litho"]; !ok {
+		t.Fatalf("expected litho architect after reload, got %#v", reloaded.Architects)
+	}
+	if _, ok := reloaded.Architects["hiveryn"].Repos["desktop"]; !ok {
+		t.Fatalf("expected updated repo mappings after reload, got %#v", reloaded.Architects["hiveryn"].Repos)
+	}
+	if _, ok := reloaded.Variants["codex"]; !ok {
+		t.Fatalf("expected base variants to remain available, got %#v", reloaded.Variants)
+	}
+}
+
 func TestValidateRejectsInvalidDesktopHealthPollInterval(t *testing.T) {
 	t.Parallel()
 

@@ -17,6 +17,7 @@ import (
 	"github.com/hiveryn/agentruntime/ingest"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
+	"gopkg.in/yaml.v3"
 )
 
 func TestCreateRunMarksRunFailedWhenTerminalStartFails(t *testing.T) {
@@ -213,10 +214,10 @@ func TestConcludeWorkSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 		TicketID:     "ticket-1",
 		CreatedAt:    created,
 		CurrentRun: &domain.SessionRun{
-			ID:        "run-1",
-			Status:    domain.SessionRunStatusRunning,
-			Workdir:   daemonRepoPath,
-			StartedAt: &started,
+			ID:          "run-1",
+			Status:      domain.SessionRunStatusRunning,
+			Workdir:     daemonRepoPath,
+			StartedAt:   &started,
 			ProfileName: "codex",
 		},
 	}
@@ -254,6 +255,73 @@ func TestConcludeWorkSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 	}
 	if got, want := strings.Join(operations, ","), "complete,event,kill,delete"; got != want {
 		t.Fatalf("expected operations %q, got %q", want, got)
+	}
+}
+
+func TestCreateIntentReloadsArchitectsFile(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+	hiverynPath := t.TempDir()
+	lithoPath := t.TempDir()
+	cfgPath := writeRuntimeConfigFiles(t, configDir, map[string]config.ArchitectConfig{
+		"hiveryn": {
+			Path:  hiverynPath,
+			Group: "personal",
+			Repos: map[string]string{"daemon": "/tmp/daemon"},
+		},
+	})
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	source, err := config.NewArchitectsReloadingSource(cfgPath, cfg)
+	if err != nil {
+		t.Fatalf("create config source: %v", err)
+	}
+
+	repo := newFakeSessionRepository()
+	service := &Service{
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:          cfg,
+		configSource: source,
+		repo:         repo,
+		tickets:      &fakeTicketService{},
+	}
+
+	_, err = service.CreateIntent(context.Background(), domain.CreateSessionIntentRequest{
+		ArchitectKey: "litho",
+		SessionType:  domain.SessionTypeArchitect,
+	})
+	if err == nil {
+		t.Fatal("expected missing architect before reload")
+	}
+	if _, ok := err.(*domain.NotFoundError); !ok {
+		t.Fatalf("expected not found error, got %T %v", err, err)
+	}
+
+	writeRuntimeYAML(t, filepath.Join(configDir, "architects.yaml"), map[string]config.ArchitectConfig{
+		"hiveryn": {
+			Path:  hiverynPath,
+			Group: "personal",
+			Repos: map[string]string{"daemon": "/tmp/daemon"},
+		},
+		"litho": {
+			Path:  lithoPath,
+			Group: "personal",
+			Repos: map[string]string{"app": "/tmp/lithoapp"},
+		},
+	})
+
+	intent, err := service.CreateIntent(context.Background(), domain.CreateSessionIntentRequest{
+		ArchitectKey: "litho",
+		SessionType:  domain.SessionTypeArchitect,
+	})
+	if err != nil {
+		t.Fatalf("CreateIntent after reload failed: %v", err)
+	}
+	if intent.ArchitectKey != "litho" || intent.SessionType != domain.SessionTypeArchitect {
+		t.Fatalf("unexpected intent after reload: %#v", intent)
 	}
 }
 
@@ -427,11 +495,11 @@ func TestHandleReceiverEventUpdatesCurrentRun(t *testing.T) {
 	}
 
 	service.handleReceiverEvent(agentruntime.Event{
-		ID:        "intent-1",
-		Status:    agentruntime.StatusWorking,
-		NativeID:  "native-1",
-		Message:   "hello",
-		At:        time.Now().UTC(),
+		ID:       "intent-1",
+		Status:   agentruntime.StatusWorking,
+		NativeID: "native-1",
+		Message:  "hello",
+		At:       time.Now().UTC(),
 	})
 
 	event := repo.lastAppendedEvent(t)
@@ -634,7 +702,7 @@ func testRuntimeConfig(t *testing.T) config.Config {
 	t.Helper()
 	return config.Config{
 		Variants: map[string]config.VariantConfig{
-			"codex": {Agent: "codex", Env: map[string]string{"CODEX_HOME": "/custom/codex"}},
+			"codex":    {Agent: "codex", Env: map[string]string{"CODEX_HOME": "/custom/codex"}},
 			"opencode": {Agent: "opencode"},
 		},
 		Architects: map[string]config.ArchitectConfig{
@@ -646,12 +714,40 @@ func testRuntimeConfig(t *testing.T) config.Config {
 func testRuntimeConfigWithPaths(architectPath, repoPath string) config.Config {
 	return config.Config{
 		Variants: map[string]config.VariantConfig{
-			"codex": {Agent: "codex", Env: map[string]string{"CODEX_HOME": "/custom/codex"}},
+			"codex":    {Agent: "codex", Env: map[string]string{"CODEX_HOME": "/custom/codex"}},
 			"opencode": {Agent: "opencode"},
 		},
 		Architects: map[string]config.ArchitectConfig{
 			"hiveryn": {Path: architectPath, Group: "personal", Repos: map[string]string{"daemon": repoPath}},
 		},
+	}
+}
+
+func writeRuntimeConfigFiles(t *testing.T, configDir string, architects map[string]config.ArchitectConfig) string {
+	t.Helper()
+
+	path := filepath.Join(configDir, "config.yaml")
+	writeRuntimeYAML(t, path, map[string]any{
+		"port":         4201,
+		"bind_address": "127.0.0.1",
+		"log_level":    "debug",
+	})
+	writeRuntimeYAML(t, filepath.Join(configDir, "variants.yaml"), map[string]config.VariantConfig{
+		"codex": {Agent: "codex"},
+	})
+	writeRuntimeYAML(t, filepath.Join(configDir, "architects.yaml"), architects)
+	return path
+}
+
+func writeRuntimeYAML(t *testing.T, path string, v any) {
+	t.Helper()
+
+	data, err := yaml.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal %q: %v", path, err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write %q: %v", path, err)
 	}
 }
 
@@ -680,7 +776,9 @@ func (f *fakeAdapter) RemoveSetup(context.Context, agentruntime.SetupRequest) (a
 	return agentruntime.SetupResult{}, nil
 }
 
-func (fakeAdapter) NormalizeEvent(context.Context, []byte) (*agentruntime.Event, error) { return nil, nil }
+func (fakeAdapter) NormalizeEvent(context.Context, []byte) (*agentruntime.Event, error) {
+	return nil, nil
+}
 
 type fakePrepareLaunchAdapter struct {
 	delegate agentruntime.Adapter
@@ -899,12 +997,14 @@ func (f *fakeSessionRepository) lastAppendedEvent(t *testing.T) domain.AppendSes
 
 type fakeTicketService struct {
 	ticket      domain.Ticket
-	err        error
-	moveErr    error
+	err         error
+	moveErr     error
 	concludeErr error
 }
 
-func (f *fakeTicketService) ListTickets(context.Context, string) (domain.TicketBoard, error) { return domain.TicketBoard{}, nil }
+func (f *fakeTicketService) ListTickets(context.Context, string) (domain.TicketBoard, error) {
+	return domain.TicketBoard{}, nil
+}
 
 func (f *fakeTicketService) GetTicket(context.Context, string, string) (domain.Ticket, error) {
 	return f.ticket, f.err

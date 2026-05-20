@@ -9,14 +9,24 @@ import (
 )
 
 func (h *architectsHandler) list(w http.ResponseWriter, r *http.Request) {
+	cfg, err := currentConfig(h.config, h.configSource)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
 	writeJSON(w, r, http.StatusOK, map[string][]architectResponse{
-		"architects": listArchitects(h.config),
+		"architects": listArchitects(cfg),
 	})
 }
 
 func (h *architectsHandler) get(w http.ResponseWriter, r *http.Request) {
+	cfg, err := currentConfig(h.config, h.configSource)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
 	key := r.PathValue("key")
-	architect, ok := getArchitect(h.config, key, true)
+	architect, ok := getArchitect(cfg, key, true)
 	if !ok {
 		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "architect "+key+" not found", map[string]string{
 			"resource": "architect",
