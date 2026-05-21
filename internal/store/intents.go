@@ -34,9 +34,9 @@ func (s *SessionStore) CreateIntent(ctx context.Context, params domain.CreateSes
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO session_intents (id, architect_key, session_type, ticket_id, prompt, instructions, created_by)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, params.ID, params.ArchitectKey, string(params.SessionType), nullIfEmpty(params.TicketID), nullIfEmpty(params.Prompt), nullIfEmpty(params.Instructions), nullIfEmpty(string(params.CreatedBy)))
+		INSERT INTO session_intents (id, architect_key, session_type, context_id, prompt, workdir, instructions, created_by)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, params.ID, params.ArchitectKey, string(params.SessionType), params.ContextID, params.Prompt, params.Workdir, nullIfEmpty(params.Instructions), nullIfEmpty(string(params.CreatedBy)))
 	if err != nil {
 		return domain.SessionIntent{}, fmt.Errorf("insert session intent: %w", err)
 	}
@@ -91,7 +91,7 @@ func (s *SessionStore) DeleteIntent(ctx context.Context, id string) error {
 
 func intentWithCurrentRunQuery(suffix string) string {
 	return `
-		SELECT i.id, i.architect_key, i.session_type, COALESCE(i.ticket_id, ''), COALESCE(i.prompt, ''), COALESCE(i.instructions, ''),
+		SELECT i.id, i.architect_key, i.session_type, i.context_id, i.prompt, i.workdir, COALESCE(i.instructions, ''),
 		       COALESCE(i.created_by, ''), i.created_at, i.updated_at,
 		       r.id, r.session_intent_id, r.status, r.profile_name, COALESCE(r.profile_snapshot, ''), COALESCE(r.workdir, ''),
 		       COALESCE(r.native_id, ''), COALESCE(r.failure_reason, ''), COALESCE(r.started_at, ''), COALESCE(r.ended_at, ''),
@@ -122,18 +122,18 @@ func ensureNoActiveIntentTx(ctx context.Context, tx *sql.Tx, params domain.Creat
 		if !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("check active architect intent: %w", err)
 		}
-	case domain.SessionTypeWork:
+	case domain.SessionTypeTicket:
 		var existingID string
-		err := tx.QueryRowContext(ctx, `SELECT id FROM session_intents WHERE ticket_id = ? AND session_type = ? LIMIT 1`, params.TicketID, string(domain.SessionTypeWork)).Scan(&existingID)
+		err := tx.QueryRowContext(ctx, `SELECT id FROM session_intents WHERE context_id = ? AND session_type = ? LIMIT 1`, params.ContextID, string(domain.SessionTypeTicket)).Scan(&existingID)
 		if err == nil {
 			return &domain.ConflictError{
 				Resource: "session_intent",
 				Field:    "ticket_id",
-				Message:  fmt.Sprintf("ticket %s already has an active work intent", params.TicketID),
+				Message:  fmt.Sprintf("ticket %s already has an active ticket intent", params.ContextID),
 			}
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("check active work intent: %w", err)
+			return fmt.Errorf("check active ticket intent: %w", err)
 		}
 	}
 	return nil

@@ -91,12 +91,12 @@ func (h *sessionsHandler) createRun(w http.ResponseWriter, r *http.Request) {
 			writeDomainError(w, r, intentErr)
 			return
 		}
-		if intent.SessionType == domain.SessionTypeWork {
+		if intent.SessionType == domain.SessionTypeTicket {
 			h.publishArchitect(intent.ArchitectKey, domain.ArchitectEvent{
 				Type:         "workspace_changed",
 				ArchitectKey: intent.ArchitectKey,
 				Reason:       "ticket_moved",
-				TicketID:     intent.TicketID,
+				TicketID:     intent.ContextID,
 				At:           time.Now().UTC(),
 			})
 		}

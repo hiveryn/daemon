@@ -80,6 +80,70 @@ func TestHandleConcludeSessionWorkerSuccess(t *testing.T) {
 	}
 }
 
+func TestHandleConcludeSessionFreeformSuccessWithoutCommits(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s", r.Method)
+		}
+		if r.URL.Path != "/api/sessions/sess-3/conclude" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		var body struct {
+			Commits []domain.CommitRef `json:"commits"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if len(body.Commits) != 0 {
+			t.Fatalf("expected no commits payload, got %#v", body.Commits)
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"success":    true,
+			"session_id": "sess-3",
+		})
+	})
+	server.sessionID = "sess-3"
+	server.sessionType = SessionTypeFreeform
+
+	_, output, err := server.handleConcludeSession(context.Background(), nil, ConcludeSessionInput{
+		Body: "Exploration concluded.",
+	})
+	if err != nil {
+		t.Fatalf("handleConcludeSession failed: %v", err)
+	}
+	if !output.Success || output.SessionID != "sess-3" {
+		t.Fatalf("unexpected output: %#v", output)
+	}
+}
+
+func TestHandleConcludeSessionFreeformRejectsRejectedMode(t *testing.T) {
+	t.Parallel()
+
+	server, err := NewServer(Config{
+		DaemonURL:    "http://127.0.0.1:4200",
+		ArchitectKey: "hiveryn",
+		SessionID:    "sess-3",
+		SessionType:  SessionTypeFreeform,
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	_, _, err = server.handleConcludeSession(context.Background(), nil, ConcludeSessionInput{
+		Body:     "done",
+		Rejected: true,
+	})
+	toolErr, ok := err.(*ToolError)
+	if !ok {
+		t.Fatalf("expected ToolError, got %T", err)
+	}
+	if toolErr.Code != ErrorCodeValidation {
+		t.Fatalf("code = %q, want %q", toolErr.Code, ErrorCodeValidation)
+	}
+}
+
 func TestHandleConcludeSessionMissingBody(t *testing.T) {
 	t.Parallel()
 
@@ -223,7 +287,7 @@ func TestWorkerSessionRegistersConcludeTool(t *testing.T) {
 	server, err := NewServer(Config{
 		DaemonURL:    ts.URL,
 		ArchitectKey: "hiveryn",
-		SessionType:  SessionTypeWork,
+		SessionType:  SessionTypeTicket,
 		SessionID:    "worker-sess",
 		HTTPClient:   ts.Client(),
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -231,8 +295,8 @@ func TestWorkerSessionRegistersConcludeTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
 	}
-	if server.SessionType() != SessionTypeWork {
-		t.Fatalf("session type = %q, want %q", server.SessionType(), SessionTypeWork)
+	if server.SessionType() != SessionTypeTicket {
+		t.Fatalf("session type = %q, want %q", server.SessionType(), SessionTypeTicket)
 	}
 
 	_, _, err = server.handleConcludeSession(context.Background(), nil, ConcludeSessionInput{

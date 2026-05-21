@@ -59,7 +59,7 @@ internal/
   mcp/                stdio MCP server; registers role-scoped tools and translates tool calls into daemon HTTP API requests
   server/             HTTP server lifecycle (Listen, Shutdown) — thin wrapper around net/http
   api/                HTTP handlers, routing, middleware (request ID, recovery, access logging), JSON helpers
-  sessionruntime/     session orchestration (architect + worker), agentruntime ingest bridge, daemon-owned PTY manager
+  sessionruntime/     session orchestration (architect + ticket + freeform), agentruntime ingest bridge, daemon-owned PTY manager
   store/              SQLite persistence: DB open, migration runner, session/event repository implementations
 ```
 
@@ -100,11 +100,12 @@ Each resource is self-contained across four packages — no cross-contamination.
 - SQLite uses `SetMaxOpenConns(1)` (single-writer). Busy timeout is 5 seconds.
 - Never log secrets from profiles, env configs, or MCP configurations.
 - PTY/process handles stay in memory under `sessionruntime`; SQLite stores session metadata and structured events only.
-- Architect sessions must not conclude while same-architect work sessions are still running; return a `Conflict` with the active worker session IDs instead of orphaning PTYs.
+- Architect sessions must not conclude while same-architect ticket sessions are still running; return a `Conflict` with the active ticket session IDs instead of orphaning PTYs.
 - Ticket filesystem mutations are status-gated: only backlog tickets can be edited, metadata-updated, or deleted; only progress tickets can be concluded; done tickets are read-only.
 - The only legitimate session end is `concludeSession`. Any unexpected main agent PTY exit must auto-resume the current run from the stored `native_id`, publish the new `main_terminal_id`, and leave run status as `running`; restore failures must mark the run `restore_failed` and crash loudly.
-- Architect sessions launched with `AgentOpenCode` must define a named `StartRequest.OpenCodeAgentConfig` entry keyed by `architect_key`, use the architect system prompt as that agent's `Prompt`, and prepend `--agent <architect_key>` to launch args. Worker OpenCode sessions must not define a named agent, and architect OpenCode profile args must not include `--agent` because the daemon owns that flag.
-- Work-session conclusion commit metadata is stored and returned as structured `{sha, repo}` entries, where `repo` is the architect repo key from config. Legacy conclusion markdown that stored flat SHA arrays must remain readable and resolve those SHAs against the ticket's repo key.
+- Architect sessions launched with `AgentOpenCode` must define a named `StartRequest.OpenCodeAgentConfig` entry keyed by `architect_key`, use the architect system prompt as that agent's `Prompt`, and prepend `--agent <architect_key>` to launch args. Ticket and freeform OpenCode sessions must not define a named agent, and architect OpenCode profile args must not include `--agent` because the daemon owns that flag.
+- `session_intents` store the fully resolved create-time contract: `id` (runtime identity), `architect_key`, `session_type`, `context_id` (artifact/context identity), `prompt`, `workdir`, optional `instructions`, and lifecycle metadata. Launch must use the stored `workdir` directly instead of re-resolving repo mappings or architect paths.
+- Ticket-session conclusion commit metadata is stored and returned as structured `{sha, repo}` entries, where `repo` is the architect repo key from config. Legacy conclusion markdown that stored flat SHA arrays must remain readable and resolve those SHAs against the ticket's repo key.
 - The architect folder's markdown is the source of truth for tickets and conclusions. `~/.hiveryn/config.yaml` is the source of truth for daemon core settings, including the default terminal shell. `~/.hiveryn/variants.yaml`, `~/.hiveryn/architects.yaml`, `~/.hiveryn/tabs.yaml`, and `~/.hiveryn/shortcuts.yaml` are the source of truth for variants, architects, repo mappings, tab layouts, and shortcuts. `architects.yaml` changes must be picked up without a daemon restart; SQLite stores runtime state only.
 - All API responses use a standard envelope (`domain.Envelope`) with `data`/`error` (mutually exclusive), `logs`, `commands`, and `meta.request_id`. Handlers write via `writeJSON(w, r, ...)` and `writeError(w, r, ...)` — envelope wrapping is automatic.
 

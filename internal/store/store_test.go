@@ -44,6 +44,9 @@ func TestSessionStoreAllowsOneArchitectIntentPerArchitect(t *testing.T) {
 		ID:           "intent-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
+		ContextID:    "2026-05-19-1200",
+		Prompt:       "kickoff",
+		Workdir:      "/tmp/architect",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
 		t.Fatalf("create first architect intent: %v", err)
@@ -53,6 +56,9 @@ func TestSessionStoreAllowsOneArchitectIntentPerArchitect(t *testing.T) {
 		ID:           "intent-2",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
+		ContextID:    "2026-05-19-1201",
+		Prompt:       "kickoff",
+		Workdir:      "/tmp/architect",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	})
 	var conflict *domain.ConflictError
@@ -68,13 +74,16 @@ func TestSessionStoreAllowsOneArchitectIntentPerArchitect(t *testing.T) {
 		ID:           "intent-3",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
+		ContextID:    "2026-05-19-1202",
+		Prompt:       "kickoff",
+		Workdir:      "/tmp/architect",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
 		t.Fatalf("create architect intent after delete: %v", err)
 	}
 }
 
-func TestSessionStoreAllowsOneWorkIntentPerTicket(t *testing.T) {
+func TestSessionStoreAllowsOneTicketIntentPerTicket(t *testing.T) {
 	t.Parallel()
 
 	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
@@ -87,23 +96,27 @@ func TestSessionStoreAllowsOneWorkIntentPerTicket(t *testing.T) {
 	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
 		ID:           "intent-1",
 		ArchitectKey: "hiveryn",
-		SessionType:  domain.SessionTypeWork,
-		TicketID:     "ticket-1",
+		SessionType:  domain.SessionTypeTicket,
+		ContextID:    "ticket-1",
+		Prompt:       "kickoff",
+		Workdir:      "/tmp/repo",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
-		t.Fatalf("create first work intent: %v", err)
+		t.Fatalf("create first ticket intent: %v", err)
 	}
 
 	_, err = store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
 		ID:           "intent-2",
 		ArchitectKey: "hiveryn",
-		SessionType:  domain.SessionTypeWork,
-		TicketID:     "ticket-1",
+		SessionType:  domain.SessionTypeTicket,
+		ContextID:    "ticket-1",
+		Prompt:       "kickoff",
+		Workdir:      "/tmp/repo",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	})
 	var conflict *domain.ConflictError
 	if !errors.As(err, &conflict) {
-		t.Fatalf("expected conflict for second work intent on same ticket, got %v", err)
+		t.Fatalf("expected conflict for second ticket intent on same ticket, got %v", err)
 	}
 }
 
@@ -121,6 +134,9 @@ func TestSessionStoreAllowsOneRunningRunPerIntent(t *testing.T) {
 		ID:           "intent-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
+		ContextID:    "2026-05-19-1200",
+		Prompt:       "kickoff",
+		Workdir:      "/tmp/architect",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
 		t.Fatalf("create intent: %v", err)
@@ -167,6 +183,40 @@ func TestSessionStoreAllowsOneRunningRunPerIntent(t *testing.T) {
 	}
 }
 
+func TestSessionStorePersistsFreeformIntentFields(t *testing.T) {
+	t.Parallel()
+
+	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	store := NewSessionStore(db)
+	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
+		ID:           "intent-1",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeFreeform,
+		ContextID:    "2026-05-19-1200-investigate-login-failure",
+		Prompt:       "Investigate login failure and report root cause",
+		Workdir:      "/tmp/service-a",
+		CreatedBy:    domain.SessionCreatedByDesktop,
+	}); err != nil {
+		t.Fatalf("create freeform intent: %v", err)
+	}
+
+	intent, err := store.GetIntent(context.Background(), "intent-1")
+	if err != nil {
+		t.Fatalf("get freeform intent: %v", err)
+	}
+	if intent.SessionType != domain.SessionTypeFreeform || intent.ContextID != "2026-05-19-1200-investigate-login-failure" {
+		t.Fatalf("unexpected intent identity %#v", intent)
+	}
+	if intent.Prompt != "Investigate login failure and report root cause" || intent.Workdir != "/tmp/service-a" {
+		t.Fatalf("unexpected persisted freeform fields %#v", intent)
+	}
+}
+
 func TestSessionStoreUpdatesRunNativeID(t *testing.T) {
 	t.Parallel()
 
@@ -181,6 +231,9 @@ func TestSessionStoreUpdatesRunNativeID(t *testing.T) {
 		ID:           "intent-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
+		ContextID:    "2026-05-19-1200",
+		Prompt:       "kickoff",
+		Workdir:      "/tmp/architect",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
 		t.Fatalf("create intent: %v", err)
@@ -225,6 +278,9 @@ func TestSessionStorePrefersRunningCurrentRun(t *testing.T) {
 		ID:           "intent-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
+		ContextID:    "2026-05-19-1200",
+		Prompt:       "kickoff",
+		Workdir:      "/tmp/architect",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
 		t.Fatalf("create intent: %v", err)

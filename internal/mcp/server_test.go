@@ -30,20 +30,37 @@ func TestNewServerDefaultsToArchitect(t *testing.T) {
 	}
 }
 
-func TestNewServerWorkSession(t *testing.T) {
+func TestNewServerTicketSession(t *testing.T) {
 	t.Parallel()
 
 	server, err := NewServer(Config{
 		DaemonURL:    "http://127.0.0.1:4200",
 		ArchitectKey: "hiveryn",
-		SessionType:  SessionTypeWork,
+		SessionType:  SessionTypeTicket,
 	})
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
 	}
 
-	if server.SessionType() != SessionTypeWork {
-		t.Fatalf("session type = %q, want %q", server.SessionType(), SessionTypeWork)
+	if server.SessionType() != SessionTypeTicket {
+		t.Fatalf("session type = %q, want %q", server.SessionType(), SessionTypeTicket)
+	}
+}
+
+func TestNewServerFreeformSession(t *testing.T) {
+	t.Parallel()
+
+	server, err := NewServer(Config{
+		DaemonURL:    "http://127.0.0.1:4200",
+		ArchitectKey: "hiveryn",
+		SessionType:  SessionTypeFreeform,
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	if server.SessionType() != SessionTypeFreeform {
+		t.Fatalf("session type = %q, want %q", server.SessionType(), SessionTypeFreeform)
 	}
 }
 
@@ -654,15 +671,15 @@ func TestWorkerReadTicketRegisteredAndFunctional(t *testing.T) {
 	server, err := NewServer(Config{
 		DaemonURL:    ts.URL,
 		ArchitectKey: "hiveryn",
-		SessionType:  SessionTypeWork,
+		SessionType:  SessionTypeTicket,
 		HTTPClient:   ts.Client(),
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
 	}
-	if server.SessionType() != SessionTypeWork {
-		t.Fatalf("session type = %q, want %q", server.SessionType(), SessionTypeWork)
+	if server.SessionType() != SessionTypeTicket {
+		t.Fatalf("session type = %q, want %q", server.SessionType(), SessionTypeTicket)
 	}
 
 	_, output, err := server.handleReadTicket(context.Background(), nil, ReadTicketInput{ID: "worker-ticket"})

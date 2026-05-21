@@ -15,8 +15,8 @@ type SessionRunFailureReason string
 
 const (
 	SessionTypeArchitect SessionType = "architect"
-	SessionTypeWork      SessionType = "work"
-	SessionTypeCollab    SessionType = "collab"
+	SessionTypeTicket    SessionType = "ticket"
+	SessionTypeFreeform  SessionType = "freeform"
 )
 
 const (
@@ -47,8 +47,9 @@ type SessionIntent struct {
 	ID           string           `json:"id"`
 	ArchitectKey string           `json:"architect_key"`
 	SessionType  SessionType      `json:"session_type"`
-	TicketID     string           `json:"ticket_id,omitempty"`
-	Prompt       string           `json:"prompt,omitempty"`
+	ContextID    string           `json:"context_id"`
+	Prompt       string           `json:"prompt"`
+	Workdir      string           `json:"workdir"`
 	Instructions string           `json:"instructions,omitempty"`
 	CreatedBy    SessionCreatedBy `json:"created_by,omitempty"`
 	CreatedAt    time.Time        `json:"created_at"`
@@ -93,14 +94,18 @@ type CreateSessionIntentRequest struct {
 	SessionType  SessionType `json:"session_type"`
 	ArchitectKey string      `json:"architect_key"`
 	TicketID     string      `json:"ticket_id,omitempty"`
+	Prompt       string      `json:"prompt,omitempty"`
+	Workdir      string      `json:"workdir,omitempty"`
+	Slug         string      `json:"slug,omitempty"`
 }
 
 type CreateSessionIntentParams struct {
 	ID           string
 	ArchitectKey string
 	SessionType  SessionType
-	TicketID     string
+	ContextID    string
 	Prompt       string
+	Workdir      string
 	Instructions string
 	CreatedBy    SessionCreatedBy
 }

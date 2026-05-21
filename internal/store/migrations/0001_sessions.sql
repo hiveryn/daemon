@@ -2,8 +2,9 @@ CREATE TABLE session_intents (
     id TEXT PRIMARY KEY,
     architect_key TEXT NOT NULL,
     session_type TEXT NOT NULL,
-    ticket_id TEXT,
-    prompt TEXT,
+    context_id TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    workdir TEXT NOT NULL,
     instructions TEXT,
     created_by TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -43,7 +44,7 @@ CREATE TABLE session_events (
 );
 
 CREATE INDEX idx_session_intents_architect_type ON session_intents(architect_key, session_type);
-CREATE INDEX idx_session_intents_ticket_type ON session_intents(ticket_id, session_type) WHERE ticket_id IS NOT NULL;
+CREATE INDEX idx_session_intents_context_type ON session_intents(context_id, session_type);
 CREATE UNIQUE INDEX idx_session_runs_one_running_per_intent ON session_runs(session_intent_id) WHERE status = 'running';
 CREATE INDEX idx_session_runs_intent_created ON session_runs(session_intent_id, created_at DESC, id DESC);
 CREATE INDEX idx_session_runs_status ON session_runs(status);

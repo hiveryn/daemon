@@ -178,6 +178,14 @@ func (s *Server) handleConcludeSession(
 	if strings.TrimSpace(input.Body) == "" {
 		return nil, ConcludeSessionOutput{}, newValidationError("body", "is required")
 	}
+	if s.sessionType == SessionTypeFreeform {
+		if input.Rejected {
+			return nil, ConcludeSessionOutput{}, newValidationError("rejected", "freeform sessions do not support rejected mode")
+		}
+		if strings.TrimSpace(input.RejectionReason) != "" {
+			return nil, ConcludeSessionOutput{}, newValidationError("rejection_reason", "freeform sessions do not accept a rejection reason")
+		}
+	}
 	for _, commit := range input.Commits {
 		if strings.TrimSpace(commit.SHA) == "" {
 			return nil, ConcludeSessionOutput{}, newValidationError("commits", "commit sha is required")

@@ -24,6 +24,9 @@ func TestCreateIntentArchitectEndpoint(t *testing.T) {
 			ID:           "intent-1",
 			ArchitectKey: "hiveryn",
 			SessionType:  domain.SessionTypeArchitect,
+			ContextID:    "2026-05-13-1500",
+			Prompt:       "kickoff",
+			Workdir:      "/tmp/architect",
 			CreatedBy:    domain.SessionCreatedByDesktop,
 		},
 	}
@@ -40,6 +43,37 @@ func TestCreateIntentArchitectEndpoint(t *testing.T) {
 		t.Fatalf("unexpected payload %#v", payload)
 	}
 	if service.lastCreateIntent.ArchitectKey != "hiveryn" || service.lastCreateIntent.SessionType != domain.SessionTypeArchitect {
+		t.Fatalf("unexpected create intent request %#v", service.lastCreateIntent)
+	}
+}
+
+func TestCreateIntentFreeformEndpoint(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeSessionService{
+		createIntentResult: domain.SessionIntent{
+			ID:           "intent-2",
+			ArchitectKey: "hiveryn",
+			SessionType:  domain.SessionTypeFreeform,
+			ContextID:    "2026-05-13-1500-investigate-login-failure",
+			Prompt:       "Investigate login failure and report root cause",
+			Workdir:      "/tmp/service-a",
+			CreatedBy:    domain.SessionCreatedByDesktop,
+		},
+	}
+	handler := newSessionTestHandler(t, service)
+
+	status, body := request(t, handler, http.MethodPost, "/api/sessions", strings.NewReader(`{"session_type":"freeform","architect_key":"hiveryn","prompt":"Investigate login failure and report root cause","workdir":"/tmp/service-a","slug":"investigate-login-failure"}`))
+	if status != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, status, string(body))
+	}
+
+	var payload domain.SessionIntent
+	decodeEnvelopeData(t, body, &payload)
+	if payload.SessionType != domain.SessionTypeFreeform || payload.ContextID != "2026-05-13-1500-investigate-login-failure" {
+		t.Fatalf("unexpected payload %#v", payload)
+	}
+	if service.lastCreateIntent.Workdir != "/tmp/service-a" || service.lastCreateIntent.Slug != "investigate-login-failure" {
 		t.Fatalf("unexpected create intent request %#v", service.lastCreateIntent)
 	}
 }
@@ -61,8 +95,10 @@ func TestCreateRunEndpoint(t *testing.T) {
 		getIntentResult: domain.SessionIntent{
 			ID:           "intent-1",
 			ArchitectKey: "hiveryn",
-			SessionType:  domain.SessionTypeWork,
-			TicketID:     "ticket-1",
+			SessionType:  domain.SessionTypeTicket,
+			ContextID:    "ticket-1",
+			Prompt:       "kickoff",
+			Workdir:      "/tmp/repo",
 		},
 	}
 	handler := newSessionTestHandler(t, service)
@@ -102,7 +138,10 @@ func TestSessionsListEndpoint(t *testing.T) {
 		intents: []domain.SessionIntent{{
 			ID:           "intent-1",
 			ArchitectKey: "hiveryn",
-			SessionType:  domain.SessionTypeWork,
+			SessionType:  domain.SessionTypeTicket,
+			ContextID:    "ticket-1",
+			Prompt:       "kickoff",
+			Workdir:      "/tmp/repo",
 			CurrentRun: &domain.SessionRun{
 				ID:             "run-1",
 				Status:         domain.SessionRunStatusRunning,

@@ -25,7 +25,7 @@ The daemon binary also exposes an MCP stdio subcommand for agent-launched tool a
 hiverynd mcp --daemon-url http://127.0.0.1:4201 --architect-key hiveryn
 ```
 
-`hiverynd mcp` is intended to be spawned by `agentruntime`; session scoping comes from `HIVERYN_SESSION_TYPE` (`architect` or `work`).
+`hiverynd mcp` is intended to be spawned by `agentruntime`; session scoping comes from `HIVERYN_SESSION_TYPE` (`architect`, `ticket`, or `freeform`).
 
 ## Configuration
 
@@ -63,7 +63,7 @@ deep-personal:
   args: [--model, gpt-5]
 ```
 
-For architect sessions using `agent: opencode`, the daemon defines a named OpenCode agent automatically from `prompts/architect/SYSTEM.md`, using the architect key as the agent name and passing `--agent <architect_key>` at launch. Do not put `--agent` in OpenCode architect variant args; the daemon treats that as a launch error. Worker OpenCode sessions do not define a named agent.
+For architect sessions using `agent: opencode`, the daemon defines a named OpenCode agent automatically from `prompts/architect/SYSTEM.md`, using the architect key as the agent name and passing `--agent <architect_key>` at launch. Do not put `--agent` in OpenCode architect variant args; the daemon treats that as a launch error. Ticket and freeform OpenCode sessions do not define a named agent.
 
 ### `architects.yaml` — architect definitions
 
@@ -86,7 +86,11 @@ architect:
     command: lazygit
   - type: terminal
 
-work:
+ticket:
+  - type: event-log
+  - type: terminal
+
+freeform:
   - type: event-log
   - type: terminal
 ```
@@ -159,11 +163,11 @@ The daemon also writes append-only structured JSONL logs to `~/.hiveryn/logs/dae
 | `GET` | `/api/architects/{key}/repos` | List repos for an architect |
 | `GET` | `/api/architects/{key}/repos/{repoKey}` | Get one architect repo by key |
 | `GET` | `/api/config/shortcuts` | Get resolved shortcuts config (global + per-pane keybindings) |
-| `POST` | `/api/sessions` | Create a durable session intent for architect planning or ticket work |
+| `POST` | `/api/sessions` | Create a durable session intent for architect planning, ticket work, or freeform exploration |
 | `GET` | `/api/sessions` | List session intents with their current run, if any |
 | `GET` | `/api/sessions/{id}` | Get one session intent |
-| `POST` | `/api/sessions/{id}/runs` | Start a run for a session intent using an agent profile; work runs move the ticket backlog → progress on successful launch |
-| `POST` | `/api/sessions/{id}/conclude` | Conclude an intent's running run, publish `ended`, kill its PTYs, and delete the intent row; architect conclude returns `CONFLICT` if same-architect work sessions are still running |
+| `POST` | `/api/sessions/{id}/runs` | Start a run for a session intent using an agent profile; ticket runs move the ticket backlog → progress on successful launch |
+| `POST` | `/api/sessions/{id}/conclude` | Conclude an intent's running run, publish `ended`, kill its PTYs, and delete the intent row; architect conclude returns `CONFLICT` if same-architect ticket sessions are still running |
 | `GET` | `/api/sessions/{id}/tabs` | Get the resolved right-pane tab layout for a session intent's current run |
 | `POST` | `/api/sessions/{id}/terminals` | Create a new user terminal in a session intent's current run using the resolved default shell |
 | `GET` | `/api/sessions/{id}/terminals` | List all terminals for a session intent's current run |
@@ -175,11 +179,11 @@ Profile, architect, repo, and tab configuration endpoints are read-only. Edit `~
 
 Ticket mutations are status-gated: backlog tickets can be edited, metadata-updated, moved, or deleted; progress tickets can be concluded; done tickets are read-only.
 
-Session responses expose a durable intent plus its current run, if any. `POST /api/sessions/{id}/runs` returns the created `run`, its `main_terminal_id`, and a `ws_url` so the desktop can attach immediately. If the main agent PTY exits unexpectedly, the daemon automatically resumes the running run from its stored `native_id`, emits a `main_terminal_resumed` session event with the new `main_terminal_id`, and leaves the run status as `running`; restore failures mark the run `restore_failed` and abort daemon startup. `GET /api/sessions/{id}/tabs` returns the canonical right-pane layout using `type`, `id`, `command`, and `status` for terminal tabs. `POST /api/sessions/{id}/terminals` accepts an empty JSON object and always launches the session's default shell in the current run workdir.
+Session responses expose a durable intent plus its current run, if any. Each intent stores the create-time session contract: `id`, `architect_key`, `session_type`, `context_id`, `prompt`, `workdir`, optional `instructions`, and lifecycle metadata. `POST /api/sessions/{id}/runs` returns the created `run`, its `main_terminal_id`, and a `ws_url` so the desktop can attach immediately. Launch uses the stored `workdir` directly; ticket and architect workdirs are resolved during intent creation, not recalculated later. If the main agent PTY exits unexpectedly, the daemon automatically resumes the running run from its stored `native_id`, emits a `main_terminal_resumed` session event with the new `main_terminal_id`, and leaves the run status as `running`; restore failures mark the run `restore_failed` and abort daemon startup. `GET /api/sessions/{id}/tabs` returns the canonical right-pane layout using `type`, `id`, `command`, and `status` for terminal tabs. `POST /api/sessions/{id}/terminals` accepts an empty JSON object and always launches the session's default shell in the current run workdir.
 
-Only `POST /api/sessions/{id}/conclude` legitimately ends a session. Concluding an architect intent fails fast with `CONFLICT` while worker intents for the same `architect_key` still have a `running` run; the error message lists the blocking intent IDs.
+Only `POST /api/sessions/{id}/conclude` legitimately ends a session. Concluding an architect intent fails fast with `CONFLICT` while ticket intents for the same `architect_key` still have a `running` run; the error message lists the blocking intent IDs.
 
-`POST /api/sessions/{id}/conclude` now requires structured commit refs in requests for work sessions. `repo` is the configured repo key from `architects.yaml`, not a filesystem path.
+`POST /api/sessions/{id}/conclude` now requires structured commit refs in requests for ticket sessions. `repo` is the configured repo key from `architects.yaml`, not a filesystem path. Freeform sessions may omit `commits`; when they do provide commits, the daemon validates the same `{sha, repo}` contract.
 
 Request:
 
