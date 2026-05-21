@@ -24,7 +24,12 @@ import (
 )
 
 func Run(configPath, databasePath string, portOverride int) error {
-	logManager, err := logging.New(config.DefaultLogLevel)
+	runtime, err := config.ResolveRuntime(configPath, databasePath)
+	if err != nil {
+		return err
+	}
+
+	logManager, err := logging.NewWithDir(config.DefaultLogLevel, runtime.LogDir)
 	if err != nil {
 		return err
 	}
@@ -37,7 +42,7 @@ func Run(configPath, databasePath string, portOverride int) error {
 	logger := logManager.AppLogger()
 	slog.SetDefault(logger)
 
-	cfg, err := config.Load(configPath)
+	cfg, err := config.Load(runtime.ConfigPath)
 	if err != nil {
 		return err
 	}
@@ -50,13 +55,13 @@ func Run(configPath, databasePath string, portOverride int) error {
 		return err
 	}
 
-	configSource, err := config.NewArchitectsReloadingSource(configPath, cfg)
+	configSource, err := config.NewArchitectsReloadingSource(runtime.ConfigPath, cfg)
 	if err != nil {
 		return err
 	}
 
 	ctx := context.Background()
-	db, err := store.Open(ctx, databasePath)
+	db, err := store.Open(ctx, runtime.DBPath)
 	if err != nil {
 		return err
 	}
@@ -66,9 +71,11 @@ func Run(configPath, databasePath string, portOverride int) error {
 		}
 	}()
 
+	resolvedBaseURL := baseURL(cfg)
+
 	sessionStore := store.NewSessionStore(db)
 	ticketService := architectfs.NewTicketService()
-	service, err := sessionruntime.New(ctx, cfg, configSource, sessionStore, ticketService, logger, baseURL(cfg))
+	service, err := sessionruntime.New(ctx, cfg, configSource, sessionStore, ticketService, logger, resolvedBaseURL)
 	if err != nil {
 		return err
 	}
@@ -80,6 +87,8 @@ func Run(configPath, databasePath string, portOverride int) error {
 	handler := api.NewHandler(api.Dependencies{
 		Config:          cfg,
 		ConfigSource:    configSource,
+		Runtime:         runtime,
+		BaseURL:         resolvedBaseURL,
 		Logger:          logger,
 		RequestLogger:   logManager.RequestLogger(),
 		Sessions:        service,

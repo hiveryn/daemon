@@ -32,6 +32,86 @@ func TestLoadCreatesDefaultConfigWhenMissing(t *testing.T) {
 	}
 }
 
+func TestResolveRuntimeDefaultsToProductionHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	runtime, err := ResolveRuntime("", "")
+	if err != nil {
+		t.Fatalf("ResolveRuntime: %v", err)
+	}
+
+	expectedHome := filepath.Join(home, ".hiveryn")
+	if runtime.Environment != DefaultEnvironment {
+		t.Fatalf("expected environment %q, got %q", DefaultEnvironment, runtime.Environment)
+	}
+	if runtime.Home != expectedHome {
+		t.Fatalf("expected runtime home %q, got %q", expectedHome, runtime.Home)
+	}
+	if runtime.ConfigPath != filepath.Join(expectedHome, configFileName) {
+		t.Fatalf("expected config path %q, got %q", filepath.Join(expectedHome, configFileName), runtime.ConfigPath)
+	}
+	if runtime.DBPath != filepath.Join(expectedHome, databaseFileName) {
+		t.Fatalf("expected db path %q, got %q", filepath.Join(expectedHome, databaseFileName), runtime.DBPath)
+	}
+	if runtime.LogDir != filepath.Join(expectedHome, logDirName) {
+		t.Fatalf("expected log dir %q, got %q", filepath.Join(expectedHome, logDirName), runtime.LogDir)
+	}
+}
+
+func TestResolveRuntimeUsesEnvironmentAndHomeOverrides(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "runtime-dev")
+	t.Setenv("HIVERYN_HOME", home)
+	t.Setenv("HIVERYN_ENV", "development")
+
+	runtime, err := ResolveRuntime("", "")
+	if err != nil {
+		t.Fatalf("ResolveRuntime: %v", err)
+	}
+
+	if runtime.Environment != "development" {
+		t.Fatalf("expected environment %q, got %q", "development", runtime.Environment)
+	}
+	if runtime.Home != home {
+		t.Fatalf("expected runtime home %q, got %q", home, runtime.Home)
+	}
+	if runtime.ConfigPath != filepath.Join(home, configFileName) {
+		t.Fatalf("expected config path %q, got %q", filepath.Join(home, configFileName), runtime.ConfigPath)
+	}
+	if runtime.DBPath != filepath.Join(home, databaseFileName) {
+		t.Fatalf("expected db path %q, got %q", filepath.Join(home, databaseFileName), runtime.DBPath)
+	}
+	if runtime.LogDir != filepath.Join(home, logDirName) {
+		t.Fatalf("expected log dir %q, got %q", filepath.Join(home, logDirName), runtime.LogDir)
+	}
+}
+
+func TestResolveRuntimePrefersExplicitConfigAndDBPaths(t *testing.T) {
+	t.Setenv("HIVERYN_HOME", filepath.Join(t.TempDir(), "runtime-dev"))
+	configPath := filepath.Join("testdata", "config.yaml")
+	databasePath := filepath.Join("testdata", "daemon.db")
+
+	runtime, err := ResolveRuntime(configPath, databasePath)
+	if err != nil {
+		t.Fatalf("ResolveRuntime: %v", err)
+	}
+
+	expectedConfigPath, err := filepath.Abs(configPath)
+	if err != nil {
+		t.Fatalf("filepath.Abs(configPath): %v", err)
+	}
+	expectedDBPath, err := filepath.Abs(databasePath)
+	if err != nil {
+		t.Fatalf("filepath.Abs(databasePath): %v", err)
+	}
+	if runtime.ConfigPath != expectedConfigPath {
+		t.Fatalf("expected config path %q, got %q", expectedConfigPath, runtime.ConfigPath)
+	}
+	if runtime.DBPath != expectedDBPath {
+		t.Fatalf("expected db path %q, got %q", expectedDBPath, runtime.DBPath)
+	}
+}
+
 func TestSaveAndLoadCoreConfig(t *testing.T) {
 	t.Parallel()
 

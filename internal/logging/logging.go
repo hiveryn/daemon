@@ -7,10 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/hiveryn/daemon/internal/config"
 )
 
 const (
-	logDirName      = ".hiveryn/logs"
 	daemonLogName   = "daemon.jsonl"
 	requestLogName  = "requests.jsonl"
 	timestampLayout = "2006-01-02T15:04:05.000Z07:00"
@@ -29,15 +30,27 @@ func New(level string) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create log directory %q: %w", logDir, err)
+	return NewWithDir(level, logDir)
+}
+
+func NewWithDir(level, logDir string) (*Manager, error) {
+	if logDir == "" {
+		return nil, fmt.Errorf("log directory is required")
 	}
 
-	appFile, err := newLineFile(filepath.Join(logDir, daemonLogName), "app")
+	resolvedLogDir, err := filepath.Abs(logDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve log directory %q: %w", logDir, err)
+	}
+	if err := os.MkdirAll(resolvedLogDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create log directory %q: %w", resolvedLogDir, err)
+	}
+
+	appFile, err := newLineFile(filepath.Join(resolvedLogDir, daemonLogName), "app")
 	if err != nil {
 		return nil, err
 	}
-	requestFile, err := newLineFile(filepath.Join(logDir, requestLogName), "request")
+	requestFile, err := newLineFile(filepath.Join(resolvedLogDir, requestLogName), "request")
 	if err != nil {
 		_ = appFile.Close()
 		return nil, err
@@ -89,11 +102,11 @@ func (m *Manager) Close() error {
 }
 
 func defaultLogDir() (string, error) {
-	homeDir, err := os.UserHomeDir()
+	runtime, err := config.ResolveRuntime("", "")
 	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
+		return "", err
 	}
-	return filepath.Join(homeDir, logDirName), nil
+	return runtime.LogDir, nil
 }
 
 type lineFile struct {

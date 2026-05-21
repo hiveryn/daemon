@@ -4,18 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
-	"path/filepath"
 
+	"github.com/hiveryn/daemon/internal/config"
 	_ "modernc.org/sqlite"
 )
 
 func DefaultDBPath() (string, error) {
-	homeDir, err := os.UserHomeDir()
+	runtime, err := config.ResolveRuntime("", "")
 	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
+		return "", err
 	}
-	return filepath.Join(homeDir, ".hiveryn", "daemon.db"), nil
+	return runtime.DBPath, nil
 }
 
 func Open(ctx context.Context, path string) (*sql.DB, error) {

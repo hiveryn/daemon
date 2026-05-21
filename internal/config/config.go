@@ -17,7 +17,6 @@ const (
 	DefaultBindAddress               = "127.0.0.1"
 	DefaultLogLevel                  = "info"
 	DefaultDesktopHealthPollInterval = "1s"
-	configDirName                    = ".hiveryn"
 	configFileName                   = "config.yaml"
 	variantsFileName                 = "variants.yaml"
 	architectsFileName               = "architects.yaml"
@@ -114,12 +113,11 @@ func Default() Config {
 }
 
 func DefaultPath() (string, error) {
-	homeDir, err := os.UserHomeDir()
+	runtime, err := ResolveRuntime("", "")
 	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
+		return "", err
 	}
-
-	return filepath.Join(homeDir, configDirName, configFileName), nil
+	return runtime.ConfigPath, nil
 }
 
 func StaticSource(cfg Config) Source {

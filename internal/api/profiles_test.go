@@ -123,9 +123,16 @@ func newTestHandler(t *testing.T) http.Handler {
 	t.Helper()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	runtime, err := config.ResolveRuntime("", "")
+	if err != nil {
+		t.Fatalf("resolve runtime: %v", err)
+	}
+	cfg := testConfig()
 	return NewHandler(Dependencies{
-		Config: testConfig(),
-		Logger: logger,
+		Config:  cfg,
+		Runtime: runtime,
+		BaseURL: "http://127.0.0.1:4200",
+		Logger:  logger,
 	})
 }
 

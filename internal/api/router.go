@@ -17,6 +17,8 @@ const ingestRoutePrefix = "/internal/agentruntime"
 type Dependencies struct {
 	Config          config.Config
 	ConfigSource    config.Source
+	Runtime         config.Runtime
+	BaseURL         string
 	Logger          *slog.Logger
 	RequestLogger   *logging.RequestLogger
 	Sessions        domain.SessionService
@@ -103,6 +105,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	rh := &reposHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
 	sch := &shortcutsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
 	dch := &desktopConfigHandler{config: deps.Config}
+	srh := &systemRuntimeHandler{runtime: deps.Runtime, bindAddress: deps.Config.BindAddress, port: deps.Config.Port, baseURL: deps.BaseURL}
 	sh := &sessionsHandler{logger: deps.Logger, sessions: deps.Sessions}
 	th := &ticketsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
 	eh := &architectEventsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, hub: deps.ArchitectEvents}
@@ -117,6 +120,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/system/home", func(w http.ResponseWriter, r *http.Request) {
 		handleSystemHome(w, r, deps.Logger)
 	})
+	mux.HandleFunc("GET /api/system/runtime", srh.get)
 	mux.HandleFunc("GET /api/agent-profiles", ph.list)
 	mux.HandleFunc("GET /api/agent-profiles/{name}", ph.get)
 	mux.HandleFunc("GET /api/architect-groups", gh.list)

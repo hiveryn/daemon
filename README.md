@@ -25,6 +25,12 @@ Pass `--port` to override the listen port at launch (takes precedence over `conf
 hiverynd serve --port 4202
 ```
 
+Set `HIVERYN_HOME` to move daemon-owned local runtime state under a different root, and `HIVERYN_ENV` to label the runtime mode exposed by `/api/system/runtime`:
+
+```bash
+HIVERYN_HOME=~/.hiveryn-dev HIVERYN_ENV=development hiverynd serve --port 4202
+```
+
 The daemon binary also exposes an MCP stdio subcommand for agent-launched tool access:
 
 ```bash
@@ -35,7 +41,7 @@ hiverynd mcp --daemon-url http://127.0.0.1:4201 --architect-key hiveryn
 
 ## Configuration
 
-The daemon reads five YAML files from `~/.hiveryn/`. Only `config.yaml` is required; the others default to empty when missing. `architects.yaml` is reloaded on demand for architect/repo lookups, so new architect and repo mappings do not require a daemon restart.
+The daemon reads five YAML files from `HIVERYN_HOME` (default `~/.hiveryn`). Only `config.yaml` is required; the others default to empty when missing. `architects.yaml` is reloaded on demand for architect/repo lookups, so new architect and repo mappings do not require a daemon restart. Passing `--config` points `config.yaml` elsewhere and, because config loading is directory-scoped, also changes where `variants.yaml`, `architects.yaml`, `tabs.yaml`, and `shortcuts.yaml` are read from.
 
 ### `config.yaml` — daemon core
 
@@ -139,15 +145,16 @@ Maps are two-level: top-level keys are sections (`global`, `kanban`, `event-log`
 
 ## Data
 
-Local runtime state is stored at `~/.hiveryn/daemon.db`. This file is safe to delete — it will be recreated on next start. Variants, architects, repo mappings, and tab layouts live in `~/.hiveryn/*.yaml`. Your architect workspace (tickets, conclusions) is stored separately as markdown files and is never affected.
+Local runtime state is stored at `HIVERYN_HOME/daemon.db` by default. This file is safe to delete — it will be recreated on next start. Variants, architects, repo mappings, and tab layouts live in `HIVERYN_HOME/*.yaml` by default. Your architect workspace (tickets, conclusions) is stored separately as markdown files and is never affected. `--db` overrides the SQLite path explicitly.
 
-The daemon also writes append-only structured JSONL logs to `~/.hiveryn/logs/daemon.jsonl` and `~/.hiveryn/logs/requests.jsonl`. `daemon.jsonl` contains app/runtime logs with source location metadata; `requests.jsonl` contains one JSON object per HTTP request/response, including the response envelope for JSON API calls.
+The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/daemon.jsonl` and `HIVERYN_HOME/logs/requests.jsonl` by default. `daemon.jsonl` contains app/runtime logs with source location metadata; `requests.jsonl` contains one JSON object per HTTP request/response, including the response envelope for JSON API calls.
 
 ## API
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/system/home` | Get daemon host home directory |
+| `GET` | `/api/system/runtime` | Get resolved daemon runtime identity and paths |
 | `GET` | `/api/health` | Health check |
 | `GET` | `/api/agent-profiles` | List all agent profiles |
 | `GET` | `/api/agent-profiles/{name}` | Get one agent profile by name |
@@ -181,7 +188,7 @@ The daemon also writes append-only structured JSONL logs to `~/.hiveryn/logs/dae
 | `GET` | `/api/sessions/{id}/events` | Stream structured session intent events over SSE |
 | `WS` | `/ws/session/{id}/terminal/{uuid}` | Stream PTY output and send terminal input for a terminal UUID |
 
-Profile, architect, repo, and tab configuration endpoints are read-only. Edit `~/.hiveryn/*.yaml` directly to change variants, architects, repos, or tabs. `architects.yaml` changes apply to architect/repo reads plus new ticket/session operations without restarting the daemon.
+Profile, architect, repo, and tab configuration endpoints are read-only. Edit `HIVERYN_HOME/*.yaml` directly to change variants, architects, repos, or tabs unless you launched with `--config`. `architects.yaml` changes apply to architect/repo reads plus new ticket/session operations without restarting the daemon.
 
 Ticket mutations are status-gated: backlog tickets can be edited, metadata-updated, moved, or deleted; progress tickets can be concluded; done tickets are read-only.
 

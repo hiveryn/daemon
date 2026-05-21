@@ -6,7 +6,7 @@
 
 The daemon is the **single mutation and event hub** for Hiveryn. Every state change — whether initiated by the desktop app, an MCP tool call from a running agent, or a lifecycle event from `agentruntime` — flows through the daemon. It owns:
 
-- **Local state**: bootstrap config in `~/.hiveryn/config.yaml` (plus `variants.yaml`, `architects.yaml`, `tabs.yaml`, `shortcuts.yaml`); SQLite for sessions, terminal buffers, and runtime events.
+- **Local state**: bootstrap config under `HIVERYN_HOME` (default `~/.hiveryn`) with `config.yaml` plus `variants.yaml`, `architects.yaml`, `tabs.yaml`, and `shortcuts.yaml`; SQLite for sessions, terminal buffers, and runtime events.
 - **Agent lifecycle**: spawn, kill, and track agent processes through daemon-owned ptys; delegate launch/config synthesis to `agentruntime`.
 - **Filesystem mutations**: read/write architect folder markdown (tickets, conclusions, collabs). The architect folder is the shared source of truth; the daemon's SQLite is local-only.
 - **MCP tools**: exposed by the daemon so running agents can mutate project state (create tickets, conclude sessions) without direct filesystem access.
@@ -96,7 +96,7 @@ Each resource is self-contained across four packages — no cross-contamination.
 - One repository file per table/aggregate in `store/`. One handler file per resource in `api/`.
 - Migrations are idempotent, versioned, and run inside a transaction per file.
 - Access logging, panic recovery, and request IDs are enforced by middleware — not per-handler.
-- Structured daemon logs live in `~/.hiveryn/logs/daemon.jsonl`; request logs live in `~/.hiveryn/logs/requests.jsonl`. Keep every record as single-line valid JSON.
+- Structured daemon logs live under `HIVERYN_HOME/logs/daemon.jsonl`; request logs live under `HIVERYN_HOME/logs/requests.jsonl`. Keep every record as single-line valid JSON.
 - SQLite uses `SetMaxOpenConns(1)` (single-writer). Busy timeout is 5 seconds.
 - Never log secrets from profiles, env configs, or MCP configurations.
 - PTY/process handles stay in memory under `sessionruntime`; SQLite stores session metadata and structured events only.
@@ -106,7 +106,7 @@ Each resource is self-contained across four packages — no cross-contamination.
 - Architect sessions launched with `AgentOpenCode` must define a named `StartRequest.OpenCodeAgentConfig` entry keyed by `architect_key`, use the architect system prompt as that agent's `Prompt`, and prepend `--agent <architect_key>` to launch args. Ticket and freeform OpenCode sessions must not define a named agent, and architect OpenCode profile args must not include `--agent` because the daemon owns that flag.
 - `session_intents` store the fully resolved create-time contract: `id` (runtime identity), `architect_key`, `session_type`, `context_id` (artifact/context identity), `prompt`, `workdir`, optional `instructions`, and lifecycle metadata. Launch must use the stored `workdir` directly instead of re-resolving repo mappings or architect paths.
 - Ticket-session conclusion commit metadata is stored and returned as structured `{sha, repo}` entries, where `repo` is the architect repo key from config. Legacy conclusion markdown that stored flat SHA arrays must remain readable and resolve those SHAs against the ticket's repo key.
-- The architect folder's markdown is the source of truth for tickets and conclusions. `~/.hiveryn/config.yaml` is the source of truth for daemon core settings, including the default terminal shell. `~/.hiveryn/variants.yaml`, `~/.hiveryn/architects.yaml`, `~/.hiveryn/tabs.yaml`, and `~/.hiveryn/shortcuts.yaml` are the source of truth for variants, architects, repo mappings, tab layouts, and shortcuts. `architects.yaml` changes must be picked up without a daemon restart; SQLite stores runtime state only.
+- The architect folder's markdown is the source of truth for tickets and conclusions. `HIVERYN_HOME/config.yaml` is the source of truth for daemon core settings, including the default terminal shell, unless launch flags override it. `HIVERYN_HOME/variants.yaml`, `HIVERYN_HOME/architects.yaml`, `HIVERYN_HOME/tabs.yaml`, and `HIVERYN_HOME/shortcuts.yaml` are the source of truth for variants, architects, repo mappings, tab layouts, and shortcuts when using the default runtime layout. `architects.yaml` changes must be picked up without a daemon restart; SQLite stores runtime state only. `HIVERYN_ENV` identifies the daemon runtime mode but does not change paths by itself.
 - All API responses use a standard envelope (`domain.Envelope`) with `data`/`error` (mutually exclusive), `logs`, `commands`, and `meta.request_id`. Handlers write via `writeJSON(w, r, ...)` and `writeError(w, r, ...)` — envelope wrapping is automatic.
 
 ## Error handling
