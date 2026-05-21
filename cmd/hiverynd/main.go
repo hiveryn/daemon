@@ -2,7 +2,7 @@ package main
 
 import (
 	"flag"
-	"log/slog"
+	"fmt"
 	"os"
 
 	"github.com/hiveryn/daemon/internal/app"
@@ -11,7 +11,7 @@ import (
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		slog.Error("daemon failed", "error", err)
+		fmt.Fprintf(os.Stderr, "daemon failed: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -33,10 +33,11 @@ func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	configPath := fs.String("config", "", "Path to daemon bootstrap config")
 	databasePath := fs.String("db", "", "Path to local SQLite state database")
+	port := fs.Int("port", 0, "Override listen port (takes precedence over config)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return app.Run(*configPath, *databasePath)
+	return app.Run(*configPath, *databasePath, *port)
 }
 
 func runMCP(args []string) error {

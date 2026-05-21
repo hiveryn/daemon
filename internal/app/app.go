@@ -23,7 +23,7 @@ import (
 	"github.com/hiveryn/daemon/internal/store"
 )
 
-func Run(configPath, databasePath string) error {
+func Run(configPath, databasePath string, portOverride int) error {
 	logManager, err := logging.New(config.DefaultLogLevel)
 	if err != nil {
 		return err
@@ -40,6 +40,10 @@ func Run(configPath, databasePath string) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
+	}
+
+	if portOverride != 0 {
+		cfg.Port = portOverride
 	}
 
 	if err := logManager.SetLevel(cfg.LogLevel); err != nil {

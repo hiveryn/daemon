@@ -19,6 +19,12 @@ cd daemon
 go run ./cmd/hiverynd
 ```
 
+Pass `--port` to override the listen port at launch (takes precedence over `config.yaml`):
+
+```bash
+hiverynd serve --port 4202
+```
+
 The daemon binary also exposes an MCP stdio subcommand for agent-launched tool access:
 
 ```bash
