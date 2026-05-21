@@ -148,9 +148,9 @@ The daemon also writes append-only structured JSONL logs to `~/.hiveryn/logs/dae
 | `GET` | `/api/architects/{key}/tickets` | List ticket board columns; supports `?status=backlog\|progress\|done` and `?limit=N` |
 | `POST` | `/api/architects/{key}/tickets` | Create a backlog ticket in the architect folder |
 | `GET` | `/api/architects/{key}/tickets/{id}` | Get one filesystem-backed ticket by ID |
-| `PATCH` | `/api/architects/{key}/tickets/{id}` | Apply a targeted body edit to a ticket |
-| `PATCH` | `/api/architects/{key}/tickets/{id}/metadata` | Update ticket frontmatter (`title`, `repo`, `references`) |
-| `DELETE` | `/api/architects/{key}/tickets/{id}` | Delete a ticket folder and its contents |
+| `PATCH` | `/api/architects/{key}/tickets/{id}` | Apply a targeted body edit to a backlog ticket |
+| `PATCH` | `/api/architects/{key}/tickets/{id}/metadata` | Update frontmatter (`title`, `repo`, `references`) for a backlog ticket |
+| `DELETE` | `/api/architects/{key}/tickets/{id}` | Delete a backlog ticket folder and its contents |
 | `POST` | `/api/architects/{key}/tickets/{id}/move?to=...` | Move a ticket between backlog, progress, and done |
 | `GET` | `/api/architects/{key}/events` | Stream architect-scoped workspace_changed SSE hints |
 | `GET` | `/api/architects/{key}/conclusions` | List recent conclusions (IDs + timestamps); supports `?limit=N` |
@@ -172,6 +172,8 @@ The daemon also writes append-only structured JSONL logs to `~/.hiveryn/logs/dae
 | `WS` | `/ws/session/{id}/terminal/{uuid}` | Stream PTY output and send terminal input for a terminal UUID |
 
 Profile, architect, repo, and tab configuration endpoints are read-only. Edit `~/.hiveryn/*.yaml` directly to change variants, architects, repos, or tabs. `architects.yaml` changes apply to architect/repo reads plus new ticket/session operations without restarting the daemon.
+
+Ticket mutations are status-gated: backlog tickets can be edited, metadata-updated, moved, or deleted; progress tickets can be concluded; done tickets are read-only.
 
 Session responses expose a durable intent plus its current run, if any. `POST /api/sessions/{id}/runs` returns the created `run`, its `main_terminal_id`, and a `ws_url` so the desktop can attach immediately. If the main agent PTY exits unexpectedly, the daemon automatically resumes the running run from its stored `native_id`, emits a `main_terminal_resumed` session event with the new `main_terminal_id`, and leaves the run status as `running`; restore failures mark the run `restore_failed` and abort daemon startup. `GET /api/sessions/{id}/tabs` returns the canonical right-pane layout using `type`, `id`, `command`, and `status` for terminal tabs. `POST /api/sessions/{id}/terminals` accepts an empty JSON object and always launches the session's default shell in the current run workdir.
 

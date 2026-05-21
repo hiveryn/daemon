@@ -207,6 +207,14 @@ func TestTicketServiceMoveAndDelete(t *testing.T) {
 		t.Fatalf("expected moved ticket on disk: %v", err)
 	}
 
+	moved, err = service.MoveTicket(context.Background(), root, "2026-05-12-0900-move-me", domain.MoveTicketParams{To: domain.TicketStatusBacklog})
+	if err != nil {
+		t.Fatalf("MoveTicket back to backlog: %v", err)
+	}
+	if moved.Status != domain.TicketStatusBacklog {
+		t.Fatalf("expected backlog status, got %#v", moved)
+	}
+
 	if err := service.DeleteTicket(context.Background(), root, "2026-05-12-0900-move-me"); err != nil {
 		t.Fatalf("DeleteTicket: %v", err)
 	}
@@ -314,6 +322,52 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		var validationErr *domain.ValidationError
 		if !errors.As(err, &validationErr) || validationErr.Field != "oldString" {
 			t.Fatalf("expected oldString validation error, got %v", err)
+		}
+	})
+
+	t.Run("edit only allowed in backlog", func(t *testing.T) {
+		root := t.TempDir()
+		writeTicketFile(t, root, domain.TicketStatusProgress, "2026-05-12-0900-progress-edit", "---\ntitle: Progress edit\n---\n\nalpha\n")
+		writeTicketFile(t, root, domain.TicketStatusDone, "2026-05-12-0900-done-edit", "---\ntitle: Done edit\n---\n\nalpha\n")
+		writeConclusionFile(t, root, domain.TicketStatusDone, "2026-05-12-0900-done-edit", "---\nstarted_at: 2026-05-12T09:00:00Z\nconcluded_at: 2026-05-12T09:05:00Z\nrejected: false\n---\n\ndone\n")
+
+		for _, id := range []string{"2026-05-12-0900-progress-edit", "2026-05-12-0900-done-edit"} {
+			_, err := NewTicketService().EditTicket(context.Background(), root, id, domain.EditTicketParams{OldString: "alpha", NewString: "beta"})
+			var validationErr *domain.ValidationError
+			if !errors.As(err, &validationErr) || validationErr.Field != "ticket_id" {
+				t.Fatalf("expected ticket_id validation error for %s, got %v", id, err)
+			}
+		}
+	})
+
+	t.Run("metadata update only allowed in backlog", func(t *testing.T) {
+		root := t.TempDir()
+		writeTicketFile(t, root, domain.TicketStatusProgress, "2026-05-12-0900-progress-update", "---\ntitle: Progress update\n---\n\nbody\n")
+		writeTicketFile(t, root, domain.TicketStatusDone, "2026-05-12-0900-done-update", "---\ntitle: Done update\n---\n\nbody\n")
+		writeConclusionFile(t, root, domain.TicketStatusDone, "2026-05-12-0900-done-update", "---\nstarted_at: 2026-05-12T09:00:00Z\nconcluded_at: 2026-05-12T09:05:00Z\nrejected: false\n---\n\ndone\n")
+		newTitle := "Updated"
+
+		for _, id := range []string{"2026-05-12-0900-progress-update", "2026-05-12-0900-done-update"} {
+			_, err := NewTicketService().UpdateTicketMetadata(context.Background(), root, id, domain.UpdateTicketMetadataParams{Title: &newTitle})
+			var validationErr *domain.ValidationError
+			if !errors.As(err, &validationErr) || validationErr.Field != "ticket_id" {
+				t.Fatalf("expected ticket_id validation error for %s, got %v", id, err)
+			}
+		}
+	})
+
+	t.Run("delete only allowed in backlog", func(t *testing.T) {
+		root := t.TempDir()
+		writeTicketFile(t, root, domain.TicketStatusProgress, "2026-05-12-0900-progress-delete", "---\ntitle: Progress delete\n---\n\nbody\n")
+		writeTicketFile(t, root, domain.TicketStatusDone, "2026-05-12-0900-done-delete", "---\ntitle: Done delete\n---\n\nbody\n")
+		writeConclusionFile(t, root, domain.TicketStatusDone, "2026-05-12-0900-done-delete", "---\nstarted_at: 2026-05-12T09:00:00Z\nconcluded_at: 2026-05-12T09:05:00Z\nrejected: false\n---\n\ndone\n")
+
+		for _, id := range []string{"2026-05-12-0900-progress-delete", "2026-05-12-0900-done-delete"} {
+			err := NewTicketService().DeleteTicket(context.Background(), root, id)
+			var validationErr *domain.ValidationError
+			if !errors.As(err, &validationErr) || validationErr.Field != "ticket_id" {
+				t.Fatalf("expected ticket_id validation error for %s, got %v", id, err)
+			}
 		}
 	})
 }

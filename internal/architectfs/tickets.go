@@ -118,6 +118,9 @@ func (s *TicketService) EditTicket(_ context.Context, architectPath, id string, 
 	if err != nil {
 		return domain.Ticket{}, err
 	}
+	if entry.status != domain.TicketStatusBacklog {
+		return domain.Ticket{}, &domain.ValidationError{Field: "ticket_id", Message: "ticket must be in backlog to edit"}
+	}
 
 	matches := findBodyEditMatches(entry.document.Body, params.OldString)
 	if len(matches) == 0 {
@@ -149,6 +152,9 @@ func (s *TicketService) UpdateTicketMetadata(_ context.Context, architectPath, i
 	entry, err := getTicketEntry(architectPath, id)
 	if err != nil {
 		return domain.Ticket{}, err
+	}
+	if entry.status != domain.TicketStatusBacklog {
+		return domain.Ticket{}, &domain.ValidationError{Field: "ticket_id", Message: "ticket must be in backlog to update metadata"}
 	}
 
 	if params.Title != nil {
@@ -197,6 +203,9 @@ func (s *TicketService) DeleteTicket(_ context.Context, architectPath, id string
 	entry, err := getTicketEntry(architectPath, id)
 	if err != nil {
 		return err
+	}
+	if entry.status != domain.TicketStatusBacklog {
+		return &domain.ValidationError{Field: "ticket_id", Message: "ticket must be in backlog to delete"}
 	}
 	if err := os.RemoveAll(entry.dir); err != nil {
 		return fmt.Errorf("remove ticket directory: %w", err)

@@ -106,6 +106,11 @@ func TestTicketsAPIFlow(t *testing.T) {
 		t.Fatalf("unexpected fetched ticket: %#v", fetched)
 	}
 
+	moveBackStatus, moveBackBody := requestJSON(t, handler, http.MethodPost, "/api/architects/hiveryn/tickets/"+created.ID+"/move?to=backlog", map[string]any{})
+	if moveBackStatus != http.StatusOK {
+		t.Fatalf("expected move-back status %d, got %d: %s", http.StatusOK, moveBackStatus, string(moveBackBody))
+	}
+
 	deleteStatus, deleteBody := request(t, handler, http.MethodDelete, "/api/architects/hiveryn/tickets/"+created.ID, nil)
 	if deleteStatus != http.StatusOK {
 		t.Fatalf("expected delete status %d, got %d: %s", http.StatusOK, deleteStatus, string(deleteBody))
