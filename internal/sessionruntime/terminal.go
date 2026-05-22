@@ -19,7 +19,7 @@ import (
 
 const (
 	replayBufferSize = 64 * 1024
-	outputQueueSize  = 64
+	outputQueueSize  = 512
 	mainTerminalName = "main"
 )
 
@@ -555,6 +555,14 @@ func (p *terminalProcess) broadcast(chunk []byte) {
 		select {
 		case ch <- payload:
 		default:
+			// Subscriber channel full: evict it. A stream with holes
+			// (dropped bytes mid-escape-sequence) leaves xterm's parser in an
+			// unknown state with no recovery path. A clean WS close is better:
+			// the desktop detects it via onTerminalClosed and auto-reconnects
+			// (sending ESC c + re-attaching for a fresh replay). The increased
+			// outputQueueSize=512 makes this rare for normal TUI output rates.
+			p.logger.Warn("[pty] subscriber channel full, evicting",
+				"sub_id", id, "bytes", len(payload))
 			delete(p.outputSubs, id)
 			close(ch)
 		}
