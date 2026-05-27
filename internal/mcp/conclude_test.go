@@ -19,7 +19,7 @@ func TestHandleConcludeSessionArchitectSuccess(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %s", r.Method)
 		}
-		if r.URL.Path != "/api/sessions/sess-1/conclude" {
+		if r.URL.Path != "/api/sessions/sess-1/request-conclusion" {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
 		writeEnvelope(t, w, http.StatusOK, map[string]any{
@@ -47,7 +47,7 @@ func TestHandleConcludeSessionWorkerSuccess(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %s", r.Method)
 		}
-		if r.URL.Path != "/api/sessions/sess-2/conclude" {
+		if r.URL.Path != "/api/sessions/sess-2/request-conclusion" {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
 		var body struct {
@@ -87,7 +87,7 @@ func TestHandleConcludeSessionFreeformSuccessWithoutCommits(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %s", r.Method)
 		}
-		if r.URL.Path != "/api/sessions/sess-3/conclude" {
+		if r.URL.Path != "/api/sessions/sess-3/request-conclusion" {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
 		var body struct {

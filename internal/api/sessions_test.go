@@ -392,26 +392,31 @@ func newSessionTestHandler(t *testing.T, sessions domain.SessionService) http.Ha
 }
 
 type fakeSessionService struct {
-	createIntentResult    domain.SessionIntent
-	createIntentErr       error
-	lastCreateIntent      domain.CreateSessionIntentRequest
-	createRunResult       domain.CreateSessionRunResult
-	createRunErr          error
-	lastCreateRunIntentID string
-	lastCreateRun         domain.CreateSessionRunRequest
-	intents               []domain.SessionIntent
-	getIntentResult       domain.SessionIntent
-	attachTerminal        func(context.Context, string, string) (domain.TerminalAttachment, error)
-	createTerminalResult  domain.TerminalInfo
-	createTerminalErr     error
-	lastCreateTerminalID  string
-	sessionTabs           []domain.SessionTab
-	concludeResult        domain.ConcludeSessionResult
-	concludeErr           error
-	lastConcludeSessionID string
-	lastConcludeParams    domain.ConcludeSessionParams
-	readConclusionResult  domain.ArchitectConclusion
-	readConclusionErr     error
+	createIntentResult      domain.SessionIntent
+	createIntentErr         error
+	lastCreateIntent        domain.CreateSessionIntentRequest
+	createRunResult         domain.CreateSessionRunResult
+	createRunErr            error
+	lastCreateRunIntentID   string
+	lastCreateRun           domain.CreateSessionRunRequest
+	intents                 []domain.SessionIntent
+	getIntentResult         domain.SessionIntent
+	attachTerminal          func(context.Context, string, string) (domain.TerminalAttachment, error)
+	createTerminalResult    domain.TerminalInfo
+	createTerminalErr       error
+	lastCreateTerminalID    string
+	sessionTabs             []domain.SessionTab
+	concludeResult          domain.ConcludeSessionResult
+	concludeErr             error
+	lastConcludeSessionID   string
+	lastConcludeParams      domain.ConcludeSessionParams
+	requestConclusionResult domain.ConcludeSessionResult
+	requestConclusionErr    error
+	approveConclusionResult domain.ConcludeSessionResult
+	approveConclusionErr    error
+	rejectConclusionErr     error
+	readConclusionResult    domain.ArchitectConclusion
+	readConclusionErr       error
 }
 
 func (f *fakeSessionService) CreateIntent(_ context.Context, req domain.CreateSessionIntentRequest) (domain.SessionIntent, error) {
@@ -429,6 +434,20 @@ func (f *fakeSessionService) ConcludeSession(_ context.Context, id string, param
 	f.lastConcludeSessionID = id
 	f.lastConcludeParams = params
 	return f.concludeResult, f.concludeErr
+}
+
+func (f *fakeSessionService) RequestConclusion(_ context.Context, id string, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
+	f.lastConcludeSessionID = id
+	f.lastConcludeParams = params
+	return f.requestConclusionResult, f.requestConclusionErr
+}
+
+func (f *fakeSessionService) ApproveConclusion(_ context.Context, id string) (domain.ConcludeSessionResult, error) {
+	return f.approveConclusionResult, f.approveConclusionErr
+}
+
+func (f *fakeSessionService) RejectConclusion(_ context.Context, id string, reason string) error {
+	return f.rejectConclusionErr
 }
 
 func (f *fakeSessionService) ReadConclusion(_ context.Context, architectKey, id string) (domain.ArchitectConclusion, error) {

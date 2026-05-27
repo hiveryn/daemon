@@ -292,7 +292,7 @@ func (s *Server) concludeSession(ctx context.Context, input ConcludeSessionInput
 		return ConcludeSessionOutput{}, newInternalError(fmt.Sprintf("marshal conclude body: %v", err))
 	}
 
-	u := fmt.Sprintf("%s/api/sessions/%s/conclude", s.daemonURL, url.PathEscape(s.sessionID))
+	u := fmt.Sprintf("%s/api/sessions/%s/request-conclusion", s.daemonURL, url.PathEscape(s.sessionID))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return ConcludeSessionOutput{}, fmt.Errorf("build concludeSession request: %w", err)

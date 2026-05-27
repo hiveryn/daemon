@@ -218,6 +218,9 @@ type SessionService interface {
 	CreateIntent(context.Context, CreateSessionIntentRequest) (SessionIntent, error)
 	CreateRun(context.Context, string, CreateSessionRunRequest) (CreateSessionRunResult, error)
 	ConcludeSession(context.Context, string, ConcludeSessionParams) (ConcludeSessionResult, error)
+	RequestConclusion(context.Context, string, ConcludeSessionParams) (ConcludeSessionResult, error)
+	ApproveConclusion(context.Context, string) (ConcludeSessionResult, error)
+	RejectConclusion(context.Context, string, string) error
 	ReadConclusion(context.Context, string, string) (ArchitectConclusion, error)
 	ReadRecentConclusion(context.Context, string) (ArchitectConclusion, error)
 	ListConclusions(context.Context, string, int) ([]ConclusionSummary, error)

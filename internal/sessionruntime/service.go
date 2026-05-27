@@ -47,6 +47,8 @@ type Service struct {
 	adapters map[agentruntime.AgentKind]agentruntime.Adapter
 	terminal terminalManager
 
+	approvals *approvalStore
+
 	eventMu      sync.RWMutex
 	eventNextID  uint64
 	eventStreams map[string]map[uint64]chan domain.SessionEvent
@@ -108,6 +110,7 @@ func New(ctx context.Context, cfg config.Config, configSource config.Source, rep
 		executablePath: os.Executable,
 		adapters:       adapters,
 		terminal:       newPTYTerminalManager(logger),
+		approvals:      newApprovalStore(),
 		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
 		bridgeCancels:  map[string]func(){},
 		terminalStates: map[string]sessionTerminalState{},
@@ -638,6 +641,110 @@ func (s *Service) ConcludeSession(ctx context.Context, id string, params domain.
 	default:
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_type", Message: "cannot conclude session of type " + string(intent.SessionType)}
 	}
+}
+
+func (s *Service) RequestConclusion(ctx context.Context, id string, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
+	if strings.TrimSpace(params.Body) == "" {
+		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "body", Message: "is required"}
+	}
+
+	intent, err := s.repo.GetIntent(ctx, id)
+	if err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+	if intent.CurrentRun == nil || intent.CurrentRun.Status != domain.SessionRunStatusRunning {
+		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_id", Message: "session run is not running"}
+	}
+
+	resultCh, err := s.approvals.Store(id, params)
+	if err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+
+	if err := s.publishApprovalRequired(ctx, id, params); err != nil {
+		s.approvals.Delete(id)
+		return domain.ConcludeSessionResult{}, err
+	}
+
+	timeoutDuration := time.Duration(s.cfg.ConclusionApprovalTimeout) * time.Second
+	var timeoutCh <-chan time.Time
+	if timeoutDuration > 0 {
+		timeoutCh = time.After(timeoutDuration)
+	}
+
+	select {
+	case <-ctx.Done():
+		s.approvals.Delete(id)
+		return domain.ConcludeSessionResult{}, ctx.Err()
+	case result := <-resultCh:
+		if result.err != nil {
+			return domain.ConcludeSessionResult{}, result.err
+		}
+		return result.concludeResult, nil
+	case <-timeoutCh:
+	}
+
+	_, claimed := s.approvals.Claim(id)
+	if !claimed {
+		select {
+		case <-ctx.Done():
+			return domain.ConcludeSessionResult{}, ctx.Err()
+		case result := <-resultCh:
+			if result.err != nil {
+				return domain.ConcludeSessionResult{}, result.err
+			}
+			return result.concludeResult, nil
+		}
+	}
+
+	result, err := s.ConcludeSession(ctx, id, params)
+	return result, err
+}
+
+func (s *Service) ApproveConclusion(ctx context.Context, id string) (domain.ConcludeSessionResult, error) {
+	pending, ok := s.approvals.Claim(id)
+	if !ok {
+		return domain.ConcludeSessionResult{}, &domain.NotFoundError{Resource: "pending_approval", ID: id}
+	}
+
+	result, err := s.ConcludeSession(ctx, id, pending.params)
+	pending.resultCh <- approvalResult{concludeResult: result, err: err}
+	return result, err
+}
+
+func (s *Service) RejectConclusion(ctx context.Context, id string, reason string) error {
+	pending, ok := s.approvals.Claim(id)
+	if !ok {
+		return &domain.NotFoundError{Resource: "pending_approval", ID: id}
+	}
+
+	pending.resultCh <- approvalResult{
+		err: &domain.ValidationError{Field: "conclusion", Message: "rejected: " + reason},
+	}
+	return nil
+}
+
+func (s *Service) publishApprovalRequired(ctx context.Context, sessionID string, params domain.ConcludeSessionParams) error {
+	raw := map[string]any{
+		"body": params.Body,
+	}
+	if len(params.Commits) > 0 {
+		raw["commits"] = params.Commits
+	}
+	if params.Rejected {
+		raw["rejected"] = true
+	}
+	if params.RejectionReason != "" {
+		raw["rejection_reason"] = params.RejectionReason
+	}
+	return s.appendAndPublishSessionEvent(ctx, domain.AppendSessionEventParams{
+		SessionIntentID: sessionID,
+		Type:            "status",
+		Status:          "approval_required",
+		Message:         "conclusion approval required",
+		Raw:             raw,
+		At:              time.Now().UTC(),
+	})
 }
 
 func (s *Service) ReadConclusion(ctx context.Context, architectKey, id string) (domain.ArchitectConclusion, error) {

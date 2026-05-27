@@ -30,7 +30,8 @@ Desktop app        ←HTTP/WS→  Daemon  ←MCP stdio/HTTP→  Agent process
                                    ├─ SQLite (local state)
                                    ├─ Filesystem (architect folder = markdown)
                                    ├─ agentruntime (launch/config/status primitives)
-                                   └─ Pty (daemon-owned process I/O)
+                                   ├─ Pty (daemon-owned process I/O)
+                                   └─ Approval store (in-memory sessionID → pending conclusion)
 ```
 
 The daemon is the integration point. The desktop app, MCP tools, and agent processes all talk to the daemon. The daemon calls `agentruntime` during spawn and receives hook events back through `agentruntime`'s ingest pipeline.
@@ -53,7 +54,7 @@ internal/
   app/                dependency wiring, startup/shutdown orchestration
   archevents/         in-memory publish/subscribe hub for architect-scoped SSE events
   architectfs/        architect folder filesystem operations (ticket CRUD, frontmatter, body edits)
-  config/             bootstrap config (~/.hiveryn/{config,variants,architects,tabs,shortcuts}.yaml) — port, bind_address, log_level, shell, variants, architects, tabs, shortcuts
+  config/             bootstrap config (~/.hiveryn/{config,variants,architects,tabs,shortcuts}.yaml) — port, bind_address, log_level, shell, conclusion_approval_timeout, variants, architects, tabs, shortcuts
   domain/             shared envelope/error/session types — zero imports of store/api
   logging/            structured JSONL app/request logging to ~/.hiveryn/logs/*.jsonl
   mcp/                stdio MCP server; registers role-scoped tools and translates tool calls into daemon HTTP API requests
@@ -70,7 +71,7 @@ internal/
 - Config-backed read APIs read from `config/`, not SQLite. Architect/repo lookups must come from the current `architects.yaml` view so new architect and repo mappings apply without a daemon restart.
 - `app/` wires everything together — it's the only package that imports both `store/` and `api/`.
 - `sessionruntime/` owns live process/PTY state and bridges `agentruntime` events into persisted session events.
-- `sessionruntime/` also owns resolved per-intent terminal UUIDs and right-pane tab layout state for the current run; SQLite stores durable `session_intents`, `session_runs`, and structured events, not terminal identity/layout snapshots.
+- `sessionruntime/` also owns the in-memory conclusion approval store (one pending approval per session), resolved per-intent terminal UUIDs, and right-pane tab layout state for the current run; SQLite stores durable `session_intents`, `session_runs`, and structured events, not terminal identity/layout snapshots or approval state.
 - `logging/` owns append-only JSONL sinks and schema shaping for app logs and request logs. Middleware and services should emit structured fields, not hand-built JSON strings.
 - `mcp/` stays transport-focused: role-specific tool registration plus HTTP client shims back into daemon APIs. Keep tool handlers out of `cmd/` and avoid filesystem mutations here.
 - `config/` is self-contained. Bootstrap config lives outside SQLite because the server needs it before the DB opens.
