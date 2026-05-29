@@ -17,7 +17,7 @@ const (
 	DefaultBindAddress               = "127.0.0.1"
 	DefaultLogLevel                  = "info"
 	DefaultDesktopHealthPollInterval = "1s"
-	DefaultConclusionApprovalTimeout = 60
+	DefaultConclusionApprovalTimeout = 20
 	configFileName                   = "config.yaml"
 	variantsFileName                 = "variants.yaml"
 	architectsFileName               = "architects.yaml"
