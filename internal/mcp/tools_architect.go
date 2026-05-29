@@ -10,7 +10,7 @@ import (
 func (s *Server) registerArchitectTools() {
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "concludeSession",
-		Description: "Conclude the architect session. Provide a summary of topics covered, decisions made, tickets created, and any follow-up work.",
+		Description: "End the architect session. Records a summary of decisions, tickets created, and next steps. The terminal is killed and the session cannot be resumed. The conclusion is sent to the user for approval before taking effect. Fails if any active ticket sessions are in progress.",
 	}, s.handleArchitectConcludeSession)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
