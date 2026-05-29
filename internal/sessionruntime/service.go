@@ -409,16 +409,39 @@ func (s *Service) RestoreRunningSessions(ctx context.Context) error {
 	}
 
 	restoredCount := 0
+	failedCount := 0
 	for _, intent := range intents {
 		if intent.CurrentRun == nil || intent.CurrentRun.Status != domain.SessionRunStatusRunning {
 			continue
 		}
 		run := *intent.CurrentRun
 		if err := s.restoreSession(ctx, intent, run); err != nil {
+			s.logger.Error("failed to restore session run, marking as failed",
+				"session_intent_id", intent.ID,
+				"run_id", run.ID,
+				"session_type", intent.SessionType,
+				"architect_key", intent.ArchitectKey,
+				"error", err,
+			)
+			failedCount++
+
 			if markErr := s.repo.MarkRunFailed(ctx, run.ID, domain.SessionRunFailureRestoreFailed); markErr != nil {
-				return fmt.Errorf("restore session intent %s failed: %w (also failed to mark run failed: %v)", intent.ID, err, markErr)
+				s.logger.Error("failed to mark run as failed after restore failure",
+					"run_id", run.ID,
+					"error", markErr,
+				)
 			}
-			return fmt.Errorf("restore session intent %s run %s: %w", intent.ID, run.ID, err)
+
+			if intent.SessionType == domain.SessionTypeTicket {
+				if ticketErr := s.moveTicketToBacklog(ctx, intent); ticketErr != nil {
+					s.logger.Error("failed to move ticket back to backlog after restore failure",
+						"session_intent_id", intent.ID,
+						"ticket_id", intent.ContextID,
+						"error", ticketErr,
+					)
+				}
+			}
+			continue
 		}
 		restoredCount++
 		s.logger.Info("session run restored",
@@ -431,6 +454,9 @@ func (s *Service) RestoreRunningSessions(ctx context.Context) error {
 
 	if restoredCount > 0 {
 		s.logger.Info("restored running session runs", "count", restoredCount)
+	}
+	if failedCount > 0 {
+		s.logger.Warn("failed to restore some session runs", "count", failedCount)
 	}
 
 	return nil
@@ -451,6 +477,24 @@ func (s *Service) restoreSession(ctx context.Context, intent domain.SessionInten
 		ResumeID:     run.NativeID,
 	}, terminalSize{Cols: defaultPTYCols, Rows: defaultPTYRows}); err != nil {
 		return fmt.Errorf("launch session run: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Service) moveTicketToBacklog(ctx context.Context, intent domain.SessionIntent) error {
+	cfg, err := s.currentConfig()
+	if err != nil {
+		return fmt.Errorf("get config: %w", err)
+	}
+
+	architect, ok := cfg.Architects[intent.ArchitectKey]
+	if !ok {
+		return fmt.Errorf("architect %q not found in config", intent.ArchitectKey)
+	}
+
+	if _, err := s.tickets.MoveTicket(ctx, architect.Path, intent.ContextID, domain.MoveTicketParams{To: domain.TicketStatusBacklog}); err != nil {
+		return fmt.Errorf("move ticket %q to backlog: %w", intent.ContextID, err)
 	}
 
 	return nil

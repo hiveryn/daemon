@@ -100,11 +100,42 @@ func TestRestoreRunningSessionsMarksRestoreFailure(t *testing.T) {
 	}
 
 	err := service.RestoreRunningSessions(context.Background())
-	if err == nil {
-		t.Fatal("expected restore failure")
+	if err != nil {
+		t.Fatalf("expected restore to succeed despite individual failure, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "intent-1") {
-		t.Fatalf("expected restore error to mention intent, got %v", err)
+	if repo.failedRunID != "run-1" || repo.failedRunReason != domain.SessionRunFailureRestoreFailed {
+		t.Fatalf("expected restore failure to mark run failed, got run=%q reason=%q", repo.failedRunID, repo.failedRunReason)
+	}
+}
+
+func TestRestoreRunningSessionsMovesTicketToBacklogOnRestoreFailure(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.listedIntents = []domain.SessionIntent{{
+		ID:           "intent-1",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeTicket,
+		ContextID:    "ticket-1",
+		Prompt:       "fix the thing",
+		Workdir:      t.TempDir(),
+		CurrentRun: &domain.SessionRun{
+			ID:          "run-1",
+			Status:      domain.SessionRunStatusRunning,
+			ProfileName: "codex",
+		},
+	}}
+	tickets := &fakeTicketService{}
+	service := &Service{
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:     testRuntimeConfig(t),
+		repo:    repo,
+		tickets: tickets,
+	}
+
+	err := service.RestoreRunningSessions(context.Background())
+	if err != nil {
+		t.Fatalf("expected restore to succeed despite individual failure, got %v", err)
 	}
 	if repo.failedRunID != "run-1" || repo.failedRunReason != domain.SessionRunFailureRestoreFailed {
 		t.Fatalf("expected restore failure to mark run failed, got run=%q reason=%q", repo.failedRunID, repo.failedRunReason)
