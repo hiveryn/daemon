@@ -726,7 +726,8 @@ func (s *Service) RejectConclusion(ctx context.Context, id string, reason string
 
 func (s *Service) publishApprovalRequired(ctx context.Context, sessionID string, params domain.ConcludeSessionParams) error {
 	raw := map[string]any{
-		"body": params.Body,
+		"body":            params.Body,
+		"timeout_seconds": s.cfg.ConclusionApprovalTimeout,
 	}
 	if len(params.Commits) > 0 {
 		raw["commits"] = params.Commits

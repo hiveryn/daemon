@@ -206,8 +206,8 @@ Only `POST /api/sessions/{id}/conclude` legitimately ends a session. Concluding 
 When an agent calls `concludeSession` via MCP, the daemon routes through an approval flow so the desktop user can review before the session ends:
 
 1. MCP `concludeSession` calls `POST /api/sessions/{id}/request-conclusion` (blocks)
-2. The daemon stores a pending approval in memory, publishes an `approval_required` SSE event on the session event stream, and blocks on a channel with the configured `conclusion_approval_timeout` (default 60s)
-3. The desktop receives the SSE event and presents an approval dialog
+2. The daemon stores a pending approval in memory, publishes an `approval_required` SSE event on the session event stream (with `raw.timeout_seconds` so the desktop can show a countdown), and blocks on a channel with the configured `conclusion_approval_timeout` (default 60s)
+3. The desktop receives the SSE event and presents an approval dialog with a countdown timer
 4. The desktop calls `POST /api/sessions/{id}/approve-conclusion` or `POST /api/sessions/{id}/reject-conclusion`
 5. On approve: the daemon runs the conclusion and returns the result. On reject: the rejection reason propagates back as a `VALIDATION` error to the blocked MCP call so the agent can retry.
 6. On timeout: the daemon auto-approves and runs the conclusion as if the user clicked approve.
