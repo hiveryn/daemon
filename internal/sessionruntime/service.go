@@ -33,6 +33,10 @@ const (
 	defaultPTYRows   = 24
 )
 
+var defaultTabsBySessionType = map[string][]config.TabEntry{
+	"ticket": {{Type: "ticket"}},
+}
+
 type Service struct {
 	logger         *slog.Logger
 	cfg            config.Config
@@ -1817,6 +1821,9 @@ func (s *Service) defaultShell() string {
 func (s *Service) startAutoTerminals(ctx context.Context, intent domain.SessionIntent, workdir string, env map[string]string, size terminalSize, cleanupPaths []string) []sessionTabState {
 	tabs, ok := s.cfg.Tabs[string(intent.SessionType)]
 	if !ok || len(tabs) == 0 {
+		tabs = defaultTabsBySessionType[string(intent.SessionType)]
+	}
+	if len(tabs) == 0 {
 		return nil
 	}
 	layout := make([]sessionTabState, 0, len(tabs))

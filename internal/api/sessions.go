@@ -67,6 +67,52 @@ func (h *sessionsHandler) get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, intent)
 }
 
+func (h *sessionsHandler) getTicket(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
+		return
+	}
+
+	intent, err := h.sessions.GetIntent(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	if intent.SessionType != domain.SessionTypeTicket {
+		writeDomainError(w, r, &domain.NotFoundError{
+			Resource: "ticket",
+			ID:       r.PathValue("id"),
+		})
+		return
+	}
+
+	if h.tickets == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "ticket service not configured", nil)
+		return
+	}
+
+	cfg, err := currentConfig(h.config, h.configSource)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	architectPath, ok := getArchitectPath(cfg, intent.ArchitectKey)
+	if !ok {
+		writeArchitectNotFound(w, r, intent.ArchitectKey)
+		return
+	}
+
+	ticket, err := h.tickets.GetTicket(r.Context(), architectPath, intent.ContextID)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, ticket)
+}
+
 func (h *sessionsHandler) createRun(w http.ResponseWriter, r *http.Request) {
 	if h.sessions == nil {
 		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)

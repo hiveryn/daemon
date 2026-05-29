@@ -59,8 +59,11 @@ type shortcutsHandler struct {
 }
 
 type sessionsHandler struct {
+	config           config.Config
+	configSource     config.Source
 	logger           *slog.Logger
 	sessions         domain.SessionService
+	tickets          domain.TicketService
 	publishArchitect func(key string, event domain.ArchitectEvent)
 }
 
@@ -106,7 +109,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	sch := &shortcutsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
 	dch := &desktopConfigHandler{config: deps.Config}
 	srh := &systemRuntimeHandler{runtime: deps.Runtime, bindAddress: deps.Config.BindAddress, port: deps.Config.Port, baseURL: deps.BaseURL}
-	sh := &sessionsHandler{logger: deps.Logger, sessions: deps.Sessions}
+	sh := &sessionsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
 	th := &ticketsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
 	eh := &architectEventsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, hub: deps.ArchitectEvents}
 
@@ -149,6 +152,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/reject-conclusion", sh.rejectConclusion)
 	mux.HandleFunc("GET /api/sessions/{id}/events", sh.events)
 	mux.HandleFunc("GET /api/sessions/{id}/tabs", sh.listTabs)
+	mux.HandleFunc("GET /api/sessions/{id}/ticket", sh.getTicket)
 	mux.HandleFunc("POST /api/sessions/{id}/terminals", sh.createTerminal)
 	mux.HandleFunc("GET /api/sessions/{id}/terminals", sh.listTerminals)
 	mux.HandleFunc("DELETE /api/sessions/{id}/terminals/{uuid}", sh.killTerminal)
