@@ -117,9 +117,6 @@ func NewHandler(deps Dependencies) http.Handler {
 	}
 
 	mux.HandleFunc("GET /api/health", handleHealth)
-	mux.HandleFunc("GET /api/system/home", func(w http.ResponseWriter, r *http.Request) {
-		handleSystemHome(w, r, deps.Logger)
-	})
 	mux.HandleFunc("GET /api/system/runtime", srh.get)
 	mux.HandleFunc("GET /api/agent-profiles", ph.list)
 	mux.HandleFunc("GET /api/agent-profiles/{name}", ph.get)

@@ -155,7 +155,6 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/system/home` | Get daemon host home directory |
 | `GET` | `/api/system/runtime` | Get resolved daemon runtime identity and paths |
 | `GET` | `/api/health` | Health check |
 | `GET` | `/api/agent-profiles` | List all agent profiles |
