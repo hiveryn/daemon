@@ -147,7 +147,7 @@ Maps are two-level: top-level keys are sections (`global`, `kanban`, `event-log`
 
 ## Data
 
-Local runtime state is stored at `HIVERYN_HOME/daemon.db` by default. This file is safe to delete — it will be recreated on next start. Variants, architects, repo mappings, and tab layouts live in `HIVERYN_HOME/*.yaml` by default. Your architect workspace (tickets, conclusions) is stored separately as markdown files and is never affected. `--db` overrides the SQLite path explicitly.
+Local runtime state is stored at `HIVERYN_HOME/daemon.db` by default and managed by the daemon through migrations. Schema changes should be written as new migration files in `internal/store/migrations/`. Variants, architects, repo mappings, and tab layouts live in `HIVERYN_HOME/*.yaml` by default. Your architect workspace (tickets, conclusions) is stored separately as markdown files and is never affected. `--db` overrides the SQLite path explicitly.
 
 The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/daemon.jsonl` and `HIVERYN_HOME/logs/requests.jsonl` by default. `daemon.jsonl` contains app/runtime logs with source location metadata; `requests.jsonl` contains one JSON object per HTTP request/response, including the response envelope for JSON API calls.
 
