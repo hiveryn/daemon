@@ -327,3 +327,197 @@ func TestSessionStorePrefersRunningCurrentRun(t *testing.T) {
 		t.Fatalf("expected intent current run to prefer running retry, got %#v", intent.CurrentRun)
 	}
 }
+
+func TestSessionStoreAgentStatusOnCreate(t *testing.T) {
+	t.Parallel()
+
+	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	store := NewSessionStore(db)
+	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
+		ID:           "intent-1",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeArchitect,
+		ContextID:    "2026-05-19-1200",
+		Prompt:       "kickoff",
+		Workdir:      "/tmp/architect",
+		CreatedBy:    domain.SessionCreatedByDesktop,
+	}); err != nil {
+		t.Fatalf("create intent: %v", err)
+	}
+
+	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	run, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
+		ID:              "run-1",
+		SessionIntentID: "intent-1",
+		ProfileName:     "codex-work",
+		ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex"},
+		Workdir:         "/tmp/repo",
+		StartedAt:       startedAt,
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if run.AgentStatus != "" {
+		t.Fatalf("expected empty agent status on create, got %q", run.AgentStatus)
+	}
+}
+
+func TestSessionStoreUpdateRunAgentStatus(t *testing.T) {
+	t.Parallel()
+
+	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	store := NewSessionStore(db)
+	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
+		ID:           "intent-1",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeArchitect,
+		ContextID:    "2026-05-19-1200",
+		Prompt:       "kickoff",
+		Workdir:      "/tmp/architect",
+		CreatedBy:    domain.SessionCreatedByDesktop,
+	}); err != nil {
+		t.Fatalf("create intent: %v", err)
+	}
+
+	if _, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
+		ID:              "run-1",
+		SessionIntentID: "intent-1",
+		ProfileName:     "codex-work",
+		ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex"},
+		Workdir:         "/tmp/repo",
+		StartedAt:       time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	if err := store.UpdateRunAgentStatus(context.Background(), "run-1", domain.AgentStatusActive); err != nil {
+		t.Fatalf("update agent status: %v", err)
+	}
+
+	run, err := store.GetRun(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.AgentStatus != domain.AgentStatusActive {
+		t.Fatalf("expected agent status %q, got %q", domain.AgentStatusActive, run.AgentStatus)
+	}
+
+	if err := store.UpdateRunAgentStatus(context.Background(), "run-1", domain.AgentStatusWaiting); err != nil {
+		t.Fatalf("update agent status again: %v", err)
+	}
+	run, err = store.GetRun(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("get run after second update: %v", err)
+	}
+	if run.AgentStatus != domain.AgentStatusWaiting {
+		t.Fatalf("expected agent status %q, got %q", domain.AgentStatusWaiting, run.AgentStatus)
+	}
+}
+
+func TestSessionStoreMarkRunCompletedSetsAgentStatusStopped(t *testing.T) {
+	t.Parallel()
+
+	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	store := NewSessionStore(db)
+	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
+		ID:           "intent-1",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeArchitect,
+		ContextID:    "2026-05-19-1200",
+		Prompt:       "kickoff",
+		Workdir:      "/tmp/architect",
+		CreatedBy:    domain.SessionCreatedByDesktop,
+	}); err != nil {
+		t.Fatalf("create intent: %v", err)
+	}
+
+	if _, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
+		ID:              "run-1",
+		SessionIntentID: "intent-1",
+		ProfileName:     "codex-work",
+		ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex"},
+		Workdir:         "/tmp/repo",
+		StartedAt:       time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	if err := store.MarkRunCompleted(context.Background(), "run-1"); err != nil {
+		t.Fatalf("mark run completed: %v", err)
+	}
+
+	run, err := store.GetRun(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.AgentStatus != domain.AgentStatusStopped {
+		t.Fatalf("expected agent status %q on completed run, got %q", domain.AgentStatusStopped, run.AgentStatus)
+	}
+	if run.Status != domain.SessionRunStatusCompleted {
+		t.Fatalf("expected run status %q, got %q", domain.SessionRunStatusCompleted, run.Status)
+	}
+}
+
+func TestSessionStoreMarkRunFailedSetsAgentStatusStopped(t *testing.T) {
+	t.Parallel()
+
+	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	store := NewSessionStore(db)
+	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
+		ID:           "intent-1",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeArchitect,
+		ContextID:    "2026-05-19-1200",
+		Prompt:       "kickoff",
+		Workdir:      "/tmp/architect",
+		CreatedBy:    domain.SessionCreatedByDesktop,
+	}); err != nil {
+		t.Fatalf("create intent: %v", err)
+	}
+
+	if _, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
+		ID:              "run-1",
+		SessionIntentID: "intent-1",
+		ProfileName:     "codex-work",
+		ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex"},
+		Workdir:         "/tmp/repo",
+		StartedAt:       time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	if err := store.MarkRunFailed(context.Background(), "run-1", domain.SessionRunFailureProcessExited); err != nil {
+		t.Fatalf("mark run failed: %v", err)
+	}
+
+	run, err := store.GetRun(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.AgentStatus != domain.AgentStatusStopped {
+		t.Fatalf("expected agent status %q on failed run, got %q", domain.AgentStatusStopped, run.AgentStatus)
+	}
+	if run.Status != domain.SessionRunStatusFailed {
+		t.Fatalf("expected run status %q, got %q", domain.SessionRunStatusFailed, run.Status)
+	}
+}

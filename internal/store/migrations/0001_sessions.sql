@@ -18,6 +18,7 @@ CREATE TABLE session_runs (
     profile_name TEXT NOT NULL,
     profile_snapshot TEXT,
     workdir TEXT NOT NULL,
+    agent_status TEXT,
     native_id TEXT,
     failure_reason TEXT,
     started_at TEXT,

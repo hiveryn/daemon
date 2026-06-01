@@ -704,6 +704,10 @@ func (s *Service) RequestConclusion(ctx context.Context, id string, params domai
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_id", Message: "session run is not running"}
 	}
 
+	if err := s.repo.UpdateRunAgentStatus(ctx, intent.CurrentRun.ID, domain.AgentStatusWaiting); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+
 	resultCh, err := s.approvals.Store(id, params)
 	if err != nil {
 		return domain.ConcludeSessionResult{}, err
@@ -1523,6 +1527,12 @@ func (s *Service) handleReceiverEvent(event agentruntime.Event) {
 		}
 	}
 
+	if agentStatus := mapAgentStatusToRunStatus(event.Status); agentStatus != "" {
+		if err := s.repo.UpdateRunAgentStatus(context.Background(), run.ID, agentStatus); err != nil {
+			panic(fmt.Errorf("update session run agent status for intent %s run %s: %w", event.ID, run.ID, err))
+		}
+	}
+
 	s.publishEvent(event.ID, persisted)
 }
 
@@ -1638,6 +1648,21 @@ func (s *eventSubscription) Close() {
 			s.close()
 		}
 	})
+}
+
+func mapAgentStatusToRunStatus(native agentruntime.Status) string {
+	switch native {
+	case agentruntime.StatusStarting, agentruntime.StatusWorking:
+		return domain.AgentStatusActive
+	case agentruntime.StatusIdle:
+		return domain.AgentStatusIdle
+	case agentruntime.StatusAwaitingInput:
+		return domain.AgentStatusWaiting
+	case agentruntime.StatusEnded, agentruntime.StatusError:
+		return domain.AgentStatusStopped
+	default:
+		return ""
+	}
 }
 
 func parseAgentKind(value string) (agentruntime.AgentKind, error) {

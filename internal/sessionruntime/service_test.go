@@ -1228,6 +1228,13 @@ func (f *fakeSessionRepository) UpdateRunNativeID(_ context.Context, id, nativeI
 	return nil
 }
 
+func (f *fakeSessionRepository) UpdateRunAgentStatus(_ context.Context, id, agentStatus string) error {
+	if f.createdIntent.CurrentRun != nil && f.createdIntent.CurrentRun.ID == id {
+		f.createdIntent.CurrentRun.AgentStatus = agentStatus
+	}
+	return nil
+}
+
 func (f *fakeSessionRepository) ListSessionEvents(context.Context, string) ([]domain.SessionEvent, error) {
 	return nil, nil
 }

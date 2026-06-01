@@ -93,7 +93,7 @@ func intentWithCurrentRunQuery(suffix string) string {
 	return `
 		SELECT i.id, i.architect_key, i.session_type, i.context_id, i.prompt, i.workdir, COALESCE(i.instructions, ''),
 		       COALESCE(i.created_by, ''), i.created_at, i.updated_at,
-		       r.id, r.session_intent_id, r.status, r.profile_name, COALESCE(r.profile_snapshot, ''), COALESCE(r.workdir, ''),
+		       r.id, r.session_intent_id, r.status, COALESCE(r.agent_status, ''), r.profile_name, COALESCE(r.profile_snapshot, ''), COALESCE(r.workdir, ''),
 		       COALESCE(r.native_id, ''), COALESCE(r.failure_reason, ''), COALESCE(r.started_at, ''), COALESCE(r.ended_at, ''),
 		       COALESCE(r.created_at, ''), COALESCE(r.updated_at, '')
 		FROM session_intents i

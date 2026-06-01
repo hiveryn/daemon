@@ -25,6 +25,7 @@ func scanSessionIntentWithCurrentRun(scanner interface{ Scan(...any) error }) (d
 	var runID sql.NullString
 	var runIntentID sql.NullString
 	var runStatus sql.NullString
+	var runAgentStatus sql.NullString
 	var runProfileName sql.NullString
 	var runProfileSnapshot sql.NullString
 	var runWorkdir sql.NullString
@@ -49,6 +50,7 @@ func scanSessionIntentWithCurrentRun(scanner interface{ Scan(...any) error }) (d
 		&runID,
 		&runIntentID,
 		&runStatus,
+		&runAgentStatus,
 		&runProfileName,
 		&runProfileSnapshot,
 		&runWorkdir,
@@ -79,6 +81,7 @@ func scanSessionIntentWithCurrentRun(scanner interface{ Scan(...any) error }) (d
 			runID.String,
 			runIntentID.String,
 			runStatus.String,
+			runAgentStatus.String,
 			runProfileName.String,
 			runProfileSnapshot.String,
 			runWorkdir.String,
@@ -98,11 +101,12 @@ func scanSessionIntentWithCurrentRun(scanner interface{ Scan(...any) error }) (d
 	return intent, nil
 }
 
-func scanSessionRunValues(id, intentID, status, profileName, profileSnapshotJSON, workdir, nativeID, failureReason, startedAt, endedAt, createdAt, updatedAt string) (domain.SessionRun, error) {
+func scanSessionRunValues(id, intentID, status, agentStatus, profileName, profileSnapshotJSON, workdir, nativeID, failureReason, startedAt, endedAt, createdAt, updatedAt string) (domain.SessionRun, error) {
 	run := domain.SessionRun{
 		ID:              id,
 		SessionIntentID: intentID,
 		Status:          domain.SessionRunStatus(status),
+		AgentStatus:     agentStatus,
 		ProfileName:     profileName,
 		Workdir:         workdir,
 		NativeID:        nativeID,

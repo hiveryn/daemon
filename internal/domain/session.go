@@ -31,6 +31,13 @@ const (
 )
 
 const (
+	AgentStatusActive  = "active"
+	AgentStatusIdle    = "idle"
+	AgentStatusWaiting = "waiting"
+	AgentStatusStopped = "stopped"
+)
+
+const (
 	SessionRunFailureLaunchFailed  SessionRunFailureReason = "launch_failed"
 	SessionRunFailureProcessExited SessionRunFailureReason = "process_exited"
 	SessionRunFailureRestoreFailed SessionRunFailureReason = "restore_failed"
@@ -61,6 +68,7 @@ type SessionRun struct {
 	ID              string                  `json:"id"`
 	SessionIntentID string                  `json:"session_intent_id"`
 	Status          SessionRunStatus        `json:"status"`
+	AgentStatus     string                  `json:"agent_status,omitempty"`
 	ProfileName     string                  `json:"profile_name"`
 	ProfileSnapshot *AgentProfileSnapshot   `json:"profile_snapshot,omitempty"`
 	Workdir         string                  `json:"workdir"`
@@ -157,6 +165,7 @@ type SessionRepository interface {
 	MarkRunCompleted(context.Context, string) error
 	MarkRunFailed(context.Context, string, SessionRunFailureReason) error
 	UpdateRunNativeID(context.Context, string, string) error
+	UpdateRunAgentStatus(context.Context, string, string) error
 	ListSessionEvents(context.Context, string) ([]SessionEvent, error)
 	AppendSessionEvent(context.Context, AppendSessionEventParams) (SessionEvent, error)
 }

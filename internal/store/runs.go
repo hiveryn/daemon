@@ -40,8 +40,8 @@ func (s *SessionStore) CreateRun(ctx context.Context, params domain.CreateSessio
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO session_runs (id, session_intent_id, status, profile_name, profile_snapshot, workdir, native_id, started_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO session_runs (id, session_intent_id, status, agent_status, profile_name, profile_snapshot, workdir, native_id, started_at, created_at, updated_at)
+		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
 	`, params.ID, params.SessionIntentID, string(domain.SessionRunStatusRunning), params.ProfileName, profileSnapshotJSON, params.Workdir, nullIfEmpty(params.NativeID), formatPreciseTime(params.StartedAt), formatPreciseTime(createdAt), formatPreciseTime(createdAt))
 	if err != nil {
 		return domain.SessionRun{}, fmt.Errorf("insert session run: %w", err)
@@ -56,7 +56,7 @@ func (s *SessionStore) CreateRun(ctx context.Context, params domain.CreateSessio
 
 func (s *SessionStore) GetRun(ctx context.Context, id string) (domain.SessionRun, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, session_intent_id, status, profile_name, COALESCE(profile_snapshot, ''), workdir, COALESCE(native_id, ''),
+		SELECT id, session_intent_id, status, COALESCE(agent_status, ''), profile_name, COALESCE(profile_snapshot, ''), workdir, COALESCE(native_id, ''),
 		       COALESCE(failure_reason, ''), COALESCE(started_at, ''), COALESCE(ended_at, ''), created_at, updated_at
 		FROM session_runs
 		WHERE id = ?
@@ -73,7 +73,7 @@ func (s *SessionStore) GetRun(ctx context.Context, id string) (domain.SessionRun
 
 func (s *SessionStore) GetCurrentRun(ctx context.Context, intentID string) (*domain.SessionRun, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, session_intent_id, status, profile_name, COALESCE(profile_snapshot, ''), workdir, COALESCE(native_id, ''),
+		SELECT id, session_intent_id, status, COALESCE(agent_status, ''), profile_name, COALESCE(profile_snapshot, ''), workdir, COALESCE(native_id, ''),
 		       COALESCE(failure_reason, ''), COALESCE(started_at, ''), COALESCE(ended_at, ''), created_at, updated_at
 		FROM session_runs
 		WHERE session_intent_id = ?
@@ -94,9 +94,9 @@ func (s *SessionStore) MarkRunCompleted(ctx context.Context, id string) error {
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE session_runs
-		SET status = ?, failure_reason = NULL, ended_at = ?, updated_at = ?
+		SET status = ?, agent_status = ?, failure_reason = NULL, ended_at = ?, updated_at = ?
 		WHERE id = ?
-	`, domain.SessionRunStatusCompleted, formatPreciseTime(now), formatPreciseTime(now), id)
+	`, domain.SessionRunStatusCompleted, domain.AgentStatusStopped, formatPreciseTime(now), formatPreciseTime(now), id)
 	if err != nil {
 		return fmt.Errorf("mark session run completed %s: %w", id, err)
 	}
@@ -107,9 +107,9 @@ func (s *SessionStore) MarkRunFailed(ctx context.Context, id string, reason doma
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE session_runs
-		SET status = ?, failure_reason = ?, ended_at = ?, updated_at = ?
+		SET status = ?, agent_status = ?, failure_reason = ?, ended_at = ?, updated_at = ?
 		WHERE id = ?
-	`, domain.SessionRunStatusFailed, nullIfEmpty(string(reason)), formatPreciseTime(now), formatPreciseTime(now), id)
+	`, domain.SessionRunStatusFailed, domain.AgentStatusStopped, nullIfEmpty(string(reason)), formatPreciseTime(now), formatPreciseTime(now), id)
 	if err != nil {
 		return fmt.Errorf("mark session run failed %s: %w", id, err)
 	}
@@ -125,6 +125,19 @@ func (s *SessionStore) UpdateRunNativeID(ctx context.Context, id, nativeID strin
 	`, nullIfEmpty(nativeID), formatPreciseTime(now), id)
 	if err != nil {
 		return fmt.Errorf("update session run native id %s: %w", id, err)
+	}
+	return ensureRowsAffected(result, "session_run", id)
+}
+
+func (s *SessionStore) UpdateRunAgentStatus(ctx context.Context, id, agentStatus string) error {
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE session_runs
+		SET agent_status = ?, updated_at = ?
+		WHERE id = ?
+	`, agentStatus, formatPreciseTime(now), id)
+	if err != nil {
+		return fmt.Errorf("update session run agent status %s: %w", id, err)
 	}
 	return ensureRowsAffected(result, "session_run", id)
 }
@@ -323,6 +336,7 @@ func scanSessionEvent(scanner interface{ Scan(...any) error }) (domain.SessionEv
 func scanSessionRun(scanner interface{ Scan(...any) error }) (domain.SessionRun, error) {
 	var run domain.SessionRun
 	var status string
+	var agentStatus string
 	var profileSnapshotJSON string
 	var failureReason string
 	var startedAt string
@@ -333,6 +347,7 @@ func scanSessionRun(scanner interface{ Scan(...any) error }) (domain.SessionRun,
 		&run.ID,
 		&run.SessionIntentID,
 		&status,
+		&agentStatus,
 		&run.ProfileName,
 		&profileSnapshotJSON,
 		&run.Workdir,
@@ -347,6 +362,7 @@ func scanSessionRun(scanner interface{ Scan(...any) error }) (domain.SessionRun,
 	}
 
 	run.Status = domain.SessionRunStatus(status)
+	run.AgentStatus = agentStatus
 	run.FailureReason = domain.SessionRunFailureReason(failureReason)
 	if profileSnapshotJSON != "" {
 		var snapshot domain.AgentProfileSnapshot
