@@ -81,6 +81,7 @@ func defaultShortcuts() map[string]map[string]string {
 			"next-session":  "Cmd+Shift+]",
 			"close-tab":     "Cmd+w",
 			"new-terminal":  "Cmd+t",
+			"maximize-pane": "Cmd+m",
 			"quit":          "q",
 		},
 		"kanban": {
