@@ -666,10 +666,6 @@ func (s *Service) resumeSessionMainTerminal(ctx context.Context, intent domain.S
 }
 
 func (s *Service) ConcludeSession(ctx context.Context, id string, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
-	if strings.TrimSpace(params.Body) == "" {
-		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "body", Message: "is required"}
-	}
-
 	intent, err := s.repo.GetIntent(ctx, id)
 	if err != nil {
 		return domain.ConcludeSessionResult{}, err
@@ -942,17 +938,19 @@ func (s *Service) concludeArchitectSession(ctx context.Context, intent domain.Se
 		return domain.ConcludeSessionResult{}, err
 	}
 
-	folderName := intent.ContextID
-	dir := filepath.Join(architect.Path, "architect-sessions", folderName)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return domain.ConcludeSessionResult{}, fmt.Errorf("create architect session directory: %w", err)
-	}
+	if strings.TrimSpace(params.Body) != "" {
+		folderName := intent.ContextID
+		dir := filepath.Join(architect.Path, "architect-sessions", folderName)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return domain.ConcludeSessionResult{}, fmt.Errorf("create architect session directory: %w", err)
+		}
 
-	now := time.Now().UTC()
-	conclusionPath := filepath.Join(dir, conclusionFileName)
-	doc := newArchitectConclusionDocument(intent.CreatedAt, now, run.ProfileName, params.Body)
-	if err := writeConclusionFile(conclusionPath, doc); err != nil {
-		return domain.ConcludeSessionResult{}, err
+		now := time.Now().UTC()
+		conclusionPath := filepath.Join(dir, conclusionFileName)
+		doc := newArchitectConclusionDocument(intent.CreatedAt, now, run.ProfileName, params.Body)
+		if err := writeConclusionFile(conclusionPath, doc); err != nil {
+			return domain.ConcludeSessionResult{}, err
+		}
 	}
 
 	if err := s.repo.MarkRunCompleted(ctx, run.ID); err != nil {
@@ -1110,19 +1108,21 @@ func (s *Service) concludeFreeformSession(ctx context.Context, intent domain.Ses
 		return domain.ConcludeSessionResult{}, err
 	}
 
-	now := time.Now().UTC()
-	startedAt := intent.CreatedAt
-	if run.StartedAt != nil {
-		startedAt = run.StartedAt.UTC()
-	}
-	dir := filepath.Join(architect.Path, "freeform", intent.ContextID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return domain.ConcludeSessionResult{}, fmt.Errorf("create freeform session directory: %w", err)
-	}
-	conclusionPath := filepath.Join(dir, conclusionFileName)
-	doc := newSessionConclusionDocument(startedAt, now, run.ProfileName, params.Body, resolvedCommits)
-	if err := writeConclusionFile(conclusionPath, doc); err != nil {
-		return domain.ConcludeSessionResult{}, err
+	if strings.TrimSpace(params.Body) != "" {
+		now := time.Now().UTC()
+		startedAt := intent.CreatedAt
+		if run.StartedAt != nil {
+			startedAt = run.StartedAt.UTC()
+		}
+		dir := filepath.Join(architect.Path, "freeform", intent.ContextID)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return domain.ConcludeSessionResult{}, fmt.Errorf("create freeform session directory: %w", err)
+		}
+		conclusionPath := filepath.Join(dir, conclusionFileName)
+		doc := newSessionConclusionDocument(startedAt, now, run.ProfileName, params.Body, resolvedCommits)
+		if err := writeConclusionFile(conclusionPath, doc); err != nil {
+			return domain.ConcludeSessionResult{}, err
+		}
 	}
 
 	if err := s.repo.MarkRunCompleted(ctx, run.ID); err != nil {

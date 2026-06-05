@@ -367,15 +367,23 @@ func TestConcludeSessionWorkerSuccess(t *testing.T) {
 	}
 }
 
-func TestConcludeSessionMissingBody(t *testing.T) {
+func TestConcludeSessionEmptyBodySucceeds(t *testing.T) {
 	t.Parallel()
 
-	service := &fakeSessionService{concludeErr: &domain.ValidationError{Field: "body", Message: "is required"}}
+	service := &fakeSessionService{
+		concludeResult: domain.ConcludeSessionResult{SessionID: "intent-1", ArchitectKey: "hiveryn"},
+	}
 	handler := newSessionTestHandler(t, service)
 
 	status, body := requestJSON(t, handler, http.MethodPost, "/api/sessions/intent-1/conclude", map[string]any{})
-	if status != http.StatusBadRequest {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, status, string(body))
+	if status != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, status, string(body))
+	}
+
+	var payload map[string]any
+	decodeEnvelopeData(t, body, &payload)
+	if payload["session_id"] != "intent-1" {
+		t.Fatalf("expected session_id=intent-1, got %#v", payload)
 	}
 }
 

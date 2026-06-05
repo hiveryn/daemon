@@ -406,6 +406,113 @@ func TestConcludeFreeformSessionValidatesProvidedCommits(t *testing.T) {
 	}
 }
 
+func TestConcludeArchitectSessionEmptyBodySkipsConclusionFile(t *testing.T) {
+	t.Parallel()
+
+	architectPath := t.TempDir()
+	operations := []string{}
+	repo := newFakeSessionRepository()
+	repo.operations = &operations
+	repo.createdIntent = domain.SessionIntent{
+		ID:           "intent-architect",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeArchitect,
+		ContextID:    "2026-05-13-1500",
+		Prompt:       "kickoff",
+		Workdir:      t.TempDir(),
+		CreatedAt:    time.Date(2026, 5, 13, 15, 0, 0, 0, time.UTC),
+		CurrentRun: &domain.SessionRun{
+			ID:          "run-1",
+			Status:      domain.SessionRunStatusRunning,
+			ProfileName: "codex",
+		},
+	}
+	service := &Service{
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:          testRuntimeConfig(t),
+		repo:         repo,
+		terminal:     &fakeTerminalManager{operations: &operations},
+		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
+	}
+	service.cfg.Architects["hiveryn"] = config.ArchitectConfig{Path: architectPath, Group: "personal", Repos: map[string]string{}}
+
+	_, err := service.ConcludeSession(context.Background(), "intent-architect", domain.ConcludeSessionParams{Body: ""})
+	if err != nil {
+		t.Fatalf("ConcludeSession failed: %v", err)
+	}
+
+	if got, want := strings.Join(operations, ","), "complete,event,kill,delete"; got != want {
+		t.Fatalf("expected operations %q, got %q", want, got)
+	}
+
+	event := repo.lastAppendedEvent(t)
+	if event.Raw["body"] != "" {
+		t.Fatalf("expected empty body in ended event, got %#v", event.Raw["body"])
+	}
+
+	dir := filepath.Join(architectPath, "architect-sessions", "2026-05-13-1500")
+	conclusionPath := filepath.Join(dir, "conclusion.md")
+	if _, err := os.Stat(conclusionPath); !os.IsNotExist(err) {
+		t.Fatal("expected no conclusion.md written for discarded architect session")
+	}
+}
+
+func TestConcludeFreeformSessionEmptyBodySkipsConclusionFile(t *testing.T) {
+	t.Parallel()
+
+	architectPath := t.TempDir()
+	workdir := t.TempDir()
+	created := time.Date(2026, 5, 13, 16, 0, 0, 0, time.UTC)
+	operations := []string{}
+	repo := newFakeSessionRepository()
+	repo.operations = &operations
+	repo.createdIntent = domain.SessionIntent{
+		ID:           "intent-freeform",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeFreeform,
+		ContextID:    "2026-05-13-1600-investigate-login-failure",
+		Prompt:       "Investigate login failure and report root cause",
+		Workdir:      workdir,
+		CreatedAt:    created,
+		CurrentRun: &domain.SessionRun{
+			ID:          "run-1",
+			Status:      domain.SessionRunStatusRunning,
+			ProfileName: "codex",
+		},
+	}
+	service := &Service{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg: config.Config{
+			Architects: map[string]config.ArchitectConfig{
+				"hiveryn": {Path: architectPath, Group: "personal", Repos: map[string]string{}},
+			},
+		},
+		repo:         repo,
+		terminal:     &fakeTerminalManager{operations: &operations},
+		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
+	}
+
+	_, err := service.ConcludeSession(context.Background(), "intent-freeform", domain.ConcludeSessionParams{Body: ""})
+	if err != nil {
+		t.Fatalf("ConcludeSession failed: %v", err)
+	}
+
+	if got, want := strings.Join(operations, ","), "complete,event,kill,delete"; got != want {
+		t.Fatalf("expected operations %q, got %q", want, got)
+	}
+
+	event := repo.lastAppendedEvent(t)
+	if event.Raw["body"] != "" {
+		t.Fatalf("expected empty body in ended event, got %#v", event.Raw["body"])
+	}
+
+	dir := filepath.Join(architectPath, "freeform", repo.createdIntent.ContextID)
+	conclusionPath := filepath.Join(dir, "conclusion.md")
+	if _, err := os.Stat(conclusionPath); !os.IsNotExist(err) {
+		t.Fatal("expected no conclusion.md written for discarded freeform session")
+	}
+}
+
 func TestCreateIntentFreeformWritesPromptFile(t *testing.T) {
 	t.Parallel()
 
