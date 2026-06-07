@@ -10,11 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/logging"
 )
 
 func TestAccessLogWritesStructuredRequestEntry(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HIVERYN_HOME", filepath.Join(t.TempDir(), ".hiveryn"))
 	manager := newRequestLogManager(t)
 
 	handler := requestID(accessLog(discardLogger(), manager.RequestLogger(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +64,7 @@ func TestAccessLogWritesStructuredRequestEntry(t *testing.T) {
 }
 
 func TestAccessLogCapturesRecoveredPanics(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HIVERYN_HOME", filepath.Join(t.TempDir(), ".hiveryn"))
 	manager := newRequestLogManager(t)
 
 	handler := requestID(accessLog(discardLogger(), manager.RequestLogger(), recovery(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -90,7 +91,7 @@ func TestAccessLogCapturesRecoveredPanics(t *testing.T) {
 }
 
 func TestAccessLogOmitsEnvelopeForSSE(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HIVERYN_HOME", filepath.Join(t.TempDir(), ".hiveryn"))
 	manager := newRequestLogManager(t)
 
 	handler := requestID(accessLog(discardLogger(), manager.RequestLogger(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -132,7 +133,12 @@ func discardLogger() *slog.Logger {
 func readRequestLogEntry(t *testing.T) map[string]any {
 	t.Helper()
 
-	data, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".hiveryn", "logs", "requests.jsonl"))
+	runtime, err := config.ResolveRuntime("", "")
+	if err != nil {
+		t.Fatalf("ResolveRuntime: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(runtime.LogDir, "requests.jsonl"))
 	if err != nil {
 		t.Fatalf("ReadFile(requests.jsonl): %v", err)
 	}

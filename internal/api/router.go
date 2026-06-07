@@ -44,6 +44,7 @@ type architectsHandler struct {
 	configSource config.Source
 	logger       *slog.Logger
 	sessions     domain.SessionService
+	tickets      domain.TicketService
 }
 
 type reposHandler struct {
@@ -104,7 +105,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux := http.NewServeMux()
 	ph := &profilesHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
 	gh := &architectGroupsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
-	ah := &architectsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions}
+	ah := &architectsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
 	rh := &reposHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
 	sch := &shortcutsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
 	dch := &desktopConfigHandler{config: deps.Config}
@@ -126,6 +127,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/architect-groups", gh.list)
 	mux.HandleFunc("GET /api/architect-groups/{name}", gh.get)
 	mux.HandleFunc("GET /api/architects", ah.list)
+	mux.HandleFunc("GET /api/architects/status", ah.listStatus)
 	mux.HandleFunc("GET /api/architects/{key}", ah.get)
 	mux.HandleFunc("GET /api/architects/{key}/conclusions", ah.listConclusions)
 	mux.HandleFunc("GET /api/architects/{key}/conclusions/recent", ah.readRecentConclusion)
@@ -317,7 +319,7 @@ func cloneStringMap(input map[string]string) map[string]string {
 func writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
 	var validationErr *domain.ValidationError
 	if errors.As(err, &validationErr) {
-		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), validationErr.Error(), map[string]string{
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), err.Error(), map[string]string{
 			"field": validationErr.Field,
 		})
 		return
@@ -325,7 +327,7 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
 
 	var conflictErr *domain.ConflictError
 	if errors.As(err, &conflictErr) {
-		writeError(w, r, http.StatusConflict, string(domain.ErrCodeConflict), conflictErr.Error(), map[string]string{
+		writeError(w, r, http.StatusConflict, string(domain.ErrCodeConflict), err.Error(), map[string]string{
 			"resource": conflictErr.Resource,
 			"field":    conflictErr.Field,
 		})
@@ -334,7 +336,7 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
 
 	var notFoundErr *domain.NotFoundError
 	if errors.As(err, &notFoundErr) {
-		writeError(w, r, http.StatusNotFound, string(domain.ErrCodeNotFound), notFoundErr.Error(), map[string]string{
+		writeError(w, r, http.StatusNotFound, string(domain.ErrCodeNotFound), err.Error(), map[string]string{
 			"resource": notFoundErr.Resource,
 			"id":       notFoundErr.ID,
 		})

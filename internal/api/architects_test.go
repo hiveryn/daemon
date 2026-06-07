@@ -1,11 +1,18 @@
 package api
 
 import (
+	"context"
+	"io"
+	"log/slog"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/hiveryn/daemon/internal/architectfs"
 	"github.com/hiveryn/daemon/internal/config"
+	"github.com/hiveryn/daemon/internal/domain"
 )
 
 func TestArchitectsReadOnlyAPI(t *testing.T) {
@@ -220,5 +227,280 @@ func TestArchitectsAPIReloadsArchitectsFile(t *testing.T) {
 	}
 	if reloaded.Architects[1].Key != "litho" {
 		t.Fatalf("expected litho architect after reload, got %#v", reloaded.Architects)
+	}
+}
+
+func TestArchitectsStatusAPI(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+	hiverynPath := t.TempDir()
+	lithoPath := t.TempDir()
+	cfgPath := writeReloadingConfigFiles(t, configDir, map[string]config.ArchitectConfig{
+		"hiveryn": {
+			Path:  hiverynPath,
+			Group: "personal",
+			Repos: map[string]string{"daemon": "/tmp/daemon"},
+		},
+		"litho": {
+			Path:  lithoPath,
+			Group: "personal",
+			Repos: map[string]string{"app": "/tmp/app"},
+		},
+	})
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	source, err := config.NewArchitectsReloadingSource(cfgPath, cfg)
+	if err != nil {
+		t.Fatalf("create config source: %v", err)
+	}
+
+	ticketService := architectfs.NewTicketService()
+	ticket, err := ticketService.CreateTicket(context.Background(), hiverynPath, domain.CreateTicketParams{
+		Title: "Add status endpoint",
+		Body:  "Describe the endpoint.",
+	})
+	if err != nil {
+		t.Fatalf("create ticket: %v", err)
+	}
+
+	architectStartedAt := time.Date(2026, 6, 7, 18, 20, 0, 0, time.UTC)
+	ticketStartedAt := time.Date(2026, 6, 7, 18, 21, 42, 123456000, time.UTC)
+	freeformStartedAt := time.Date(2026, 6, 7, 18, 25, 10, 0, time.UTC)
+	service := &fakeSessionService{
+		intents: []domain.SessionIntent{
+			{
+				ID:           "architect-session",
+				ArchitectKey: "hiveryn",
+				SessionType:  domain.SessionTypeArchitect,
+				ContextID:    "hiveryn",
+				CurrentRun: &domain.SessionRun{
+					ID:          "run-architect",
+					Status:      domain.SessionRunStatusRunning,
+					AgentStatus: domain.AgentStatusActive,
+					StartedAt:   &architectStartedAt,
+				},
+			},
+			{
+				ID:           "ticket-session",
+				ArchitectKey: "hiveryn",
+				SessionType:  domain.SessionTypeTicket,
+				ContextID:    ticket.ID,
+				CurrentRun: &domain.SessionRun{
+					ID:          "run-ticket",
+					Status:      domain.SessionRunStatusRunning,
+					AgentStatus: domain.AgentStatusActive,
+					StartedAt:   &ticketStartedAt,
+				},
+			},
+			{
+				ID:           "freeform-session",
+				ArchitectKey: "hiveryn",
+				SessionType:  domain.SessionTypeFreeform,
+				ContextID:    "2026-06-07-1825-investigate-login-failure",
+				CurrentRun: &domain.SessionRun{
+					ID:          "run-freeform",
+					Status:      domain.SessionRunStatusRunning,
+					AgentStatus: domain.AgentStatusIdle,
+					StartedAt:   &freeformStartedAt,
+				},
+			},
+			{
+				ID:           "completed-session",
+				ArchitectKey: "hiveryn",
+				SessionType:  domain.SessionTypeTicket,
+				ContextID:    "ignored",
+				CurrentRun: &domain.SessionRun{
+					ID:        "run-completed",
+					Status:    domain.SessionRunStatusCompleted,
+					StartedAt: &ticketStartedAt,
+				},
+			},
+		},
+	}
+
+	handler := NewHandler(Dependencies{
+		Config:       cfg,
+		ConfigSource: source,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Sessions:     service,
+		Tickets:      ticketService,
+	})
+
+	status, body := request(t, handler, http.MethodGet, "/api/architects/status", nil)
+	if status != http.StatusOK {
+		t.Fatalf("expected architect status %d, got %d: %s", http.StatusOK, status, string(body))
+	}
+
+	var payload struct {
+		Architects []architectStatusResponse `json:"architects"`
+	}
+	decodeEnvelopeData(t, body, &payload)
+	if len(payload.Architects) != 2 {
+		t.Fatalf("expected 2 architects, got %#v", payload.Architects)
+	}
+
+	hiveryn := payload.Architects[0]
+	if hiveryn.Key != "hiveryn" || hiveryn.Path != hiverynPath {
+		t.Fatalf("unexpected hiveryn architect payload %#v", hiveryn)
+	}
+	if hiveryn.Status == nil || *hiveryn.Status != domain.AgentStatusActive {
+		t.Fatalf("expected running architect status, got %#v", hiveryn.Status)
+	}
+	if len(hiveryn.Sessions) != 2 {
+		t.Fatalf("expected 2 running worker sessions, got %#v", hiveryn.Sessions)
+	}
+	if hiveryn.Sessions[0].ID != "ticket-session" || hiveryn.Sessions[0].Title != "Add status endpoint" {
+		t.Fatalf("unexpected first worker session %#v", hiveryn.Sessions[0])
+	}
+	if hiveryn.Sessions[0].Status != domain.SessionRunStatusRunning || hiveryn.Sessions[0].AgentStatus != domain.AgentStatusActive {
+		t.Fatalf("unexpected ticket worker status %#v", hiveryn.Sessions[0])
+	}
+	if !hiveryn.Sessions[0].StartedAt.Equal(ticketStartedAt) {
+		t.Fatalf("unexpected ticket started_at %#v", hiveryn.Sessions[0].StartedAt)
+	}
+	if hiveryn.Sessions[1].ID != "freeform-session" || hiveryn.Sessions[1].Title != "Investigate login failure" {
+		t.Fatalf("unexpected freeform worker session %#v", hiveryn.Sessions[1])
+	}
+	if hiveryn.Sessions[1].AgentStatus != domain.AgentStatusIdle {
+		t.Fatalf("unexpected freeform agent status %#v", hiveryn.Sessions[1])
+	}
+	if !hiveryn.Sessions[1].StartedAt.Equal(freeformStartedAt) {
+		t.Fatalf("unexpected freeform started_at %#v", hiveryn.Sessions[1].StartedAt)
+	}
+
+	litho := payload.Architects[1]
+	if litho.Key != "litho" || litho.Path != lithoPath {
+		t.Fatalf("unexpected litho architect payload %#v", litho)
+	}
+	if litho.Status != nil {
+		t.Fatalf("expected nil status for inactive architect, got %#v", litho.Status)
+	}
+	if len(litho.Sessions) != 0 {
+		t.Fatalf("expected no worker sessions for inactive architect, got %#v", litho.Sessions)
+	}
+}
+
+func TestArchitectsStatusAPIReloadsArchitectsFile(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+	hiverynPath := t.TempDir()
+	lithoPath := t.TempDir()
+	cfgPath := writeReloadingConfigFiles(t, configDir, map[string]config.ArchitectConfig{
+		"hiveryn": {
+			Path:  hiverynPath,
+			Group: "personal",
+			Repos: map[string]string{"daemon": "/tmp/daemon"},
+		},
+	})
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	source, err := config.NewArchitectsReloadingSource(cfgPath, cfg)
+	if err != nil {
+		t.Fatalf("create config source: %v", err)
+	}
+	handler := NewHandler(Dependencies{
+		Config:       cfg,
+		ConfigSource: source,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Sessions:     &fakeSessionService{},
+		Tickets:      &fakeTicketService{},
+	})
+
+	status, body := request(t, handler, http.MethodGet, "/api/architects/status", nil)
+	if status != http.StatusOK {
+		t.Fatalf("expected initial status %d, got %d: %s", http.StatusOK, status, string(body))
+	}
+	var initial struct {
+		Architects []architectStatusResponse `json:"architects"`
+	}
+	decodeEnvelopeData(t, body, &initial)
+	if len(initial.Architects) != 1 || initial.Architects[0].Key != "hiveryn" {
+		t.Fatalf("unexpected initial architect status payload %#v", initial.Architects)
+	}
+
+	writeYAMLConfigFile(t, filepath.Join(configDir, "architects.yaml"), map[string]config.ArchitectConfig{
+		"hiveryn": {
+			Path:  hiverynPath,
+			Group: "personal",
+			Repos: map[string]string{"daemon": "/tmp/daemon"},
+		},
+		"litho": {
+			Path:  lithoPath,
+			Group: "personal",
+			Repos: map[string]string{"app": "/tmp/lithoapp"},
+		},
+	})
+
+	status, body = request(t, handler, http.MethodGet, "/api/architects/status", nil)
+	if status != http.StatusOK {
+		t.Fatalf("expected reloaded status %d, got %d: %s", http.StatusOK, status, string(body))
+	}
+	var reloaded struct {
+		Architects []architectStatusResponse `json:"architects"`
+	}
+	decodeEnvelopeData(t, body, &reloaded)
+	if len(reloaded.Architects) != 2 {
+		t.Fatalf("expected 2 architects after reload, got %#v", reloaded.Architects)
+	}
+	if reloaded.Architects[1].Key != "litho" || reloaded.Architects[1].Status != nil || len(reloaded.Architects[1].Sessions) != 0 {
+		t.Fatalf("unexpected reloaded architect payload %#v", reloaded.Architects[1])
+	}
+}
+
+func TestArchitectsStatusAPIFailsWhenRunningTicketIsMissing(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+	hiverynPath := t.TempDir()
+	cfgPath := writeReloadingConfigFiles(t, configDir, map[string]config.ArchitectConfig{
+		"hiveryn": {
+			Path:  hiverynPath,
+			Group: "personal",
+			Repos: map[string]string{"daemon": "/tmp/daemon"},
+		},
+	})
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	source, err := config.NewArchitectsReloadingSource(cfgPath, cfg)
+	if err != nil {
+		t.Fatalf("create config source: %v", err)
+	}
+	startedAt := time.Date(2026, 6, 7, 18, 21, 42, 0, time.UTC)
+	handler := NewHandler(Dependencies{
+		Config:       cfg,
+		ConfigSource: source,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Sessions: &fakeSessionService{intents: []domain.SessionIntent{{
+			ID:           "ticket-session",
+			ArchitectKey: "hiveryn",
+			SessionType:  domain.SessionTypeTicket,
+			ContextID:    "missing-ticket",
+			CurrentRun: &domain.SessionRun{
+				ID:        "run-ticket",
+				Status:    domain.SessionRunStatusRunning,
+				StartedAt: &startedAt,
+			},
+		}}},
+		Tickets: architectfs.NewTicketService(),
+	})
+
+	status, body := request(t, handler, http.MethodGet, "/api/architects/status", nil)
+	if status != http.StatusNotFound {
+		t.Fatalf("expected missing ticket to fail with %d, got %d: %s", http.StatusNotFound, status, string(body))
+	}
+	errBody := decodeEnvelopeError(t, body)
+	if !strings.Contains(errBody.Message, "read ticket title for session ticket-session") {
+		t.Fatalf("expected detailed ticket lookup error, got %#v", errBody)
 	}
 }

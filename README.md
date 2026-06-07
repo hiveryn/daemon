@@ -162,6 +162,7 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `GET` | `/api/architect-groups` | List architect groups |
 | `GET` | `/api/architect-groups/{name}` | Get one architect group by name |
 | `GET` | `/api/architects` | List configured architects |
+| `GET` | `/api/architects/status` | List all configured architects plus their running architect status and nested running ticket/freeform worker sessions for desktop command-palette/session pickers |
 | `GET` | `/api/architects/{key}` | Get one configured architect by key |
 | `GET` | `/api/architects/{key}/tickets` | List ticket board columns; supports `?status=backlog\|progress\|done` and `?limit=N` |
 | `POST` | `/api/architects/{key}/tickets` | Create a backlog ticket in the architect folder |

@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/hiveryn/daemon/internal/config"
 )
 
 func TestManagerWritesStructuredAppLog(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HIVERYN_HOME", filepath.Join(t.TempDir(), ".hiveryn"))
 
 	manager, err := New("debug")
 	if err != nil {
@@ -29,7 +31,12 @@ func TestManagerWritesStructuredAppLog(t *testing.T) {
 		"body", map[string]any{"count": 2, "ok": false},
 	)
 
-	entry := readSingleJSONL[map[string]any](t, filepath.Join(os.Getenv("HOME"), ".hiveryn", "logs", daemonLogName))
+	runtime, err := config.ResolveRuntime("", "")
+	if err != nil {
+		t.Fatalf("ResolveRuntime: %v", err)
+	}
+
+	entry := readSingleJSONL[map[string]any](t, filepath.Join(runtime.LogDir, daemonLogName))
 	assertRFC3339Millis(t, entry["ts"].(string))
 	if entry["lvl"] != "error" {
 		t.Fatalf("expected lvl=error, got %#v", entry["lvl"])

@@ -33,15 +33,19 @@ func TestLoadCreatesDefaultConfigWhenMissing(t *testing.T) {
 }
 
 func TestResolveRuntimeDefaultsToProductionHome(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	t.Setenv("HIVERYN_HOME", "")
+	t.Setenv("HIVERYN_ENV", "")
 
 	runtime, err := ResolveRuntime("", "")
 	if err != nil {
 		t.Fatalf("ResolveRuntime: %v", err)
 	}
 
-	expectedHome := filepath.Join(home, ".hiveryn")
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	expectedHome := filepath.Join(userHome, ".hiveryn")
 	if runtime.Environment != DefaultEnvironment {
 		t.Fatalf("expected environment %q, got %q", DefaultEnvironment, runtime.Environment)
 	}
