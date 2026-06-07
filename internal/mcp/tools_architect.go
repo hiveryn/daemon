@@ -44,6 +44,11 @@ func (s *Server) registerArchitectTools() {
 	}, s.handleDeleteTicket)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "moveTicketToDone",
+		Description: "Move a ticket directly to done without a worker session — for tickets the architect resolved themselves (backlog → done), or to manually close a ticket whose worker session is dead or stuck (progress → done; fails if a worker session is currently running for the ticket). Supports rejection via rejected=true with a rejection_reason.",
+	}, s.handleMoveTicketToDone)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "readConclusion",
 		Description: "Read a conclusion by ID.",
 	}, s.handleReadConclusion)
@@ -128,6 +133,37 @@ func (s *Server) handleDeleteTicket(
 	output, err := s.deleteTicket(ctx, input.ID)
 	if err != nil {
 		return nil, DeleteTicketOutput{}, err
+	}
+
+	return nil, output, nil
+}
+
+func (s *Server) handleMoveTicketToDone(
+	ctx context.Context,
+	_ *mcp.CallToolRequest,
+	input MoveTicketToDoneInput,
+) (*mcp.CallToolResult, MoveTicketToDoneOutput, error) {
+	if strings.TrimSpace(input.ID) == "" {
+		return nil, MoveTicketToDoneOutput{}, newValidationError("id", "cannot be empty")
+	}
+	if strings.TrimSpace(input.Body) == "" {
+		return nil, MoveTicketToDoneOutput{}, newValidationError("body", "is required")
+	}
+	if input.Rejected && strings.TrimSpace(input.RejectionReason) == "" {
+		return nil, MoveTicketToDoneOutput{}, newValidationError("rejection_reason", "is required when rejected is true")
+	}
+	for _, commit := range input.Commits {
+		if strings.TrimSpace(commit.SHA) == "" {
+			return nil, MoveTicketToDoneOutput{}, newValidationError("commits", "commit sha is required")
+		}
+		if strings.TrimSpace(commit.Repo) == "" {
+			return nil, MoveTicketToDoneOutput{}, newValidationError("commits", "commit repo is required")
+		}
+	}
+
+	output, err := s.moveTicketToDone(ctx, input)
+	if err != nil {
+		return nil, MoveTicketToDoneOutput{}, err
 	}
 
 	return nil, output, nil

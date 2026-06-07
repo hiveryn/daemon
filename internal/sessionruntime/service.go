@@ -1087,6 +1087,92 @@ func (s *Service) concludeTicketSession(ctx context.Context, intent domain.Sessi
 	return domain.ConcludeSessionResult{SessionID: intent.ID, ArchitectKey: intent.ArchitectKey, TicketID: intent.ContextID}, nil
 }
 
+func (s *Service) MoveTicketToDone(ctx context.Context, architectKey, ticketID string, params domain.MoveTicketToDoneParams) (domain.MoveTicketToDoneResult, error) {
+	if strings.TrimSpace(params.Body) == "" {
+		return domain.MoveTicketToDoneResult{}, &domain.ValidationError{Field: "body", Message: "is required"}
+	}
+	if params.Rejected {
+		if strings.TrimSpace(params.RejectionReason) == "" {
+			return domain.MoveTicketToDoneResult{}, &domain.ValidationError{Field: "rejection_reason", Message: "is required when rejected is true"}
+		}
+	}
+
+	architect, err := s.currentArchitect(architectKey)
+	if err != nil {
+		return domain.MoveTicketToDoneResult{}, err
+	}
+
+	ticket, err := s.tickets.GetTicket(ctx, architect.Path, ticketID)
+	if err != nil {
+		return domain.MoveTicketToDoneResult{}, err
+	}
+
+	switch ticket.Status {
+	case domain.TicketStatusBacklog:
+		// No worker session can be running for a backlog ticket.
+	case domain.TicketStatusProgress:
+		runningSessionID, running, err := s.runningTicketSessionID(ctx, architectKey, ticketID)
+		if err != nil {
+			return domain.MoveTicketToDoneResult{}, err
+		}
+		if running {
+			return domain.MoveTicketToDoneResult{}, &domain.ConflictError{
+				Resource: "session",
+				Field:    "ticket_id",
+				Message:  "Cannot move ticket to done: worker session " + runningSessionID + " is currently running",
+			}
+		}
+	default:
+		return domain.MoveTicketToDoneResult{}, &domain.ValidationError{Field: "ticket_id", Message: "ticket must be in backlog or progress to move to done"}
+	}
+
+	resolvedCommits, err := resolveConclusionCommitRefs(ctx, architect.Repos, params.Commits)
+	if err != nil {
+		return domain.MoveTicketToDoneResult{}, err
+	}
+
+	now := time.Now().UTC()
+	conclusion := domain.TicketConclusion{
+		StartedAt:       now,
+		ConcludedAt:     now,
+		Rejected:        params.Rejected,
+		RejectionReason: params.RejectionReason,
+		Commits:         resolvedCommits,
+		Body:            params.Body,
+	}
+
+	if _, err := s.tickets.ConcludeTicket(ctx, architect.Path, ticketID, conclusion); err != nil {
+		return domain.MoveTicketToDoneResult{}, err
+	}
+
+	return domain.MoveTicketToDoneResult{TicketID: ticketID, ArchitectKey: architectKey}, nil
+}
+
+func (s *Service) runningTicketSessionID(ctx context.Context, architectKey, ticketID string) (string, bool, error) {
+	intents, err := s.repo.ListIntents(ctx)
+	if err != nil {
+		return "", false, fmt.Errorf("list session intents for ticket running check: %w", err)
+	}
+
+	for _, candidate := range intents {
+		if candidate.ArchitectKey != architectKey {
+			continue
+		}
+		if candidate.SessionType != domain.SessionTypeTicket {
+			continue
+		}
+		if candidate.ContextID != ticketID {
+			continue
+		}
+		if candidate.CurrentRun == nil || candidate.CurrentRun.Status != domain.SessionRunStatusRunning {
+			continue
+		}
+		return candidate.ID, true, nil
+	}
+
+	return "", false, nil
+}
+
 func (s *Service) concludeFreeformSession(ctx context.Context, intent domain.SessionIntent, run domain.SessionRun, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
 	if params.Rejected {
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "rejected", Message: "freeform sessions do not support rejected mode"}

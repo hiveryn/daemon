@@ -218,8 +218,8 @@ func (s *TicketService) ConcludeTicket(_ context.Context, architectPath, id stri
 	if err != nil {
 		return domain.Ticket{}, err
 	}
-	if entry.status != domain.TicketStatusProgress {
-		return domain.Ticket{}, &domain.ValidationError{Field: "ticket_id", Message: "ticket must be in progress to conclude"}
+	if entry.status != domain.TicketStatusProgress && entry.status != domain.TicketStatusBacklog {
+		return domain.Ticket{}, &domain.ValidationError{Field: "ticket_id", Message: "ticket must be in backlog or progress to conclude"}
 	}
 
 	doc := newConclusionDocument(conclusion)

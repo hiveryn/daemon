@@ -170,6 +170,7 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `PATCH` | `/api/architects/{key}/tickets/{id}/metadata` | Update frontmatter (`title`, `repo`, `references`) for a backlog ticket |
 | `DELETE` | `/api/architects/{key}/tickets/{id}` | Delete a backlog ticket folder and its contents |
 | `POST` | `/api/architects/{key}/tickets/{id}/move?to=...` | Move a ticket between backlog, progress, and done |
+| `POST` | `/api/architects/{key}/tickets/{id}/move-to-done` | Architect-driven ticket completion without a worker session: backlog → done (architect resolved it directly) or progress → done (manually closing a dead/stuck worker session — fails with `CONFLICT` if a worker session is currently running). Writes a `conclusion.md` and supports `rejected`/`rejection_reason`. Called by the MCP `moveTicketToDone` tool. |
 | `GET` | `/api/architects/{key}/events` | Stream architect-scoped workspace_changed SSE hints |
 | `GET` | `/api/architects/{key}/conclusions` | List recent conclusions (IDs + timestamps); supports `?limit=N` |
 | `GET` | `/api/architects/{key}/conclusions/recent` | Read the most recent architect session conclusion |
@@ -195,7 +196,7 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 
 Profile, architect, repo, and tab configuration endpoints are read-only. Edit `HIVERYN_HOME/*.yaml` directly to change variants, architects, repos, or tabs unless you launched with `--config`. `architects.yaml` changes apply to architect/repo reads plus new ticket/session operations without restarting the daemon.
 
-Ticket mutations are status-gated: backlog tickets can be edited, metadata-updated, moved, or deleted; progress tickets can be concluded; done tickets are read-only.
+Ticket mutations are status-gated: backlog tickets can be edited, metadata-updated, moved, or deleted; backlog or progress tickets can be concluded (worker conclusion still requires progress; architect-driven `move-to-done` accepts either, and rejects `progress → done` if a worker session is currently running); done tickets are read-only.
 
 Session responses expose a durable intent plus its current run, if any. Each intent stores the create-time session contract: `id`, `architect_key`, `session_type`, `context_id`, `prompt`, `workdir`, optional `instructions`, and lifecycle metadata. `POST /api/sessions/{id}/runs` returns the created `run`, its `main_terminal_id`, and a `ws_url` so the desktop can attach immediately. Launch uses the stored `workdir` directly; ticket and architect workdirs are resolved during intent creation, not recalculated later. If the main agent PTY exits unexpectedly, the daemon automatically resumes the running run from its stored `native_id`, emits a `main_terminal_resumed` session event with the new `main_terminal_id`, and leaves the run status as `running`; restore failures mark the run `restore_failed`, log the error at ERROR level, and for ticket sessions move the ticket back to `backlog`; the daemon continues startup regardless of individual restore failures. `GET /api/sessions/{id}/tabs` returns the canonical right-pane layout using `type`, `id`, `command`, and `status` for terminal tabs. `POST /api/sessions/{id}/terminals` accepts an empty JSON object and always launches the session's default shell in the current run workdir.
 

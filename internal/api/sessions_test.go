@@ -450,6 +450,10 @@ func (f *fakeSessionService) RequestConclusion(_ context.Context, id string, par
 	return f.requestConclusionResult, f.requestConclusionErr
 }
 
+func (f *fakeSessionService) MoveTicketToDone(_ context.Context, architectKey, ticketID string, params domain.MoveTicketToDoneParams) (domain.MoveTicketToDoneResult, error) {
+	return domain.MoveTicketToDoneResult{}, nil
+}
+
 func (f *fakeSessionService) ApproveConclusion(_ context.Context, id string) (domain.ConcludeSessionResult, error) {
 	return f.approveConclusionResult, f.approveConclusionErr
 }

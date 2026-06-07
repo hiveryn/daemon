@@ -137,6 +137,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("PATCH /api/architects/{key}/tickets/{id}/metadata", th.updateMetadata)
 	mux.HandleFunc("DELETE /api/architects/{key}/tickets/{id}", th.delete)
 	mux.HandleFunc("POST /api/architects/{key}/tickets/{id}/move", th.move)
+	mux.HandleFunc("POST /api/architects/{key}/tickets/{id}/move-to-done", th.moveToDone)
 	mux.HandleFunc("GET /api/architects/{key}/repos", rh.list)
 	mux.HandleFunc("GET /api/architects/{key}/repos/{repoKey}", rh.get)
 	mux.HandleFunc("GET /api/config/shortcuts", sch.get)

@@ -59,6 +59,19 @@ type ArchitectConcludeSessionInput struct {
 	Body string `json:"body" jsonschema:"Session conclusion summary — topics covered, decisions made, tickets created, follow-up work, and blockers (required)."`
 }
 
+type MoveTicketToDoneInput struct {
+	ID              string             `json:"id" jsonschema:"The ticket ID to move to done (required)"`
+	Body            string             `json:"body" jsonschema:"Conclusion summary — what was done and why this ticket is complete, or why it is being closed (required)."`
+	Commits         []domain.CommitRef `json:"commits,omitempty" jsonschema:"List of commits produced as objects with sha and repo (optional — the architect may have no commits to report)."`
+	Rejected        bool               `json:"rejected,omitempty" jsonschema:"Set to true to close the ticket as rejected instead of completed."`
+	RejectionReason string             `json:"rejection_reason,omitempty" jsonschema:"Required when rejected=true. Explain why the ticket is being rejected."`
+}
+
+type MoveTicketToDoneOutput struct {
+	Success  bool   `json:"success"`
+	TicketID string `json:"ticket_id"`
+}
+
 type ConcludeSessionOutput struct {
 	Success   bool   `json:"success"`
 	SessionID string `json:"session_id"`

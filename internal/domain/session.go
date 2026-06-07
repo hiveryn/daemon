@@ -183,6 +183,18 @@ type ConcludeSessionResult struct {
 	TicketID     string `json:"ticket_id,omitempty"`
 }
 
+type MoveTicketToDoneParams struct {
+	Body            string
+	Commits         []CommitRef
+	Rejected        bool
+	RejectionReason string
+}
+
+type MoveTicketToDoneResult struct {
+	TicketID     string `json:"ticket_id"`
+	ArchitectKey string `json:"architect_key"`
+}
+
 type SessionEventSubscription interface {
 	C() <-chan SessionEvent
 	Close()
@@ -228,6 +240,7 @@ type SessionService interface {
 	CreateRun(context.Context, string, CreateSessionRunRequest) (CreateSessionRunResult, error)
 	ConcludeSession(context.Context, string, ConcludeSessionParams) (ConcludeSessionResult, error)
 	RequestConclusion(context.Context, string, ConcludeSessionParams) (ConcludeSessionResult, error)
+	MoveTicketToDone(context.Context, string, string, MoveTicketToDoneParams) (MoveTicketToDoneResult, error)
 	ApproveConclusion(context.Context, string) (ConcludeSessionResult, error)
 	RejectConclusion(context.Context, string, string) error
 	ReadConclusion(context.Context, string, string) (ArchitectConclusion, error)

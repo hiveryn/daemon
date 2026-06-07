@@ -342,6 +342,51 @@ func (h *ticketsHandler) move(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, ticket)
 }
 
+func (h *ticketsHandler) moveToDone(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
+		return
+	}
+
+	var input struct {
+		Body            string             `json:"body"`
+		Commits         []domain.CommitRef `json:"commits,omitempty"`
+		Rejected        bool               `json:"rejected,omitempty"`
+		RejectionReason string             `json:"rejection_reason,omitempty"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
+		return
+	}
+
+	architectKey := r.PathValue("key")
+	result, err := h.sessions.MoveTicketToDone(r.Context(), architectKey, r.PathValue("id"), domain.MoveTicketToDoneParams{
+		Body:            input.Body,
+		Commits:         input.Commits,
+		Rejected:        input.Rejected,
+		RejectionReason: input.RejectionReason,
+	})
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	if h.publishArchitect != nil {
+		h.publishArchitect(architectKey, domain.ArchitectEvent{
+			Type:         "workspace_changed",
+			ArchitectKey: architectKey,
+			Reason:       "ticket_concluded",
+			TicketID:     result.TicketID,
+			At:           time.Now().UTC(),
+		})
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"success":   true,
+		"ticket_id": result.TicketID,
+	})
+}
+
 func validateConfiguredRepo(cfg config.Config, architectKey, repoKey string) error {
 	repoKey = strings.TrimSpace(repoKey)
 	if repoKey == "" {

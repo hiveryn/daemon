@@ -137,6 +137,58 @@ func (s *Server) createWorkTicket(ctx context.Context, input CreateWorkTicketInp
 	return output, nil
 }
 
+func (s *Server) moveTicketToDone(ctx context.Context, input MoveTicketToDoneInput) (MoveTicketToDoneOutput, error) {
+	var output MoveTicketToDoneOutput
+
+	body := map[string]any{"body": input.Body}
+	if len(input.Commits) > 0 {
+		body["commits"] = input.Commits
+	}
+	if input.Rejected {
+		body["rejected"] = true
+	}
+	if input.RejectionReason != "" {
+		body["rejection_reason"] = input.RejectionReason
+	}
+
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return MoveTicketToDoneOutput{}, newInternalError(fmt.Sprintf("marshal move ticket to done body: %v", err))
+	}
+
+	u := fmt.Sprintf("%s/api/architects/%s/tickets/%s/move-to-done", s.daemonURL, url.PathEscape(s.architectKey), url.PathEscape(input.ID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return MoveTicketToDoneOutput{}, fmt.Errorf("build moveTicketToDone request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return MoveTicketToDoneOutput{}, fmt.Errorf("request moveTicketToDone: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	var env daemonEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return MoveTicketToDoneOutput{}, newInternalError(fmt.Sprintf("decode daemon response: %v", err))
+	}
+
+	if env.Error != nil {
+		return MoveTicketToDoneOutput{}, mapDaemonError(env.Error)
+	}
+	if len(env.Data) == 0 {
+		return MoveTicketToDoneOutput{}, newInternalError("daemon response missing data")
+	}
+	if err := json.Unmarshal(env.Data, &output); err != nil {
+		return MoveTicketToDoneOutput{}, newInternalError(fmt.Sprintf("decode move ticket to done payload: %v", err))
+	}
+
+	return output, nil
+}
+
 func (s *Server) deleteTicket(ctx context.Context, id string) (DeleteTicketOutput, error) {
 	var output DeleteTicketOutput
 
