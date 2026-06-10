@@ -372,7 +372,7 @@ func TestValidateRejectsBlankArchitectGroup(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsInvalidTabType(t *testing.T) {
+func TestValidateRejectsBlankTabType(t *testing.T) {
 	t.Parallel()
 
 	err := Config{
@@ -383,12 +383,33 @@ func TestValidateRejectsInvalidTabType(t *testing.T) {
 		Architects:  map[string]ArchitectConfig{},
 		Tabs: map[string][]TabEntry{
 			"architect": {
-				{Type: "invalid"},
+				{Type: ""},
 			},
 		},
 	}.Validate()
 	if err == nil {
-		t.Fatal("expected tab type validation error")
+		t.Fatal("expected blank tab type validation error")
+	}
+}
+
+func TestValidateAllowsPluginTabTypes(t *testing.T) {
+	t.Parallel()
+
+	err := Config{
+		Port:        DefaultPort,
+		BindAddress: DefaultBindAddress,
+		LogLevel:    DefaultLogLevel,
+		Variants:    map[string]VariantConfig{},
+		Architects:  map[string]ArchitectConfig{},
+		Tabs: map[string][]TabEntry{
+			"ticket": {
+				{Type: "git-diff"},
+				{Type: "kanban"},
+			},
+		},
+	}.Validate()
+	if err != nil {
+		t.Fatalf("expected plugin tab types to be valid, got %v", err)
 	}
 }
 

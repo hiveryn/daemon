@@ -7,6 +7,7 @@ import (
 
 	"github.com/hiveryn/daemon/internal/app"
 	daemonmcp "github.com/hiveryn/daemon/internal/mcp"
+	_ "github.com/hiveryn/daemon/internal/plugin"
 )
 
 func main() {

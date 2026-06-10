@@ -23,6 +23,8 @@ import (
 	"github.com/hiveryn/daemon/internal/architectfs"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
+	"github.com/hiveryn/daemon/internal/plugin"
+	"github.com/hiveryn/tabplugin"
 	"gopkg.in/yaml.v3"
 )
 
@@ -74,6 +76,7 @@ type sessionTerminalState struct {
 	runID          string
 	mainTerminalID string
 	tabs           []sessionTabState
+	pluginTypes    []string
 }
 
 type sessionTabState struct {
@@ -389,10 +392,12 @@ func (s *Service) launchSession(ctx context.Context, intent domain.SessionIntent
 		return "", err
 	}
 
+	tabs, pluginTypes := s.startAutoTerminals(ctx, intent, spec.Workdir, spec.Env, size, spec.CleanupPaths)
 	s.storeSessionTerminalState(intent.ID, sessionTerminalState{
 		runID:          run.ID,
 		mainTerminalID: mainTerminalID,
-		tabs:           s.startAutoTerminals(ctx, intent, spec.Workdir, spec.Env, size, spec.CleanupPaths),
+		tabs:           tabs,
+		pluginTypes:    pluginTypes,
 	})
 
 	return mainTerminalID, nil
@@ -964,6 +969,7 @@ func (s *Service) concludeArchitectSession(ctx context.Context, intent domain.Se
 	if err := s.terminal.KillBySession(ctx, intent.ID); err != nil && !errors.Is(err, errTerminalNotFound) {
 		return domain.ConcludeSessionResult{}, fmt.Errorf("kill session terminal: %w", err)
 	}
+	s.closeSessionPlugins(ctx, intent)
 
 	if err := s.repo.DeleteIntent(ctx, intent.ID); err != nil {
 		return domain.ConcludeSessionResult{}, err
@@ -1078,6 +1084,7 @@ func (s *Service) concludeTicketSession(ctx context.Context, intent domain.Sessi
 	if err := s.terminal.KillBySession(ctx, intent.ID); err != nil && !errors.Is(err, errTerminalNotFound) {
 		return domain.ConcludeSessionResult{}, fmt.Errorf("kill session terminal: %w", err)
 	}
+	s.closeSessionPlugins(ctx, intent)
 
 	if err := s.repo.DeleteIntent(ctx, intent.ID); err != nil {
 		return domain.ConcludeSessionResult{}, err
@@ -1226,6 +1233,7 @@ func (s *Service) concludeFreeformSession(ctx context.Context, intent domain.Ses
 	if err := s.terminal.KillBySession(ctx, intent.ID); err != nil && !errors.Is(err, errTerminalNotFound) {
 		return domain.ConcludeSessionResult{}, fmt.Errorf("kill session terminal: %w", err)
 	}
+	s.closeSessionPlugins(ctx, intent)
 
 	if err := s.repo.DeleteIntent(ctx, intent.ID); err != nil {
 		return domain.ConcludeSessionResult{}, err
@@ -1362,6 +1370,12 @@ func (s *Service) TerminateSession(ctx context.Context, id string) error {
 	if err := s.terminal.KillBySession(ctx, id); err != nil && !errors.Is(err, errTerminalNotFound) {
 		return err
 	}
+
+	intent, err := s.repo.GetIntent(ctx, id)
+	if err != nil {
+		return err
+	}
+	s.closeSessionPlugins(ctx, intent)
 
 	if err := s.repo.DeleteIntent(ctx, id); err != nil {
 		return err
@@ -1539,6 +1553,35 @@ func (s *Service) KillTerminal(ctx context.Context, sessionID, terminalID string
 	}
 	s.removeSessionTabOnTerminalClose(sessionID, terminalID)
 	return nil
+}
+
+func (s *Service) CallPlugin(ctx context.Context, sessionID, pluginType, fn string, args map[string]any) (tabplugin.Response, error) {
+	intent, err := s.repo.GetIntent(ctx, sessionID)
+	if err != nil {
+		return tabplugin.Response{}, err
+	}
+	arch, err := s.currentArchitect(intent.ArchitectKey)
+	if err != nil {
+		return tabplugin.Response{}, err
+	}
+	var ticketPtr *domain.Ticket
+	if intent.SessionType == domain.SessionTypeTicket && intent.ContextID != "" {
+		t, tErr := s.tickets.GetTicket(ctx, arch.Path, intent.ContextID)
+		if tErr != nil {
+			return tabplugin.Response{}, tErr
+		}
+		ticketPtr = &t
+	}
+	pctx := plugin.BuildSessionContext(intent, arch, ticketPtr)
+	p, ok := tabplugin.Get(pluginType)
+	if !ok {
+		return tabplugin.Response{}, &domain.NotFoundError{Resource: "tab_plugin", ID: pluginType}
+	}
+	resp, err := p.Call(pctx, fn, args)
+	if err != nil {
+		return tabplugin.Response{}, err
+	}
+	return resp, nil
 }
 
 func (s *Service) Shutdown(ctx context.Context) error {
@@ -1973,17 +2016,37 @@ func (s *Service) defaultShell() string {
 	return "bash"
 }
 
-func (s *Service) startAutoTerminals(ctx context.Context, intent domain.SessionIntent, workdir string, env map[string]string, size terminalSize, cleanupPaths []string) []sessionTabState {
+func (s *Service) startAutoTerminals(ctx context.Context, intent domain.SessionIntent, workdir string, env map[string]string, size terminalSize, cleanupPaths []string) ([]sessionTabState, []string) {
 	tabs, ok := s.cfg.Tabs[string(intent.SessionType)]
 	if !ok || len(tabs) == 0 {
 		tabs = defaultTabsBySessionType[string(intent.SessionType)]
 	}
 	if len(tabs) == 0 {
-		return nil
+		return nil, nil
 	}
 	layout := make([]sessionTabState, 0, len(tabs))
+	var pluginTypes []string
 	for _, tab := range tabs {
 		if tab.Type != "terminal" {
+			if p, ok := tabplugin.Get(tab.Type); ok {
+				arch, archErr := s.currentArchitect(intent.ArchitectKey)
+				if archErr != nil {
+					panic(fmt.Sprintf("startAutoTerminals: architect %q not found for plugin %q: %v", intent.ArchitectKey, tab.Type, archErr))
+				}
+				var ticketPtr *domain.Ticket
+				if intent.SessionType == domain.SessionTypeTicket && intent.ContextID != "" {
+					t, tErr := s.tickets.GetTicket(ctx, arch.Path, intent.ContextID)
+					if tErr != nil {
+						panic(fmt.Sprintf("startAutoTerminals: load ticket %q for plugin %q: %v", intent.ContextID, tab.Type, tErr))
+					}
+					ticketPtr = &t
+				}
+				ctxPlugin := plugin.BuildSessionContext(intent, arch, ticketPtr)
+				if err := p.Init(ctxPlugin); err != nil {
+					panic(fmt.Sprintf("startAutoTerminals: Init plugin %q for session %s: %v", tab.Type, intent.ID, err))
+				}
+				pluginTypes = append(pluginTypes, tab.Type)
+			}
 			layout = append(layout, sessionTabState{tab: domain.SessionTab{Type: tab.Type}})
 			continue
 		}
@@ -2014,7 +2077,7 @@ func (s *Service) startAutoTerminals(ctx context.Context, intent domain.SessionI
 		}
 		layout = append(layout, sessionTabState{tab: domain.SessionTab{Type: tab.Type, TerminalID: terminalID, Command: cmd, Status: status}})
 	}
-	return layout
+	return layout, pluginTypes
 }
 
 func (s *Service) storeSessionTerminalState(sessionID string, state sessionTerminalState) {
@@ -2027,6 +2090,7 @@ func (s *Service) storeSessionTerminalState(sessionID string, state sessionTermi
 		runID:          state.runID,
 		mainTerminalID: state.mainTerminalID,
 		tabs:           cloneSessionTabStates(state.tabs),
+		pluginTypes:    append([]string(nil), state.pluginTypes...),
 	}
 }
 
@@ -2042,6 +2106,7 @@ func (s *Service) replaceSessionMainTerminalID(sessionID, mainTerminalID string)
 		runID:          state.runID,
 		mainTerminalID: state.mainTerminalID,
 		tabs:           cloneSessionTabStates(state.tabs),
+		pluginTypes:    append([]string(nil), state.pluginTypes...),
 	}
 	return nil
 }
@@ -2147,4 +2212,30 @@ func errorString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func (s *Service) closeSessionPlugins(ctx context.Context, intent domain.SessionIntent) {
+	state, ok := s.terminalStates[intent.ID]
+	if !ok || len(state.pluginTypes) == 0 {
+		return
+	}
+	arch, err := s.currentArchitect(intent.ArchitectKey)
+	if err != nil {
+		s.logger.Warn("[plugin] close: architect not found", "architect", intent.ArchitectKey, "error", err)
+		return
+	}
+	var ticketPtr *domain.Ticket
+	if intent.SessionType == domain.SessionTypeTicket && intent.ContextID != "" {
+		if t, tErr := s.tickets.GetTicket(ctx, arch.Path, intent.ContextID); tErr == nil {
+			ticketPtr = &t
+		}
+	}
+	for _, typ := range state.pluginTypes {
+		if p, ok := tabplugin.Get(typ); ok {
+			ctxPlugin := plugin.BuildSessionContext(intent, arch, ticketPtr)
+			if cerr := p.Close(ctxPlugin); cerr != nil {
+				s.logger.Warn("[plugin] Close error (ignored)", "type", typ, "session", intent.ID, "error", cerr)
+			}
+		}
+	}
 }

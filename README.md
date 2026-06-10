@@ -111,6 +111,8 @@ freeform:
 
 Terminal entries only support `type` and optional `command`. Entries without `command` default to the user's shell. When a session run starts, the daemon auto-creates PTY terminals for every `type: terminal` entry in the matching session type section and assigns each terminal a UUID.
 
+`tabs.yaml` also accepts pluggable tab types (e.g. `type: git-diff`). These are declarative (no `command`); the daemon calls `Init` on spawn and `Close` on session end for registered plugins, and exposes `POST /api/sessions/{id}/plugins/call` for RPC. Unknown types at call time return a daemon 404 envelope; plugin errors are returned inside the strict plugin envelope at 200. See `internal/plugin` and the `tabplugin` contract repo.
+
 ### `shortcuts.yaml` — keybindings
 
 ```yaml
@@ -188,6 +190,7 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `POST` | `/api/sessions/{id}/approve-conclusion` | Approve a pending conclusion request and run the conclusion. Called by the desktop app. |
 | `POST` | `/api/sessions/{id}/reject-conclusion` | Reject a pending conclusion request with a reason. Returns the reason as a validation error to the blocked `request-conclusion` caller so the agent can retry. |
 | `GET` | `/api/sessions/{id}/tabs` | Get the resolved right-pane tab layout for a session intent's current run |
+| `POST` | `/api/sessions/{id}/plugins/call` | Call a pluggable tab function: body `{"type":"...","fn":"...","args":{...}}`; returns the strict plugin envelope (200 even if plugin sets inner error); 4xx/5xx only on dispatch failure |
 | `GET` | `/api/sessions/{id}/ticket` | Get the associated ticket for a ticket session (returns NOT_FOUND for non-ticket sessions) |
 | `POST` | `/api/sessions/{id}/terminals` | Create a new user terminal in a session intent's current run using the resolved default shell |
 | `GET` | `/api/sessions/{id}/terminals` | List all terminals for a session intent's current run |

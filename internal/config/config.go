@@ -362,9 +362,8 @@ func (c Config) Validate() error {
 			return fmt.Errorf("tabs keys must not be blank")
 		}
 		for i, entry := range c.Tabs[sessionType] {
-			validTypes := map[string]bool{"kanban": true, "event-log": true, "terminal": true, "ticket": true}
-			if !validTypes[entry.Type] {
-				return fmt.Errorf("tabs.%s[%d].type %q is invalid; must be kanban, event-log, ticket, or terminal", sessionType, i, entry.Type)
+			if strings.TrimSpace(entry.Type) == "" {
+				return fmt.Errorf("tabs.%s[%d].type is required", sessionType, i)
 			}
 			if entry.Type != "terminal" {
 				if entry.Command != "" {

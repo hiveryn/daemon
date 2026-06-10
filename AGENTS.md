@@ -61,6 +61,7 @@ internal/
   server/             HTTP server lifecycle (Listen, Shutdown) — thin wrapper around net/http
   api/                HTTP handlers, routing, middleware (request ID, recovery, access logging), JSON helpers
   sessionruntime/     session orchestration (architect + ticket + freeform), agentruntime ingest bridge, daemon-owned PTY manager
+  plugin/             build-time tab plugin registration (imports tabplugin + concrete plugins via replace) + SessionContext builder
   store/              SQLite persistence: DB open, migration runner, session/event repository implementations
 ```
 
