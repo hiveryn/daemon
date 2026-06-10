@@ -1,49 +1,22 @@
 package domain
 
-import (
-	"errors"
-	"fmt"
-)
+import sd "github.com/hiveryn/shared/domain"
 
-type ErrorCode string
+type ErrorCode = sd.ErrorCode
 
 const (
-	ErrCodeValidation ErrorCode = "VALIDATION"
-	ErrCodeConflict   ErrorCode = "CONFLICT"
-	ErrCodeNotFound   ErrorCode = "NOT_FOUND"
-	ErrCodeInternal   ErrorCode = "INTERNAL"
+	ErrCodeValidation = sd.ErrCodeValidation
+	ErrCodeConflict   = sd.ErrCodeConflict
+	ErrCodeNotFound   = sd.ErrCodeNotFound
+	ErrCodeInternal   = sd.ErrCodeInternal
 )
 
-var ErrNotFound = errors.New("resource not found")
+var ErrNotFound = sd.ErrNotFound
 
-type ValidationError struct {
-	Field   string
-	Message string
-}
+type ValidationError = sd.ValidationError
 
-func (e *ValidationError) Error() string {
-	return fmt.Sprintf("%s %s", e.Field, e.Message)
-}
+type ConflictError = sd.ConflictError
 
-type ConflictError struct {
-	Resource string
-	Field    string
-	Message  string
-}
+type NotFoundError = sd.NotFoundError
 
-func (e *ConflictError) Error() string {
-	return fmt.Sprintf("%s %s: %s", e.Resource, e.Field, e.Message)
-}
-
-type NotFoundError struct {
-	Resource string
-	ID       string
-}
-
-func (e *NotFoundError) Error() string {
-	return fmt.Sprintf("%s %s not found", e.Resource, e.ID)
-}
-
-func (e *NotFoundError) Unwrap() error {
-	return ErrNotFound
-}
+type InternalError = sd.InternalError

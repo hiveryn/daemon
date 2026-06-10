@@ -55,7 +55,7 @@ internal/
   archevents/         in-memory publish/subscribe hub for architect-scoped SSE events
   architectfs/        architect folder filesystem operations (ticket CRUD, frontmatter, body edits)
   config/             bootstrap config (~/.hiveryn/{config,variants,architects,tabs,shortcuts}.yaml) — port, bind_address, log_level, shell, conclusion_approval_timeout, variants, architects, tabs, shortcuts
-  domain/             shared envelope/error/session types — zero imports of store/api
+  domain/             re-exports shared data types (github.com/hiveryn/shared/domain) + local interfaces, Envelope, ArchitectEvent, AgentStatus consts — zero imports of store/api
   logging/            structured JSONL app/request logging to ~/.hiveryn/logs/*.jsonl
   mcp/                stdio MCP server; registers role-scoped tools and translates tool calls into daemon HTTP API requests
   server/             HTTP server lifecycle (Listen, Shutdown) — thin wrapper around net/http
@@ -80,7 +80,7 @@ internal/
 
 Example: adding a SQLite-backed session resource.
 
-1. **Domain** (`internal/domain/session.go`): `SessionIntent` / `SessionRun` structs, `SessionRepository` interface, any enums or validation errors.
+1. **Domain** (`internal/domain/session.go`): re-export pure data types from `github.com/hiveryn/shared/domain` (SessionIntent/SessionRun/SessionEvent/SessionTab/Ticket*/CommitRef/error types/enums/etc.) via type aliases + const re-exports; define `SessionRepository`/`SessionService`/`TicketService` interfaces and any daemon-local contracts (Envelope, ArchitectEvent, AgentStatus, TerminalAttachment, etc.) here.
 2. **Migration** (`internal/store/migrations/0002_<resource>.sql`): CREATE TABLE. Add to `migrationFiles` slice in `internal/store/migrate.go`.
 3. **Repository** (`internal/store/intents.go`, `internal/store/runs.go`): `SessionStore` methods implementing `domain.SessionRepository` with SQLite queries.
 4. **API** (`internal/api/sessions.go`): handlers using `domain.SessionRepository` interface. Use Go 1.24 method-pattern routing (`"POST /api/sessions"`).
