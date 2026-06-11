@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -361,6 +362,23 @@ func (h *sessionsHandler) events(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// parseAttachSize reads the optional cols/rows query params of a terminal
+// attach. Returns (0, 0, nil) when absent. Present-but-invalid values are a
+// client bug and produce an error so the attach fails loudly.
+func parseAttachSize(r *http.Request) (cols, rows uint16, err error) {
+	colsStr := r.URL.Query().Get("cols")
+	rowsStr := r.URL.Query().Get("rows")
+	if colsStr == "" && rowsStr == "" {
+		return 0, 0, nil
+	}
+	c, errC := strconv.ParseUint(colsStr, 10, 16)
+	rw, errR := strconv.ParseUint(rowsStr, 10, 16)
+	if errC != nil || errR != nil || c == 0 || rw == 0 {
+		return 0, 0, fmt.Errorf("invalid cols/rows query params: cols=%q rows=%q", colsStr, rowsStr)
+	}
+	return uint16(c), uint16(rw), nil
+}
+
 func (h *sessionsHandler) wsTerminal(w http.ResponseWriter, r *http.Request) {
 	if h.sessions == nil {
 		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
@@ -370,12 +388,35 @@ func (h *sessionsHandler) wsTerminal(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
 	terminalID := r.PathValue("uuid")
 
+	cols, rows, err := parseAttachSize(r)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), err.Error(), nil)
+		return
+	}
+
 	attachment, err := h.sessions.AttachTerminal(r.Context(), sessionID, terminalID)
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
 	}
 	defer func() { _ = attachment.Close() }()
+
+	// Attach-time size handshake: bring the PTY to the client's grid BEFORE
+	// streaming starts. Size sync used to be purely edge-triggered (resize
+	// messages on grid changes), so any missed edge — daemon restart restoring
+	// PTYs at the 80×24 default, a resize sent while the WS was down, a client
+	// that fit while the pane was in a transient layout — left the PTY and the
+	// client grid divergent forever, with TUIs drawing frames for the wrong
+	// size. Applying the client's size at attach makes every (re)connect a
+	// reconciliation point: the SIGWINCH repaint lands right after the replay
+	// buffer in the PTY stream, correcting any stale-size frame.
+	if cols > 0 && rows > 0 {
+		if err := attachment.Resize(cols, rows); err != nil {
+			h.logger.Warn("[ws] attach resize error (ignored)", "session_id", sessionID, "terminal_id", terminalID, "cols", cols, "rows", rows, "error", err)
+		} else {
+			h.logger.Info("[ws] attach resize", "session_id", sessionID, "terminal_id", terminalID, "cols", cols, "rows", rows)
+		}
+	}
 
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
