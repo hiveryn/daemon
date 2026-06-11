@@ -55,7 +55,7 @@ func Run(configPath, databasePath string, portOverride int) error {
 		return err
 	}
 
-	configSource, err := config.NewArchitectsReloadingSource(runtime.ConfigPath, cfg)
+	configSource, err := config.NewReloadingSource(runtime.ConfigPath, cfg)
 	if err != nil {
 		return err
 	}

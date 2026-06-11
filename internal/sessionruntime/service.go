@@ -325,7 +325,7 @@ func (s *Service) CreateRun(ctx context.Context, intentID string, req domain.Cre
 		"requested_rows", req.Rows,
 	)
 
-	mainTerminalID, err := s.launchSession(ctx, intent, run, profile, agentKind, agentruntime.StartRequest{
+	mainTerminalID, err := s.launchSession(ctx, cfg, intent, run, profile, agentKind, agentruntime.StartRequest{
 		Prompt:       intent.Prompt,
 		Instructions: intent.Instructions,
 		Workdir:      intent.Workdir,
@@ -386,13 +386,13 @@ func hookCommandForAgent(agentKind agentruntime.AgentKind, endpoint string) agen
 	}
 }
 
-func (s *Service) launchSession(ctx context.Context, intent domain.SessionIntent, run domain.SessionRun, profile config.VariantConfig, agentKind agentruntime.AgentKind, startReq agentruntime.StartRequest, size terminalSize) (string, error) {
+func (s *Service) launchSession(ctx context.Context, cfg config.Config, intent domain.SessionIntent, run domain.SessionRun, profile config.VariantConfig, agentKind agentruntime.AgentKind, startReq agentruntime.StartRequest, size terminalSize) (string, error) {
 	mainTerminalID, spec, err := s.startSessionMainTerminal(ctx, intent, run, profile, agentKind, startReq, size)
 	if err != nil {
 		return "", err
 	}
 
-	tabs, pluginTypes := s.startAutoTerminals(ctx, intent, spec.Workdir, spec.Env, size, spec.CleanupPaths)
+	tabs, pluginTypes := s.startAutoTerminals(ctx, cfg, intent, spec.Workdir, spec.Env, size, spec.CleanupPaths)
 	s.storeSessionTerminalState(intent.ID, sessionTerminalState{
 		runID:          run.ID,
 		mainTerminalID: mainTerminalID,
@@ -468,12 +468,17 @@ func (s *Service) RestoreRunningSessions(ctx context.Context) error {
 }
 
 func (s *Service) restoreSession(ctx context.Context, intent domain.SessionIntent, run domain.SessionRun) error {
+	cfg, err := s.currentConfig()
+	if err != nil {
+		return err
+	}
+
 	profile, agentKind, err := s.resolveStoredRunLaunchContext(intent, run)
 	if err != nil {
 		return err
 	}
 
-	if _, err := s.launchSession(ctx, intent, run, profile, agentKind, agentruntime.StartRequest{
+	if _, err := s.launchSession(ctx, cfg, intent, run, profile, agentKind, agentruntime.StartRequest{
 		Instructions: intent.Instructions,
 		Workdir:      run.Workdir,
 		Args:         append([]string(nil), profile.Args...),
@@ -2016,8 +2021,8 @@ func (s *Service) defaultShell() string {
 	return "bash"
 }
 
-func (s *Service) startAutoTerminals(ctx context.Context, intent domain.SessionIntent, workdir string, env map[string]string, size terminalSize, cleanupPaths []string) ([]sessionTabState, []string) {
-	tabs, ok := s.cfg.Tabs[string(intent.SessionType)]
+func (s *Service) startAutoTerminals(ctx context.Context, cfg config.Config, intent domain.SessionIntent, workdir string, env map[string]string, size terminalSize, cleanupPaths []string) ([]sessionTabState, []string) {
+	tabs, ok := cfg.Tabs[string(intent.SessionType)]
 	if !ok || len(tabs) == 0 {
 		tabs = defaultTabsBySessionType[string(intent.SessionType)]
 	}
@@ -2029,9 +2034,9 @@ func (s *Service) startAutoTerminals(ctx context.Context, intent domain.SessionI
 	for _, tab := range tabs {
 		if tab.Type != "terminal" {
 			if p, ok := tabplugin.Get(tab.Type); ok {
-				arch, archErr := s.currentArchitect(intent.ArchitectKey)
-				if archErr != nil {
-					panic(fmt.Sprintf("startAutoTerminals: architect %q not found for plugin %q: %v", intent.ArchitectKey, tab.Type, archErr))
+				arch, ok := cfg.Architects[intent.ArchitectKey]
+				if !ok {
+					panic(fmt.Sprintf("startAutoTerminals: architect %q not found for plugin %q", intent.ArchitectKey, tab.Type))
 				}
 				var ticketPtr *domain.Ticket
 				if intent.SessionType == domain.SessionTypeTicket && intent.ContextID != "" {

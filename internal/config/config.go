@@ -46,7 +46,7 @@ type staticSource struct {
 	cfg Config
 }
 
-type architectsReloadingSource struct {
+type reloadingSource struct {
 	path string
 	base Config
 }
@@ -129,13 +129,13 @@ func StaticSource(cfg Config) Source {
 	return staticSource{cfg: cfg.Clone()}
 }
 
-func NewArchitectsReloadingSource(path string, base Config) (Source, error) {
+func NewReloadingSource(path string, base Config) (Source, error) {
 	resolvedPath, err := resolvePath(path)
 	if err != nil {
 		return nil, err
 	}
 
-	return architectsReloadingSource{
+	return reloadingSource{
 		path: resolvedPath,
 		base: base.Clone(),
 	}, nil
@@ -167,20 +167,8 @@ func Load(path string) (Config, error) {
 
 	configDir := filepath.Dir(path)
 
-	if err := loadOptionalFile(filepath.Join(configDir, variantsFileName), &cfg.Variants); err != nil {
-		return Config{}, fmt.Errorf("load variants: %w", err)
-	}
-
-	if err := loadOptionalFile(filepath.Join(configDir, architectsFileName), &cfg.Architects); err != nil {
-		return Config{}, fmt.Errorf("load architects: %w", err)
-	}
-
-	if err := loadOptionalFile(filepath.Join(configDir, tabsFileName), &cfg.Tabs); err != nil {
-		return Config{}, fmt.Errorf("load tabs: %w", err)
-	}
-
-	if err := loadOptionalFile(filepath.Join(configDir, shortcutsFileName), &cfg.Shortcuts); err != nil {
-		return Config{}, fmt.Errorf("load shortcuts: %w", err)
+	if err := loadOptionalConfigFiles(configDir, &cfg); err != nil {
+		return Config{}, err
 	}
 
 	cfg.normalize()
@@ -204,18 +192,40 @@ func (s staticSource) Current() (Config, error) {
 	return s.cfg.Clone(), nil
 }
 
-func (s architectsReloadingSource) Current() (Config, error) {
+func (s reloadingSource) Current() (Config, error) {
 	cfg := s.base.Clone()
-	architects, err := loadArchitects(filepath.Dir(s.path))
-	if err != nil {
-		return Config{}, fmt.Errorf("reload architects: %w", err)
+	cfg.Variants = map[string]VariantConfig{}
+	cfg.Architects = map[string]ArchitectConfig{}
+	cfg.Tabs = map[string][]TabEntry{}
+	cfg.Shortcuts = defaultShortcuts()
+	if err := loadOptionalConfigFiles(filepath.Dir(s.path), &cfg); err != nil {
+		return Config{}, fmt.Errorf("reload optional config files: %w", err)
 	}
-	cfg.Architects = architects
 	cfg.normalize()
 	if err := cfg.Validate(); err != nil {
-		return Config{}, fmt.Errorf("validate config after architects reload: %w", err)
+		return Config{}, fmt.Errorf("validate config after reload: %w", err)
 	}
 	return cfg, nil
+}
+
+func loadOptionalConfigFiles(configDir string, cfg *Config) error {
+	if err := loadOptionalFile(filepath.Join(configDir, variantsFileName), &cfg.Variants); err != nil {
+		return fmt.Errorf("load variants: %w", err)
+	}
+
+	if err := loadOptionalFile(filepath.Join(configDir, architectsFileName), &cfg.Architects); err != nil {
+		return fmt.Errorf("load architects: %w", err)
+	}
+
+	if err := loadOptionalFile(filepath.Join(configDir, tabsFileName), &cfg.Tabs); err != nil {
+		return fmt.Errorf("load tabs: %w", err)
+	}
+
+	if err := loadOptionalFile(filepath.Join(configDir, shortcutsFileName), &cfg.Shortcuts); err != nil {
+		return fmt.Errorf("load shortcuts: %w", err)
+	}
+
+	return nil
 }
 
 func loadOptionalFile(path string, target interface{}) error {
@@ -230,14 +240,6 @@ func loadOptionalFile(path string, target interface{}) error {
 		return fmt.Errorf("decode YAML %q: %w", path, err)
 	}
 	return nil
-}
-
-func loadArchitects(configDir string) (map[string]ArchitectConfig, error) {
-	architects := map[string]ArchitectConfig{}
-	if err := loadOptionalFile(filepath.Join(configDir, architectsFileName), &architects); err != nil {
-		return nil, err
-	}
-	return architects, nil
 }
 
 type coreConfig struct {

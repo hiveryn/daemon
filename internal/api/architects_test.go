@@ -253,7 +253,7 @@ func TestArchitectsStatusAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	source, err := config.NewArchitectsReloadingSource(cfgPath, cfg)
+	source, err := config.NewReloadingSource(cfgPath, cfg)
 	if err != nil {
 		t.Fatalf("create config source: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestArchitectsStatusAPIReloadsArchitectsFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	source, err := config.NewArchitectsReloadingSource(cfgPath, cfg)
+	source, err := config.NewReloadingSource(cfgPath, cfg)
 	if err != nil {
 		t.Fatalf("create config source: %v", err)
 	}
@@ -472,7 +472,7 @@ func TestArchitectsStatusAPIFailsWhenRunningTicketIsMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	source, err := config.NewArchitectsReloadingSource(cfgPath, cfg)
+	source, err := config.NewReloadingSource(cfgPath, cfg)
 	if err != nil {
 		t.Fatalf("create config source: %v", err)
 	}

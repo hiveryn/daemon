@@ -617,7 +617,7 @@ func TestCreateIntentReloadsArchitectsFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	source, err := config.NewArchitectsReloadingSource(cfgPath, cfg)
+	source, err := config.NewReloadingSource(cfgPath, cfg)
 	if err != nil {
 		t.Fatalf("create config source: %v", err)
 	}
@@ -664,6 +664,96 @@ func TestCreateIntentReloadsArchitectsFile(t *testing.T) {
 	}
 	if intent.ArchitectKey != "litho" || intent.SessionType != domain.SessionTypeArchitect {
 		t.Fatalf("unexpected intent after reload: %#v", intent)
+	}
+}
+
+func TestCreateRunReloadsTabsFileForSessionLayouts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		sessionType domain.SessionType
+		contextID   string
+		updatedCmd  string
+	}{
+		{name: "architect", sessionType: domain.SessionTypeArchitect, contextID: "2026-05-13-1500", updatedCmd: "btop"},
+		{name: "ticket", sessionType: domain.SessionTypeTicket, contextID: "ticket-1", updatedCmd: "yazi"},
+		{name: "freeform", sessionType: domain.SessionTypeFreeform, contextID: "2026-05-13-1600-investigate", updatedCmd: "lazygit"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configDir := t.TempDir()
+			architectPath := t.TempDir()
+			workdir := t.TempDir()
+			cfgPath := writeRuntimeConfigFiles(t, configDir, map[string]config.ArchitectConfig{
+				"hiveryn": {
+					Path:  architectPath,
+					Group: "personal",
+					Repos: map[string]string{"daemon": workdir},
+				},
+			})
+			writeRuntimeTabs(t, configDir, map[string][]config.TabEntry{
+				string(tt.sessionType): {{Type: "terminal", Command: "old-command"}},
+			})
+
+			cfg, err := config.Load(cfgPath)
+			if err != nil {
+				t.Fatalf("load config: %v", err)
+			}
+			source, err := config.NewReloadingSource(cfgPath, cfg)
+			if err != nil {
+				t.Fatalf("create config source: %v", err)
+			}
+
+			repo := newFakeSessionRepository()
+			repo.createdIntent = domain.SessionIntent{
+				ID:           "intent-1",
+				ArchitectKey: "hiveryn",
+				SessionType:  tt.sessionType,
+				ContextID:    tt.contextID,
+				Prompt:       "kickoff",
+				Workdir:      workdir,
+			}
+			adapter := &fakeAdapter{}
+			terminal := &fakeTerminalManager{}
+			service := &Service{
+				logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+				cfg:          cfg,
+				configSource: source,
+				repo:         repo,
+				tickets:      &fakeTicketService{},
+				receiver: ingest.NewReceiver(
+					adapter,
+				),
+				adapters: map[agentruntime.AgentKind]agentruntime.Adapter{
+					agentruntime.AgentCodex: adapter,
+				},
+				terminal:       terminal,
+				eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
+				bridgeCancels:  map[string]func(){},
+				terminalStates: map[string]sessionTerminalState{},
+			}
+
+			writeRuntimeTabs(t, configDir, map[string][]config.TabEntry{
+				string(tt.sessionType): {{Type: "terminal", Command: tt.updatedCmd}},
+			})
+
+			if _, err := service.CreateRun(context.Background(), "intent-1", domain.CreateSessionRunRequest{ProfileName: "codex"}); err != nil {
+				t.Fatalf("CreateRun failed: %v", err)
+			}
+
+			tabs, err := service.ListSessionTabs(context.Background(), "intent-1")
+			if err != nil {
+				t.Fatalf("ListSessionTabs failed: %v", err)
+			}
+			if len(tabs) != 1 {
+				t.Fatalf("expected 1 auto-created tab, got %#v", tabs)
+			}
+			if tabs[0].Type != "terminal" || tabs[0].Command != tt.updatedCmd || tabs[0].Status != "running" {
+				t.Fatalf("unexpected reloaded tabs layout %#v", tabs)
+			}
+		})
 	}
 }
 
@@ -1097,6 +1187,11 @@ func writeRuntimeConfigFiles(t *testing.T, configDir string, architects map[stri
 	})
 	writeRuntimeYAML(t, filepath.Join(configDir, "architects.yaml"), architects)
 	return path
+}
+
+func writeRuntimeTabs(t *testing.T, configDir string, tabs map[string][]config.TabEntry) {
+	t.Helper()
+	writeRuntimeYAML(t, filepath.Join(configDir, "tabs.yaml"), tabs)
 }
 
 func writeRuntimeYAML(t *testing.T, path string, v any) {

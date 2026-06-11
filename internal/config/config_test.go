@@ -233,7 +233,7 @@ func TestLoadMissingOptionalFiles(t *testing.T) {
 	}
 }
 
-func TestArchitectsReloadingSourcePicksUpFileChanges(t *testing.T) {
+func TestReloadingSourcePicksUpOptionalFileChanges(t *testing.T) {
 	t.Parallel()
 
 	configDir := t.TempDir()
@@ -245,7 +245,8 @@ func TestArchitectsReloadingSourcePicksUpFileChanges(t *testing.T) {
 		"log_level":    "info",
 	})
 	writeYAML(t, filepath.Join(configDir, variantsFileName), map[string]VariantConfig{
-		"codex": {Agent: "codex"},
+		"codex":    {Agent: "codex"},
+		"opencode": {Agent: "opencode"},
 	})
 	writeYAML(t, filepath.Join(configDir, architectsFileName), map[string]ArchitectConfig{
 		"hiveryn": {
@@ -253,13 +254,25 @@ func TestArchitectsReloadingSourcePicksUpFileChanges(t *testing.T) {
 			Group: "personal",
 			Repos: map[string]string{"daemon": "/tmp/daemon"},
 		},
+		"legacy": {
+			Path:  "/tmp/legacy",
+			Group: "personal",
+			Repos: map[string]string{"old": "/tmp/old"},
+		},
+	})
+	writeYAML(t, filepath.Join(configDir, tabsFileName), map[string][]TabEntry{
+		"architect": {{Type: "kanban"}},
+		"freeform":  {{Type: "terminal", Command: "oldfree"}},
+	})
+	writeYAML(t, filepath.Join(configDir, shortcutsFileName), map[string]map[string]string{
+		"global": {"quit": "q"},
 	})
 
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	source, err := NewArchitectsReloadingSource(path, cfg)
+	source, err := NewReloadingSource(path, cfg)
 	if err != nil {
 		t.Fatalf("new source: %v", err)
 	}
@@ -271,6 +284,26 @@ func TestArchitectsReloadingSourcePicksUpFileChanges(t *testing.T) {
 	if _, ok := reloaded.Architects["litho"]; ok {
 		t.Fatalf("unexpected architect before reload: %#v", reloaded.Architects)
 	}
+	if _, ok := reloaded.Variants["claude"]; ok {
+		t.Fatalf("unexpected variant before reload: %#v", reloaded.Variants)
+	}
+	if _, ok := reloaded.Variants["opencode"]; !ok {
+		t.Fatalf("expected initial opencode variant, got %#v", reloaded.Variants)
+	}
+	if got := reloaded.Tabs["architect"][0].Type; got != "kanban" {
+		t.Fatalf("expected initial architect tab type kanban, got %q", got)
+	}
+	if got := reloaded.Tabs["freeform"][0].Command; got != "oldfree" {
+		t.Fatalf("expected initial freeform terminal command oldfree, got %q", got)
+	}
+	if got := reloaded.Shortcuts["global"]["quit"]; got != "q" {
+		t.Fatalf("expected initial quit shortcut q, got %q", got)
+	}
+
+	writeYAML(t, filepath.Join(configDir, variantsFileName), map[string]VariantConfig{
+		"codex":  {Agent: "codex"},
+		"claude": {Agent: "claude"},
+	})
 
 	writeYAML(t, filepath.Join(configDir, architectsFileName), map[string]ArchitectConfig{
 		"hiveryn": {
@@ -284,6 +317,13 @@ func TestArchitectsReloadingSourcePicksUpFileChanges(t *testing.T) {
 			Repos: map[string]string{"app": "/tmp/lithoapp"},
 		},
 	})
+	writeYAML(t, filepath.Join(configDir, tabsFileName), map[string][]TabEntry{
+		"architect": {{Type: "terminal", Command: "btop"}},
+		"ticket":    {{Type: "terminal", Command: "yazi"}},
+	})
+	writeYAML(t, filepath.Join(configDir, shortcutsFileName), map[string]map[string]string{
+		"global": {"quit": "Cmd+q"},
+	})
 
 	reloaded, err = source.Current()
 	if err != nil {
@@ -292,11 +332,32 @@ func TestArchitectsReloadingSourcePicksUpFileChanges(t *testing.T) {
 	if _, ok := reloaded.Architects["litho"]; !ok {
 		t.Fatalf("expected litho architect after reload, got %#v", reloaded.Architects)
 	}
+	if _, ok := reloaded.Architects["legacy"]; ok {
+		t.Fatalf("expected removed architect to disappear after reload, got %#v", reloaded.Architects)
+	}
 	if _, ok := reloaded.Architects["hiveryn"].Repos["desktop"]; !ok {
 		t.Fatalf("expected updated repo mappings after reload, got %#v", reloaded.Architects["hiveryn"].Repos)
 	}
 	if _, ok := reloaded.Variants["codex"]; !ok {
 		t.Fatalf("expected base variants to remain available, got %#v", reloaded.Variants)
+	}
+	if _, ok := reloaded.Variants["claude"]; !ok {
+		t.Fatalf("expected updated variant after reload, got %#v", reloaded.Variants)
+	}
+	if _, ok := reloaded.Variants["opencode"]; ok {
+		t.Fatalf("expected removed variant to disappear after reload, got %#v", reloaded.Variants)
+	}
+	if got := reloaded.Tabs["architect"][0].Command; got != "btop" {
+		t.Fatalf("expected reloaded architect terminal command btop, got %q", got)
+	}
+	if got := reloaded.Tabs["ticket"][0].Command; got != "yazi" {
+		t.Fatalf("expected reloaded ticket terminal command yazi, got %q", got)
+	}
+	if _, ok := reloaded.Tabs["freeform"]; ok {
+		t.Fatalf("expected removed freeform tabs to disappear after reload, got %#v", reloaded.Tabs)
+	}
+	if got := reloaded.Shortcuts["global"]["quit"]; got != "Cmd+q" {
+		t.Fatalf("expected reloaded quit shortcut Cmd+q, got %q", got)
 	}
 }
 
