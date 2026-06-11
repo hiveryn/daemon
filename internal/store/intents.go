@@ -107,11 +107,32 @@ func intentWithCurrentRunQuery(suffix string) string {
 	` + suffix
 }
 
+const activeIntentSQL = `(
+	NOT EXISTS (
+		SELECT 1
+		FROM session_runs sr
+		WHERE sr.session_intent_id = i.id
+	)
+	OR EXISTS (
+		SELECT 1
+		FROM session_runs sr
+		WHERE sr.session_intent_id = i.id
+		  AND sr.status = ?
+	)
+)`
+
 func ensureNoActiveIntentTx(ctx context.Context, tx *sql.Tx, params domain.CreateSessionIntentParams) error {
 	switch params.SessionType {
 	case domain.SessionTypeArchitect:
 		var existingID string
-		err := tx.QueryRowContext(ctx, `SELECT id FROM session_intents WHERE architect_key = ? AND session_type = ? LIMIT 1`, params.ArchitectKey, string(domain.SessionTypeArchitect)).Scan(&existingID)
+		err := tx.QueryRowContext(ctx, `
+			SELECT i.id
+			FROM session_intents i
+			WHERE i.architect_key = ?
+			  AND i.session_type = ?
+			  AND `+activeIntentSQL+`
+			LIMIT 1
+		`, params.ArchitectKey, string(domain.SessionTypeArchitect), string(domain.SessionRunStatusRunning)).Scan(&existingID)
 		if err == nil {
 			return &domain.ConflictError{
 				Resource: "session_intent",
@@ -124,7 +145,14 @@ func ensureNoActiveIntentTx(ctx context.Context, tx *sql.Tx, params domain.Creat
 		}
 	case domain.SessionTypeTicket:
 		var existingID string
-		err := tx.QueryRowContext(ctx, `SELECT id FROM session_intents WHERE context_id = ? AND session_type = ? LIMIT 1`, params.ContextID, string(domain.SessionTypeTicket)).Scan(&existingID)
+		err := tx.QueryRowContext(ctx, `
+			SELECT i.id
+			FROM session_intents i
+			WHERE i.context_id = ?
+			  AND i.session_type = ?
+			  AND `+activeIntentSQL+`
+			LIMIT 1
+		`, params.ContextID, string(domain.SessionTypeTicket), string(domain.SessionRunStatusRunning)).Scan(&existingID)
 		if err == nil {
 			return &domain.ConflictError{
 				Resource: "session_intent",
@@ -137,4 +165,63 @@ func ensureNoActiveIntentTx(ctx context.Context, tx *sql.Tx, params domain.Creat
 		}
 	}
 	return nil
+}
+
+func ensureNoActiveSiblingIntentTx(ctx context.Context, tx *sql.Tx, intentID string) error {
+	var architectKey, sessionType, contextID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT architect_key, session_type, context_id
+		FROM session_intents
+		WHERE id = ?
+	`, intentID).Scan(&architectKey, &sessionType, &contextID); err != nil {
+		return fmt.Errorf("get session intent %s for run creation: %w", intentID, err)
+	}
+
+	var (
+		existingID string
+		err        error
+	)
+	switch domain.SessionType(sessionType) {
+	case domain.SessionTypeArchitect:
+		err = tx.QueryRowContext(ctx, `
+			SELECT i.id
+			FROM session_intents i
+			WHERE i.id <> ?
+			  AND i.architect_key = ?
+			  AND i.session_type = ?
+			  AND `+activeIntentSQL+`
+			LIMIT 1
+		`, intentID, architectKey, string(domain.SessionTypeArchitect), string(domain.SessionRunStatusRunning)).Scan(&existingID)
+	case domain.SessionTypeTicket:
+		err = tx.QueryRowContext(ctx, `
+			SELECT i.id
+			FROM session_intents i
+			WHERE i.id <> ?
+			  AND i.context_id = ?
+			  AND i.session_type = ?
+			  AND `+activeIntentSQL+`
+			LIMIT 1
+		`, intentID, contextID, string(domain.SessionTypeTicket), string(domain.SessionRunStatusRunning)).Scan(&existingID)
+	default:
+		return nil
+	}
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check active sibling intent for %s: %w", intentID, err)
+	}
+
+	field := "architect_key"
+	message := fmt.Sprintf("architect %s already has an active architect intent", architectKey)
+	if domain.SessionType(sessionType) == domain.SessionTypeTicket {
+		field = "ticket_id"
+		message = fmt.Sprintf("ticket %s already has an active ticket intent", contextID)
+	}
+	return &domain.ConflictError{
+		Resource: "session_intent",
+		Field:    field,
+		Message:  message,
+	}
 }

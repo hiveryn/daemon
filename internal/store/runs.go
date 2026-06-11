@@ -35,6 +35,9 @@ func (s *SessionStore) CreateRun(ctx context.Context, params domain.CreateSessio
 	if err := ensureIntentExistsTx(ctx, tx, params.SessionIntentID); err != nil {
 		return domain.SessionRun{}, err
 	}
+	if err := ensureNoActiveSiblingIntentTx(ctx, tx, params.SessionIntentID); err != nil {
+		return domain.SessionRun{}, err
+	}
 	if err := ensureNoRunningRunTx(ctx, tx, params.SessionIntentID); err != nil {
 		return domain.SessionRun{}, err
 	}

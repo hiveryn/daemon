@@ -120,6 +120,68 @@ func TestSessionStoreAllowsOneTicketIntentPerTicket(t *testing.T) {
 	}
 }
 
+func TestSessionStoreAllowsTicketIntentAfterFailedRun(t *testing.T) {
+	t.Parallel()
+
+	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	store := NewSessionStore(db)
+	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
+		ID:           "intent-failed",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeTicket,
+		ContextID:    "ticket-1",
+		Prompt:       "kickoff",
+		Workdir:      "/tmp/repo",
+		CreatedBy:    domain.SessionCreatedByDesktop,
+	}); err != nil {
+		t.Fatalf("create first ticket intent: %v", err)
+	}
+
+	if _, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
+		ID:              "run-failed",
+		SessionIntentID: "intent-failed",
+		ProfileName:     "codex-work",
+		ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex"},
+		Workdir:         "/tmp/repo",
+		StartedAt:       time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create failed run: %v", err)
+	}
+	if err := store.MarkRunFailed(context.Background(), "run-failed", domain.SessionRunFailureRestoreFailed); err != nil {
+		t.Fatalf("mark run failed: %v", err)
+	}
+
+	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
+		ID:           "intent-retry",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeTicket,
+		ContextID:    "ticket-1",
+		Prompt:       "retry",
+		Workdir:      "/tmp/repo",
+		CreatedBy:    domain.SessionCreatedByDesktop,
+	}); err != nil {
+		t.Fatalf("create replacement ticket intent: %v", err)
+	}
+
+	_, err = store.CreateRun(context.Background(), domain.CreateSessionRunParams{
+		ID:              "run-stale-retry",
+		SessionIntentID: "intent-failed",
+		ProfileName:     "codex-work",
+		ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex"},
+		Workdir:         "/tmp/repo",
+		StartedAt:       time.Now().UTC(),
+	})
+	var conflict *domain.ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("expected stale intent retry to conflict with replacement intent, got %v", err)
+	}
+}
+
 func TestSessionStoreAllowsOneRunningRunPerIntent(t *testing.T) {
 	t.Parallel()
 
