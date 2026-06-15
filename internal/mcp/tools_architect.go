@@ -9,7 +9,7 @@ import (
 
 func (s *Server) registerArchitectTools() {
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
-		Name:        "concludeSession",
+		Name:        "concludeArchitectSession",
 		Description: "End the architect session. Records a summary of decisions, tickets created, and next steps. The terminal is killed and the session cannot be resumed. The conclusion is sent to the user for approval before taking effect. Fails if any active ticket sessions are in progress.",
 	}, s.handleArchitectConcludeSession)
 
@@ -49,19 +49,45 @@ func (s *Server) registerArchitectTools() {
 	}, s.handleMoveTicketToDone)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
-		Name:        "readConclusion",
-		Description: "Read a conclusion by ID.",
+		Name:        "readArchitectConclusion",
+		Description: "Read an architect session conclusion by ID.",
 	}, s.handleReadConclusion)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
-		Name:        "readRecentConclusion",
+		Name:        "readRecentArchitectConclusion",
 		Description: "Read the most recent architect session conclusion.",
 	}, s.handleReadRecentConclusion)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
-		Name:        "listConclusions",
+		Name:        "listArchitectConclusions",
 		Description: "List recent architect session conclusions. Returns summaries with IDs and timestamps.",
 	}, s.handleListConclusions)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "readTicketConclusion",
+		Description: "Read the conclusion for a specific ticket by ID. Errors with NOT_FOUND if the ticket has no conclusion.",
+	}, s.handleReadTicketConclusion)
+}
+
+func (s *Server) handleReadTicketConclusion(
+	ctx context.Context,
+	_ *mcp.CallToolRequest,
+	input ReadTicketConclusionInput,
+) (*mcp.CallToolResult, TicketConclusionOutput, error) {
+	if strings.TrimSpace(input.TicketID) == "" {
+		return nil, TicketConclusionOutput{}, newValidationError("ticketId", "cannot be empty")
+	}
+
+	ticket, err := s.readTicket(ctx, input.TicketID)
+	if err != nil {
+		return nil, TicketConclusionOutput{}, err
+	}
+
+	if ticket.Conclusion == nil {
+		return nil, TicketConclusionOutput{}, newNotFoundError("conclusion not found")
+	}
+
+	return nil, *ticket.Conclusion, nil
 }
 
 func (s *Server) handleReadTicket(

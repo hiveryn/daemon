@@ -124,9 +124,9 @@ Break large requests into independent, well-scoped tickets when that makes execu
 
 ## Session Conclusions
 
-`concludeSession` ends the session permanently — the terminal is killed and the session cannot be resumed. Your conclusion is sent to the user for approval before taking effect. It will fail if any active ticket sessions are still in progress.
+`concludeArchitectSession` ends the session permanently — the terminal is killed and the session cannot be resumed. Your conclusion is sent to the user for approval before taking effect. It will fail if any active ticket sessions are still in progress.
 
-When concluding, record what actually happened in the session so the next architect can resume quickly. Use `readRecentConclusion` to read the most recent conclusion, `listConclusions` to browse, or `readConclusion(id)` to read a specific one.
+When concluding, record what actually happened in the session so the next architect can resume quickly. Use `readRecentArchitectConclusion` to read the most recent conclusion, `listArchitectConclusions` to browse, or `readArchitectConclusion(id)` to read a specific one. To read the conclusion for a specific ticket, use `readTicketConclusion(ticketId)`.
 
 Include:
 - Tickets created, updated, or deleted
@@ -139,7 +139,7 @@ Keep conclusions concrete and easy to scan. Do not write a generic wrap-up.
 
 ## Hiveryn Tools
 
-`listTickets`, `readTicket`, `editTicketBody`, `createWorkTicket`, `updateTicket`, `deleteTicket`, `concludeSession`, `readRecentConclusion`, `readConclusion`, `listConclusions`.
+`listTickets`, `readTicket`, `editTicketBody`, `createWorkTicket`, `updateTicket`, `deleteTicket`, `concludeArchitectSession`, `readRecentArchitectConclusion`, `readArchitectConclusion`, `listArchitectConclusions`, `readTicketConclusion`.
 
 ## Communication
 

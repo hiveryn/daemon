@@ -106,6 +106,12 @@ type ListTicketsOutput struct {
 	Tickets []TicketSummary `json:"tickets"`
 }
 
+type ReadTicketConclusionInput struct {
+	TicketID string `json:"ticketId" jsonschema:"The ticket ID whose conclusion to read (required)"`
+}
+
 type TicketOutput = domain.Ticket
+
+type TicketConclusionOutput = domain.TicketConclusion
 
 type TicketSummary = domain.TicketSummary
