@@ -1463,7 +1463,7 @@ func (s *Service) AttachTerminal(ctx context.Context, sessionID, terminalID stri
 	return s.terminal.Attach(ctx, sessionID, terminalID)
 }
 
-func (s *Service) CreateTerminal(ctx context.Context, sessionID string, _ domain.CreateTerminalParams) (domain.TerminalInfo, error) {
+func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params domain.CreateTerminalParams) (domain.TerminalInfo, error) {
 	intent, err := s.repo.GetIntent(ctx, sessionID)
 	if err != nil {
 		return domain.TerminalInfo{}, err
@@ -1473,6 +1473,29 @@ func (s *Service) CreateTerminal(ctx context.Context, sessionID string, _ domain
 	}
 	if strings.TrimSpace(intent.CurrentRun.Workdir) == "" {
 		return domain.TerminalInfo{}, fmt.Errorf("session intent %s current run has no workdir", intent.ID)
+	}
+	if params.Placement != domain.TerminalPlacementTab && params.Placement != domain.TerminalPlacementSplit {
+		return domain.TerminalInfo{}, &domain.ValidationError{Field: "placement", Message: "must be one of: tab, split"}
+	}
+	if params.Placement == domain.TerminalPlacementTab && strings.TrimSpace(params.BaseTabID) != "" {
+		return domain.TerminalInfo{}, &domain.ValidationError{Field: "base_tab_id", Message: "is only allowed when placement is split"}
+	}
+	if params.Placement == domain.TerminalPlacementSplit {
+		if strings.TrimSpace(params.BaseTabID) == "" {
+			return domain.TerminalInfo{}, &domain.ValidationError{Field: "base_tab_id", Message: "is required when placement is split"}
+		}
+		foundBaseTab := false
+		for _, tab := range s.sessionTabs(sessionID) {
+			if sessionTabID(tab) == params.BaseTabID && tab.Placement != domain.TerminalPlacementSplit {
+				foundBaseTab = true
+			}
+			if tab.Type == "terminal" && tab.Placement == domain.TerminalPlacementSplit && tab.BaseTabID == params.BaseTabID {
+				return domain.TerminalInfo{}, &domain.ConflictError{Resource: "terminal", Field: "base_tab_id", Message: "split terminal already exists for base tab"}
+			}
+		}
+		if !foundBaseTab {
+			return domain.TerminalInfo{}, &domain.ValidationError{Field: "base_tab_id", Message: "must reference an existing primary right-pane tab"}
+		}
 	}
 
 	command := s.defaultShell()
@@ -1495,6 +1518,8 @@ func (s *Service) CreateTerminal(ctx context.Context, sessionID string, _ domain
 			TerminalID: terminalID,
 			Command:    command,
 			Status:     "running",
+			Placement:  params.Placement,
+			BaseTabID:  params.BaseTabID,
 		},
 		removeOnExit: true,
 	})
@@ -2080,7 +2105,7 @@ func (s *Service) startAutoTerminals(ctx context.Context, cfg config.Config, int
 				"error", err,
 			)
 		}
-		layout = append(layout, sessionTabState{tab: domain.SessionTab{Type: tab.Type, TerminalID: terminalID, Command: cmd, Status: status}})
+		layout = append(layout, sessionTabState{tab: domain.SessionTab{Type: tab.Type, TerminalID: terminalID, Command: cmd, Status: status, Placement: domain.TerminalPlacementTab}})
 	}
 	return layout, pluginTypes
 }
@@ -2187,6 +2212,13 @@ func cloneSessionTabStates(tabs []sessionTabState) []sessionTabState {
 
 func cloneSessionTabState(tab sessionTabState) sessionTabState {
 	return sessionTabState{tab: tab.tab, removeOnExit: tab.removeOnExit}
+}
+
+func sessionTabID(tab domain.SessionTab) string {
+	if tab.Type == "terminal" {
+		return tab.TerminalID
+	}
+	return tab.Type
 }
 
 func (s *Service) hydrateIntent(intent domain.SessionIntent) domain.SessionIntent {

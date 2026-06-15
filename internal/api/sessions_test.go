@@ -231,7 +231,7 @@ func TestSessionTabsEndpoint(t *testing.T) {
 	service := &fakeSessionService{
 		sessionTabs: []domain.SessionTab{
 			{Type: "kanban"},
-			{Type: "terminal", TerminalID: "term-1", Command: "yazi", Status: "running"},
+			{Type: "terminal", TerminalID: "term-1", Command: "yazi", Status: "running", Placement: domain.TerminalPlacementSplit, BaseTabID: "kanban"},
 		},
 	}
 	handler := newSessionTestHandler(t, service)
@@ -246,7 +246,7 @@ func TestSessionTabsEndpoint(t *testing.T) {
 	if len(tabs) != 2 {
 		t.Fatalf("expected 2 tabs, got %#v", tabs)
 	}
-	if tabs[1]["id"] != "term-1" || tabs[1]["command"] != "yazi" || tabs[1]["status"] != "running" {
+	if tabs[1]["id"] != "term-1" || tabs[1]["command"] != "yazi" || tabs[1]["status"] != "running" || tabs[1]["placement"] != "split" || tabs[1]["base_tab_id"] != "kanban" {
 		t.Fatalf("unexpected terminal tab payload %#v", tabs[1])
 	}
 }
@@ -376,7 +376,7 @@ func TestPluginsCallEndpointRejectsUnknownTypeWithDaemonErrorEnvelope(t *testing
 	}
 }
 
-func TestCreateTerminalEndpointAllowsEmptyBody(t *testing.T) {
+func TestCreateTerminalEndpointPassesPlacement(t *testing.T) {
 	t.Parallel()
 
 	service := &fakeSessionService{
@@ -384,12 +384,18 @@ func TestCreateTerminalEndpointAllowsEmptyBody(t *testing.T) {
 	}
 	handler := newSessionTestHandler(t, service)
 
-	status, body := request(t, handler, http.MethodPost, "/api/sessions/intent-1/terminals", strings.NewReader(`{}`))
+	status, body := request(t, handler, http.MethodPost, "/api/sessions/intent-1/terminals", strings.NewReader(`{"placement":"split","base_tab_id":"kanban"}`))
 	if status != http.StatusCreated {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, status, string(body))
 	}
 	if service.lastCreateTerminalID != "intent-1" {
 		t.Fatalf("unexpected session id %q", service.lastCreateTerminalID)
+	}
+	if service.lastCreateTerminalParams.Placement != domain.TerminalPlacementSplit {
+		t.Fatalf("expected split placement, got %#v", service.lastCreateTerminalParams)
+	}
+	if service.lastCreateTerminalParams.BaseTabID != "kanban" {
+		t.Fatalf("expected split base tab id kanban, got %#v", service.lastCreateTerminalParams)
 	}
 
 	var terminal domain.TerminalInfo
@@ -531,36 +537,37 @@ func newSessionTestHandler(t *testing.T, sessions domain.SessionService) http.Ha
 }
 
 type fakeSessionService struct {
-	createIntentResult      domain.SessionIntent
-	createIntentErr         error
-	lastCreateIntent        domain.CreateSessionIntentRequest
-	createRunResult         domain.CreateSessionRunResult
-	createRunErr            error
-	lastCreateRunIntentID   string
-	lastCreateRun           domain.CreateSessionRunRequest
-	intents                 []domain.SessionIntent
-	getIntentResult         domain.SessionIntent
-	attachTerminal          func(context.Context, string, string) (domain.TerminalAttachment, error)
-	createTerminalResult    domain.TerminalInfo
-	createTerminalErr       error
-	lastCreateTerminalID    string
-	sessionTabs             []domain.SessionTab
-	concludeResult          domain.ConcludeSessionResult
-	concludeErr             error
-	lastConcludeSessionID   string
-	lastConcludeParams      domain.ConcludeSessionParams
-	requestConclusionResult domain.ConcludeSessionResult
-	requestConclusionErr    error
-	approveConclusionResult domain.ConcludeSessionResult
-	approveConclusionErr    error
-	rejectConclusionErr     error
-	readConclusionResult    domain.ArchitectConclusion
-	readConclusionErr       error
-	callPlugin              func(context.Context, string, string, string, map[string]any) (tabplugin.Response, error)
-	lastCallPluginSession   string
-	lastCallPluginType      string
-	lastCallPluginFn        string
-	lastCallPluginArgs      map[string]any
+	createIntentResult       domain.SessionIntent
+	createIntentErr          error
+	lastCreateIntent         domain.CreateSessionIntentRequest
+	createRunResult          domain.CreateSessionRunResult
+	createRunErr             error
+	lastCreateRunIntentID    string
+	lastCreateRun            domain.CreateSessionRunRequest
+	intents                  []domain.SessionIntent
+	getIntentResult          domain.SessionIntent
+	attachTerminal           func(context.Context, string, string) (domain.TerminalAttachment, error)
+	createTerminalResult     domain.TerminalInfo
+	createTerminalErr        error
+	lastCreateTerminalID     string
+	lastCreateTerminalParams domain.CreateTerminalParams
+	sessionTabs              []domain.SessionTab
+	concludeResult           domain.ConcludeSessionResult
+	concludeErr              error
+	lastConcludeSessionID    string
+	lastConcludeParams       domain.ConcludeSessionParams
+	requestConclusionResult  domain.ConcludeSessionResult
+	requestConclusionErr     error
+	approveConclusionResult  domain.ConcludeSessionResult
+	approveConclusionErr     error
+	rejectConclusionErr      error
+	readConclusionResult     domain.ArchitectConclusion
+	readConclusionErr        error
+	callPlugin               func(context.Context, string, string, string, map[string]any) (tabplugin.Response, error)
+	lastCallPluginSession    string
+	lastCallPluginType       string
+	lastCallPluginFn         string
+	lastCallPluginArgs       map[string]any
 }
 
 func (f *fakeSessionService) CreateIntent(_ context.Context, req domain.CreateSessionIntentRequest) (domain.SessionIntent, error) {
@@ -643,6 +650,7 @@ func (f *fakeSessionService) AttachTerminal(ctx context.Context, sessionID, term
 
 func (f *fakeSessionService) CreateTerminal(_ context.Context, id string, params domain.CreateTerminalParams) (domain.TerminalInfo, error) {
 	f.lastCreateTerminalID = id
+	f.lastCreateTerminalParams = params
 	return f.createTerminalResult, f.createTerminalErr
 }
 

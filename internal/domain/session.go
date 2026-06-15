@@ -31,6 +31,7 @@ type (
 	MoveTicketToDoneParams     = sd.MoveTicketToDoneParams
 	MoveTicketToDoneResult     = sd.MoveTicketToDoneResult
 	TerminalInfo               = sd.TerminalInfo
+	TerminalPlacement          = sd.TerminalPlacement
 	CreateTerminalParams       = sd.CreateTerminalParams
 	SessionTab                 = sd.SessionTab
 	ArchitectConclusion        = sd.ArchitectConclusion
@@ -65,6 +66,9 @@ const (
 	SessionRunFailureProcessExited = sd.SessionRunFailureProcessExited
 	SessionRunFailureRestoreFailed = sd.SessionRunFailureRestoreFailed
 	SessionRunFailureUserCancelled = sd.SessionRunFailureUserCancelled
+
+	TerminalPlacementTab   = sd.TerminalPlacementTab
+	TerminalPlacementSplit = sd.TerminalPlacementSplit
 )
 
 type SessionRepository interface {
