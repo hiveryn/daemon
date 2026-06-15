@@ -554,15 +554,58 @@ func (p *terminalProcess) broadcast(chunk []byte) {
 		payload := append([]byte(nil), chunk...)
 		select {
 		case ch <- payload:
+			continue
 		default:
-			// Subscriber channel full: evict it. A stream with holes
-			// (dropped bytes mid-escape-sequence) leaves xterm's parser in an
-			// unknown state with no recovery path. A clean WS close is better:
-			// the desktop detects it via onTerminalClosed and auto-reconnects
-			// (sending ESC c + re-attaching for a fresh replay). The increased
-			// outputQueueSize=512 makes this rare for normal TUI output rates.
-			p.logger.Warn("[pty] subscriber channel full, evicting",
-				"sub_id", id, "bytes", len(payload))
+		}
+
+		// Channel full: coalesce the backlog into a single ordered payload
+		// rather than evicting. Dropping bytes is not an option — a hole
+		// mid-escape-sequence leaves xterm's parser in an unknown state with no
+		// recovery path — but draining the queued chunks and concatenating them
+		// in receive order (oldest first) with the new chunk preserves byte
+		// order with zero holes. This absorbs transient consumer slowness (most
+		// notably the attach handshake window opened by the attach-time resize)
+		// that previously dropped the WS the instant 512 chunks queued up.
+		queued := make([][]byte, 0, len(ch)+1)
+		total := len(payload)
+	drain:
+		for {
+			select {
+			case b := <-ch:
+				queued = append(queued, b)
+				total += len(b)
+			default:
+				break drain
+			}
+		}
+
+		// Backstop: a consumer that has fallen further behind than the replay
+		// buffer is genuinely stuck (dead WS, paused tab). Reconnect+replay
+		// delivers the same 64 KB of state with a clean parser reset, so evict
+		// rather than grow an unbounded coalesced buffer. The desktop detects
+		// the close via onTerminalClosed and auto-reconnects.
+		if total > replayBufferSize {
+			p.logger.Warn("[pty] subscriber too far behind, evicting",
+				"sub_id", id, "bytes", total)
+			delete(p.outputSubs, id)
+			close(ch)
+			continue
+		}
+
+		merged := make([]byte, 0, total)
+		for _, b := range queued {
+			merged = append(merged, b...)
+		}
+		merged = append(merged, payload...)
+
+		// The channel was just drained to empty under p.mu, so this send always
+		// succeeds without blocking. The select guards the (impossible) case
+		// where the consumer is closing the channel concurrently.
+		select {
+		case ch <- merged:
+		default:
+			p.logger.Warn("[pty] subscriber channel unwritable after drain, evicting",
+				"sub_id", id, "bytes", len(merged))
 			delete(p.outputSubs, id)
 			close(ch)
 		}

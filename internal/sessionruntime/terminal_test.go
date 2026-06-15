@@ -111,7 +111,7 @@ func TestTerminalProcessReplaysBeforeResizeOutput(t *testing.T) {
 	assertOutputChunk(t, attachment.Output(), "redraw")
 }
 
-func TestTerminalProcessClosesSlowSubscriberWhenQueueIsFull(t *testing.T) {
+func TestTerminalProcessCoalescesBacklogWhenQueueIsFull(t *testing.T) {
 	t.Parallel()
 
 	process := newTestTerminalProcess(t)
@@ -121,16 +121,65 @@ func TestTerminalProcessClosesSlowSubscriberWhenQueueIsFull(t *testing.T) {
 	}
 	defer func() { _ = attachment.Close() }()
 
-	for i := 0; i < outputQueueSize+1; i++ {
+	// Overflow the channel without draining it. The total stays well under the
+	// replay-buffer backstop, so nothing is evicted: the backlog is coalesced
+	// into a single ordered payload instead of dropping the subscriber.
+	const chunks = outputQueueSize + 64
+	for range chunks {
 		process.broadcast([]byte("x"))
 	}
 
-	count := 0
-	for range attachment.Output() {
-		count++
+	// Drain everything the subscriber received and confirm zero bytes were lost
+	// and the channel was never closed (no eviction).
+	var got []byte
+	deadline := time.After(time.Second)
+	for len(got) < chunks {
+		select {
+		case b, ok := <-attachment.Output():
+			if !ok {
+				t.Fatalf("subscriber was evicted; got %d of %d bytes", len(got), chunks)
+			}
+			got = append(got, b...)
+		case <-deadline:
+			t.Fatalf("timed out after receiving %d of %d bytes", len(got), chunks)
+		}
 	}
-	if count != outputQueueSize {
-		t.Fatalf("expected %d queued chunks before close, got %d", outputQueueSize, count)
+	if string(got) != strings.Repeat("x", chunks) {
+		t.Fatalf("coalesced stream lost or reordered bytes: got %d bytes", len(got))
+	}
+}
+
+func TestTerminalProcessEvictsSubscriberBeyondReplayBuffer(t *testing.T) {
+	t.Parallel()
+
+	process := newTestTerminalProcess(t)
+	attachment, err := process.attach()
+	if err != nil {
+		t.Fatalf("attach terminal: %v", err)
+	}
+	defer func() { _ = attachment.Close() }()
+
+	// A consumer that falls further behind than the replay buffer is genuinely
+	// stuck. Eviction only triggers once the channel is full (coalescing can no
+	// longer make progress), so overflow the queue with chunks whose coalesced
+	// total exceeds the replay buffer. Each 4 KB chunk × (outputQueueSize+1)
+	// far exceeds the 64 KB backstop, so the first full-channel broadcast
+	// drains a >64 KB backlog and evicts rather than re-enqueueing it.
+	chunk := bytes.Repeat([]byte("x"), 4096)
+	for range outputQueueSize + 1 {
+		process.broadcast(chunk)
+	}
+
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case _, ok := <-attachment.Output():
+			if !ok {
+				return // channel closed → subscriber evicted, as expected
+			}
+		case <-deadline:
+			t.Fatal("expected subscriber channel to be closed after exceeding replay buffer")
+		}
 	}
 }
 
