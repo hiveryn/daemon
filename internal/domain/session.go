@@ -17,6 +17,7 @@ type (
 	SessionRunFailureReason = sd.SessionRunFailureReason
 
 	AgentProfileSnapshot       = sd.AgentProfileSnapshot
+	MCPServerSnapshot          = sd.MCPServerSnapshot
 	SessionIntent              = sd.SessionIntent
 	SessionRun                 = sd.SessionRun
 	SessionEvent               = sd.SessionEvent

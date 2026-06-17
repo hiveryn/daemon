@@ -553,6 +553,145 @@ func TestValidateRejectsBlankTabSessionType(t *testing.T) {
 	}
 }
 
+func TestLoadVariantWithMCPServers(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+	writeYAML(t, filepath.Join(configDir, configFileName), map[string]any{
+		"port":         4201,
+		"bind_address": "127.0.0.1",
+		"log_level":    "info",
+	})
+
+	variantsYAML := "claude-sonnet-plan:\n" +
+		"  agent: claude\n" +
+		"  args: [--model, claude-sonnet-4-6]\n" +
+		"  mcp_servers:\n" +
+		"    sentrux:\n" +
+		"      command: sentrux\n" +
+		"      args: [--mcp]\n"
+	if err := os.WriteFile(filepath.Join(configDir, variantsFileName), []byte(variantsYAML), 0o600); err != nil {
+		t.Fatalf("write variants: %v", err)
+	}
+
+	cfg, err := Load(filepath.Join(configDir, configFileName))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	variant, ok := cfg.Variants["claude-sonnet-plan"]
+	if !ok {
+		t.Fatalf("expected claude-sonnet-plan variant, got %#v", cfg.Variants)
+	}
+	server, ok := variant.MCP["sentrux"]
+	if !ok {
+		t.Fatalf("expected sentrux mcp server, got %#v", variant.MCP)
+	}
+	if server.Command != "sentrux" {
+		t.Fatalf("expected command sentrux, got %q", server.Command)
+	}
+	if len(server.Args) != 1 || server.Args[0] != "--mcp" {
+		t.Fatalf("expected args [--mcp], got %#v", server.Args)
+	}
+	if server.Env == nil {
+		t.Fatal("expected normalized empty env, got nil")
+	}
+}
+
+func TestValidateRejectsReservedMCPServerName(t *testing.T) {
+	t.Parallel()
+
+	err := variantConfigWithMCP(map[string]MCPServerConfig{
+		ReservedMCPServerName: {Command: "sentrux"},
+	}).Validate()
+	if err == nil {
+		t.Fatal("expected reserved mcp server name validation error")
+	}
+}
+
+func TestValidateRejectsMCPServerWithoutTransport(t *testing.T) {
+	t.Parallel()
+
+	err := variantConfigWithMCP(map[string]MCPServerConfig{
+		"sentrux": {},
+	}).Validate()
+	if err == nil {
+		t.Fatal("expected missing transport validation error")
+	}
+}
+
+func TestValidateRejectsMCPServerWithBothTransports(t *testing.T) {
+	t.Parallel()
+
+	err := variantConfigWithMCP(map[string]MCPServerConfig{
+		"sentrux": {Command: "sentrux", URL: "http://127.0.0.1:9000"},
+	}).Validate()
+	if err == nil {
+		t.Fatal("expected both-transports validation error")
+	}
+}
+
+func TestValidateAllowsURLMCPServer(t *testing.T) {
+	t.Parallel()
+
+	err := variantConfigWithMCP(map[string]MCPServerConfig{
+		"remote": {URL: "http://127.0.0.1:9000", BearerTokenEnvVar: "TOKEN"},
+	}).Validate()
+	if err != nil {
+		t.Fatalf("expected url mcp server to be valid, got %v", err)
+	}
+}
+
+func TestCloneIsolatesVariantMCPServers(t *testing.T) {
+	t.Parallel()
+
+	original := Config{
+		Port:        DefaultPort,
+		BindAddress: DefaultBindAddress,
+		LogLevel:    DefaultLogLevel,
+		Variants: map[string]VariantConfig{
+			"claude-plan": {
+				Agent: "claude",
+				MCP: map[string]MCPServerConfig{
+					"sentrux": {Command: "sentrux", Args: []string{"--mcp"}, Env: map[string]string{"K": "V"}},
+				},
+			},
+		},
+		Architects: map[string]ArchitectConfig{},
+		Tabs:       map[string][]TabEntry{},
+	}
+
+	cloned := original.Clone()
+	clonedServer := cloned.Variants["claude-plan"].MCP["sentrux"]
+	clonedServer.Args[0] = "MUTATED"
+	clonedServer.Env["K"] = "MUTATED"
+	cloned.Variants["claude-plan"].MCP["added"] = MCPServerConfig{Command: "added"}
+
+	origServer := original.Variants["claude-plan"].MCP["sentrux"]
+	if origServer.Args[0] != "--mcp" {
+		t.Fatalf("expected original args unchanged, got %#v", origServer.Args)
+	}
+	if origServer.Env["K"] != "V" {
+		t.Fatalf("expected original env unchanged, got %#v", origServer.Env)
+	}
+	if _, ok := original.Variants["claude-plan"].MCP["added"]; ok {
+		t.Fatal("expected original mcp map to be isolated from clone")
+	}
+}
+
+func variantConfigWithMCP(mcp map[string]MCPServerConfig) Config {
+	return Config{
+		Port:        DefaultPort,
+		BindAddress: DefaultBindAddress,
+		LogLevel:    DefaultLogLevel,
+		Variants: map[string]VariantConfig{
+			"claude-plan": {Agent: "claude", MCP: mcp},
+		},
+		Architects: map[string]ArchitectConfig{},
+		Tabs:       map[string][]TabEntry{},
+	}
+}
+
 func writeYAML(t *testing.T, path string, v interface{}) {
 	t.Helper()
 	data, err := yaml.Marshal(v)

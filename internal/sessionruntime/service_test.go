@@ -1171,6 +1171,108 @@ func TestCreateRunAddsMCPServer(t *testing.T) {
 	assertMCPServer(t, adapter.launchRequest.MCPServers, domain.SessionTypeArchitect, "intent-1")
 }
 
+func TestCreateRunMergesVariantMCPServers(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.createdIntent = domain.SessionIntent{
+		ID:           "intent-1",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeArchitect,
+		ContextID:    "2026-05-13-1500",
+		Prompt:       "kickoff",
+		Workdir:      t.TempDir(),
+		Instructions: "system",
+	}
+	adapter := &fakeAdapter{}
+	service := &Service{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg: config.Config{
+			Variants: map[string]config.VariantConfig{
+				"codex-sentrux": {
+					Agent: "codex",
+					MCP: map[string]config.MCPServerConfig{
+						"sentrux": {Command: "sentrux", Args: []string{"--mcp"}},
+						"alpha":   {Command: "alpha"},
+					},
+				},
+			},
+			Architects: map[string]config.ArchitectConfig{
+				"hiveryn": {Path: t.TempDir(), Group: "personal", Repos: map[string]string{}},
+			},
+		},
+		repo:           repo,
+		receiver:       ingest.NewReceiver(adapter),
+		adapters:       map[agentruntime.AgentKind]agentruntime.Adapter{agentruntime.AgentCodex: adapter},
+		terminal:       &fakeTerminalManager{},
+		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels:  map[string]func(){},
+		baseURL:        "http://127.0.0.1:4200",
+		executablePath: func() (string, error) { return "/tmp/hiverynd", nil },
+	}
+
+	if _, err := service.CreateRun(context.Background(), "intent-1", domain.CreateSessionRunRequest{ProfileName: "codex-sentrux"}); err != nil {
+		t.Fatalf("CreateRun failed: %v", err)
+	}
+
+	servers := adapter.launchRequest.MCPServers
+	if len(servers) != 3 {
+		t.Fatalf("expected base + 2 variant mcp servers, got %#v", servers)
+	}
+	if servers[0].Name != "hiveryn-daemon" {
+		t.Fatalf("expected base hiveryn-daemon server first, got %#v", servers)
+	}
+	// Variant servers are appended in sorted-by-name order for determinism.
+	if servers[1].Name != "alpha" || servers[2].Name != "sentrux" {
+		t.Fatalf("expected variant servers sorted (alpha, sentrux), got %#v", servers)
+	}
+	if servers[2].Command != "sentrux" || len(servers[2].Args) != 1 || servers[2].Args[0] != "--mcp" {
+		t.Fatalf("unexpected sentrux server config %#v", servers[2])
+	}
+}
+
+func TestSnapshotVariantRoundTripsMCP(t *testing.T) {
+	t.Parallel()
+
+	profile := config.VariantConfig{
+		Agent: "claude",
+		Args:  []string{"--model", "claude-sonnet-4-6"},
+		Env:   map[string]string{"K": "V"},
+		MCP: map[string]config.MCPServerConfig{
+			"sentrux": {
+				Command:           "sentrux",
+				Args:              []string{"--mcp"},
+				Env:               map[string]string{"E": "1"},
+				BearerTokenEnvVar: "TOKEN",
+			},
+		},
+	}
+
+	snap := snapshotVariant(profile)
+	got, ok := snap.MCP["sentrux"]
+	if !ok {
+		t.Fatalf("expected snapshot to carry sentrux mcp, got %#v", snap.MCP)
+	}
+	if got.Command != "sentrux" || got.BearerTokenEnvVar != "TOKEN" {
+		t.Fatalf("unexpected snapshot server %#v", got)
+	}
+
+	rebuilt := mcpServersFromSnapshot(snap.MCP)
+	rebuiltServer, ok := rebuilt["sentrux"]
+	if !ok {
+		t.Fatalf("expected rebuilt sentrux mcp, got %#v", rebuilt)
+	}
+	if rebuiltServer.Command != "sentrux" {
+		t.Fatalf("expected rebuilt command sentrux, got %q", rebuiltServer.Command)
+	}
+	if len(rebuiltServer.Args) != 1 || rebuiltServer.Args[0] != "--mcp" {
+		t.Fatalf("expected rebuilt args [--mcp], got %#v", rebuiltServer.Args)
+	}
+	if rebuiltServer.Env["E"] != "1" || rebuiltServer.BearerTokenEnvVar != "TOKEN" {
+		t.Fatalf("unexpected rebuilt server %#v", rebuiltServer)
+	}
+}
+
 func TestCreateRunOpenCodeArchitectDefinesNamedAgent(t *testing.T) {
 	t.Parallel()
 

@@ -279,6 +279,60 @@ func TestSessionStorePersistsFreeformIntentFields(t *testing.T) {
 	}
 }
 
+func TestSessionStorePersistsMCPServerSnapshot(t *testing.T) {
+	t.Parallel()
+
+	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	store := NewSessionStore(db)
+	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
+		ID:           "intent-1",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeArchitect,
+		ContextID:    "2026-05-19-1200",
+		Prompt:       "kickoff",
+		Workdir:      "/tmp/architect",
+		CreatedBy:    domain.SessionCreatedByDesktop,
+	}); err != nil {
+		t.Fatalf("create intent: %v", err)
+	}
+
+	if _, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
+		ID:              "run-1",
+		SessionIntentID: "intent-1",
+		ProfileName:     "claude-sonnet-plan",
+		ProfileSnapshot: domain.AgentProfileSnapshot{
+			Agent: "claude",
+			MCP: map[string]domain.MCPServerSnapshot{
+				"sentrux": {Command: "sentrux", Args: []string{"--mcp"}, Env: map[string]string{"E": "1"}},
+			},
+		},
+		Workdir:   "/tmp/repo",
+		StartedAt: time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	run, err := store.GetRun(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.ProfileSnapshot == nil {
+		t.Fatal("expected profile snapshot to persist")
+	}
+	server, ok := run.ProfileSnapshot.MCP["sentrux"]
+	if !ok {
+		t.Fatalf("expected sentrux mcp in snapshot, got %#v", run.ProfileSnapshot.MCP)
+	}
+	if server.Command != "sentrux" || len(server.Args) != 1 || server.Args[0] != "--mcp" || server.Env["E"] != "1" {
+		t.Fatalf("unexpected persisted mcp server %#v", server)
+	}
+}
+
 func TestSessionStoreUpdatesRunNativeID(t *testing.T) {
 	t.Parallel()
 

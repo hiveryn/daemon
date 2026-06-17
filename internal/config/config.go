@@ -52,10 +52,25 @@ type reloadingSource struct {
 }
 
 type VariantConfig struct {
-	Agent string            `yaml:"agent"`
-	Args  []string          `yaml:"args"`
-	Env   map[string]string `yaml:"env"`
+	Agent string                     `yaml:"agent"`
+	Args  []string                   `yaml:"args"`
+	Env   map[string]string          `yaml:"env"`
+	MCP   map[string]MCPServerConfig `yaml:"mcp_servers"`
 }
+
+type MCPServerConfig struct {
+	Command           string            `yaml:"command"`
+	Args              []string          `yaml:"args"`
+	Env               map[string]string `yaml:"env"`
+	CWD               string            `yaml:"cwd"`
+	URL               string            `yaml:"url"`
+	BearerTokenEnvVar string            `yaml:"bearer_token_env_var"`
+}
+
+// ReservedMCPServerName is the name of the base hiveryn-daemon MCP server that
+// every session always receives. Variants must not declare a server under this
+// name to avoid colliding with the base server.
+const ReservedMCPServerName = "hiveryn-daemon"
 
 type ArchitectConfig struct {
 	Path  string            `yaml:"path"`
@@ -335,6 +350,25 @@ func (c Config) Validate() error {
 				return fmt.Errorf("variants.%s.env keys must not be blank", name)
 			}
 		}
+		for _, serverName := range sortedKeys(variant.MCP) {
+			if strings.TrimSpace(serverName) == "" {
+				return fmt.Errorf("variants.%s.mcp_servers keys must not be blank", name)
+			}
+			if serverName == ReservedMCPServerName {
+				return fmt.Errorf("variants.%s.mcp_servers.%s name is reserved for the base daemon server", name, serverName)
+			}
+			server := variant.MCP[serverName]
+			hasCommand := strings.TrimSpace(server.Command) != ""
+			hasURL := strings.TrimSpace(server.URL) != ""
+			if hasCommand == hasURL {
+				return fmt.Errorf("variants.%s.mcp_servers.%s must set exactly one of command or url", name, serverName)
+			}
+			for key := range server.Env {
+				if strings.TrimSpace(key) == "" {
+					return fmt.Errorf("variants.%s.mcp_servers.%s.env keys must not be blank", name, serverName)
+				}
+			}
+		}
 	}
 
 	architectKeys := sortedKeys(c.Architects)
@@ -406,6 +440,18 @@ func (c *Config) normalize() {
 		}
 		if variant.Env == nil {
 			variant.Env = map[string]string{}
+		}
+		if variant.MCP == nil {
+			variant.MCP = map[string]MCPServerConfig{}
+		}
+		for serverName, server := range variant.MCP {
+			if server.Args == nil {
+				server.Args = []string{}
+			}
+			if server.Env == nil {
+				server.Env = map[string]string{}
+			}
+			variant.MCP[serverName] = server
 		}
 		c.Variants[name] = variant
 	}
@@ -488,6 +534,25 @@ func cloneVariantConfigs(src map[string]VariantConfig) map[string]VariantConfig 
 			Agent: variant.Agent,
 			Args:  append([]string(nil), variant.Args...),
 			Env:   cloneStringMap(variant.Env),
+			MCP:   cloneMCPServerConfigs(variant.MCP),
+		}
+	}
+	return dst
+}
+
+func cloneMCPServerConfigs(src map[string]MCPServerConfig) map[string]MCPServerConfig {
+	if len(src) == 0 {
+		return map[string]MCPServerConfig{}
+	}
+	dst := make(map[string]MCPServerConfig, len(src))
+	for name, server := range src {
+		dst[name] = MCPServerConfig{
+			Command:           server.Command,
+			Args:              append([]string(nil), server.Args...),
+			Env:               cloneStringMap(server.Env),
+			CWD:               server.CWD,
+			URL:               server.URL,
+			BearerTokenEnvVar: server.BearerTokenEnvVar,
 		}
 	}
 	return dst

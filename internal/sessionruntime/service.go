@@ -560,7 +560,7 @@ func (s *Service) prepareLaunchSpec(ctx context.Context, intent domain.SessionIn
 		return agentruntime.LaunchSpec{}, fmt.Errorf("ensure %s setup: %w", agentKind, err)
 	}
 
-	mcpServers, err := s.mcpServersForSession(intent.SessionType, intent.ArchitectKey, intent.ID)
+	mcpServers, err := s.mcpServersForSession(intent.SessionType, intent.ArchitectKey, intent.ID, profile.MCP)
 	if err != nil {
 		return agentruntime.LaunchSpec{}, err
 	}
@@ -647,6 +647,7 @@ func (s *Service) resolveStoredRunLaunchContext(intent domain.SessionIntent, run
 		Agent: snapshot.Agent,
 		Args:  append([]string(nil), snapshot.Args...),
 		Env:   cloneStringMap(snapshot.Env),
+		MCP:   mcpServersFromSnapshot(snapshot.MCP),
 	}, agentKind, nil
 }
 
@@ -1857,14 +1858,14 @@ func cloneStringMap(input map[string]string) map[string]string {
 	return cloned
 }
 
-func (s *Service) mcpServersForSession(sessionType domain.SessionType, architectKey, sessionID string) ([]agentruntime.MCPServerConfig, error) {
+func (s *Service) mcpServersForSession(sessionType domain.SessionType, architectKey, sessionID string, variantServers map[string]config.MCPServerConfig) ([]agentruntime.MCPServerConfig, error) {
 	hiveryndPath, err := s.resolveExecutablePath()
 	if err != nil {
 		return nil, fmt.Errorf("resolve hiverynd executable: %w", err)
 	}
 
-	return []agentruntime.MCPServerConfig{{
-		Name:    "hiveryn-daemon",
+	servers := []agentruntime.MCPServerConfig{{
+		Name:    config.ReservedMCPServerName,
 		Command: hiveryndPath,
 		Args: []string{
 			"mcp",
@@ -1877,7 +1878,27 @@ func (s *Service) mcpServersForSession(sessionType domain.SessionType, architect
 			"HIVERYN_SESSION_TYPE":  string(sessionType),
 			"HIVERYN_SESSION_ID":    sessionID,
 		},
-	}}, nil
+	}}
+
+	names := make([]string, 0, len(variantServers))
+	for name := range variantServers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		server := variantServers[name]
+		servers = append(servers, agentruntime.MCPServerConfig{
+			Name:              name,
+			Command:           server.Command,
+			Args:              append([]string(nil), server.Args...),
+			CWD:               server.CWD,
+			Env:               cloneStringMap(server.Env),
+			URL:               server.URL,
+			BearerTokenEnvVar: server.BearerTokenEnvVar,
+		})
+	}
+
+	return servers, nil
 }
 
 func (s *Service) resolveExecutablePath() (string, error) {
@@ -2033,7 +2054,44 @@ func snapshotVariant(profile config.VariantConfig) domain.AgentProfileSnapshot {
 		Agent: profile.Agent,
 		Args:  append([]string(nil), profile.Args...),
 		Env:   cloneStringMap(profile.Env),
+		MCP:   snapshotMCPServers(profile.MCP),
 	}
+}
+
+func snapshotMCPServers(src map[string]config.MCPServerConfig) map[string]domain.MCPServerSnapshot {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]domain.MCPServerSnapshot, len(src))
+	for name, server := range src {
+		dst[name] = domain.MCPServerSnapshot{
+			Command:           server.Command,
+			Args:              append([]string(nil), server.Args...),
+			Env:               cloneStringMap(server.Env),
+			CWD:               server.CWD,
+			URL:               server.URL,
+			BearerTokenEnvVar: server.BearerTokenEnvVar,
+		}
+	}
+	return dst
+}
+
+func mcpServersFromSnapshot(src map[string]domain.MCPServerSnapshot) map[string]config.MCPServerConfig {
+	if len(src) == 0 {
+		return map[string]config.MCPServerConfig{}
+	}
+	dst := make(map[string]config.MCPServerConfig, len(src))
+	for name, server := range src {
+		dst[name] = config.MCPServerConfig{
+			Command:           server.Command,
+			Args:              append([]string(nil), server.Args...),
+			Env:               cloneStringMap(server.Env),
+			CWD:               server.CWD,
+			URL:               server.URL,
+			BearerTokenEnvVar: server.BearerTokenEnvVar,
+		}
+	}
+	return dst
 }
 
 func (s *Service) defaultShell() string {

@@ -77,6 +77,18 @@ deep-personal:
   args: [--model, gpt-5]
 ```
 
+A variant may declare its own MCP servers under `mcp_servers` (keyed by server name). Those servers are attached only to sessions launched for that variant, merged after the base `hiveryn-daemon` server that every session always receives. Each entry mirrors the agent MCP server fields — set exactly one of `command` (stdio) or `url` (HTTP); `args`, `env`, `cwd`, and `bearer_token_env_var` are optional. The name `hiveryn-daemon` is reserved. The frozen set is restored when a session is resumed after a daemon restart.
+
+```yaml
+claude-sonnet-plan:
+  agent: claude
+  args: [--model, claude-sonnet-4-6]
+  mcp_servers:
+    sentrux:
+      command: sentrux
+      args: [--mcp]
+```
+
 For architect sessions using `agent: opencode`, the daemon defines a named OpenCode agent automatically from `prompts/architect/SYSTEM.md`, using the architect key as the agent name and passing `--agent <architect_key>` at launch. Do not put `--agent` in OpenCode architect variant args; the daemon treats that as a launch error. Ticket and freeform OpenCode sessions do not define a named agent.
 
 ### `architects.yaml` — architect definitions
