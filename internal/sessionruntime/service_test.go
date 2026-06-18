@@ -302,6 +302,52 @@ func TestConcludeTicketSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 	}
 }
 
+func TestRequestConclusionRejectsMissingCommitsBeforeApproval(t *testing.T) {
+	t.Parallel()
+
+	created := time.Date(2026, 5, 13, 15, 30, 0, 0, time.UTC)
+	started := created.Add(5 * time.Minute)
+	repo := newFakeSessionRepository()
+	repo.createdIntent = domain.SessionIntent{
+		ID:           "intent-work",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeTicket,
+		ContextID:    "ticket-1",
+		CreatedAt:    created,
+		CurrentRun: &domain.SessionRun{
+			ID:        "run-1",
+			Status:    domain.SessionRunStatusRunning,
+			StartedAt: &started,
+		},
+	}
+	service := &Service{
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repo:         repo,
+		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
+	}
+
+	_, err := service.RequestConclusion(context.Background(), "intent-work", domain.ConcludeSessionParams{Body: "done"})
+	var validationErr *domain.ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Field != "commits" {
+		t.Fatalf("expected commits validation error, got %v", err)
+	}
+	if len(repo.appendedEvents) != 0 {
+		t.Fatalf("expected no approval_required event, got %#v", repo.appendedEvents)
+	}
+}
+
+func TestMoveTicketToDoneRejectsMissingCommits(t *testing.T) {
+	t.Parallel()
+
+	service := &Service{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	_, err := service.MoveTicketToDone(context.Background(), "hiveryn", "ticket-1", domain.MoveTicketToDoneParams{Body: "done"})
+	var validationErr *domain.ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Field != "commits" {
+		t.Fatalf("expected commits validation error, got %v", err)
+	}
+}
+
 func TestConcludeFreeformSessionWritesConclusionAndAllowsNoCommits(t *testing.T) {
 	t.Parallel()
 

@@ -698,6 +698,22 @@ func (s *Service) ConcludeSession(ctx context.Context, id string, params domain.
 	}
 }
 
+// validateConclusionCommits enforces the commit/rejection invariant shared by
+// ticket conclusion and moveTicketToDone: a conclusion either carries at least
+// one commit, or is explicitly rejected with a reason.
+func validateConclusionCommits(rejected bool, rejectionReason string, commits []domain.CommitRef) error {
+	if rejected {
+		if strings.TrimSpace(rejectionReason) == "" {
+			return &domain.ValidationError{Field: "rejection_reason", Message: "is required when rejected is true"}
+		}
+		return nil
+	}
+	if len(commits) == 0 {
+		return &domain.ValidationError{Field: "commits", Message: "are required when not rejected"}
+	}
+	return nil
+}
+
 func (s *Service) RequestConclusion(ctx context.Context, id string, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
 	if strings.TrimSpace(params.Body) == "" {
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "body", Message: "is required"}
@@ -709,6 +725,16 @@ func (s *Service) RequestConclusion(ctx context.Context, id string, params domai
 	}
 	if intent.CurrentRun == nil || intent.CurrentRun.Status != domain.SessionRunStatusRunning {
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_id", Message: "session run is not running"}
+	}
+
+	// Validate commit/rejection invariants before storing the pending approval
+	// or publishing approval_required, so the agent gets the error immediately
+	// and the desktop approval dialog is never shown. Only ticket sessions carry
+	// commits; architect and freeform conclusions have no such requirement.
+	if intent.SessionType == domain.SessionTypeTicket {
+		if err := validateConclusionCommits(params.Rejected, params.RejectionReason, params.Commits); err != nil {
+			return domain.ConcludeSessionResult{}, err
+		}
 	}
 
 	if err := s.repo.UpdateRunAgentStatus(ctx, intent.CurrentRun.ID, domain.AgentStatusWaiting); err != nil {
@@ -1013,14 +1039,10 @@ func (s *Service) activeTicketSessionIDs(ctx context.Context, architectKey, excl
 }
 
 func (s *Service) concludeTicketSession(ctx context.Context, intent domain.SessionIntent, run domain.SessionRun, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
-	if params.Rejected {
-		if strings.TrimSpace(params.RejectionReason) == "" {
-			return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "rejection_reason", Message: "is required when rejected is true"}
-		}
-	} else {
-		if len(params.Commits) == 0 {
-			return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "commits", Message: "are required when not rejected"}
-		}
+	// Commit/rejection validation runs earlier in RequestConclusion (before the
+	// approval dialog fires); see validateConclusionCommits.
+	if err := validateConclusionCommits(params.Rejected, params.RejectionReason, params.Commits); err != nil {
+		return domain.ConcludeSessionResult{}, err
 	}
 
 	if strings.TrimSpace(intent.ContextID) == "" {
@@ -1104,10 +1126,8 @@ func (s *Service) MoveTicketToDone(ctx context.Context, architectKey, ticketID s
 	if strings.TrimSpace(params.Body) == "" {
 		return domain.MoveTicketToDoneResult{}, &domain.ValidationError{Field: "body", Message: "is required"}
 	}
-	if params.Rejected {
-		if strings.TrimSpace(params.RejectionReason) == "" {
-			return domain.MoveTicketToDoneResult{}, &domain.ValidationError{Field: "rejection_reason", Message: "is required when rejected is true"}
-		}
+	if err := validateConclusionCommits(params.Rejected, params.RejectionReason, params.Commits); err != nil {
+		return domain.MoveTicketToDoneResult{}, err
 	}
 
 	architect, err := s.currentArchitect(architectKey)

@@ -204,7 +204,7 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `PATCH` | `/api/architects/{key}/tickets/{id}/metadata` | Update frontmatter (`title`, `repo`, `references`) for a backlog ticket |
 | `DELETE` | `/api/architects/{key}/tickets/{id}` | Delete a backlog ticket folder and its contents |
 | `POST` | `/api/architects/{key}/tickets/{id}/move?to=...` | Move a ticket between backlog, progress, and done |
-| `POST` | `/api/architects/{key}/tickets/{id}/move-to-done` | Architect-driven ticket completion without a worker session: backlog → done (architect resolved it directly) or progress → done (manually closing a dead/stuck worker session — fails with `CONFLICT` if a worker session is currently running). Writes a `conclusion.md` and supports `rejected`/`rejection_reason`. Called by the MCP `moveTicketToDone` tool. |
+| `POST` | `/api/architects/{key}/tickets/{id}/move-to-done` | Architect-driven ticket completion without a worker session: backlog → done (architect resolved it directly) or progress → done (manually closing a dead/stuck worker session — fails with `CONFLICT` if a worker session is currently running). Writes a `conclusion.md`; requires `commits` unless `rejected=true` with a `rejection_reason`. Called by the MCP `moveTicketToDone` tool. |
 | `GET` | `/api/architects/{key}/events` | Stream architect-scoped workspace_changed SSE hints |
 | `GET` | `/api/architects/{key}/conclusions` | List recent conclusions (IDs + timestamps); supports `?limit=N` |
 | `GET` | `/api/architects/{key}/conclusions/recent` | Read the most recent architect session conclusion |
@@ -242,11 +242,12 @@ Only `POST /api/sessions/{id}/conclude` legitimately ends a session. Concluding 
 When an agent calls `concludeSession` via MCP, the daemon routes through an approval flow so the desktop user can review before the session ends:
 
 1. MCP `concludeSession` calls `POST /api/sessions/{id}/request-conclusion` (blocks)
-2. The daemon stores a pending approval in memory, publishes an `approval_required` SSE event on the session event stream (with `raw.timeout_seconds` so the desktop can show a countdown), and blocks on a channel with the configured `conclusion_approval_timeout` (default 20s)
-3. The desktop receives the SSE event and presents an approval dialog with a countdown timer
-4. The desktop calls `POST /api/sessions/{id}/approve-conclusion` or `POST /api/sessions/{id}/reject-conclusion`
-5. On approve: the daemon runs the conclusion and returns the result. On reject: the rejection reason propagates back as a `VALIDATION` error to the blocked MCP call so the agent can retry.
-6. On timeout: the daemon auto-approves and runs the conclusion as if the user clicked approve.
+2. For ticket sessions, the daemon validates the commit/rejection invariant up front (commits required unless `rejected=true` with a reason) — before storing the approval or publishing the event — so an invalid conclusion returns a `VALIDATION` error to the agent immediately and no dialog is ever shown
+3. The daemon stores a pending approval in memory, publishes an `approval_required` SSE event on the session event stream (with `raw.timeout_seconds` so the desktop can show a countdown), and blocks on a channel with the configured `conclusion_approval_timeout` (default 20s)
+4. The desktop receives the SSE event and presents an approval dialog with a countdown timer
+5. The desktop calls `POST /api/sessions/{id}/approve-conclusion` or `POST /api/sessions/{id}/reject-conclusion`
+6. On approve: the daemon runs the conclusion and returns the result. On reject: the rejection reason propagates back as a `VALIDATION` error to the blocked MCP call so the agent can retry.
+7. On timeout: the daemon auto-approves and runs the conclusion as if the user clicked approve.
 
 The original `POST /api/sessions/{id}/conclude` endpoint remains available for direct calls without approval.
 
