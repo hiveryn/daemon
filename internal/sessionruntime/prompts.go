@@ -4,7 +4,6 @@ import (
 	"embed"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"text/template"
 	"time"
@@ -41,12 +40,12 @@ type workerKickoffTemplateData struct {
 }
 
 func loadArchitectPrompts(architectKey string, architect config.ArchitectConfig, cfg config.Config) (string, string, error) {
-	systemContent, err := loadPromptFile(architect.Path, "architect", "SYSTEM.md")
+	systemContent, err := loadPrompt(architect.SystemPromptPath, "prompts/architect/SYSTEM.md")
 	if err != nil {
 		return "", "", err
 	}
 
-	kickoffTemplateSource, err := loadPromptFile(architect.Path, "architect", "KICKOFF.md")
+	kickoffTemplateSource, err := loadPrompt(architect.KickoffPromptPath, "prompts/architect/KICKOFF.md")
 	if err != nil {
 		return "", "", err
 	}
@@ -68,7 +67,7 @@ func loadArchitectPrompts(architectKey string, architect config.ArchitectConfig,
 }
 
 func loadWorkerPrompt(architectKey string, architect config.ArchitectConfig, cfg config.Config, ticket domain.Ticket) (string, error) {
-	kickoffTemplateSource, err := loadPromptFile(architect.Path, "work", "KICKOFF.md")
+	kickoffTemplateSource, err := loadPrompt(selectTicketKickoff(architect, ticket.Repo), "prompts/work/KICKOFF.md")
 	if err != nil {
 		return "", err
 	}
@@ -110,19 +109,42 @@ func loadWorkerPrompt(architectKey string, architect config.ArchitectConfig, cfg
 	return rendered, nil
 }
 
-func loadPromptFile(architectPath, promptSubDir, filename string) (string, error) {
-	overridePath := filepath.Join(architectPath, "prompts", promptSubDir, filename)
-	if data, err := os.ReadFile(overridePath); err == nil {
+// loadPrompt reads the prompt at overridePath when set; otherwise it reads the
+// embedded default identified by embeddedName (a forward-slash path within
+// promptFS). A configured override that cannot be read is a hard error.
+func loadPrompt(overridePath, embeddedName string) (string, error) {
+	if strings.TrimSpace(overridePath) != "" {
+		data, err := os.ReadFile(overridePath)
+		if err != nil {
+			return "", fmt.Errorf("read prompt %s: %w", overridePath, err)
+		}
 		return string(data), nil
-	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("read prompt override %s: %w", overridePath, err)
 	}
 
-	data, err := promptFS.ReadFile(filepath.ToSlash(filepath.Join("prompts", promptSubDir, filename)))
+	data, err := promptFS.ReadFile(embeddedName)
 	if err != nil {
-		return "", fmt.Errorf("read embedded prompt %s/%s: %w", promptSubDir, filename, err)
+		return "", fmt.Errorf("read embedded prompt %s: %w", embeddedName, err)
 	}
 	return string(data), nil
+}
+
+// selectTicketKickoff returns the configured ticket-kickoff path for the given
+// repo. A repo-scoped entry wins over the default (no-repos) entry. Returns ""
+// when no entry applies, meaning the embedded default should be used.
+func selectTicketKickoff(architect config.ArchitectConfig, repo string) string {
+	defaultPath := ""
+	for _, kickoff := range architect.TicketKickoffs {
+		if len(kickoff.Repos) == 0 {
+			defaultPath = kickoff.Path
+			continue
+		}
+		for _, repoKey := range kickoff.Repos {
+			if repoKey == repo {
+				return kickoff.Path
+			}
+		}
+	}
+	return defaultPath
 }
 
 func renderKickoff(source string, data kickoffTemplateData) (string, error) {

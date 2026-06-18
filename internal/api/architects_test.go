@@ -5,7 +5,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -49,47 +48,11 @@ func TestArchitectsReadOnlyAPI(t *testing.T) {
 
 	var architect architectResponse
 	decodeEnvelopeData(t, getBody, &architect)
-	if architect.Key != "hiveryn" || architect.Group != "personal" {
+	if architect.Key != "hiveryn" || architect.Name != "Hiveryn" {
 		t.Fatalf("unexpected architect payload: %#v", architect)
 	}
 	if len(architect.Repos) != 2 {
 		t.Fatalf("expected 2 repos on architect detail, got %#v", architect.Repos)
-	}
-}
-
-func TestArchitectGroupsReadOnlyAPI(t *testing.T) {
-	t.Parallel()
-
-	handler := newTestHandler(t)
-
-	listStatus, listBody := request(t, handler, http.MethodGet, "/api/architect-groups", nil)
-	if listStatus != http.StatusOK {
-		t.Fatalf("expected group list status %d, got %d: %s", http.StatusOK, listStatus, string(listBody))
-	}
-
-	var listed struct {
-		ArchitectGroups []architectGroupResponse `json:"architect_groups"`
-	}
-	decodeEnvelopeData(t, listBody, &listed)
-	if len(listed.ArchitectGroups) != 1 {
-		t.Fatalf("expected 1 group, got %d", len(listed.ArchitectGroups))
-	}
-	if listed.ArchitectGroups[0].Name != "personal" {
-		t.Fatalf("unexpected group payload: %#v", listed.ArchitectGroups[0])
-	}
-	if len(listed.ArchitectGroups[0].Architects) != 2 {
-		t.Fatalf("expected 2 architects in group payload, got %#v", listed.ArchitectGroups[0].Architects)
-	}
-
-	getStatus, getBody := request(t, handler, http.MethodGet, "/api/architect-groups/personal", nil)
-	if getStatus != http.StatusOK {
-		t.Fatalf("expected group get status %d, got %d: %s", http.StatusOK, getStatus, string(getBody))
-	}
-
-	var group architectGroupResponse
-	decodeEnvelopeData(t, getBody, &group)
-	if group.Name != "personal" || len(group.Architects) != 2 {
-		t.Fatalf("unexpected group detail payload: %#v", group)
 	}
 }
 
@@ -135,9 +98,6 @@ func TestArchitectMutationEndpointsRemoved(t *testing.T) {
 		method string
 		path   string
 	}{
-		{method: http.MethodPost, path: "/api/architect-groups"},
-		{method: http.MethodPatch, path: "/api/architect-groups/personal"},
-		{method: http.MethodDelete, path: "/api/architect-groups/personal"},
 		{method: http.MethodPost, path: "/api/architects"},
 		{method: http.MethodPatch, path: "/api/architects/hiveryn"},
 		{method: http.MethodDelete, path: "/api/architects/hiveryn"},
@@ -161,7 +121,6 @@ func TestArchitectAndRepoNotFound(t *testing.T) {
 
 	cases := []string{
 		"/api/architects/missing",
-		"/api/architect-groups/missing",
 		"/api/architects/missing/repos",
 		"/api/architects/hiveryn/repos/missing",
 	}
@@ -183,7 +142,6 @@ func TestArchitectsAPIReloadsArchitectsFile(t *testing.T) {
 	cfgPath := writeReloadingConfigFiles(t, configDir, map[string]config.ArchitectConfig{
 		"hiveryn": {
 			Path:  hiverynPath,
-			Group: "personal",
 			Repos: map[string]string{"daemon": "/tmp/daemon"},
 		},
 	})
@@ -201,15 +159,13 @@ func TestArchitectsAPIReloadsArchitectsFile(t *testing.T) {
 		t.Fatalf("unexpected initial architects: %#v", initial.Architects)
 	}
 
-	writeYAMLConfigFile(t, filepath.Join(configDir, "architects.yaml"), map[string]config.ArchitectConfig{
+	writeAPIArchitects(t, configDir, map[string]config.ArchitectConfig{
 		"hiveryn": {
 			Path:  hiverynPath,
-			Group: "personal",
 			Repos: map[string]string{"daemon": "/tmp/daemon"},
 		},
 		"litho": {
 			Path:  lithoPath,
-			Group: "personal",
 			Repos: map[string]string{"app": "/tmp/lithoapp"},
 		},
 	})
@@ -239,12 +195,10 @@ func TestArchitectsStatusAPI(t *testing.T) {
 	cfgPath := writeReloadingConfigFiles(t, configDir, map[string]config.ArchitectConfig{
 		"hiveryn": {
 			Path:  hiverynPath,
-			Group: "personal",
 			Repos: map[string]string{"daemon": "/tmp/daemon"},
 		},
 		"litho": {
 			Path:  lithoPath,
-			Group: "personal",
 			Repos: map[string]string{"app": "/tmp/app"},
 		},
 	})
@@ -393,7 +347,6 @@ func TestArchitectsStatusAPIReloadsArchitectsFile(t *testing.T) {
 	cfgPath := writeReloadingConfigFiles(t, configDir, map[string]config.ArchitectConfig{
 		"hiveryn": {
 			Path:  hiverynPath,
-			Group: "personal",
 			Repos: map[string]string{"daemon": "/tmp/daemon"},
 		},
 	})
@@ -426,15 +379,13 @@ func TestArchitectsStatusAPIReloadsArchitectsFile(t *testing.T) {
 		t.Fatalf("unexpected initial architect status payload %#v", initial.Architects)
 	}
 
-	writeYAMLConfigFile(t, filepath.Join(configDir, "architects.yaml"), map[string]config.ArchitectConfig{
+	writeAPIArchitects(t, configDir, map[string]config.ArchitectConfig{
 		"hiveryn": {
 			Path:  hiverynPath,
-			Group: "personal",
 			Repos: map[string]string{"daemon": "/tmp/daemon"},
 		},
 		"litho": {
 			Path:  lithoPath,
-			Group: "personal",
 			Repos: map[string]string{"app": "/tmp/lithoapp"},
 		},
 	})
@@ -463,7 +414,6 @@ func TestArchitectsStatusAPIFailsWhenRunningTicketIsMissing(t *testing.T) {
 	cfgPath := writeReloadingConfigFiles(t, configDir, map[string]config.ArchitectConfig{
 		"hiveryn": {
 			Path:  hiverynPath,
-			Group: "personal",
 			Repos: map[string]string{"daemon": "/tmp/daemon"},
 		},
 	})

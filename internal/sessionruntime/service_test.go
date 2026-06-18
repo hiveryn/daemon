@@ -266,7 +266,7 @@ func TestConcludeTicketSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 		},
 	}
 	cfg := testRuntimeConfigWithPaths(architectPath, daemonRepoPath)
-	cfg.Architects["hiveryn"] = config.ArchitectConfig{Path: architectPath, Group: "personal", Repos: map[string]string{"daemon": daemonRepoPath, "desktop": desktopRepoPath}}
+	cfg.Architects["hiveryn"] = config.ArchitectConfig{Path: architectPath, Repos: map[string]string{"daemon": daemonRepoPath, "desktop": desktopRepoPath}}
 	service := &Service{
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg:    cfg,
@@ -331,7 +331,7 @@ func TestConcludeFreeformSessionWritesConclusionAndAllowsNoCommits(t *testing.T)
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg: config.Config{
 			Architects: map[string]config.ArchitectConfig{
-				"hiveryn": {Path: architectPath, Group: "personal", Repos: map[string]string{}},
+				"hiveryn": {Path: architectPath, Repos: map[string]string{}},
 			},
 		},
 		repo:         repo,
@@ -385,7 +385,7 @@ func TestConcludeFreeformSessionValidatesProvidedCommits(t *testing.T) {
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg: config.Config{
 			Architects: map[string]config.ArchitectConfig{
-				"hiveryn": {Path: architectPath, Group: "personal", Repos: map[string]string{"daemon": repoPath}},
+				"hiveryn": {Path: architectPath, Repos: map[string]string{"daemon": repoPath}},
 			},
 		},
 		repo:         repo,
@@ -434,7 +434,7 @@ func TestConcludeArchitectSessionEmptyBodySkipsConclusionFile(t *testing.T) {
 		terminal:     &fakeTerminalManager{operations: &operations},
 		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
 	}
-	service.cfg.Architects["hiveryn"] = config.ArchitectConfig{Path: architectPath, Group: "personal", Repos: map[string]string{}}
+	service.cfg.Architects["hiveryn"] = config.ArchitectConfig{Path: architectPath, Repos: map[string]string{}}
 
 	_, err := service.ConcludeSession(context.Background(), "intent-architect", domain.ConcludeSessionParams{Body: ""})
 	if err != nil {
@@ -484,7 +484,7 @@ func TestConcludeFreeformSessionEmptyBodySkipsConclusionFile(t *testing.T) {
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg: config.Config{
 			Architects: map[string]config.ArchitectConfig{
-				"hiveryn": {Path: architectPath, Group: "personal", Repos: map[string]string{}},
+				"hiveryn": {Path: architectPath, Repos: map[string]string{}},
 			},
 		},
 		repo:         repo,
@@ -523,7 +523,7 @@ func TestCreateIntentFreeformWritesPromptFile(t *testing.T) {
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg: config.Config{
 			Architects: map[string]config.ArchitectConfig{
-				"hiveryn": {Path: architectPath, Group: "personal", Repos: map[string]string{}},
+				"hiveryn": {Path: architectPath, Repos: map[string]string{}},
 			},
 		},
 		repo:    repo,
@@ -609,7 +609,6 @@ func TestCreateIntentReloadsArchitectsFile(t *testing.T) {
 	cfgPath := writeRuntimeConfigFiles(t, configDir, map[string]config.ArchitectConfig{
 		"hiveryn": {
 			Path:  hiverynPath,
-			Group: "personal",
 			Repos: map[string]string{"daemon": "/tmp/daemon"},
 		},
 	})
@@ -642,15 +641,13 @@ func TestCreateIntentReloadsArchitectsFile(t *testing.T) {
 		t.Fatalf("expected not found error, got %T %v", err, err)
 	}
 
-	writeRuntimeYAML(t, filepath.Join(configDir, "architects.yaml"), map[string]config.ArchitectConfig{
+	writeRuntimeArchitects(t, configDir, map[string]config.ArchitectConfig{
 		"hiveryn": {
 			Path:  hiverynPath,
-			Group: "personal",
 			Repos: map[string]string{"daemon": "/tmp/daemon"},
 		},
 		"litho": {
 			Path:  lithoPath,
-			Group: "personal",
 			Repos: map[string]string{"app": "/tmp/lithoapp"},
 		},
 	})
@@ -689,7 +686,6 @@ func TestCreateRunReloadsTabsFileForSessionLayouts(t *testing.T) {
 			cfgPath := writeRuntimeConfigFiles(t, configDir, map[string]config.ArchitectConfig{
 				"hiveryn": {
 					Path:  architectPath,
-					Group: "personal",
 					Repos: map[string]string{"daemon": workdir},
 				},
 			})
@@ -1198,7 +1194,7 @@ func TestCreateRunMergesVariantMCPServers(t *testing.T) {
 				},
 			},
 			Architects: map[string]config.ArchitectConfig{
-				"hiveryn": {Path: t.TempDir(), Group: "personal", Repos: map[string]string{}},
+				"hiveryn": {Path: t.TempDir(), Repos: map[string]string{}},
 			},
 		},
 		repo:           repo,
@@ -1436,7 +1432,7 @@ func testRuntimeConfig(t *testing.T) config.Config {
 			"opencode": {Agent: "opencode"},
 		},
 		Architects: map[string]config.ArchitectConfig{
-			"hiveryn": {Path: t.TempDir(), Group: "personal", Repos: map[string]string{}},
+			"hiveryn": {Path: t.TempDir(), Repos: map[string]string{}},
 		},
 	}
 }
@@ -1448,7 +1444,7 @@ func testRuntimeConfigWithPaths(architectPath, repoPath string) config.Config {
 			"opencode": {Agent: "opencode"},
 		},
 		Architects: map[string]config.ArchitectConfig{
-			"hiveryn": {Path: architectPath, Group: "personal", Repos: map[string]string{"daemon": repoPath}},
+			"hiveryn": {Path: architectPath, Repos: map[string]string{"daemon": repoPath}},
 		},
 	}
 }
@@ -1465,8 +1461,33 @@ func writeRuntimeConfigFiles(t *testing.T, configDir string, architects map[stri
 	writeRuntimeYAML(t, filepath.Join(configDir, "variants.yaml"), map[string]config.VariantConfig{
 		"codex": {Agent: "codex"},
 	})
-	writeRuntimeYAML(t, filepath.Join(configDir, "architects.yaml"), architects)
+	writeRuntimeArchitects(t, configDir, architects)
 	return path
+}
+
+// writeRuntimeArchitects writes the bare architects.yaml registry (key -> path)
+// plus a hiveryn.yaml in each architect's workspace, derived from the test's
+// ArchitectConfig values.
+func writeRuntimeArchitects(t *testing.T, configDir string, architects map[string]config.ArchitectConfig) {
+	t.Helper()
+
+	registry := map[string]string{}
+	for key, architect := range architects {
+		registry[key] = architect.Path
+		name := architect.Name
+		if name == "" {
+			name = key
+		}
+		repos := map[string]string{}
+		for repoKey, repoPath := range architect.Repos {
+			repos[repoKey] = repoPath
+		}
+		writeRuntimeYAML(t, filepath.Join(architect.Path, "hiveryn.yaml"), map[string]any{
+			"name":  name,
+			"repos": repos,
+		})
+	}
+	writeRuntimeYAML(t, filepath.Join(configDir, "architects.yaml"), registry)
 }
 
 func writeRuntimeTabs(t *testing.T, configDir string, tabs map[string][]config.TabEntry) {

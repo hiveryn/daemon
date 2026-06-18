@@ -21,6 +21,7 @@ const (
 	configFileName                   = "config.yaml"
 	variantsFileName                 = "variants.yaml"
 	architectsFileName               = "architects.yaml"
+	architectConfigFileName          = "hiveryn.yaml"
 	tabsFileName                     = "tabs.yaml"
 	shortcutsFileName                = "shortcuts.yaml"
 )
@@ -72,10 +73,45 @@ type MCPServerConfig struct {
 // name to avoid colliding with the base server.
 const ReservedMCPServerName = "hiveryn-daemon"
 
+// ArchitectConfig is the resolved configuration for a single architect,
+// assembled from the global architects.yaml registry (which supplies the key
+// and workspace path) and the architect's own hiveryn.yaml (name, repos,
+// prompts). Repos is keyed by repo key for lookups; prompt paths are resolved
+// to absolute paths and empty when not configured (the embedded default is
+// used in that case).
 type ArchitectConfig struct {
-	Path  string            `yaml:"path"`
-	Group string            `yaml:"group"`
-	Repos map[string]string `yaml:"repos"`
+	Name              string
+	Path              string
+	Repos             map[string]string
+	SystemPromptPath  string
+	KickoffPromptPath string
+	TicketKickoffs    []TicketKickoff
+}
+
+// TicketKickoff is a single ticket-kickoff prompt entry. Path is the resolved
+// absolute path to the prompt file. Repos optionally scopes the entry to
+// specific repo keys; an entry with no repos is the default.
+type TicketKickoff struct {
+	Path  string
+	Repos []string
+}
+
+// architectFile is the on-disk shape of <architectPath>/hiveryn.yaml.
+type architectFile struct {
+	Name    string            `yaml:"name"`
+	Repos   map[string]string `yaml:"repos"`
+	Prompts struct {
+		Architect struct {
+			System  string `yaml:"system"`
+			Kickoff string `yaml:"kickoff"`
+		} `yaml:"architect"`
+		Ticket struct {
+			Kickoffs []struct {
+				Path  string   `yaml:"path"`
+				Repos []string `yaml:"repos"`
+			} `yaml:"kickoffs"`
+		} `yaml:"ticket"`
+	} `yaml:"prompts"`
 }
 
 type TabEntry struct {
@@ -229,9 +265,11 @@ func loadOptionalConfigFiles(configDir string, cfg *Config) error {
 		return fmt.Errorf("load variants: %w", err)
 	}
 
-	if err := loadOptionalFile(filepath.Join(configDir, architectsFileName), &cfg.Architects); err != nil {
+	architects, err := loadArchitects(configDir)
+	if err != nil {
 		return fmt.Errorf("load architects: %w", err)
 	}
+	cfg.Architects = architects
 
 	if err := loadOptionalFile(filepath.Join(configDir, tabsFileName), &cfg.Tabs); err != nil {
 		return fmt.Errorf("load tabs: %w", err)
@@ -256,6 +294,80 @@ func loadOptionalFile(path string, target interface{}) error {
 		return fmt.Errorf("decode YAML %q: %w", path, err)
 	}
 	return nil
+}
+
+// loadArchitects reads the global architects.yaml registry (a bare key ->
+// workspace path map) and, for each registered architect, loads its own
+// hiveryn.yaml. A missing or unparseable hiveryn.yaml is a hard error.
+func loadArchitects(configDir string) (map[string]ArchitectConfig, error) {
+	registry := map[string]string{}
+	if err := loadOptionalFile(filepath.Join(configDir, architectsFileName), &registry); err != nil {
+		return nil, err
+	}
+
+	architects := make(map[string]ArchitectConfig, len(registry))
+	for key, workspacePath := range registry {
+		architect, err := loadArchitectFile(key, workspacePath)
+		if err != nil {
+			return nil, err
+		}
+		architects[key] = architect
+	}
+	return architects, nil
+}
+
+func loadArchitectFile(key, workspacePath string) (ArchitectConfig, error) {
+	if strings.TrimSpace(workspacePath) == "" {
+		return ArchitectConfig{}, fmt.Errorf("architects.%s path is required", key)
+	}
+
+	filePath := filepath.Join(workspacePath, architectConfigFileName)
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return ArchitectConfig{}, fmt.Errorf("read %q: %w", filePath, err)
+	}
+
+	var file architectFile
+	if err := yaml.Unmarshal(data, &file); err != nil {
+		return ArchitectConfig{}, fmt.Errorf("decode YAML %q: %w", filePath, err)
+	}
+
+	// Duplicate repo keys are rejected by the YAML decoder above.
+	repos := file.Repos
+	if repos == nil {
+		repos = map[string]string{}
+	}
+
+	kickoffs := make([]TicketKickoff, 0, len(file.Prompts.Ticket.Kickoffs))
+	for _, kickoff := range file.Prompts.Ticket.Kickoffs {
+		kickoffs = append(kickoffs, TicketKickoff{
+			Path:  resolveArchitectPath(workspacePath, kickoff.Path),
+			Repos: append([]string(nil), kickoff.Repos...),
+		})
+	}
+
+	return ArchitectConfig{
+		Name:              file.Name,
+		Path:              workspacePath,
+		Repos:             repos,
+		SystemPromptPath:  resolveArchitectPath(workspacePath, file.Prompts.Architect.System),
+		KickoffPromptPath: resolveArchitectPath(workspacePath, file.Prompts.Architect.Kickoff),
+		TicketKickoffs:    kickoffs,
+	}, nil
+}
+
+// resolveArchitectPath resolves a prompt path from hiveryn.yaml against the
+// architect workspace. Empty stays empty (meaning "use the embedded default");
+// absolute paths are used as-is.
+func resolveArchitectPath(workspacePath, p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(workspacePath, p)
 }
 
 type coreConfig struct {
@@ -377,11 +489,11 @@ func (c Config) Validate() error {
 			return fmt.Errorf("architects keys must not be blank")
 		}
 		architect := c.Architects[key]
+		if strings.TrimSpace(architect.Name) == "" {
+			return fmt.Errorf("architects.%s.name is required", key)
+		}
 		if strings.TrimSpace(architect.Path) == "" {
 			return fmt.Errorf("architects.%s.path is required", key)
-		}
-		if strings.TrimSpace(architect.Group) == "" {
-			return fmt.Errorf("architects.%s.group is required", key)
 		}
 		for repoKey, repoPath := range architect.Repos {
 			if strings.TrimSpace(repoKey) == "" {
@@ -389,6 +501,30 @@ func (c Config) Validate() error {
 			}
 			if strings.TrimSpace(repoPath) == "" {
 				return fmt.Errorf("architects.%s.repos.%s is required", key, repoKey)
+			}
+		}
+
+		defaultKickoffs := 0
+		repoKickoffSeen := map[string]struct{}{}
+		for i, kickoff := range architect.TicketKickoffs {
+			if strings.TrimSpace(kickoff.Path) == "" {
+				return fmt.Errorf("architects.%s.prompts.ticket.kickoffs[%d].path is required", key, i)
+			}
+			if len(kickoff.Repos) == 0 {
+				defaultKickoffs++
+				if defaultKickoffs > 1 {
+					return fmt.Errorf("architects.%s.prompts.ticket.kickoffs has multiple default (no-repos) entries", key)
+				}
+				continue
+			}
+			for _, repoKey := range kickoff.Repos {
+				if _, ok := architect.Repos[repoKey]; !ok {
+					return fmt.Errorf("architects.%s.prompts.ticket.kickoffs[%d] references unknown repo %q", key, i, repoKey)
+				}
+				if _, dup := repoKickoffSeen[repoKey]; dup {
+					return fmt.Errorf("architects.%s.prompts.ticket.kickoffs has multiple entries for repo %q", key, repoKey)
+				}
+				repoKickoffSeen[repoKey] = struct{}{}
 			}
 		}
 	}
@@ -461,6 +597,9 @@ func (c *Config) normalize() {
 	for key, architect := range c.Architects {
 		if architect.Repos == nil {
 			architect.Repos = map[string]string{}
+		}
+		if architect.TicketKickoffs == nil {
+			architect.TicketKickoffs = []TicketKickoff{}
 		}
 		c.Architects[key] = architect
 	}
@@ -565,9 +704,26 @@ func cloneArchitectConfigs(src map[string]ArchitectConfig) map[string]ArchitectC
 	dst := make(map[string]ArchitectConfig, len(src))
 	for key, architect := range src {
 		dst[key] = ArchitectConfig{
-			Path:  architect.Path,
-			Group: architect.Group,
-			Repos: cloneStringMap(architect.Repos),
+			Name:              architect.Name,
+			Path:              architect.Path,
+			Repos:             cloneStringMap(architect.Repos),
+			SystemPromptPath:  architect.SystemPromptPath,
+			KickoffPromptPath: architect.KickoffPromptPath,
+			TicketKickoffs:    cloneTicketKickoffs(architect.TicketKickoffs),
+		}
+	}
+	return dst
+}
+
+func cloneTicketKickoffs(src []TicketKickoff) []TicketKickoff {
+	if src == nil {
+		return nil
+	}
+	dst := make([]TicketKickoff, len(src))
+	for i, kickoff := range src {
+		dst[i] = TicketKickoff{
+			Path:  kickoff.Path,
+			Repos: append([]string(nil), kickoff.Repos...),
 		}
 	}
 	return dst

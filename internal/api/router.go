@@ -33,12 +33,6 @@ type profilesHandler struct {
 	logger       *slog.Logger
 }
 
-type architectGroupsHandler struct {
-	config       config.Config
-	configSource config.Source
-	logger       *slog.Logger
-}
-
 type architectsHandler struct {
 	config       config.Config
 	configSource config.Source
@@ -86,14 +80,9 @@ type agentProfileResponse struct {
 
 type architectResponse struct {
 	Key   string         `json:"key"`
+	Name  string         `json:"name"`
 	Path  string         `json:"path"`
-	Group string         `json:"group"`
 	Repos []repoResponse `json:"repos,omitempty"`
-}
-
-type architectGroupResponse struct {
-	Name       string              `json:"name"`
-	Architects []architectResponse `json:"architects"`
 }
 
 type repoResponse struct {
@@ -104,7 +93,6 @@ type repoResponse struct {
 func NewHandler(deps Dependencies) http.Handler {
 	mux := http.NewServeMux()
 	ph := &profilesHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
-	gh := &architectGroupsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
 	ah := &architectsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
 	rh := &reposHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
 	sch := &shortcutsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
@@ -124,8 +112,6 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/system/runtime", srh.get)
 	mux.HandleFunc("GET /api/agent-profiles", ph.list)
 	mux.HandleFunc("GET /api/agent-profiles/{name}", ph.get)
-	mux.HandleFunc("GET /api/architect-groups", gh.list)
-	mux.HandleFunc("GET /api/architect-groups/{name}", gh.get)
 	mux.HandleFunc("GET /api/architects", ah.list)
 	mux.HandleFunc("GET /api/architects/status", ah.listStatus)
 	mux.HandleFunc("GET /api/architects/{key}", ah.get)
@@ -228,25 +214,6 @@ func getArchitectPath(cfg config.Config, key string) (string, bool) {
 	return architect.Path, true
 }
 
-func listArchitectGroups(cfg config.Config) []architectGroupResponse {
-	groups := groupArchitects(cfg)
-	names := configKeys(groups)
-	items := make([]architectGroupResponse, 0, len(names))
-	for _, name := range names {
-		items = append(items, architectGroupResponse{Name: name, Architects: groups[name]})
-	}
-	return items
-}
-
-func getArchitectGroup(cfg config.Config, name string) (architectGroupResponse, bool) {
-	groups := groupArchitects(cfg)
-	architects, ok := groups[name]
-	if !ok {
-		return architectGroupResponse{}, false
-	}
-	return architectGroupResponse{Name: name, Architects: architects}, true
-}
-
 func listRepos(cfg config.Config, architectKey string) ([]repoResponse, bool) {
 	architect, ok := cfg.Architects[architectKey]
 	if !ok {
@@ -269,9 +236,9 @@ func getRepo(cfg config.Config, architectKey, repoKey string) (repoResponse, boo
 
 func buildArchitectResponse(key string, architect config.ArchitectConfig, includeRepos bool) architectResponse {
 	resp := architectResponse{
-		Key:   key,
-		Path:  architect.Path,
-		Group: architect.Group,
+		Key:  key,
+		Name: architect.Name,
+		Path: architect.Path,
 	}
 	if includeRepos {
 		resp.Repos = buildRepos(architect.Repos)
@@ -286,15 +253,6 @@ func buildRepos(repos map[string]string) []repoResponse {
 		items = append(items, repoResponse{Key: key, Path: repos[key]})
 	}
 	return items
-}
-
-func groupArchitects(cfg config.Config) map[string][]architectResponse {
-	grouped := map[string][]architectResponse{}
-	for _, key := range configKeys(cfg.Architects) {
-		architect := cfg.Architects[key]
-		grouped[architect.Group] = append(grouped[architect.Group], buildArchitectResponse(key, architect, false))
-	}
-	return grouped
 }
 
 func configKeys[V any](m map[string]V) []string {

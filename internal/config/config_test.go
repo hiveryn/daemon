@@ -169,12 +169,12 @@ func TestLoadAllFiles(t *testing.T) {
 		},
 	})
 
-	writeYAML(t, filepath.Join(configDir, architectsFileName), map[string]ArchitectConfig{
-		"hiveryn": {
-			Path:  "/Users/kareem/architects/hiveryn",
-			Group: "personal",
-			Repos: map[string]string{"daemon": "/Users/kareem/hiveryn/daemon"},
-		},
+	architectDir := writeArchitect(t, map[string]any{
+		"name":  "Hiveryn",
+		"repos": map[string]string{"daemon": "/Users/kareem/hiveryn/daemon"},
+	})
+	writeYAML(t, filepath.Join(configDir, architectsFileName), map[string]string{
+		"hiveryn": architectDir,
 	})
 
 	writeYAML(t, filepath.Join(configDir, tabsFileName), map[string][]TabEntry{
@@ -192,8 +192,11 @@ func TestLoadAllFiles(t *testing.T) {
 	if len(cfg.Variants) != 1 || cfg.Variants["codex-personal"].Agent != "codex" {
 		t.Fatalf("expected 1 variant, got %d", len(cfg.Variants))
 	}
-	if len(cfg.Architects) != 1 || cfg.Architects["hiveryn"].Group != "personal" {
+	if len(cfg.Architects) != 1 || cfg.Architects["hiveryn"].Name != "Hiveryn" {
 		t.Fatalf("expected 1 architect, got %d", len(cfg.Architects))
+	}
+	if got := cfg.Architects["hiveryn"].Repos["daemon"]; got != "/Users/kareem/hiveryn/daemon" {
+		t.Fatalf("expected daemon repo path, got %q", got)
 	}
 	if len(cfg.Tabs) != 1 || len(cfg.Tabs["architect"]) != 2 {
 		t.Fatalf("expected 2 tabs for architect, got %d", len(cfg.Tabs["architect"]))
@@ -248,17 +251,21 @@ func TestReloadingSourcePicksUpOptionalFileChanges(t *testing.T) {
 		"codex":    {Agent: "codex"},
 		"opencode": {Agent: "opencode"},
 	})
-	writeYAML(t, filepath.Join(configDir, architectsFileName), map[string]ArchitectConfig{
-		"hiveryn": {
-			Path:  "/tmp/hiveryn",
-			Group: "personal",
-			Repos: map[string]string{"daemon": "/tmp/daemon"},
-		},
-		"legacy": {
-			Path:  "/tmp/legacy",
-			Group: "personal",
-			Repos: map[string]string{"old": "/tmp/old"},
-		},
+	hiverynDir := writeArchitect(t, map[string]any{
+		"name":  "Hiveryn",
+		"repos": map[string]string{"daemon": "/tmp/daemon"},
+	})
+	legacyDir := writeArchitect(t, map[string]any{
+		"name":  "Legacy",
+		"repos": map[string]string{"old": "/tmp/old"},
+	})
+	lithoDir := writeArchitect(t, map[string]any{
+		"name":  "Litho",
+		"repos": map[string]string{"app": "/tmp/lithoapp"},
+	})
+	writeYAML(t, filepath.Join(configDir, architectsFileName), map[string]string{
+		"hiveryn": hiverynDir,
+		"legacy":  legacyDir,
 	})
 	writeYAML(t, filepath.Join(configDir, tabsFileName), map[string][]TabEntry{
 		"architect": {{Type: "kanban"}},
@@ -305,17 +312,16 @@ func TestReloadingSourcePicksUpOptionalFileChanges(t *testing.T) {
 		"claude": {Agent: "claude"},
 	})
 
-	writeYAML(t, filepath.Join(configDir, architectsFileName), map[string]ArchitectConfig{
-		"hiveryn": {
-			Path:  "/tmp/hiveryn",
-			Group: "personal",
-			Repos: map[string]string{"daemon": "/tmp/daemon", "desktop": "/tmp/desktop"},
+	writeYAML(t, filepath.Join(hiverynDir, architectConfigFileName), map[string]any{
+		"name": "Hiveryn",
+		"repos": map[string]string{
+			"daemon":  "/tmp/daemon",
+			"desktop": "/tmp/desktop",
 		},
-		"litho": {
-			Path:  "/tmp/litho",
-			Group: "personal",
-			Repos: map[string]string{"app": "/tmp/lithoapp"},
-		},
+	})
+	writeYAML(t, filepath.Join(configDir, architectsFileName), map[string]string{
+		"hiveryn": hiverynDir,
+		"litho":   lithoDir,
 	})
 	writeYAML(t, filepath.Join(configDir, tabsFileName), map[string][]TabEntry{
 		"architect": {{Type: "terminal", Command: "btop"}},
@@ -411,7 +417,7 @@ func TestValidateRejectsNonLocalBindAddress(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsBlankArchitectGroup(t *testing.T) {
+func TestValidateRejectsBlankArchitectName(t *testing.T) {
 	t.Parallel()
 
 	err := Config{
@@ -421,15 +427,92 @@ func TestValidateRejectsBlankArchitectGroup(t *testing.T) {
 		Variants:    map[string]VariantConfig{},
 		Architects: map[string]ArchitectConfig{
 			"hiveryn": {
+				Name:  "",
 				Path:  "/Users/kareem/architects/hiveryn",
-				Group: "",
 				Repos: map[string]string{},
 			},
 		},
 		Tabs: map[string][]TabEntry{},
 	}.Validate()
 	if err == nil {
-		t.Fatal("expected architect group validation error")
+		t.Fatal("expected architect name validation error")
+	}
+}
+
+func TestValidateRejectsKickoffUnknownRepo(t *testing.T) {
+	t.Parallel()
+
+	err := Config{
+		Port:        DefaultPort,
+		BindAddress: DefaultBindAddress,
+		LogLevel:    DefaultLogLevel,
+		Variants:    map[string]VariantConfig{},
+		Architects: map[string]ArchitectConfig{
+			"hiveryn": {
+				Name:  "Hiveryn",
+				Path:  "/Users/kareem/architects/hiveryn",
+				Repos: map[string]string{"daemon": "/tmp/daemon"},
+				TicketKickoffs: []TicketKickoff{
+					{Path: "/tmp/k.md", Repos: []string{"nonexistent"}},
+				},
+			},
+		},
+		Tabs: map[string][]TabEntry{},
+	}.Validate()
+	if err == nil {
+		t.Fatal("expected unknown-repo kickoff validation error")
+	}
+}
+
+func TestValidateRejectsMultipleDefaultKickoffs(t *testing.T) {
+	t.Parallel()
+
+	err := Config{
+		Port:        DefaultPort,
+		BindAddress: DefaultBindAddress,
+		LogLevel:    DefaultLogLevel,
+		Variants:    map[string]VariantConfig{},
+		Architects: map[string]ArchitectConfig{
+			"hiveryn": {
+				Name:  "Hiveryn",
+				Path:  "/Users/kareem/architects/hiveryn",
+				Repos: map[string]string{"daemon": "/tmp/daemon"},
+				TicketKickoffs: []TicketKickoff{
+					{Path: "/tmp/a.md"},
+					{Path: "/tmp/b.md"},
+				},
+			},
+		},
+		Tabs: map[string][]TabEntry{},
+	}.Validate()
+	if err == nil {
+		t.Fatal("expected multiple-default kickoff validation error")
+	}
+}
+
+func TestValidateRejectsDuplicateRepoKickoff(t *testing.T) {
+	t.Parallel()
+
+	err := Config{
+		Port:        DefaultPort,
+		BindAddress: DefaultBindAddress,
+		LogLevel:    DefaultLogLevel,
+		Variants:    map[string]VariantConfig{},
+		Architects: map[string]ArchitectConfig{
+			"hiveryn": {
+				Name:  "Hiveryn",
+				Path:  "/Users/kareem/architects/hiveryn",
+				Repos: map[string]string{"daemon": "/tmp/daemon"},
+				TicketKickoffs: []TicketKickoff{
+					{Path: "/tmp/a.md", Repos: []string{"daemon"}},
+					{Path: "/tmp/b.md", Repos: []string{"daemon"}},
+				},
+			},
+		},
+		Tabs: map[string][]TabEntry{},
+	}.Validate()
+	if err == nil {
+		t.Fatal("expected duplicate-repo kickoff validation error")
 	}
 }
 
@@ -689,6 +772,109 @@ func variantConfigWithMCP(mcp map[string]MCPServerConfig) Config {
 		},
 		Architects: map[string]ArchitectConfig{},
 		Tabs:       map[string][]TabEntry{},
+	}
+}
+
+// writeArchitect creates a fresh architect workspace directory containing a
+// hiveryn.yaml built from file, and returns the workspace path.
+func writeArchitect(t *testing.T, file map[string]any) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeYAML(t, filepath.Join(dir, architectConfigFileName), file)
+	return dir
+}
+
+func TestLoadFailsWhenArchitectConfigMissing(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+	writeYAML(t, filepath.Join(configDir, configFileName), map[string]any{
+		"port":         4201,
+		"bind_address": "127.0.0.1",
+		"log_level":    "info",
+	})
+	// Registry points at a workspace with no hiveryn.yaml.
+	writeYAML(t, filepath.Join(configDir, architectsFileName), map[string]string{
+		"hiveryn": t.TempDir(),
+	})
+
+	if _, err := Load(filepath.Join(configDir, configFileName)); err == nil {
+		t.Fatal("expected error when architect hiveryn.yaml is missing")
+	}
+}
+
+func TestLoadFailsOnDuplicateRepoKey(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+	writeYAML(t, filepath.Join(configDir, configFileName), map[string]any{
+		"port":         4201,
+		"bind_address": "127.0.0.1",
+		"log_level":    "info",
+	})
+	architectDir := t.TempDir()
+	// A map literal can't express duplicate keys; write raw YAML so the
+	// duplicate reaches the decoder.
+	rawHiveryn := "name: Hiveryn\nrepos:\n  daemon: /tmp/a\n  daemon: /tmp/b\n"
+	if err := os.WriteFile(filepath.Join(architectDir, architectConfigFileName), []byte(rawHiveryn), 0o600); err != nil {
+		t.Fatalf("write hiveryn.yaml: %v", err)
+	}
+	writeYAML(t, filepath.Join(configDir, architectsFileName), map[string]string{
+		"hiveryn": architectDir,
+	})
+
+	if _, err := Load(filepath.Join(configDir, configFileName)); err == nil {
+		t.Fatal("expected error on duplicate repo key")
+	}
+}
+
+func TestLoadResolvesPromptPathsRelativeToWorkspace(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+	writeYAML(t, filepath.Join(configDir, configFileName), map[string]any{
+		"port":         4201,
+		"bind_address": "127.0.0.1",
+		"log_level":    "info",
+	})
+	architectDir := writeArchitect(t, map[string]any{
+		"name":  "Hiveryn",
+		"repos": map[string]string{"daemon": "/tmp/daemon"},
+		"prompts": map[string]any{
+			"architect": map[string]string{
+				"system":  "prompts/SYSTEM.md",
+				"kickoff": "/abs/KICKOFF.md",
+			},
+			"ticket": map[string]any{
+				"kickoffs": []map[string]any{
+					{"path": "prompts/default.md"},
+					{"path": "prompts/daemon.md", "repos": []string{"daemon"}},
+				},
+			},
+		},
+	})
+	writeYAML(t, filepath.Join(configDir, architectsFileName), map[string]string{
+		"hiveryn": architectDir,
+	})
+
+	cfg, err := Load(filepath.Join(configDir, configFileName))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	architect := cfg.Architects["hiveryn"]
+	if want := filepath.Join(architectDir, "prompts/SYSTEM.md"); architect.SystemPromptPath != want {
+		t.Fatalf("expected system prompt %q, got %q", want, architect.SystemPromptPath)
+	}
+	if architect.KickoffPromptPath != "/abs/KICKOFF.md" {
+		t.Fatalf("expected absolute kickoff path preserved, got %q", architect.KickoffPromptPath)
+	}
+	if len(architect.TicketKickoffs) != 2 {
+		t.Fatalf("expected 2 ticket kickoffs, got %d", len(architect.TicketKickoffs))
+	}
+	for _, kickoff := range architect.TicketKickoffs {
+		if !filepath.IsAbs(kickoff.Path) {
+			t.Fatalf("expected resolved absolute kickoff path, got %q", kickoff.Path)
+		}
 	}
 }
 

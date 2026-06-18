@@ -15,6 +15,7 @@ import (
 
 type architectStatusResponse struct {
 	Key      string                           `json:"key"`
+	Name     string                           `json:"name"`
 	Path     string                           `json:"path"`
 	Status   *string                          `json:"status"`
 	Sessions []architectWorkerSessionResponse `json:"sessions"`
@@ -135,6 +136,7 @@ func architectStatusesFromConfig(cfg config.Config) ([]architectStatusResponse, 
 	for i, key := range keys {
 		statuses[i] = architectStatusResponse{
 			Key:      key,
+			Name:     cfg.Architects[key].Name,
 			Path:     cfg.Architects[key].Path,
 			Sessions: []architectWorkerSessionResponse{},
 		}

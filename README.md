@@ -41,7 +41,7 @@ hiverynd mcp --daemon-url http://127.0.0.1:4201 --architect-key hiveryn
 
 ## Configuration
 
-The daemon reads five YAML files from `HIVERYN_HOME` (default `~/.hiveryn`). Only `config.yaml` is required; the others default to empty when missing. `variants.yaml`, `architects.yaml`, `tabs.yaml`, and `shortcuts.yaml` are reloaded on demand, so changes to profiles, architect/repo mappings, tab layouts, and keybindings do not require a daemon restart. Passing `--config` points `config.yaml` elsewhere and, because config loading is directory-scoped, also changes where `variants.yaml`, `architects.yaml`, `tabs.yaml`, and `shortcuts.yaml` are read from.
+The daemon reads five YAML files from `HIVERYN_HOME` (default `~/.hiveryn`). Only `config.yaml` is required; the others default to empty when missing. `variants.yaml`, `architects.yaml`, `tabs.yaml`, and `shortcuts.yaml` are reloaded on demand, so changes to profiles, the architect registry, tab layouts, and keybindings do not require a daemon restart. The per-architect `hiveryn.yaml` files those entries point at are reloaded the same way. Passing `--config` points `config.yaml` elsewhere and, because config loading is directory-scoped, also changes where `variants.yaml`, `architects.yaml`, `tabs.yaml`, and `shortcuts.yaml` are read from.
 
 ### `config.yaml` — daemon core
 
@@ -91,16 +91,37 @@ claude-sonnet-plan:
 
 For architect sessions using `agent: opencode`, the daemon defines a named OpenCode agent automatically from `prompts/architect/SYSTEM.md`, using the architect key as the agent name and passing `--agent <architect_key>` at launch. Do not put `--agent` in OpenCode architect variant args; the daemon treats that as a launch error. Ticket and freeform OpenCode sessions do not define a named agent.
 
-### `architects.yaml` — architect definitions
+### `architects.yaml` — architect registry
+
+A bare `key: path` map. Each value points at an architect workspace directory containing a `hiveryn.yaml`; the architect's name, repos, and prompts are read from there.
 
 ```yaml
-hiveryn:
-  path: /Users/kareem/architects/hiveryn
-  group: personal
-  repos:
-    daemon: /Users/kareem/hiveryn/daemon
-    desktop: /Users/kareem/hiveryn/desktop
+hiveryn: /Users/kareem/architects/hiveryn
+litho: /Users/kareem/architects/litho
 ```
+
+### `hiveryn.yaml` — per-architect configuration
+
+Lives at the root of each architect workspace. The `key` from `architects.yaml` remains the identifier used in URLs and session records; `name` is a display label.
+
+```yaml
+name: Hiveryn
+repos:
+  daemon:  /Users/kareem/hiveryn/daemon
+  desktop: /Users/kareem/hiveryn/desktop
+prompts:                                       # optional
+  architect:                                   # optional
+    system: prompts/architect/SYSTEM.md        # optional path
+    kickoff: prompts/architect/KICKOFF.md      # optional path
+  ticket:                                      # optional
+    kickoffs:                                  # optional; default is the built-in kickoff
+      - { path: prompts/work/KICKOFF.md }              # default entry (no repos)
+      - { path: prompts/work/DAEMON.md, repos: [daemon] }  # repo-scoped
+```
+
+Prompt paths resolve relative to the workspace directory (absolute paths are used as-is) and override the daemon's embedded defaults; omit a field to keep the built-in prompt.
+
+Ticket-kickoff selection: the entry whose `repos` contains the ticket's repo wins over the default (no-`repos`) entry — most specific wins, regardless of list order. When `kickoffs` is absent, the embedded default is used. Configuration fails to load if any kickoff references a repo key not declared under `repos`, if two entries are both default, or if a repo key appears in more than one entry.
 
 ### `tabs.yaml` — tab layout per session type
 
@@ -173,8 +194,6 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `GET` | `/api/health` | Health check |
 | `GET` | `/api/agent-profiles` | List all agent profiles |
 | `GET` | `/api/agent-profiles/{name}` | Get one agent profile by name |
-| `GET` | `/api/architect-groups` | List architect groups |
-| `GET` | `/api/architect-groups/{name}` | Get one architect group by name |
 | `GET` | `/api/architects` | List configured architects |
 | `GET` | `/api/architects/status` | List all configured architects plus their running architect status and nested running ticket/freeform worker sessions for desktop command-palette/session pickers |
 | `GET` | `/api/architects/{key}` | Get one configured architect by key |

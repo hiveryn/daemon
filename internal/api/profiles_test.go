@@ -169,8 +169,33 @@ func writeReloadingConfigFiles(t *testing.T, configDir string, architects map[st
 	writeYAMLConfigFile(t, filepath.Join(configDir, "variants.yaml"), map[string]config.VariantConfig{
 		"codex-personal": {Agent: "codex"},
 	})
-	writeYAMLConfigFile(t, filepath.Join(configDir, "architects.yaml"), architects)
+	writeAPIArchitects(t, configDir, architects)
 	return path
+}
+
+// writeAPIArchitects writes the bare architects.yaml registry (key -> path)
+// plus a hiveryn.yaml in each architect's workspace, derived from the test's
+// ArchitectConfig values.
+func writeAPIArchitects(t *testing.T, configDir string, architects map[string]config.ArchitectConfig) {
+	t.Helper()
+
+	registry := map[string]string{}
+	for key, architect := range architects {
+		registry[key] = architect.Path
+		name := architect.Name
+		if name == "" {
+			name = key
+		}
+		repos := map[string]string{}
+		for repoKey, repoPath := range architect.Repos {
+			repos[repoKey] = repoPath
+		}
+		writeYAMLConfigFile(t, filepath.Join(architect.Path, "hiveryn.yaml"), map[string]any{
+			"name":  name,
+			"repos": repos,
+		})
+	}
+	writeYAMLConfigFile(t, filepath.Join(configDir, "architects.yaml"), registry)
 }
 
 func writeYAMLConfigFile(t *testing.T, path string, v any) {
@@ -207,16 +232,16 @@ func testConfig() config.Config {
 		},
 		Architects: map[string]config.ArchitectConfig{
 			"hiveryn": {
-				Path:  "/Users/kareem/architects/hiveryn",
-				Group: "personal",
+				Name: "Hiveryn",
+				Path: "/Users/kareem/architects/hiveryn",
 				Repos: map[string]string{
 					"daemon":  "/Users/kareem/hiveryn/daemon",
 					"desktop": "/Users/kareem/hiveryn/desktop",
 				},
 			},
 			"litho": {
-				Path:  "/Users/kareem/architects/litho",
-				Group: "personal",
+				Name: "Litho",
+				Path: "/Users/kareem/architects/litho",
 				Repos: map[string]string{
 					"app": "/Users/kareem/litho/lithoapp",
 				},

@@ -241,7 +241,6 @@ func TestTicketCreateReloadsRepoMappingsFromArchitectsFile(t *testing.T) {
 	cfgPath := writeReloadingConfigFiles(t, configDir, map[string]config.ArchitectConfig{
 		"hiveryn": {
 			Path:  architectPath,
-			Group: "personal",
 			Repos: map[string]string{"daemon": "/tmp/daemon"},
 		},
 	})
@@ -255,10 +254,9 @@ func TestTicketCreateReloadsRepoMappingsFromArchitectsFile(t *testing.T) {
 		t.Fatalf("expected initial status %d, got %d: %s", http.StatusBadRequest, status, string(body))
 	}
 
-	writeYAMLConfigFile(t, filepath.Join(configDir, "architects.yaml"), map[string]config.ArchitectConfig{
+	writeAPIArchitects(t, configDir, map[string]config.ArchitectConfig{
 		"hiveryn": {
 			Path:  architectPath,
-			Group: "personal",
 			Repos: map[string]string{"daemon": "/tmp/daemon", "desktop": "/tmp/desktop"},
 		},
 	})
