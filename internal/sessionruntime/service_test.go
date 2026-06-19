@@ -336,6 +336,114 @@ func TestRequestConclusionRejectsMissingCommitsBeforeApproval(t *testing.T) {
 	}
 }
 
+func TestRejectConclusionPublishesApprovalResolved(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	service := &Service{
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repo:         repo,
+		approvals:    newApprovalStore(),
+		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
+	}
+	if _, err := service.approvals.Store("intent-work", domain.ConcludeSessionParams{Body: "done"}); err != nil {
+		t.Fatalf("store approval: %v", err)
+	}
+
+	if err := service.RejectConclusion(context.Background(), "intent-work", "needs work"); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+
+	event := repo.lastAppendedEvent(t)
+	if event.Status != "approval_resolved" {
+		t.Fatalf("expected approval_resolved event, got %q", event.Status)
+	}
+	if event.Raw["outcome"] != "rejected" {
+		t.Fatalf("expected outcome rejected, got %#v", event.Raw["outcome"])
+	}
+}
+
+func TestRequestConclusionPublishesApprovalResolvedOnCancel(t *testing.T) {
+	t.Parallel()
+
+	created := time.Date(2026, 5, 13, 15, 30, 0, 0, time.UTC)
+	started := created.Add(5 * time.Minute)
+	repo := newFakeSessionRepository()
+	repo.createdIntent = domain.SessionIntent{
+		ID:           "intent-work",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeTicket,
+		ContextID:    "ticket-1",
+		CreatedAt:    created,
+		CurrentRun: &domain.SessionRun{
+			ID:        "run-1",
+			Status:    domain.SessionRunStatusRunning,
+			StartedAt: &started,
+		},
+	}
+	service := &Service{
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repo:         repo,
+		approvals:    newApprovalStore(),
+		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := service.RequestConclusion(ctx, "intent-work", domain.ConcludeSessionParams{
+		Body:    "done",
+		Commits: []domain.CommitRef{{Repo: "desktop", SHA: "abc123"}},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	event := repo.lastAppendedEvent(t)
+	if event.Status != "approval_resolved" || event.Raw["outcome"] != "cancelled" {
+		t.Fatalf("expected approval_resolved/cancelled, got %q %#v", event.Status, event.Raw["outcome"])
+	}
+}
+
+func TestReconcilePendingApprovalsResolvesDanglingRequired(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.listedIntents = []domain.SessionIntent{
+		{ID: "dangling", SessionType: domain.SessionTypeTicket},
+		{ID: "resolved", SessionType: domain.SessionTypeTicket},
+		{ID: "ended", SessionType: domain.SessionTypeTicket},
+	}
+	repo.sessionEvents = map[string][]domain.SessionEvent{
+		"dangling": {{Type: "status", Status: "approval_required"}},
+		"resolved": {
+			{Type: "status", Status: "approval_required"},
+			{Type: "status", Status: "approval_resolved"},
+		},
+		"ended": {
+			{Type: "status", Status: "approval_required"},
+			{Type: "status", Status: "ended"},
+		},
+	}
+	service := &Service{
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repo:         repo,
+		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
+	}
+
+	if err := service.ReconcilePendingApprovals(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if len(repo.appendedEvents) != 1 {
+		t.Fatalf("expected exactly one resolution event, got %#v", repo.appendedEvents)
+	}
+	event := repo.appendedEvents[0]
+	if event.SessionIntentID != "dangling" || event.Status != "approval_resolved" || event.Raw["outcome"] != "daemon_restart" {
+		t.Fatalf("unexpected reconciliation event: %#v", event)
+	}
+}
+
 func TestMoveTicketToDoneRejectsMissingCommits(t *testing.T) {
 	t.Parallel()
 
@@ -1671,6 +1779,7 @@ type fakeSessionRepository struct {
 	updatedRunNativeID string
 	updatedRunNative   string
 	appendedEvents     []domain.AppendSessionEventParams
+	sessionEvents      map[string][]domain.SessionEvent
 	operations         *[]string
 }
 
@@ -1784,8 +1893,8 @@ func (f *fakeSessionRepository) UpdateRunAgentStatus(_ context.Context, id, agen
 	return nil
 }
 
-func (f *fakeSessionRepository) ListSessionEvents(context.Context, string) ([]domain.SessionEvent, error) {
-	return nil, nil
+func (f *fakeSessionRepository) ListSessionEvents(_ context.Context, intentID string) ([]domain.SessionEvent, error) {
+	return f.sessionEvents[intentID], nil
 }
 
 func (f *fakeSessionRepository) AppendSessionEvent(_ context.Context, params domain.AppendSessionEventParams) (domain.SessionEvent, error) {

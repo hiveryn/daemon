@@ -82,6 +82,9 @@ func Run(configPath, databasePath string, portOverride int) error {
 	if err := service.RestoreRunningSessions(ctx); err != nil {
 		return err
 	}
+	if err := service.ReconcilePendingApprovals(ctx); err != nil {
+		return err
+	}
 	architectHub := archevents.New()
 
 	handler := api.NewHandler(api.Dependencies{

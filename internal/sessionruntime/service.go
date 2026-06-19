@@ -760,6 +760,12 @@ func (s *Service) RequestConclusion(ctx context.Context, id string, params domai
 	select {
 	case <-ctx.Done():
 		s.approvals.Delete(id)
+		// ctx is cancelled (agent disconnected), so detach it for the durable
+		// resolution write; otherwise a reconnecting desktop replays a dangling
+		// approval_required as a stale dialog.
+		if err := s.publishApprovalResolved(context.WithoutCancel(ctx), id, "cancelled"); err != nil {
+			s.logger.Warn("publish approval_resolved on cancel", "session_id", id, "error", err)
+		}
 		return domain.ConcludeSessionResult{}, ctx.Err()
 	case result := <-resultCh:
 		if result.err != nil {
@@ -793,6 +799,13 @@ func (s *Service) ApproveConclusion(ctx context.Context, id string) (domain.Conc
 	}
 
 	result, err := s.ConcludeSession(ctx, id, pending.params)
+	if err != nil {
+		// A failed conclusion emits no ended/concluded event, so without this the
+		// approval_required would dangle in the log and replay as a stale dialog.
+		if pubErr := s.publishApprovalResolved(ctx, id, "error"); pubErr != nil {
+			s.logger.Warn("publish approval_resolved after approve failure", "session_id", id, "error", pubErr)
+		}
+	}
 	pending.resultCh <- approvalResult{concludeResult: result, err: err}
 	return result, err
 }
@@ -801,6 +814,10 @@ func (s *Service) RejectConclusion(ctx context.Context, id string, reason string
 	pending, ok := s.approvals.Claim(id)
 	if !ok {
 		return &domain.NotFoundError{Resource: "pending_approval", ID: id}
+	}
+
+	if err := s.publishApprovalResolved(ctx, id, "rejected"); err != nil {
+		return err
 	}
 
 	pending.resultCh <- approvalResult{
@@ -831,6 +848,71 @@ func (s *Service) publishApprovalRequired(ctx context.Context, sessionID string,
 		Raw:             raw,
 		At:              time.Now().UTC(),
 	})
+}
+
+// publishApprovalResolved emits the durable counterpart to approval_required.
+// approval_required is persisted and replayed on every client (re)connect, but
+// the pending approval itself lives only in the in-memory approvalStore. Without
+// a resolution event, a rejected/cancelled/orphaned approval leaves a dangling
+// approval_required in the log that a reconnecting desktop replays into a stale,
+// unactionable dialog. Emitting approval_resolved makes the event log converge to
+// "no dialog" under replay. The successful-conclusion path does not need this:
+// it already emits the ended/concluded event that dismisses the dialog.
+func (s *Service) publishApprovalResolved(ctx context.Context, sessionID, outcome string) error {
+	return s.appendAndPublishSessionEvent(ctx, domain.AppendSessionEventParams{
+		SessionIntentID: sessionID,
+		Type:            "status",
+		Status:          "approval_resolved",
+		Message:         "conclusion approval resolved",
+		Raw:             map[string]any{"outcome": outcome},
+		At:              time.Now().UTC(),
+	})
+}
+
+// ReconcilePendingApprovals runs once at daemon startup. Pending approvals live
+// only in the in-memory approvalStore, which is empty after a restart, so any
+// approval_required still trailing in a session's durable log has no live
+// approval backing it and would replay into a stale dialog on the next desktop
+// reconnect. For every such session, append a durable approval_resolved so the
+// log converges to "no dialog". Because the approvalStore is always empty at
+// startup, any unresolved trailing approval_required is by definition orphaned.
+func (s *Service) ReconcilePendingApprovals(ctx context.Context) error {
+	intents, err := s.repo.ListIntents(ctx)
+	if err != nil {
+		return err
+	}
+	for _, intent := range intents {
+		events, err := s.repo.ListSessionEvents(ctx, intent.ID)
+		if err != nil {
+			return err
+		}
+		if !latestApprovalUnresolved(events) {
+			continue
+		}
+		if err := s.publishApprovalResolved(ctx, intent.ID, "daemon_restart"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// latestApprovalUnresolved reports whether the most recent approval-lifecycle
+// event (events are ordered oldest-first) is an approval_required with no
+// following approval_resolved or session end. Non-approval events are ignored.
+func latestApprovalUnresolved(events []domain.SessionEvent) bool {
+	for i := len(events) - 1; i >= 0; i-- {
+		e := events[i]
+		if e.Type != "status" {
+			continue
+		}
+		switch e.Status {
+		case "approval_required":
+			return true
+		case "approval_resolved", "ended":
+			return false
+		}
+	}
+	return false
 }
 
 func (s *Service) ReadConclusion(ctx context.Context, architectKey, id string) (domain.ArchitectConclusion, error) {

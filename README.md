@@ -248,6 +248,7 @@ When an agent calls `concludeSession` via MCP, the daemon routes through an appr
 5. The desktop calls `POST /api/sessions/{id}/approve-conclusion` or `POST /api/sessions/{id}/reject-conclusion`
 6. On approve: the daemon runs the conclusion and returns the result. On reject: the rejection reason propagates back as a `VALIDATION` error to the blocked MCP call so the agent can retry.
 7. On timeout: the daemon auto-approves and runs the conclusion as if the user clicked approve.
+8. Whenever a pending approval is resolved without a session-ending conclusion — reject, agent disconnect (request context cancelled), or a failed approve — the daemon publishes a durable `approval_resolved` SSE event (`raw.outcome` is `rejected`/`cancelled`/`error`). `approval_required` is persisted and replayed on every desktop (re)connect, but the pending approval lives only in memory; the resolution event is its durable counterpart, so replaying the event log always converges to "no dialog". A successful conclusion needs no resolution event — its `ended`/`concluded` event already dismisses the dialog. On startup the in-memory approval store is empty, so `ReconcilePendingApprovals` scans for any session whose latest approval event is still an unresolved `approval_required` (orphaned by a daemon restart) and appends `approval_resolved` (`outcome: daemon_restart`).
 
 The original `POST /api/sessions/{id}/conclude` endpoint remains available for direct calls without approval.
 
