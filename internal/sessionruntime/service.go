@@ -352,24 +352,11 @@ func (s *Service) CreateRun(ctx context.Context, intentID string, req domain.Cre
 	return domain.CreateSessionRunResult{Run: run, MainTerminalID: mainTerminalID}, nil
 }
 
-func setupRequestForAgent(agentKind agentruntime.AgentKind, endpoint string, env map[string]string) agentruntime.SetupRequest {
+func setupRequestForAgent(adapter agentruntime.Adapter, endpoint string, env map[string]string) agentruntime.SetupRequest {
 	return agentruntime.SetupRequest{
 		Marker:     setupMarker,
-		ConfigRoot: configRootForAgent(agentKind, env),
-		Hook:       hookCommandForAgent(agentKind, endpoint),
-	}
-}
-
-func configRootForAgent(agentKind agentruntime.AgentKind, env map[string]string) string {
-	switch agentKind {
-	case agentruntime.AgentCodex:
-		return env["CODEX_HOME"]
-	case agentruntime.AgentClaude:
-		return ""
-	case agentruntime.AgentOpenCode:
-		return ""
-	default:
-		return ""
+		ConfigRoot: adapter.ConfigRoot(env),
+		Hook:       hookCommandForAgent(adapter.Agent(), endpoint),
 	}
 }
 
@@ -556,7 +543,7 @@ func (s *Service) prepareLaunchSpec(ctx context.Context, intent domain.SessionIn
 	}
 
 	adapter := s.adapters[agentKind]
-	if _, err := adapter.EnsureSetup(ctx, setupRequestForAgent(agentKind, s.baseURL+ingestPathPrefix, profile.Env)); err != nil {
+	if _, err := adapter.EnsureSetup(ctx, setupRequestForAgent(adapter, s.baseURL+ingestPathPrefix, profile.Env)); err != nil {
 		return agentruntime.LaunchSpec{}, fmt.Errorf("ensure %s setup: %w", agentKind, err)
 	}
 

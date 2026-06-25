@@ -1751,6 +1751,8 @@ type fakeAdapter struct {
 
 func (fakeAdapter) Agent() agentruntime.AgentKind { return agentruntime.AgentCodex }
 
+func (fakeAdapter) ConfigRoot(env map[string]string) string { return env["CODEX_HOME"] }
+
 func (f *fakeAdapter) PrepareLaunch(_ context.Context, req agentruntime.StartRequest) (agentruntime.LaunchSpec, error) {
 	f.launchRequest = req
 	return agentruntime.LaunchSpec{Command: "fake-command", Workdir: "/tmp", Args: append([]string(nil), req.Args...)}, nil
@@ -1777,6 +1779,10 @@ type fakePrepareLaunchAdapter struct {
 }
 
 func (f *fakePrepareLaunchAdapter) Agent() agentruntime.AgentKind { return f.delegate.Agent() }
+
+func (f *fakePrepareLaunchAdapter) ConfigRoot(env map[string]string) string {
+	return f.delegate.ConfigRoot(env)
+}
 
 func (f *fakePrepareLaunchAdapter) PrepareLaunch(ctx context.Context, req agentruntime.StartRequest) (agentruntime.LaunchSpec, error) {
 	return f.delegate.PrepareLaunch(ctx, req)
