@@ -108,6 +108,37 @@ func TestRestoreRunningSessionsMarksRestoreFailure(t *testing.T) {
 	}
 }
 
+func TestResolveStoredRunLaunchContextAllowsEmptyNativeID(t *testing.T) {
+	t.Parallel()
+
+	service := &Service{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:    testRuntimeConfig(t),
+		repo:   newFakeSessionRepository(),
+	}
+	intent := domain.SessionIntent{ID: "intent-1", ArchitectKey: "hiveryn"}
+	run := domain.SessionRun{
+		ID:          "run-1",
+		ProfileName: "codex",
+		Workdir:     t.TempDir(),
+		NativeID:    "", // race left this empty; must fall back to id-less resume
+		ProfileSnapshot: &domain.AgentProfileSnapshot{
+			Agent: "codex",
+		},
+	}
+
+	profile, agentKind, err := service.resolveStoredRunLaunchContext(intent, run)
+	if err != nil {
+		t.Fatalf("expected empty NativeID to resolve, got %v", err)
+	}
+	if agentKind != agentruntime.AgentCodex {
+		t.Fatalf("expected codex agent kind, got %q", agentKind)
+	}
+	if profile.Agent != "codex" {
+		t.Fatalf("expected codex profile agent, got %q", profile.Agent)
+	}
+}
+
 func TestRestoreRunningSessionsMovesTicketToBacklogOnRestoreFailure(t *testing.T) {
 	t.Parallel()
 

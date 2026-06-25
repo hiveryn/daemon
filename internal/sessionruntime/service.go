@@ -617,9 +617,10 @@ func (s *Service) resolveStoredRunLaunchContext(intent domain.SessionIntent, run
 	if run.ProfileSnapshot == nil {
 		return config.VariantConfig{}, "", fmt.Errorf("session run %s has no profile snapshot", run.ID)
 	}
-	if strings.TrimSpace(run.NativeID) == "" {
-		return config.VariantConfig{}, "", fmt.Errorf("session run %s has no native ID", run.ID)
-	}
+	// An empty NativeID is tolerated: both restore and main-terminal-exit resume
+	// pass ResumeID: run.NativeID, so a blank NativeID launches the agent in
+	// id-less resume mode (session picker / continue) instead of failing. The
+	// spawn->killed-before-first-ingest race can still leave NativeID empty.
 	if strings.TrimSpace(run.Workdir) == "" {
 		return config.VariantConfig{}, "", fmt.Errorf("session run %s has no workdir", run.ID)
 	}
@@ -1839,7 +1840,26 @@ func (s *Service) handleTerminalExit(exit terminalExit) {
 
 	mainTerminalID, err := s.resumeSessionMainTerminal(context.Background(), intent, run, terminalSize{Cols: defaultPTYCols, Rows: defaultPTYRows})
 	if err != nil {
-		panic(fmt.Errorf("resume session intent %s run %s after main terminal exit: %w", exit.SessionID, run.ID, err))
+		// A single session's resume failure must never crash the daemon (and every
+		// other live session with it). Recover per-session: mark this run failed and,
+		// for tickets, move it back to backlog — mirroring RestoreRunningSessions.
+		s.logger.Error("failed to resume main terminal after exit, marking run as failed",
+			"session_intent_id", exit.SessionID,
+			"run_id", run.ID,
+			"session_type", intent.SessionType,
+			"error", err,
+		)
+		s.markRunFailed(run.ID, domain.SessionRunFailureLaunchFailed, "resume_main_terminal")
+		if intent.SessionType == domain.SessionTypeTicket {
+			if ticketErr := s.moveTicketToBacklog(context.Background(), intent); ticketErr != nil {
+				s.logger.Error("failed to move ticket back to backlog after resume failure",
+					"session_intent_id", exit.SessionID,
+					"ticket_id", intent.ContextID,
+					"error", ticketErr,
+				)
+			}
+		}
+		return
 	}
 
 	if err := s.appendAndPublishSessionEvent(context.Background(), domain.AppendSessionEventParams{
