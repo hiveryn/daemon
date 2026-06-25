@@ -302,6 +302,88 @@ func TestConcludeTicketSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 	}
 }
 
+func TestUnspawnTicketSessionMovesTicketBackAndDeletesRun(t *testing.T) {
+	t.Parallel()
+
+	architectPath := t.TempDir()
+	repoPath := t.TempDir()
+	created := time.Date(2026, 5, 13, 15, 30, 0, 0, time.UTC)
+	operations := []string{}
+	repo := newFakeSessionRepository()
+	repo.operations = &operations
+	repo.createdIntent = domain.SessionIntent{
+		ID:           "intent-work",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeTicket,
+		ContextID:    "ticket-1",
+		Prompt:       "kickoff",
+		Workdir:      repoPath,
+		CreatedAt:    created,
+		CurrentRun: &domain.SessionRun{
+			ID:          "run-1",
+			Status:      domain.SessionRunStatusRunning,
+			Workdir:     repoPath,
+			ProfileName: "codex",
+		},
+	}
+	tickets := &fakeTicketService{ticket: domain.Ticket{
+		TicketSummary: domain.TicketSummary{ID: "ticket-1", Title: "Ticket", Repo: "daemon", Status: domain.TicketStatusProgress, Created: &created, Updated: &created},
+		Body:          "body",
+	}}
+	service := &Service{
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:          testRuntimeConfigWithPaths(architectPath, repoPath),
+		repo:         repo,
+		tickets:      tickets,
+		terminal:     &fakeTerminalManager{operations: &operations},
+		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
+	}
+
+	result, err := service.UnspawnTicketSession(context.Background(), "intent-work")
+	if err != nil {
+		t.Fatalf("UnspawnTicketSession failed: %v", err)
+	}
+
+	if result.SessionID != "intent-work" || result.TicketID != "ticket-1" || result.ArchitectKey != "hiveryn" {
+		t.Fatalf("unexpected result %#v", result)
+	}
+	if tickets.movedTo != domain.TicketStatusBacklog {
+		t.Fatalf("expected ticket moved to backlog, got %q", tickets.movedTo)
+	}
+	if repo.deletedRunID != "run-1" {
+		t.Fatalf("expected run deleted, got %q", repo.deletedRunID)
+	}
+	event := repo.lastAppendedEvent(t)
+	if event.Status != "ended" || event.Message != "session discarded" || event.Raw["lifecycle"] != "discarded" {
+		t.Fatalf("unexpected discard event %#v", event)
+	}
+	if got, want := strings.Join(operations, ","), "event,kill,delete_run,delete"; got != want {
+		t.Fatalf("expected operations %q, got %q", want, got)
+	}
+}
+
+func TestUnspawnTicketSessionRejectsNonTicketSession(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.createdIntent = domain.SessionIntent{
+		ID:           "intent-architect",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeArchitect,
+		ContextID:    "2026-05-13-1500",
+		Prompt:       "kickoff",
+		Workdir:      t.TempDir(),
+		CurrentRun:   &domain.SessionRun{ID: "run-1", Status: domain.SessionRunStatusRunning},
+	}
+	service := &Service{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), repo: repo}
+
+	_, err := service.UnspawnTicketSession(context.Background(), "intent-architect")
+	var validationErr *domain.ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Field != "session_type" {
+		t.Fatalf("expected session_type validation error, got %v", err)
+	}
+}
+
 func TestRequestConclusionRejectsMissingCommitsBeforeApproval(t *testing.T) {
 	t.Parallel()
 
@@ -1776,6 +1858,7 @@ type fakeSessionRepository struct {
 	failedRunID        string
 	failedRunReason    domain.SessionRunFailureReason
 	completedRunID     string
+	deletedRunID       string
 	updatedRunNativeID string
 	updatedRunNative   string
 	appendedEvents     []domain.AppendSessionEventParams
@@ -1856,6 +1939,17 @@ func (f *fakeSessionRepository) GetCurrentRun(context.Context, string) (*domain.
 	return &run, nil
 }
 
+func (f *fakeSessionRepository) DeleteRun(_ context.Context, id string) error {
+	if f.operations != nil {
+		*f.operations = append(*f.operations, "delete_run")
+	}
+	f.deletedRunID = id
+	if f.createdIntent.CurrentRun != nil && f.createdIntent.CurrentRun.ID == id {
+		f.createdIntent.CurrentRun = nil
+	}
+	return nil
+}
+
 func (f *fakeSessionRepository) MarkRunCompleted(_ context.Context, id string) error {
 	if f.operations != nil {
 		*f.operations = append(*f.operations, "complete")
@@ -1917,6 +2011,7 @@ type fakeTicketService struct {
 	ticket      domain.Ticket
 	err         error
 	moveErr     error
+	movedTo     domain.TicketStatus
 	concludeErr error
 }
 
@@ -1942,7 +2037,8 @@ func (f *fakeTicketService) UpdateTicketMetadata(context.Context, string, string
 
 func (f *fakeTicketService) DeleteTicket(context.Context, string, string) error { return nil }
 
-func (f *fakeTicketService) MoveTicket(context.Context, string, string, domain.MoveTicketParams) (domain.Ticket, error) {
+func (f *fakeTicketService) MoveTicket(_ context.Context, _ string, _ string, params domain.MoveTicketParams) (domain.Ticket, error) {
+	f.movedTo = params.To
 	return domain.Ticket{}, f.moveErr
 }
 

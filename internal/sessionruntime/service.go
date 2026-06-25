@@ -698,6 +698,48 @@ func (s *Service) ConcludeSession(ctx context.Context, id string, params domain.
 	}
 }
 
+func (s *Service) UnspawnTicketSession(ctx context.Context, id string) (domain.ConcludeSessionResult, error) {
+	intent, err := s.repo.GetIntent(ctx, id)
+	if err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+	if intent.SessionType != domain.SessionTypeTicket {
+		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_type", Message: "only ticket sessions can be discarded"}
+	}
+	if strings.TrimSpace(intent.ContextID) == "" {
+		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_id", Message: "ticket session has no context ID"}
+	}
+	if intent.CurrentRun == nil {
+		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_id", Message: "session has no run to discard"}
+	}
+	run := *intent.CurrentRun
+
+	if err := s.moveTicketToBacklog(ctx, intent); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+
+	if err := s.appendAndPublishSessionEnded(ctx, intent.ID, run.ID, "session discarded", "discarded", map[string]any{
+		"ticket_id": intent.ContextID,
+	}); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+
+	if err := s.terminal.KillBySession(ctx, intent.ID); err != nil && !errors.Is(err, errTerminalNotFound) {
+		return domain.ConcludeSessionResult{}, fmt.Errorf("kill session terminal: %w", err)
+	}
+	s.closeSessionPlugins(ctx, intent)
+
+	if err := s.repo.DeleteRun(ctx, run.ID); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+	if err := s.repo.DeleteIntent(ctx, intent.ID); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+	s.cleanupDeletedSession(intent.ID)
+
+	return domain.ConcludeSessionResult{SessionID: intent.ID, ArchitectKey: intent.ArchitectKey, TicketID: intent.ContextID}, nil
+}
+
 // validateConclusionCommits enforces the commit/rejection invariant shared by
 // ticket conclusion and moveTicketToDone: a conclusion either carries at least
 // one commit, or is explicitly rejected with a reason.
@@ -1076,7 +1118,7 @@ func (s *Service) concludeArchitectSession(ctx context.Context, intent domain.Se
 		return domain.ConcludeSessionResult{}, err
 	}
 
-	if err := s.appendAndPublishSessionEnded(ctx, intent.ID, run.ID, "session concluded", map[string]any{"body": params.Body}); err != nil {
+	if err := s.appendAndPublishSessionEnded(ctx, intent.ID, run.ID, "session concluded", "concluded", map[string]any{"body": params.Body}); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
 
@@ -1182,7 +1224,7 @@ func (s *Service) concludeTicketSession(ctx context.Context, intent domain.Sessi
 		return domain.ConcludeSessionResult{}, err
 	}
 
-	if err := s.appendAndPublishSessionEnded(ctx, intent.ID, run.ID, "session concluded", map[string]any{
+	if err := s.appendAndPublishSessionEnded(ctx, intent.ID, run.ID, "session concluded", "concluded", map[string]any{
 		"body":             params.Body,
 		"commits":          resolvedCommits,
 		"rejected":         params.Rejected,
@@ -1334,7 +1376,7 @@ func (s *Service) concludeFreeformSession(ctx context.Context, intent domain.Ses
 	if len(resolvedCommits) > 0 {
 		raw["commits"] = resolvedCommits
 	}
-	if err := s.appendAndPublishSessionEnded(ctx, intent.ID, run.ID, "session concluded", raw); err != nil {
+	if err := s.appendAndPublishSessionEnded(ctx, intent.ID, run.ID, "session concluded", "concluded", raw); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
 
@@ -1351,9 +1393,9 @@ func (s *Service) concludeFreeformSession(ctx context.Context, intent domain.Ses
 	return domain.ConcludeSessionResult{SessionID: intent.ID, ArchitectKey: intent.ArchitectKey}, nil
 }
 
-func (s *Service) appendAndPublishSessionEnded(ctx context.Context, intentID, runID, message string, raw map[string]any) error {
+func (s *Service) appendAndPublishSessionEnded(ctx context.Context, intentID, runID, message, lifecycle string, raw map[string]any) error {
 	raw = cloneAnyMap(raw)
-	raw["lifecycle"] = "concluded"
+	raw["lifecycle"] = lifecycle
 	raw["session_intent_id"] = intentID
 	if runID != "" {
 		raw["run_id"] = runID

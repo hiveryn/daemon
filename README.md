@@ -217,6 +217,7 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `GET` | `/api/sessions/{id}` | Get one session intent |
 | `POST` | `/api/sessions/{id}/runs` | Start a run for a session intent using an agent profile; ticket runs move the ticket backlog → progress on successful launch |
 | `POST` | `/api/sessions/{id}/conclude` | Conclude an intent's running run, publish `ended`, kill its PTYs, and delete the intent row; architect conclude returns `CONFLICT` if same-architect ticket sessions are still running |
+| `POST` | `/api/sessions/{id}/discard` | Discard a ticket session without writing a conclusion: move the ticket progress → backlog, publish `ended` with `raw.lifecycle=discarded`, kill PTYs, delete the run, and delete the intent row |
 | `POST` | `/api/sessions/{id}/request-conclusion` | Request conclusion approval (blocking). Stores pending approval, publishes `approval_required` SSE event, blocks until approved, rejected, or timeout (auto-approves). Called by the MCP `concludeSession` tool. |
 | `POST` | `/api/sessions/{id}/approve-conclusion` | Approve a pending conclusion request and run the conclusion. Called by the desktop app. |
 | `POST` | `/api/sessions/{id}/reject-conclusion` | Reject a pending conclusion request with a reason. Returns the reason as a validation error to the blocked `request-conclusion` caller so the agent can retry. |
@@ -235,7 +236,31 @@ Ticket mutations are status-gated: backlog tickets can be edited, metadata-updat
 
 Session responses expose a durable intent plus its current run, if any. Each intent stores the create-time session contract: `id`, `architect_key`, `session_type`, `context_id`, `prompt`, `workdir`, optional `instructions`, and lifecycle metadata. `POST /api/sessions/{id}/runs` returns the created `run`, its `main_terminal_id`, and a `ws_url` so the desktop can attach immediately. Launch uses the stored `workdir` directly; ticket and architect workdirs are resolved during intent creation, not recalculated later. If the main agent PTY exits unexpectedly, the daemon automatically resumes the running run from its stored `native_id`, emits a `main_terminal_resumed` session event with the new `main_terminal_id`, and leaves the run status as `running`; restore failures mark the run `restore_failed`, log the error at ERROR level, and for ticket sessions move the ticket back to `backlog`; the daemon continues startup regardless of individual restore failures. `GET /api/sessions/{id}/tabs` returns the canonical right-pane layout using `type`, `id`, `command`, and `status` for terminal tabs. `POST /api/sessions/{id}/terminals` accepts an empty JSON object and always launches the session's default shell in the current run workdir.
 
-Only `POST /api/sessions/{id}/conclude` legitimately ends a session. Concluding an architect intent fails fast with `CONFLICT` while ticket intents for the same `architect_key` still have a `running` run; the error message lists the blocking intent IDs.
+The legitimate explicit session ends are `POST /api/sessions/{id}/conclude` and, for ticket sessions only, `POST /api/sessions/{id}/discard`. Concluding an architect intent fails fast with `CONFLICT` while ticket intents for the same `architect_key` still have a `running` run; the error message lists the blocking intent IDs.
+
+### Discard ticket session
+
+`POST /api/sessions/{id}/discard` is for the desktop "discard worker session" action. It accepts no request body. The target session must be a ticket session with a current run; architect and freeform sessions return a `VALIDATION` envelope. The daemon moves the ticket back to `backlog`, emits a live session SSE event with `type=status`, `status=ended`, `message=session discarded`, and `raw.lifecycle=discarded`, kills all PTYs/plugins for the session, deletes the `session_runs` row, and deletes the `session_intents` row. No `conclusion.md` is written and no commit/rejection invariant is checked. Git changes made by the agent are not reverted.
+
+Successful response:
+
+```json
+{
+  "data": {
+    "success": true,
+    "session_id": "intent-uuid",
+    "ticket_id": "ticket-id"
+  },
+  "error": null,
+  "logs": [],
+  "commands": [],
+  "meta": {
+    "request_id": "..."
+  }
+}
+```
+
+Desktop consumers should remove the session tab either when the POST succeeds or when they receive the `ended` SSE event with `raw.lifecycle=discarded`. The architect event stream also receives a `workspace_changed` hint with `reason=ticket_moved` and the ticket ID so ticket boards can refresh.
 
 ### Conclusion approval flow
 

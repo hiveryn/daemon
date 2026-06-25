@@ -202,6 +202,35 @@ func (h *sessionsHandler) conclude(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *sessionsHandler) discard(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
+		return
+	}
+
+	result, err := h.sessions.UnspawnTicketSession(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	if result.TicketID != "" && h.publishArchitect != nil {
+		h.publishArchitect(result.ArchitectKey, domain.ArchitectEvent{
+			Type:         "workspace_changed",
+			ArchitectKey: result.ArchitectKey,
+			Reason:       "ticket_moved",
+			TicketID:     result.TicketID,
+			At:           time.Now().UTC(),
+		})
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"success":    true,
+		"session_id": result.SessionID,
+		"ticket_id":  result.TicketID,
+	})
+}
+
 func (h *sessionsHandler) requestConclusion(w http.ResponseWriter, r *http.Request) {
 	if h.sessions == nil {
 		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)

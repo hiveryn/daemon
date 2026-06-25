@@ -80,6 +80,7 @@ type SessionRepository interface {
 	CreateRun(context.Context, CreateSessionRunParams) (SessionRun, error)
 	GetRun(context.Context, string) (SessionRun, error)
 	GetCurrentRun(context.Context, string) (*SessionRun, error)
+	DeleteRun(context.Context, string) error
 	MarkRunCompleted(context.Context, string) error
 	MarkRunFailed(context.Context, string, SessionRunFailureReason) error
 	UpdateRunNativeID(context.Context, string, string) error
@@ -104,6 +105,7 @@ type SessionService interface {
 	CreateIntent(context.Context, CreateSessionIntentRequest) (SessionIntent, error)
 	CreateRun(context.Context, string, CreateSessionRunRequest) (CreateSessionRunResult, error)
 	ConcludeSession(context.Context, string, ConcludeSessionParams) (ConcludeSessionResult, error)
+	UnspawnTicketSession(context.Context, string) (ConcludeSessionResult, error)
 	RequestConclusion(context.Context, string, ConcludeSessionParams) (ConcludeSessionResult, error)
 	MoveTicketToDone(context.Context, string, string, MoveTicketToDoneParams) (MoveTicketToDoneResult, error)
 	ApproveConclusion(context.Context, string) (ConcludeSessionResult, error)

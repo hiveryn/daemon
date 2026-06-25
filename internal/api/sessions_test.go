@@ -524,6 +524,26 @@ func TestConcludeSessionEmptyBodySucceeds(t *testing.T) {
 	}
 }
 
+func TestDiscardSessionSuccess(t *testing.T) {
+	service := &fakeSessionService{
+		discardResult: domain.ConcludeSessionResult{SessionID: "intent-1", ArchitectKey: "hiveryn", TicketID: "ticket-1"},
+	}
+	handler := newSessionTestHandler(t, service)
+
+	status, body := request(t, handler, http.MethodPost, "/api/sessions/intent-1/discard", nil)
+	if status != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", status, body)
+	}
+	if service.lastDiscardSessionID != "intent-1" {
+		t.Fatalf("expected discard session intent-1, got %q", service.lastDiscardSessionID)
+	}
+	var payload map[string]any
+	decodeEnvelopeData(t, body, &payload)
+	if payload["session_id"] != "intent-1" || payload["ticket_id"] != "ticket-1" {
+		t.Fatalf("unexpected payload %#v", payload)
+	}
+}
+
 func newSessionTestHandler(t *testing.T, sessions domain.SessionService) http.Handler {
 	t.Helper()
 
@@ -556,6 +576,9 @@ type fakeSessionService struct {
 	concludeErr              error
 	lastConcludeSessionID    string
 	lastConcludeParams       domain.ConcludeSessionParams
+	discardResult            domain.ConcludeSessionResult
+	discardErr               error
+	lastDiscardSessionID     string
 	requestConclusionResult  domain.ConcludeSessionResult
 	requestConclusionErr     error
 	approveConclusionResult  domain.ConcludeSessionResult
@@ -585,6 +608,11 @@ func (f *fakeSessionService) ConcludeSession(_ context.Context, id string, param
 	f.lastConcludeSessionID = id
 	f.lastConcludeParams = params
 	return f.concludeResult, f.concludeErr
+}
+
+func (f *fakeSessionService) UnspawnTicketSession(_ context.Context, id string) (domain.ConcludeSessionResult, error) {
+	f.lastDiscardSessionID = id
+	return f.discardResult, f.discardErr
 }
 
 func (f *fakeSessionService) RequestConclusion(_ context.Context, id string, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {

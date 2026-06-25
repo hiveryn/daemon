@@ -83,6 +83,54 @@ func TestSessionStoreAllowsOneArchitectIntentPerArchitect(t *testing.T) {
 	}
 }
 
+func TestSessionStoreDeleteRunErasesRun(t *testing.T) {
+	t.Parallel()
+
+	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	store := NewSessionStore(db)
+	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
+		ID:           "intent-1",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeArchitect,
+		ContextID:    "2026-05-19-1200",
+		Prompt:       "kickoff",
+		Workdir:      "/tmp/architect",
+		CreatedBy:    domain.SessionCreatedByDesktop,
+	}); err != nil {
+		t.Fatalf("create intent: %v", err)
+	}
+	if _, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
+		ID:              "run-1",
+		SessionIntentID: "intent-1",
+		ProfileName:     "codex",
+		Workdir:         "/tmp/architect",
+	}); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	if err := store.DeleteRun(context.Background(), "run-1"); err != nil {
+		t.Fatalf("delete run: %v", err)
+	}
+
+	_, err = store.GetRun(context.Background(), "run-1")
+	var notFound *domain.NotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("expected deleted run to be missing, got %v", err)
+	}
+	current, err := store.GetCurrentRun(context.Background(), "intent-1")
+	if err != nil {
+		t.Fatalf("get current run: %v", err)
+	}
+	if current != nil {
+		t.Fatalf("expected no current run, got %#v", current)
+	}
+}
+
 func TestSessionStoreAllowsOneTicketIntentPerTicket(t *testing.T) {
 	t.Parallel()
 

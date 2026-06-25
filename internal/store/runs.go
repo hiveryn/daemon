@@ -93,6 +93,14 @@ func (s *SessionStore) GetCurrentRun(ctx context.Context, intentID string) (*dom
 	return &run, nil
 }
 
+func (s *SessionStore) DeleteRun(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM session_runs WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete session run %s: %w", id, err)
+	}
+	return ensureRowsAffected(result, "session_run", id)
+}
+
 func (s *SessionStore) MarkRunCompleted(ctx context.Context, id string) error {
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `
