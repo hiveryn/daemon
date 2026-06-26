@@ -54,6 +54,7 @@ type reloadingSource struct {
 
 type VariantConfig struct {
 	Agent string                     `yaml:"agent"`
+	Model string                     `yaml:"model"`
 	Args  []string                   `yaml:"args"`
 	Env   map[string]string          `yaml:"env"`
 	MCP   map[string]MCPServerConfig `yaml:"mcp_servers"`
@@ -671,6 +672,7 @@ func cloneVariantConfigs(src map[string]VariantConfig) map[string]VariantConfig 
 	for name, variant := range src {
 		dst[name] = VariantConfig{
 			Agent: variant.Agent,
+			Model: variant.Model,
 			Args:  append([]string(nil), variant.Args...),
 			Env:   cloneStringMap(variant.Env),
 			MCP:   cloneMCPServerConfigs(variant.MCP),

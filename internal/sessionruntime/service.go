@@ -327,6 +327,7 @@ func (s *Service) CreateRun(ctx context.Context, intentID string, req domain.Cre
 
 	mainTerminalID, err := s.launchSession(ctx, cfg, intent, run, profile, agentKind, agentruntime.StartRequest{
 		Prompt:       intent.Prompt,
+		Model:        profile.Model,
 		Instructions: intent.Instructions,
 		Workdir:      intent.Workdir,
 		Args:         append([]string(nil), profile.Args...),
@@ -466,6 +467,7 @@ func (s *Service) restoreSession(ctx context.Context, intent domain.SessionInten
 	}
 
 	if _, err := s.launchSession(ctx, cfg, intent, run, profile, agentKind, agentruntime.StartRequest{
+		Model:        profile.Model,
 		Instructions: intent.Instructions,
 		Workdir:      run.Workdir,
 		Args:         append([]string(nil), profile.Args...),
@@ -633,6 +635,7 @@ func (s *Service) resolveStoredRunLaunchContext(intent domain.SessionIntent, run
 
 	return config.VariantConfig{
 		Agent: snapshot.Agent,
+		Model: snapshot.Model,
 		Args:  append([]string(nil), snapshot.Args...),
 		Env:   cloneStringMap(snapshot.Env),
 		MCP:   mcpServersFromSnapshot(snapshot.MCP),
@@ -646,6 +649,7 @@ func (s *Service) resumeSessionMainTerminal(ctx context.Context, intent domain.S
 	}
 
 	mainTerminalID, _, err := s.startSessionMainTerminal(ctx, intent, run, profile, agentKind, agentruntime.StartRequest{
+		Model:        profile.Model,
 		Instructions: intent.Instructions,
 		Workdir:      run.Workdir,
 		Args:         append([]string(nil), profile.Args...),
@@ -2203,6 +2207,7 @@ func yamlNodeString(node *yaml.Node, key string) string {
 func snapshotVariant(profile config.VariantConfig) domain.AgentProfileSnapshot {
 	return domain.AgentProfileSnapshot{
 		Agent: profile.Agent,
+		Model: profile.Model,
 		Args:  append([]string(nil), profile.Args...),
 		Env:   cloneStringMap(profile.Env),
 		MCP:   snapshotMCPServers(profile.MCP),

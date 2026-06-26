@@ -74,6 +74,7 @@ type ticketsHandler struct {
 type agentProfileResponse struct {
 	Name  string            `json:"name"`
 	Agent string            `json:"agent"`
+	Model string            `json:"model,omitempty"`
 	Args  []string          `json:"args"`
 	Env   map[string]string `json:"env"`
 }
@@ -163,6 +164,7 @@ func listAgentProfiles(cfg config.Config) []agentProfileResponse {
 		profiles = append(profiles, agentProfileResponse{
 			Name:  name,
 			Agent: profile.Agent,
+			Model: profile.Model,
 			Args:  append([]string(nil), profile.Args...),
 			Env:   cloneStringMap(profile.Env),
 		})
@@ -185,6 +187,7 @@ func getAgentProfile(cfg config.Config, name string) (agentProfileResponse, bool
 	return agentProfileResponse{
 		Name:  name,
 		Agent: profile.Agent,
+		Model: profile.Model,
 		Args:  append([]string(nil), profile.Args...),
 		Env:   cloneStringMap(profile.Env),
 	}, true
