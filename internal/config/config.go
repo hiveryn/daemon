@@ -55,6 +55,8 @@ type reloadingSource struct {
 type VariantConfig struct {
 	Agent string                     `yaml:"agent"`
 	Model string                     `yaml:"model"`
+	Yolo  bool                       `yaml:"yolo"`
+	Mode  string                     `yaml:"mode"`
 	Args  []string                   `yaml:"args"`
 	Env   map[string]string          `yaml:"env"`
 	MCP   map[string]MCPServerConfig `yaml:"mcp_servers"`
@@ -458,6 +460,14 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(variant.Agent) == "" {
 			return fmt.Errorf("variants.%s.agent is required", name)
 		}
+		switch variant.Mode {
+		case "", "build", "plan":
+		default:
+			return fmt.Errorf("variants.%s.mode must be \"build\" or \"plan\", got %q", name, variant.Mode)
+		}
+		if variant.Mode == "plan" && variant.Agent == "codex" {
+			return fmt.Errorf("variants.%s: mode \"plan\" is not supported by agent codex", name)
+		}
 		for key := range variant.Env {
 			if strings.TrimSpace(key) == "" {
 				return fmt.Errorf("variants.%s.env keys must not be blank", name)
@@ -673,6 +683,8 @@ func cloneVariantConfigs(src map[string]VariantConfig) map[string]VariantConfig 
 		dst[name] = VariantConfig{
 			Agent: variant.Agent,
 			Model: variant.Model,
+			Yolo:  variant.Yolo,
+			Mode:  variant.Mode,
 			Args:  append([]string(nil), variant.Args...),
 			Env:   cloneStringMap(variant.Env),
 			MCP:   cloneMCPServerConfigs(variant.MCP),

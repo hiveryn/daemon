@@ -75,6 +75,8 @@ type agentProfileResponse struct {
 	Name  string            `json:"name"`
 	Agent string            `json:"agent"`
 	Model string            `json:"model,omitempty"`
+	Yolo  bool              `json:"yolo,omitempty"`
+	Mode  string            `json:"mode,omitempty"`
 	Args  []string          `json:"args"`
 	Env   map[string]string `json:"env"`
 }
@@ -165,6 +167,8 @@ func listAgentProfiles(cfg config.Config) []agentProfileResponse {
 			Name:  name,
 			Agent: profile.Agent,
 			Model: profile.Model,
+			Yolo:  profile.Yolo,
+			Mode:  profile.Mode,
 			Args:  append([]string(nil), profile.Args...),
 			Env:   cloneStringMap(profile.Env),
 		})
@@ -188,6 +192,8 @@ func getAgentProfile(cfg config.Config, name string) (agentProfileResponse, bool
 		Name:  name,
 		Agent: profile.Agent,
 		Model: profile.Model,
+		Yolo:  profile.Yolo,
+		Mode:  profile.Mode,
 		Args:  append([]string(nil), profile.Args...),
 		Env:   cloneStringMap(profile.Env),
 	}, true
