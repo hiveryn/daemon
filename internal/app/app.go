@@ -85,7 +85,7 @@ func Run(configPath, databasePath string, portOverride int) error {
 	if err := service.ReconcilePendingApprovals(ctx); err != nil {
 		return err
 	}
-	architectHub := archevents.New()
+	architectHub := archevents.New(logger)
 
 	handler := api.NewHandler(api.Dependencies{
 		Config:          cfg,

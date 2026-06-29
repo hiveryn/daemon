@@ -74,6 +74,11 @@ func (h *architectEventsHandler) events(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 			flusher.Flush()
+			h.logger.Debug("[sse] architect event delivered",
+				"key", key,
+				"reason", event.Reason,
+				"ticket_id", event.TicketID,
+			)
 		case <-keepAlive.C:
 			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
 				h.logger.Warn("[sse] keepalive write error", "error", err)

@@ -546,7 +546,7 @@ func newTicketWithEventsHandler(t *testing.T, architectPath string) http.Handler
 	architect.Path = architectPath
 	cfg.Architects["hiveryn"] = architect
 
-	hub := archevents.New()
+	hub := archevents.New(nil)
 
 	return NewHandler(Dependencies{
 		Config:          cfg,
