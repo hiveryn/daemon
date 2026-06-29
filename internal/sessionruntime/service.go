@@ -1835,8 +1835,26 @@ func (s *Service) handleReceiverEvent(event agentruntime.Event) {
 	}
 
 	if agentStatus := mapAgentStatusToRunStatus(event.Status); agentStatus != "" {
+		previous := run.AgentStatus
 		if err := s.repo.UpdateRunAgentStatus(context.Background(), run.ID, agentStatus); err != nil {
 			panic(fmt.Errorf("update session run agent status for intent %s run %s: %w", event.ID, run.ID, err))
+		}
+		// Emit a live event only when the mapped status actually changes, so the
+		// desktop can re-render the per-session tab icon without polling. A
+		// distinct type avoids colliding with the overloaded "status" events
+		// (approval_required/approval_resolved/ended and raw agentruntime
+		// statuses). The append persists it, so it lands in the connect backlog
+		// and a freshly-attached client renders the right icon immediately.
+		if agentStatus != previous {
+			if err := s.appendAndPublishSessionEvent(context.Background(), domain.AppendSessionEventParams{
+				SessionIntentID: event.ID,
+				RunID:           run.ID,
+				Type:            "agent_status",
+				Status:          agentStatus,
+				At:              event.At,
+			}); err != nil {
+				panic(fmt.Errorf("publish agent_status event for intent %s run %s: %w", event.ID, run.ID, err))
+			}
 		}
 	}
 

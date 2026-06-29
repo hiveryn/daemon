@@ -1396,6 +1396,66 @@ func TestHandleReceiverEventUpdatesCurrentRun(t *testing.T) {
 	}
 }
 
+func TestHandleReceiverEventEmitsAgentStatusOnTransition(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.createdIntent = domain.SessionIntent{
+		ID:           "intent-1",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeArchitect,
+		ContextID:    "2026-05-13-1500",
+		Workdir:      t.TempDir(),
+		CurrentRun:   &domain.SessionRun{ID: "run-1", Status: domain.SessionRunStatusRunning},
+	}
+	service := &Service{
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repo:         repo,
+		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
+	}
+
+	sub, err := service.SubscribeSessionEvents(context.Background(), "intent-1")
+	if err != nil {
+		t.Fatalf("subscribe session events: %v", err)
+	}
+	defer sub.Close()
+
+	// working -> active is a transition from the zero-value status, so it emits.
+	service.handleReceiverEvent(agentruntime.Event{ID: "intent-1", Status: agentruntime.StatusWorking, At: time.Now().UTC()})
+	// A second working event maps to the same "active" status: no emit.
+	service.handleReceiverEvent(agentruntime.Event{ID: "intent-1", Status: agentruntime.StatusWorking, At: time.Now().UTC()})
+	// awaiting_input -> waiting is a transition: emit.
+	service.handleReceiverEvent(agentruntime.Event{ID: "intent-1", Status: agentruntime.StatusAwaitingInput, At: time.Now().UTC()})
+
+	want := strings.Join([]string{domain.AgentStatusActive, domain.AgentStatusWaiting}, ",")
+
+	var persisted []string
+	for _, params := range repo.appendedEvents {
+		if params.Type == "agent_status" {
+			persisted = append(persisted, params.Status)
+		}
+	}
+	if got := strings.Join(persisted, ","); got != want {
+		t.Fatalf("persisted agent_status events = %q, want %q", got, want)
+	}
+
+	var streamed []string
+drain:
+	for {
+		select {
+		case ev := <-sub.C():
+			if ev.Type == "agent_status" {
+				streamed = append(streamed, ev.Status)
+			}
+		default:
+			break drain
+		}
+	}
+	if got := strings.Join(streamed, ","); got != want {
+		t.Fatalf("streamed agent_status events = %q, want %q", got, want)
+	}
+}
+
 func TestCreateRunAddsMCPServer(t *testing.T) {
 	t.Parallel()
 
@@ -1805,6 +1865,14 @@ func (fakeAdapter) NormalizeEvent(context.Context, []byte) (*agentruntime.Event,
 	return nil, nil
 }
 
+func (fakeAdapter) LocateTranscript(context.Context, agentruntime.LocateRequest) (string, error) {
+	return "", nil
+}
+
+func (fakeAdapter) ParseUsage(context.Context, string) (agentruntime.Usage, error) {
+	return agentruntime.Usage{}, nil
+}
+
 type fakePrepareLaunchAdapter struct {
 	delegate agentruntime.Adapter
 }
@@ -1829,6 +1897,14 @@ func (f *fakePrepareLaunchAdapter) RemoveSetup(context.Context, agentruntime.Set
 
 func (f *fakePrepareLaunchAdapter) NormalizeEvent(context.Context, []byte) (*agentruntime.Event, error) {
 	return nil, nil
+}
+
+func (f *fakePrepareLaunchAdapter) LocateTranscript(ctx context.Context, req agentruntime.LocateRequest) (string, error) {
+	return f.delegate.LocateTranscript(ctx, req)
+}
+
+func (f *fakePrepareLaunchAdapter) ParseUsage(ctx context.Context, transcriptPath string) (agentruntime.Usage, error) {
+	return f.delegate.ParseUsage(ctx, transcriptPath)
 }
 
 type fakeTerminalManager struct {
