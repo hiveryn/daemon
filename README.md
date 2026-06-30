@@ -119,6 +119,8 @@ prompts:                                       # optional
       - { path: prompts/work/DAEMON.md, repos: [daemon] }  # repo-scoped
 ```
 
+Repo paths may start with `~` or `~/` to reference the user's home directory; they are expanded to absolute paths at config load. Absolute and relative paths keep working as before.
+
 Prompt paths resolve relative to the workspace directory (absolute paths are used as-is) and override the daemon's embedded defaults; omit a field to keep the built-in prompt.
 
 Ticket-kickoff selection: the entry whose `repos` contains the ticket's repo wins over the default (no-`repos`) entry — most specific wins, regardless of list order. When `kickoffs` is absent, the embedded default is used. Configuration fails to load if any kickoff references a repo key not declared under `repos`, if two entries are both default, or if a repo key appears in more than one entry.

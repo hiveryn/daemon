@@ -878,6 +878,37 @@ func TestLoadResolvesPromptPathsRelativeToWorkspace(t *testing.T) {
 	}
 }
 
+func TestLoadArchitectFileExpandsHomeRepoPaths(t *testing.T) {
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+
+	dir := writeArchitect(t, map[string]any{
+		"name": "hiveryn",
+		"repos": map[string]string{
+			"console": "~/hiveryn/console",
+			"home":    "~",
+			"daemon":  "/tmp/daemon",
+		},
+	})
+
+	architect, err := loadArchitectFile("hiveryn", dir)
+	if err != nil {
+		t.Fatalf("loadArchitectFile: %v", err)
+	}
+
+	if want := filepath.Join(userHome, "hiveryn/console"); architect.Repos["console"] != want {
+		t.Fatalf("expected console repo %q, got %q", want, architect.Repos["console"])
+	}
+	if architect.Repos["home"] != userHome {
+		t.Fatalf("expected home repo %q, got %q", userHome, architect.Repos["home"])
+	}
+	if architect.Repos["daemon"] != "/tmp/daemon" {
+		t.Fatalf("expected absolute repo path preserved, got %q", architect.Repos["daemon"])
+	}
+}
+
 func writeYAML(t *testing.T, path string, v interface{}) {
 	t.Helper()
 	data, err := yaml.Marshal(v)

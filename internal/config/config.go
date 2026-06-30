@@ -340,6 +340,13 @@ func loadArchitectFile(key, workspacePath string) (ArchitectConfig, error) {
 	if repos == nil {
 		repos = map[string]string{}
 	}
+	for name, path := range repos {
+		expanded, err := expandHomePath(path)
+		if err != nil {
+			return ArchitectConfig{}, fmt.Errorf("architect %q repo %q: %w", key, name, err)
+		}
+		repos[name] = expanded
+	}
 
 	kickoffs := make([]TicketKickoff, 0, len(file.Prompts.Ticket.Kickoffs))
 	for _, kickoff := range file.Prompts.Ticket.Kickoffs {
@@ -357,6 +364,27 @@ func loadArchitectFile(key, workspacePath string) (ArchitectConfig, error) {
 		KickoffPromptPath: resolveArchitectPath(workspacePath, file.Prompts.Architect.Kickoff),
 		TicketKickoffs:    kickoffs,
 	}, nil
+}
+
+// expandHomePath expands a leading ~ or ~/ to the user's home directory and
+// returns an absolute path, mirroring runtimeHome's resolution in runtime.go.
+func expandHomePath(p string) (string, error) {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		if p == "~" {
+			p = home
+		} else {
+			p = filepath.Join(home, p[2:])
+		}
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", fmt.Errorf("resolve repo path %q: %w", p, err)
+	}
+	return abs, nil
 }
 
 // resolveArchitectPath resolves a prompt path from hiveryn.yaml against the
