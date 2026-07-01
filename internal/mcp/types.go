@@ -115,3 +115,99 @@ type TicketOutput = domain.Ticket
 type TicketConclusionOutput = domain.TicketConclusion
 
 type TicketSummary = domain.TicketSummary
+
+// --- hiveryn.yaml config tools ---
+
+type DescribePromptSchemaInput struct {
+	Kind string `json:"kind" jsonschema:"Which prompt kind's template variables to describe. One of: architect, ticket."`
+}
+
+type AddRepoInput struct {
+	Key  string `json:"key" jsonschema:"Stable repo key (required)."`
+	Path string `json:"path" jsonschema:"Filesystem path to the repo. Absolute or ~-prefixed (required)."`
+}
+
+type RemoveRepoInput struct {
+	Key string `json:"key" jsonschema:"The repo key to remove (required)."`
+}
+
+type AddKickoffInput struct {
+	Path  string   `json:"path" jsonschema:"Path to the ticket kickoff prompt file. Relative paths resolve against the architect workspace (required). If the file does not exist it is scaffolded from the embedded default."`
+	Repos []string `json:"repos,omitempty" jsonschema:"Repo keys this kickoff applies to. Omit or leave empty to make this the default entry used by repos without their own entry."`
+}
+
+type UpdateKickoffInput struct {
+	Path  string   `json:"path" jsonschema:"Path of the existing kickoff entry to re-scope (required)."`
+	Repos []string `json:"repos,omitempty" jsonschema:"New repo-key scope. Empty makes it the default entry."`
+}
+
+type RemoveKickoffInput struct {
+	Path string `json:"path" jsonschema:"Path of the kickoff entry to remove (required)."`
+}
+
+type SetArchitectPromptInput struct {
+	Path string `json:"path" jsonschema:"Path to the prompt file. Relative paths resolve against the architect workspace (required). If the file does not exist it is scaffolded from the embedded default."`
+}
+
+type RepoConfigEntry struct {
+	Key  string `json:"key"`
+	Path string `json:"path"`
+}
+
+type ListReposOutput struct {
+	Repos []RepoConfigEntry `json:"repos"`
+}
+
+type RemoveRepoOutput struct {
+	Key string `json:"key"`
+}
+
+type KickoffEntry struct {
+	Path    string   `json:"path"`
+	Repos   []string `json:"repos"`
+	Default bool     `json:"default"`
+}
+
+type ListKickoffsOutput struct {
+	Kickoffs []KickoffEntry `json:"kickoffs"`
+}
+
+type AddKickoffOutput struct {
+	Path    string   `json:"path"`
+	Repos   []string `json:"repos"`
+	Default bool     `json:"default"`
+	Created bool     `json:"created"`
+}
+
+type UpdateKickoffOutput struct {
+	Path    string   `json:"path"`
+	Repos   []string `json:"repos"`
+	Default bool     `json:"default"`
+}
+
+type RemoveKickoffOutput struct {
+	FallbackRepos []string `json:"fallbackRepos"`
+}
+
+type PromptPath struct {
+	Path string `json:"path"`
+}
+
+type ArchitectPromptsOutput struct {
+	System  *PromptPath `json:"system"`
+	Kickoff *PromptPath `json:"kickoff"`
+}
+
+type SetPromptOutput struct {
+	Path    string `json:"path"`
+	Created bool   `json:"created"`
+}
+
+type PromptVariableEntry struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+type PromptSchemaOutput struct {
+	Variables []PromptVariableEntry `json:"variables"`
+}

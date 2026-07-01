@@ -99,22 +99,32 @@ type TicketKickoff struct {
 	Repos []string
 }
 
-// architectFile is the on-disk shape of <architectPath>/hiveryn.yaml.
+// architectFile is the on-disk shape of <architectPath>/hiveryn.yaml. Nested
+// prompt sections are pointers with omitempty so that marshaling an architect
+// with no prompt overrides produces a clean file (no empty prompts: block).
 type architectFile struct {
-	Name    string            `yaml:"name"`
-	Repos   map[string]string `yaml:"repos"`
-	Prompts struct {
-		Architect struct {
-			System  string `yaml:"system"`
-			Kickoff string `yaml:"kickoff"`
-		} `yaml:"architect"`
-		Ticket struct {
-			Kickoffs []struct {
-				Path  string   `yaml:"path"`
-				Repos []string `yaml:"repos"`
-			} `yaml:"kickoffs"`
-		} `yaml:"ticket"`
-	} `yaml:"prompts"`
+	Name    string            `yaml:"name,omitempty"`
+	Repos   map[string]string `yaml:"repos,omitempty"`
+	Prompts *architectPrompts `yaml:"prompts,omitempty"`
+}
+
+type architectPrompts struct {
+	Architect *architectPromptPaths `yaml:"architect,omitempty"`
+	Ticket    *ticketPrompts        `yaml:"ticket,omitempty"`
+}
+
+type architectPromptPaths struct {
+	System  string `yaml:"system,omitempty"`
+	Kickoff string `yaml:"kickoff,omitempty"`
+}
+
+type ticketPrompts struct {
+	Kickoffs []ticketKickoffEntry `yaml:"kickoffs,omitempty"`
+}
+
+type ticketKickoffEntry struct {
+	Path  string   `yaml:"path"`
+	Repos []string `yaml:"repos,omitempty"`
 }
 
 type TabEntry struct {
@@ -336,11 +346,18 @@ func loadArchitectFile(key, workspacePath string) (ArchitectConfig, error) {
 	}
 
 	// Duplicate repo keys are rejected by the YAML decoder above.
-	repos := file.Repos
-	if repos == nil {
-		repos = map[string]string{}
-	}
-	for name, path := range repos {
+	return architectConfigFromFile(key, workspacePath, file)
+}
+
+// architectConfigFromFile converts a parsed architectFile into a resolved
+// ArchitectConfig without touching the filesystem: repo paths are home-expanded
+// to absolute, and prompt paths are resolved against the workspace. It does not
+// mutate the input file (the mutation layer relies on this to validate a
+// pending write before persisting it). This is the single conversion used by
+// both the loader and the mutation layer, guaranteeing they agree.
+func architectConfigFromFile(key, workspacePath string, file architectFile) (ArchitectConfig, error) {
+	repos := make(map[string]string, len(file.Repos))
+	for name, path := range file.Repos {
 		expanded, err := expandHomePath(path)
 		if err != nil {
 			return ArchitectConfig{}, fmt.Errorf("architect %q repo %q: %w", key, name, err)
@@ -348,11 +365,23 @@ func loadArchitectFile(key, workspacePath string) (ArchitectConfig, error) {
 		repos[name] = expanded
 	}
 
-	kickoffs := make([]TicketKickoff, 0, len(file.Prompts.Ticket.Kickoffs))
-	for _, kickoff := range file.Prompts.Ticket.Kickoffs {
+	var system, kickoff string
+	var kickoffEntries []ticketKickoffEntry
+	if file.Prompts != nil {
+		if file.Prompts.Architect != nil {
+			system = file.Prompts.Architect.System
+			kickoff = file.Prompts.Architect.Kickoff
+		}
+		if file.Prompts.Ticket != nil {
+			kickoffEntries = file.Prompts.Ticket.Kickoffs
+		}
+	}
+
+	kickoffs := make([]TicketKickoff, 0, len(kickoffEntries))
+	for _, entry := range kickoffEntries {
 		kickoffs = append(kickoffs, TicketKickoff{
-			Path:  resolveArchitectPath(workspacePath, kickoff.Path),
-			Repos: append([]string(nil), kickoff.Repos...),
+			Path:  resolveArchitectPath(workspacePath, entry.Path),
+			Repos: append([]string(nil), entry.Repos...),
 		})
 	}
 
@@ -360,8 +389,8 @@ func loadArchitectFile(key, workspacePath string) (ArchitectConfig, error) {
 		Name:              file.Name,
 		Path:              workspacePath,
 		Repos:             repos,
-		SystemPromptPath:  resolveArchitectPath(workspacePath, file.Prompts.Architect.System),
-		KickoffPromptPath: resolveArchitectPath(workspacePath, file.Prompts.Architect.Kickoff),
+		SystemPromptPath:  resolveArchitectPath(workspacePath, system),
+		KickoffPromptPath: resolveArchitectPath(workspacePath, kickoff),
 		TicketKickoffs:    kickoffs,
 	}, nil
 }
@@ -527,44 +556,8 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(key) == "" {
 			return fmt.Errorf("architects keys must not be blank")
 		}
-		architect := c.Architects[key]
-		if strings.TrimSpace(architect.Name) == "" {
-			return fmt.Errorf("architects.%s.name is required", key)
-		}
-		if strings.TrimSpace(architect.Path) == "" {
-			return fmt.Errorf("architects.%s.path is required", key)
-		}
-		for repoKey, repoPath := range architect.Repos {
-			if strings.TrimSpace(repoKey) == "" {
-				return fmt.Errorf("architects.%s.repos keys must not be blank", key)
-			}
-			if strings.TrimSpace(repoPath) == "" {
-				return fmt.Errorf("architects.%s.repos.%s is required", key, repoKey)
-			}
-		}
-
-		defaultKickoffs := 0
-		repoKickoffSeen := map[string]struct{}{}
-		for i, kickoff := range architect.TicketKickoffs {
-			if strings.TrimSpace(kickoff.Path) == "" {
-				return fmt.Errorf("architects.%s.prompts.ticket.kickoffs[%d].path is required", key, i)
-			}
-			if len(kickoff.Repos) == 0 {
-				defaultKickoffs++
-				if defaultKickoffs > 1 {
-					return fmt.Errorf("architects.%s.prompts.ticket.kickoffs has multiple default (no-repos) entries", key)
-				}
-				continue
-			}
-			for _, repoKey := range kickoff.Repos {
-				if _, ok := architect.Repos[repoKey]; !ok {
-					return fmt.Errorf("architects.%s.prompts.ticket.kickoffs[%d] references unknown repo %q", key, i, repoKey)
-				}
-				if _, dup := repoKickoffSeen[repoKey]; dup {
-					return fmt.Errorf("architects.%s.prompts.ticket.kickoffs has multiple entries for repo %q", key, repoKey)
-				}
-				repoKickoffSeen[repoKey] = struct{}{}
-			}
+		if err := validateArchitect(key, c.Architects[key]); err != nil {
+			return err
 		}
 	}
 

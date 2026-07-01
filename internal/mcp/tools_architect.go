@@ -67,6 +67,68 @@ func (s *Server) registerArchitectTools() {
 		Name:        "readTicketConclusion",
 		Description: "Read the conclusion for a specific ticket by ID. Errors with NOT_FOUND if the ticket has no conclusion.",
 	}, s.handleReadTicketConclusion)
+
+	s.registerConfigTools()
+}
+
+// registerConfigTools registers the hiveryn.yaml config-management tools. These
+// own the yaml wiring, validation, and path resolution; the agent edits the
+// prompt/markdown files itself once a tool returns the resolved absolute path.
+func (s *Server) registerConfigTools() {
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "listRepos",
+		Description: "List the repos configured in hiveryn.yaml. Returns entries with the repo key and its absolute path.",
+	}, s.handleListRepos)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "addRepo",
+		Description: "Add a repo to hiveryn.yaml. Errors if the key already exists.",
+	}, s.handleAddRepo)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "removeRepo",
+		Description: "Remove a repo from hiveryn.yaml. Errors if the repo is still referenced by a ticket kickoff entry.",
+	}, s.handleRemoveRepo)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "listKickoffs",
+		Description: "List the ticket kickoff prompt entries in hiveryn.yaml. Each entry has an absolute path, its repo scope, and whether it is the default (no-repos) entry.",
+	}, s.handleListKickoffs)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "addKickoff",
+		Description: "Add a ticket kickoff prompt entry to hiveryn.yaml. Empty repos makes it the default entry. If the prompt file does not exist yet it is scaffolded from the embedded default; the agent then edits it. Errors on a duplicate path, a second default, or a repo already claimed by another entry.",
+	}, s.handleAddKickoff)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "updateKickoff",
+		Description: "Re-scope an existing ticket kickoff entry (identified by its path) to a new set of repos. Empty repos makes it the default entry.",
+	}, s.handleUpdateKickoff)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "removeKickoff",
+		Description: "Remove a ticket kickoff entry from hiveryn.yaml. Returns the repos that now fall back to the default entry.",
+	}, s.handleRemoveKickoff)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "getArchitectPrompts",
+		Description: "Get the configured architect system and kickoff prompt paths from hiveryn.yaml. Each is null when unset (the embedded default is used).",
+	}, s.handleGetArchitectPrompts)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "setArchitectSystem",
+		Description: "Set the architect system prompt path in hiveryn.yaml. If the file does not exist yet it is scaffolded from the embedded default; the agent then edits it.",
+	}, s.handleSetArchitectSystem)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "setArchitectKickoff",
+		Description: "Set the architect kickoff prompt path in hiveryn.yaml. If the file does not exist yet it is scaffolded from the embedded default; the agent then edits it.",
+	}, s.handleSetArchitectKickoff)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "describePromptSchema",
+		Description: "Describe the Go template variables available to a prompt kind, so kickoff prompts can be edited correctly. kind=architect covers the architect kickoff (the architect system prompt is static, no variables); kind=ticket covers the ticket/work kickoff.",
+	}, s.handleDescribePromptSchema)
 }
 
 func (s *Server) handleReadTicketConclusion(

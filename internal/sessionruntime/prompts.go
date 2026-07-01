@@ -15,6 +15,71 @@ import (
 //go:embed prompts/architect/*.md prompts/work/*.md
 var promptFS embed.FS
 
+// PromptVariable describes a Go template variable available to a prompt kind.
+type PromptVariable struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// DefaultPromptTemplate returns the embedded default template for a prompt kind,
+// used to scaffold a new prompt file when a config tool wires a path that does
+// not exist yet. Kind is one of "architect-system", "architect-kickoff",
+// "ticket-kickoff".
+func DefaultPromptTemplate(kind string) ([]byte, error) {
+	var name string
+	switch kind {
+	case "architect-system":
+		name = "prompts/architect/SYSTEM.md"
+	case "architect-kickoff":
+		name = "prompts/architect/KICKOFF.md"
+	case "ticket-kickoff":
+		name = "prompts/work/KICKOFF.md"
+	default:
+		return nil, fmt.Errorf("unknown prompt kind %q (want architect-system, architect-kickoff, or ticket-kickoff)", kind)
+	}
+	data, err := promptFS.ReadFile(name)
+	if err != nil {
+		return nil, fmt.Errorf("read embedded prompt %s: %w", name, err)
+	}
+	return data, nil
+}
+
+// PromptSchema returns the Go template variables available to a prompt kind,
+// each with a one-line description. Co-located with the template-data structs
+// below so it cannot drift from what is actually rendered. Kind is "architect"
+// (the architect kickoff template — the architect system prompt is static and
+// takes no variables) or "ticket" (the ticket/work kickoff template).
+func PromptSchema(kind string) ([]PromptVariable, error) {
+	switch kind {
+	case "architect":
+		return []PromptVariable{
+			{Name: "ArchitectName", Description: "The architect key/identifier."},
+			{Name: "TicketList", Description: "Rendered summary of the current tickets."},
+			{Name: "Sessions", Description: "Rendered recent session history."},
+			{Name: "Repos", Description: "Configured repos as a newline-separated \"- key: path\" list."},
+			{Name: "Variants", Description: "Comma-separated list of configured agent variant keys."},
+			{Name: "CurrentDate", Description: "Session start time, RFC3339 UTC."},
+			{Name: "LastConclusionID", Description: "ID of the most recent architect conclusion, if any."},
+		}, nil
+	case "ticket":
+		return []PromptVariable{
+			{Name: "TicketTitle", Description: "The ticket title."},
+			{Name: "TicketBody", Description: "The ticket body/description."},
+			{Name: "TicketID", Description: "The ticket ID."},
+			{Name: "Repo", Description: "The repo key the ticket is scoped to."},
+			{Name: "RepoPath", Description: "Absolute filesystem path to the ticket's repo."},
+			{Name: "References", Description: "Referenced ticket IDs as a newline-separated \"- id\" list (empty when none)."},
+			{Name: "Created", Description: "Ticket creation time, RFC3339 UTC (empty when unset)."},
+			{Name: "Updated", Description: "Ticket last-update time, RFC3339 UTC (empty when unset)."},
+			{Name: "ArchitectName", Description: "The architect key/identifier."},
+			{Name: "ProjectPath", Description: "Absolute path to the architect workspace."},
+			{Name: "Repos", Description: "Configured repos as a newline-separated \"- key: path\" list."},
+		}, nil
+	default:
+		return nil, fmt.Errorf("unknown prompt kind %q (want architect or ticket)", kind)
+	}
+}
+
 type kickoffTemplateData struct {
 	ArchitectName    string
 	TicketList       string

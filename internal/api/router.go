@@ -104,6 +104,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	sh := &sessionsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
 	th := &ticketsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
 	eh := &architectEventsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, hub: deps.ArchitectEvents}
+	ach := &architectConfigHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
 
 	if deps.ArchitectEvents != nil {
 		hub := deps.ArchitectEvents
@@ -131,6 +132,17 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("POST /api/architects/{key}/tickets/{id}/move-to-done", th.moveToDone)
 	mux.HandleFunc("GET /api/architects/{key}/repos", rh.list)
 	mux.HandleFunc("GET /api/architects/{key}/repos/{repoKey}", rh.get)
+	mux.HandleFunc("GET /api/architects/{key}/config/repos", ach.listRepos)
+	mux.HandleFunc("POST /api/architects/{key}/config/repos", ach.addRepo)
+	mux.HandleFunc("DELETE /api/architects/{key}/config/repos/{repoKey}", ach.removeRepo)
+	mux.HandleFunc("GET /api/architects/{key}/config/kickoffs", ach.listKickoffs)
+	mux.HandleFunc("POST /api/architects/{key}/config/kickoffs", ach.addKickoff)
+	mux.HandleFunc("PUT /api/architects/{key}/config/kickoffs", ach.updateKickoff)
+	mux.HandleFunc("DELETE /api/architects/{key}/config/kickoffs", ach.removeKickoff)
+	mux.HandleFunc("GET /api/architects/{key}/config/architect-prompts", ach.getArchitectPrompts)
+	mux.HandleFunc("PUT /api/architects/{key}/config/architect-prompts/system", ach.setArchitectSystem)
+	mux.HandleFunc("PUT /api/architects/{key}/config/architect-prompts/kickoff", ach.setArchitectKickoff)
+	mux.HandleFunc("GET /api/architects/{key}/config/prompt-schema", ach.describePromptSchema)
 	mux.HandleFunc("GET /api/config/shortcuts", sch.get)
 	mux.HandleFunc("GET /api/config/desktop", dch.get)
 	mux.HandleFunc("GET /api/architects/{key}/events", eh.events)
