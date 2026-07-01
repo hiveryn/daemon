@@ -12,40 +12,6 @@ The daemon is the **single mutation and event hub** for Hiveryn. Every state cha
 - **MCP tools**: exposed by the daemon so running agents can mutate project state (create tickets, conclude sessions, and manage the architect's own `hiveryn.yaml` — repos, ticket kickoffs, architect prompts) without direct filesystem access. Config-mutation tools validate every write against the loader's ruleset so an invalid edit can never brick session spawning.
 - **Event stream**: SSE or WebSocket hints so the desktop app updates views without polling.
 
-## Consumers
-
-| Consumer | How it uses the daemon | Load profile |
-|---|---|---|
-| Desktop app | HTTP API for workspace views, session surfaces, and settings; WebSocket for pty I/O and app event stream | primary — active when Hiveryn is open |
-| MCP tools (in-agent) | HTTP API for ticket/collab/conclusion mutations scoped to the active session | occasional — bursts of mutations during agent runs |
-| `agentruntime` ingest | HTTP hook endpoint for normalized agent status/tool events | frequent — events stream from running sessions |
-
-v0.1 expects **1 desktop app + 0–2 MCP sessions at a time**. No multi-user concurrency, no connection pooling beyond what stdlib provides. Scale the server design for hundreds of APIs and dozens of tables, but the load profile remains a handful of local consumers per machine.
-
-## Architecture shape (v0.1 target)
-
-```
-Desktop app        ←HTTP/WS→  Daemon  ←MCP stdio/HTTP→  Agent process
-                                   │
-                                   ├─ SQLite (local state)
-                                   ├─ Filesystem (architect folder = markdown)
-                                   ├─ agentruntime (launch/config/status primitives)
-                                   ├─ Pty (daemon-owned process I/O)
-                                   └─ Approval store (in-memory sessionID → pending conclusion)
-```
-
-The daemon is the integration point. The desktop app, MCP tools, and agent processes all talk to the daemon. The daemon calls `agentruntime` during spawn and receives hook events back through `agentruntime`'s ingest pipeline.
-
-## Phased scope (from `08-phasing.md`)
-
-| Phase | What the daemon owns | Status |
-|---|---|---|
-| Phase 2 — daemon core | Architect folder FS ops, ticket CRUD, conclusions, registered folders, repo mappings, agent profiles, HTTP API | **in progress** |
-| Phase 3 — MCP + first session | MCP tools, first architect spawn through daemon pty, `concludeSession` | **in progress** |
-| Phase 4 — desktop shell | Pty WebSocket, app event stream (SSE/WS), session surface integration | planned |
-| Phase 5 — worker loop | Worker spawn from ticket repo key, repo mapping resolution, worker MCP tools, cancel/reject | **in progress** |
-| Phase 6 — collab loop | Collab sessions, prompt/conclusion files, collab MCP tools, recent session history | planned |
-
 ## Package boundaries
 
 ```
@@ -93,6 +59,7 @@ Each resource is self-contained across four packages — no cross-contamination.
 ## Design rules
 
 - Bind to localhost by default. Allow loopback-only addresses in config validation.
+- Design for a single local machine: **1 desktop app + 0–2 MCP sessions at a time**. No multi-user concurrency, no connection pooling beyond what stdlib provides. Scale the code for hundreds of APIs and dozens of tables, but the runtime load profile stays a handful of local consumers per machine.
 - Use Go 1.24 stdlib `http.ServeMux` method-pattern routing (`"GET /api/agent-profiles/{name}"`). No third-party routers.
 - Prefer interfaces over concrete dependencies at handler boundaries.
 - One repository file per table/aggregate in `store/`. One handler file per resource in `api/`.
