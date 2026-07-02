@@ -12,7 +12,7 @@ import (
 
 // configRequest performs an architect-config HTTP call and decodes the envelope
 // data into out (pass nil when no payload is expected). subPath is the portion
-// after /api/architects/{key}/config, e.g. "/repos".
+// after /api/architects/{key}/config, e.g. "" or "/default-prompt".
 func (s *Server) configRequest(ctx context.Context, method, subPath string, body, out any) error {
 	var reader io.Reader
 	if body != nil {
@@ -59,90 +59,26 @@ func (s *Server) configRequest(ctx context.Context, method, subPath string, body
 	return nil
 }
 
-func (s *Server) listRepos(ctx context.Context) (ListReposOutput, error) {
-	var output ListReposOutput
-	if err := s.configRequest(ctx, http.MethodGet, "/repos", nil, &output); err != nil {
-		return ListReposOutput{}, err
+func (s *Server) readArchitectConfig(ctx context.Context) (ReadArchitectConfigOutput, error) {
+	var output ReadArchitectConfigOutput
+	if err := s.configRequest(ctx, http.MethodGet, "", nil, &output); err != nil {
+		return ReadArchitectConfigOutput{}, err
 	}
 	return output, nil
 }
 
-func (s *Server) addRepo(ctx context.Context, input AddRepoInput) (RepoConfigEntry, error) {
-	var output RepoConfigEntry
-	if err := s.configRequest(ctx, http.MethodPost, "/repos", input, &output); err != nil {
-		return RepoConfigEntry{}, err
+func (s *Server) updateArchitectConfig(ctx context.Context, input UpdateArchitectConfigInput) (UpdateArchitectConfigOutput, error) {
+	var output UpdateArchitectConfigOutput
+	if err := s.configRequest(ctx, http.MethodPut, "", input, &output); err != nil {
+		return UpdateArchitectConfigOutput{}, err
 	}
 	return output, nil
 }
 
-func (s *Server) removeRepo(ctx context.Context, key string) (RemoveRepoOutput, error) {
-	var output RemoveRepoOutput
-	if err := s.configRequest(ctx, http.MethodDelete, "/repos/"+url.PathEscape(key), nil, &output); err != nil {
-		return RemoveRepoOutput{}, err
-	}
-	return output, nil
-}
-
-func (s *Server) listKickoffs(ctx context.Context) (ListKickoffsOutput, error) {
-	var output ListKickoffsOutput
-	if err := s.configRequest(ctx, http.MethodGet, "/kickoffs", nil, &output); err != nil {
-		return ListKickoffsOutput{}, err
-	}
-	return output, nil
-}
-
-func (s *Server) addKickoff(ctx context.Context, input AddKickoffInput) (AddKickoffOutput, error) {
-	var output AddKickoffOutput
-	if err := s.configRequest(ctx, http.MethodPost, "/kickoffs", input, &output); err != nil {
-		return AddKickoffOutput{}, err
-	}
-	return output, nil
-}
-
-func (s *Server) updateKickoff(ctx context.Context, input UpdateKickoffInput) (UpdateKickoffOutput, error) {
-	var output UpdateKickoffOutput
-	if err := s.configRequest(ctx, http.MethodPut, "/kickoffs", input, &output); err != nil {
-		return UpdateKickoffOutput{}, err
-	}
-	return output, nil
-}
-
-func (s *Server) removeKickoff(ctx context.Context, input RemoveKickoffInput) (RemoveKickoffOutput, error) {
-	var output RemoveKickoffOutput
-	if err := s.configRequest(ctx, http.MethodDelete, "/kickoffs", input, &output); err != nil {
-		return RemoveKickoffOutput{}, err
-	}
-	return output, nil
-}
-
-func (s *Server) getArchitectPrompts(ctx context.Context) (ArchitectPromptsOutput, error) {
-	var output ArchitectPromptsOutput
-	if err := s.configRequest(ctx, http.MethodGet, "/architect-prompts", nil, &output); err != nil {
-		return ArchitectPromptsOutput{}, err
-	}
-	return output, nil
-}
-
-func (s *Server) setArchitectSystem(ctx context.Context, input SetArchitectPromptInput) (SetPromptOutput, error) {
-	var output SetPromptOutput
-	if err := s.configRequest(ctx, http.MethodPut, "/architect-prompts/system", input, &output); err != nil {
-		return SetPromptOutput{}, err
-	}
-	return output, nil
-}
-
-func (s *Server) setArchitectKickoff(ctx context.Context, input SetArchitectPromptInput) (SetPromptOutput, error) {
-	var output SetPromptOutput
-	if err := s.configRequest(ctx, http.MethodPut, "/architect-prompts/kickoff", input, &output); err != nil {
-		return SetPromptOutput{}, err
-	}
-	return output, nil
-}
-
-func (s *Server) describePromptSchema(ctx context.Context, kind string) (PromptSchemaOutput, error) {
-	var output PromptSchemaOutput
-	if err := s.configRequest(ctx, http.MethodGet, "/prompt-schema?kind="+url.QueryEscape(kind), nil, &output); err != nil {
-		return PromptSchemaOutput{}, err
+func (s *Server) readDefaultPrompt(ctx context.Context, kind string) (ReadDefaultPromptOutput, error) {
+	var output ReadDefaultPromptOutput
+	if err := s.configRequest(ctx, http.MethodGet, "/default-prompt?kind="+url.QueryEscape(kind), nil, &output); err != nil {
+		return ReadDefaultPromptOutput{}, err
 	}
 	return output, nil
 }

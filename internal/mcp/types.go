@@ -118,96 +118,95 @@ type TicketSummary = domain.TicketSummary
 
 // --- hiveryn.yaml config tools ---
 
-type DescribePromptSchemaInput struct {
-	Kind string `json:"kind" jsonschema:"Which prompt kind's template variables to describe. One of: architect, ticket."`
+// ArchitectConfigDoc is the declarative, whole-document architect config. The
+// same shape is returned by readArchitectConfig and accepted by
+// updateArchitectConfig, so you can read → edit → write it back without
+// reshaping. Paths are stored verbatim.
+type ArchitectConfigDoc struct {
+	Repos   map[string]string   `json:"repos" jsonschema:"Repo key → path. Paths may be absolute or ~-prefixed and are stored verbatim."`
+	Prompts ArchitectPromptsDoc `json:"prompts" jsonschema:"Prompt path wiring; all fields optional (omit to use the embedded defaults)."`
 }
 
-type AddRepoInput struct {
-	Key  string `json:"key" jsonschema:"Stable repo key (required)."`
-	Path string `json:"path" jsonschema:"Filesystem path to the repo. Absolute or ~-prefixed (required)."`
+type ArchitectPromptsDoc struct {
+	Architect ArchitectPromptPathsDoc `json:"architect" jsonschema:"Architect system/kickoff prompt paths — single, not repo-scoped."`
+	Ticket    TicketKickoffsDoc       `json:"ticket" jsonschema:"Ticket kickoff prompt entries (repo-scoped)."`
 }
 
-type RemoveRepoInput struct {
-	Key string `json:"key" jsonschema:"The repo key to remove (required)."`
+type ArchitectPromptPathsDoc struct {
+	System  string `json:"system,omitempty" jsonschema:"Path to the architect system prompt; empty = embedded default."`
+	Kickoff string `json:"kickoff,omitempty" jsonschema:"Path to the architect kickoff prompt; empty = embedded default."`
 }
 
-type AddKickoffInput struct {
-	Path  string   `json:"path" jsonschema:"Path to the ticket kickoff prompt file. Relative paths resolve against the architect workspace (required). If the file does not exist it is scaffolded from the embedded default."`
-	Repos []string `json:"repos,omitempty" jsonschema:"Repo keys this kickoff applies to. Omit or leave empty to make this the default entry used by repos without their own entry."`
+type TicketKickoffsDoc struct {
+	Kickoffs []TicketKickoffDoc `json:"kickoffs" jsonschema:"Ticket kickoff entries. At most one default (empty-repos) entry; each repo may appear in at most one entry."`
 }
 
-type UpdateKickoffInput struct {
-	Path  string   `json:"path" jsonschema:"Path of the existing kickoff entry to re-scope (required)."`
-	Repos []string `json:"repos,omitempty" jsonschema:"New repo-key scope. Empty makes it the default entry."`
+type TicketKickoffDoc struct {
+	Path  string   `json:"path" jsonschema:"Path to the kickoff prompt file (required)."`
+	Repos []string `json:"repos" jsonschema:"Repo keys this entry applies to; empty = the default entry used by repos without their own."`
 }
 
-type RemoveKickoffInput struct {
-	Path string `json:"path" jsonschema:"Path of the kickoff entry to remove (required)."`
+// ResolvedConfig mirrors ArchitectConfigDoc with absolute paths and, per wired
+// prompt, whether the file exists. Read-only — do not send it back.
+type ResolvedConfig struct {
+	Repos   map[string]string `json:"repos"`
+	Prompts ResolvedPrompts   `json:"prompts"`
 }
 
-type SetArchitectPromptInput struct {
-	Path string `json:"path" jsonschema:"Path to the prompt file. Relative paths resolve against the architect workspace (required). If the file does not exist it is scaffolded from the embedded default."`
+type ResolvedPrompts struct {
+	Architect ResolvedArchitectPrompts `json:"architect"`
+	Ticket    ResolvedTicket           `json:"ticket"`
 }
 
-type RepoConfigEntry struct {
-	Key  string `json:"key"`
-	Path string `json:"path"`
+type ResolvedArchitectPrompts struct {
+	System  *ResolvedPath `json:"system"`
+	Kickoff *ResolvedPath `json:"kickoff"`
 }
 
-type ListReposOutput struct {
-	Repos []RepoConfigEntry `json:"repos"`
+type ResolvedTicket struct {
+	Kickoffs []ResolvedKickoff `json:"kickoffs"`
 }
 
-type RemoveRepoOutput struct {
-	Key string `json:"key"`
+type ResolvedPath struct {
+	Path   string `json:"path"`
+	Exists bool   `json:"exists"`
 }
 
-type KickoffEntry struct {
-	Path    string   `json:"path"`
-	Repos   []string `json:"repos"`
-	Default bool     `json:"default"`
+type ResolvedKickoff struct {
+	Path   string   `json:"path"`
+	Repos  []string `json:"repos"`
+	Exists bool     `json:"exists"`
 }
 
-type ListKickoffsOutput struct {
-	Kickoffs []KickoffEntry `json:"kickoffs"`
+type ReadArchitectConfigOutput struct {
+	Config   ArchitectConfigDoc `json:"config"`
+	Resolved ResolvedConfig     `json:"resolved"`
+	Warnings []string           `json:"warnings"`
+	Version  string             `json:"version"`
 }
 
-type AddKickoffOutput struct {
-	Path    string   `json:"path"`
-	Repos   []string `json:"repos"`
-	Default bool     `json:"default"`
-	Created bool     `json:"created"`
+type UpdateArchitectConfigInput struct {
+	Config  ArchitectConfigDoc `json:"config" jsonschema:"Full config document to write (declarative replace — anything omitted is dropped). Send back the document from readArchitectConfig with your edits applied."`
+	Version string             `json:"version" jsonschema:"Opaque version token from your last readArchitectConfig (required). Rejected if it no longer matches the on-disk config; re-read and retry."`
 }
 
-type UpdateKickoffOutput struct {
-	Path    string   `json:"path"`
-	Repos   []string `json:"repos"`
-	Default bool     `json:"default"`
+type UpdateArchitectConfigOutput struct {
+	Config   ArchitectConfigDoc `json:"config"`
+	Resolved ResolvedConfig     `json:"resolved"`
+	Created  []string           `json:"created"`
+	Version  string             `json:"version"`
 }
 
-type RemoveKickoffOutput struct {
-	FallbackRepos []string `json:"fallbackRepos"`
+type ReadDefaultPromptInput struct {
+	Kind string `json:"kind" jsonschema:"Which default template to fetch. One of: architect-system, architect-kickoff, ticket-kickoff."`
 }
 
-type PromptPath struct {
-	Path string `json:"path"`
-}
-
-type ArchitectPromptsOutput struct {
-	System  *PromptPath `json:"system"`
-	Kickoff *PromptPath `json:"kickoff"`
-}
-
-type SetPromptOutput struct {
-	Path    string `json:"path"`
-	Created bool   `json:"created"`
+type ReadDefaultPromptOutput struct {
+	Template  string                `json:"template"`
+	Variables []PromptVariableEntry `json:"variables"`
 }
 
 type PromptVariableEntry struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
-}
-
-type PromptSchemaOutput struct {
-	Variables []PromptVariableEntry `json:"variables"`
 }

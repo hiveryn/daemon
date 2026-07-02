@@ -9,7 +9,7 @@ The daemon is the **single mutation and event hub** for Hiveryn. Every state cha
 - **Local state**: bootstrap config under `HIVERYN_HOME` (default `~/.hiveryn`) with `config.yaml` plus `variants.yaml`, `architects.yaml`, `tabs.yaml`, and `shortcuts.yaml`; SQLite for sessions, terminal buffers, and runtime events.
 - **Agent lifecycle**: spawn, kill, and track agent processes through daemon-owned ptys; delegate launch/config synthesis to `agentruntime`.
 - **Filesystem mutations**: read/write architect folder markdown (tickets, conclusions, collabs). The architect folder is the shared source of truth; the daemon's SQLite is local-only.
-- **MCP tools**: exposed by the daemon so running agents can mutate project state (create tickets, conclude sessions, and manage the architect's own `hiveryn.yaml` — repos, ticket kickoffs, architect prompts) without direct filesystem access. Config-mutation tools validate every write against the loader's ruleset so an invalid edit can never brick session spawning.
+- **MCP tools**: exposed by the daemon so running agents can mutate project state (create tickets, conclude sessions, and manage the architect's own `hiveryn.yaml` — repos, ticket kickoffs, architect prompts) without direct filesystem access. The architect edits its config through a declarative whole-document surface (`readArchitectConfig` → edit → `updateArchitectConfig`) guarded by a stateless content-hash version token, plus `readDefaultPrompt` for embedded templates. Every write is validated against the loader's ruleset so an invalid edit can never brick session spawning.
 - **Event stream**: SSE or WebSocket hints so the desktop app updates views without polling.
 
 ## Package boundaries

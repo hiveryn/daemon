@@ -12,7 +12,8 @@ import (
 )
 
 // newConfigTestHandler wires a reloading handler over a single architect whose
-// workspace is a temp dir, and returns the handler and that workspace path.
+// workspace is a temp dir (with a hiveryn.yaml written by writeAPIArchitects),
+// and returns the handler and that workspace path.
 func newConfigTestHandler(t *testing.T) (http.Handler, string) {
 	t.Helper()
 	configDir := t.TempDir()
@@ -27,70 +28,123 @@ func newConfigTestHandler(t *testing.T) (http.Handler, string) {
 	return newReloadingTestHandler(t, cfgPath, nil), workspace
 }
 
-func TestConfigListRepos(t *testing.T) {
-	handler, _ := newConfigTestHandler(t)
-	status, body := request(t, handler, http.MethodGet, "/api/architects/hiveryn/config/repos", nil)
+func readConfig(t *testing.T, handler http.Handler) readArchitectConfigResponse {
+	t.Helper()
+	status, body := request(t, handler, http.MethodGet, "/api/architects/hiveryn/config", nil)
 	if status != http.StatusOK {
-		t.Fatalf("status = %d, body: %s", status, body)
+		t.Fatalf("read status = %d, body: %s", status, body)
 	}
-	var out struct {
-		Repos []repoResponse `json:"repos"`
-	}
+	var out readArchitectConfigResponse
 	decodeEnvelopeData(t, body, &out)
-	if len(out.Repos) != 1 || out.Repos[0].Key != "daemon" {
-		t.Fatalf("repos = %#v", out.Repos)
+	return out
+}
+
+func TestConfigReadReturnsDocAndVersion(t *testing.T) {
+	handler, _ := newConfigTestHandler(t)
+	out := readConfig(t, handler)
+	if out.Version == "" {
+		t.Fatal("expected non-empty version")
+	}
+	if out.Config.Repos["daemon"] != "/repos/daemon" {
+		t.Fatalf("repos = %#v", out.Config.Repos)
+	}
+	if out.Resolved.Repos["daemon"] != "/repos/daemon" {
+		t.Fatalf("resolved repos = %#v", out.Resolved.Repos)
 	}
 }
 
-func TestConfigAddAndRemoveRepo(t *testing.T) {
+func TestConfigUpdateReplacesWholeDoc(t *testing.T) {
 	handler, _ := newConfigTestHandler(t)
+	read := readConfig(t, handler)
 
-	status, body := requestJSON(t, handler, http.MethodPost, "/api/architects/hiveryn/config/repos", map[string]any{
-		"key": "desktop", "path": "/repos/desktop",
+	doc := read.Config
+	doc.Repos["desktop"] = "/repos/desktop"
+
+	status, body := requestJSON(t, handler, http.MethodPut, "/api/architects/hiveryn/config", map[string]any{
+		"config":  doc,
+		"version": read.Version,
 	})
 	if status != http.StatusOK {
-		t.Fatalf("add status = %d, body: %s", status, body)
+		t.Fatalf("update status = %d, body: %s", status, body)
 	}
-	var added repoResponse
-	decodeEnvelopeData(t, body, &added)
-	if added.Key != "desktop" || added.Path != "/repos/desktop" {
-		t.Fatalf("added = %#v", added)
+	var out updateArchitectConfigResponse
+	decodeEnvelopeData(t, body, &out)
+	if out.Config.Repos["desktop"] != "/repos/desktop" {
+		t.Fatalf("desktop not persisted: %#v", out.Config.Repos)
 	}
+	if out.Version == read.Version {
+		t.Fatal("expected version to change after update")
+	}
+}
 
-	// duplicate → conflict
-	status, body = requestJSON(t, handler, http.MethodPost, "/api/architects/hiveryn/config/repos", map[string]any{
-		"key": "desktop", "path": "/x",
+func TestConfigUpdateVersionConflict(t *testing.T) {
+	handler, _ := newConfigTestHandler(t)
+	read := readConfig(t, handler)
+
+	status, body := requestJSON(t, handler, http.MethodPut, "/api/architects/hiveryn/config", map[string]any{
+		"config":  read.Config,
+		"version": "stale-token",
 	})
 	if status != http.StatusConflict {
-		t.Fatalf("duplicate add status = %d, body: %s", status, body)
-	}
-
-	status, body = request(t, handler, http.MethodDelete, "/api/architects/hiveryn/config/repos/desktop", nil)
-	if status != http.StatusOK {
-		t.Fatalf("remove status = %d, body: %s", status, body)
+		t.Fatalf("status = %d, body: %s", status, body)
 	}
 }
 
-func TestConfigAddKickoffScaffoldsDefault(t *testing.T) {
-	handler, workspace := newConfigTestHandler(t)
+func TestConfigUpdateMissingVersionValidation(t *testing.T) {
+	handler, _ := newConfigTestHandler(t)
+	read := readConfig(t, handler)
 
-	status, body := requestJSON(t, handler, http.MethodPost, "/api/architects/hiveryn/config/kickoffs", map[string]any{
-		"path": "prompts/kickoff.md",
+	status, body := requestJSON(t, handler, http.MethodPut, "/api/architects/hiveryn/config", map[string]any{
+		"config":  read.Config,
+		"version": "",
 	})
-	if status != http.StatusOK {
+	if status != http.StatusBadRequest {
 		t.Fatalf("status = %d, body: %s", status, body)
 	}
-	var out addKickoffResponse
+}
+
+func TestConfigUpdateInvalidConfigValidation(t *testing.T) {
+	handler, _ := newConfigTestHandler(t)
+	read := readConfig(t, handler)
+
+	doc := read.Config
+	doc.Prompts.Ticket.Kickoffs = []ticketKickoffDocWire{{Path: "k.md", Repos: []string{"ghost"}}}
+
+	status, body := requestJSON(t, handler, http.MethodPut, "/api/architects/hiveryn/config", map[string]any{
+		"config":  doc,
+		"version": read.Version,
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, body: %s", status, body)
+	}
+}
+
+func TestConfigUpdateScaffoldsMissingPrompt(t *testing.T) {
+	handler, workspace := newConfigTestHandler(t)
+	read := readConfig(t, handler)
+
+	doc := read.Config
+	doc.Prompts.Ticket.Kickoffs = []ticketKickoffDocWire{{Path: "prompts/kickoff.md", Repos: []string{}}}
+
+	status, body := requestJSON(t, handler, http.MethodPut, "/api/architects/hiveryn/config", map[string]any{
+		"config":  doc,
+		"version": read.Version,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("update status = %d, body: %s", status, body)
+	}
+	var out updateArchitectConfigResponse
 	decodeEnvelopeData(t, body, &out)
-	if !out.Created {
-		t.Fatal("expected created = true")
-	}
-	if !out.Default {
-		t.Fatal("expected default = true for no-repos kickoff")
-	}
+
 	wantAbs := filepath.Join(workspace, "prompts/kickoff.md")
-	if out.Path != wantAbs {
-		t.Fatalf("path = %q, want %q", out.Path, wantAbs)
+	found := false
+	for _, c := range out.Created {
+		if c == wantAbs {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("created = %v, want to contain %q", out.Created, wantAbs)
 	}
 
 	got, err := os.ReadFile(wantAbs)
@@ -102,84 +156,83 @@ func TestConfigAddKickoffScaffoldsDefault(t *testing.T) {
 		t.Fatalf("default template: %v", err)
 	}
 	if !bytes.Equal(got, want) {
-		t.Fatalf("scaffolded content does not match embedded default")
-	}
-
-	// second default → conflict
-	status, body = requestJSON(t, handler, http.MethodPost, "/api/architects/hiveryn/config/kickoffs", map[string]any{
-		"path": "prompts/other.md",
-	})
-	if status != http.StatusConflict {
-		t.Fatalf("second default status = %d, body: %s", status, body)
+		t.Fatal("scaffolded content does not match embedded default")
 	}
 }
 
-func TestConfigSetArchitectSystemScaffolds(t *testing.T) {
-	handler, workspace := newConfigTestHandler(t)
+func TestConfigReadWarnsMissingWiredPrompt(t *testing.T) {
+	handler, _ := newConfigTestHandler(t)
+	read := readConfig(t, handler)
 
-	status, body := requestJSON(t, handler, http.MethodPut, "/api/architects/hiveryn/config/architect-prompts/system", map[string]any{
-		"path": "prompts/SYSTEM.md",
+	// Wiring a prompt path scaffolds the file; delete it afterward so a fresh
+	// read observes the missing-file warning + exists=false.
+	doc := read.Config
+	doc.Prompts.Architect.System = "prompts/SYSTEM.md"
+	status, body := requestJSON(t, handler, http.MethodPut, "/api/architects/hiveryn/config", map[string]any{
+		"config":  doc,
+		"version": read.Version,
 	})
 	if status != http.StatusOK {
-		t.Fatalf("status = %d, body: %s", status, body)
+		t.Fatalf("update status = %d, body: %s", status, body)
 	}
-	var out setPromptResponse
-	decodeEnvelopeData(t, body, &out)
-	if !out.Created {
-		t.Fatal("expected created = true")
-	}
-
-	got, err := os.ReadFile(filepath.Join(workspace, "prompts/SYSTEM.md"))
-	if err != nil {
-		t.Fatalf("read scaffolded file: %v", err)
-	}
-	want, _ := sessionruntime.DefaultPromptTemplate("architect-system")
-	if !bytes.Equal(got, want) {
-		t.Fatal("scaffolded system prompt does not match embedded default")
+	var updated updateArchitectConfigResponse
+	decodeEnvelopeData(t, body, &updated)
+	if updated.Resolved.Prompts.Architect.System == nil || !updated.Resolved.Prompts.Architect.System.Exists {
+		t.Fatalf("expected scaffolded system prompt to exist: %#v", updated.Resolved.Prompts.Architect.System)
 	}
 
-	// getArchitectPrompts should now report it
-	status, body = request(t, handler, http.MethodGet, "/api/architects/hiveryn/config/architect-prompts", nil)
-	if status != http.StatusOK {
-		t.Fatalf("get prompts status = %d, body: %s", status, body)
+	// delete the scaffolded file, then read → warning + exists=false
+	if err := os.Remove(updated.Resolved.Prompts.Architect.System.Path); err != nil {
+		t.Fatalf("remove scaffolded file: %v", err)
 	}
-	var prompts architectPromptsResponse
-	decodeEnvelopeData(t, body, &prompts)
-	if prompts.System == nil || prompts.System.Path != filepath.Join(workspace, "prompts/SYSTEM.md") {
-		t.Fatalf("system prompt = %#v", prompts.System)
+	after := readConfig(t, handler)
+	if len(after.Warnings) == 0 {
+		t.Fatal("expected a warning for the missing wired prompt")
 	}
-	if prompts.Kickoff != nil {
-		t.Fatalf("kickoff should be nil, got %#v", prompts.Kickoff)
+	if after.Resolved.Prompts.Architect.System == nil || after.Resolved.Prompts.Architect.System.Exists {
+		t.Fatalf("expected exists=false, got %#v", after.Resolved.Prompts.Architect.System)
 	}
 }
 
-func TestConfigDescribePromptSchema(t *testing.T) {
+func TestConfigReadDefaultPrompt(t *testing.T) {
 	handler, _ := newConfigTestHandler(t)
 
-	status, body := request(t, handler, http.MethodGet, "/api/architects/hiveryn/config/prompt-schema?kind=ticket", nil)
+	status, body := request(t, handler, http.MethodGet, "/api/architects/hiveryn/config/default-prompt?kind=ticket-kickoff", nil)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, body: %s", status, body)
 	}
-	var out struct {
-		Variables []sessionruntime.PromptVariable `json:"variables"`
-	}
+	var out readDefaultPromptResponse
 	decodeEnvelopeData(t, body, &out)
+	if out.Template == "" {
+		t.Fatal("expected non-empty template")
+	}
 	if len(out.Variables) == 0 {
-		t.Fatal("expected non-empty variables")
+		t.Fatal("expected ticket-kickoff variables")
 	}
 
-	// missing kind → 400
-	status, _ = request(t, handler, http.MethodGet, "/api/architects/hiveryn/config/prompt-schema", nil)
+	// architect-system → template, no variables
+	status, body = request(t, handler, http.MethodGet, "/api/architects/hiveryn/config/default-prompt?kind=architect-system", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, body: %s", status, body)
+	}
+	decodeEnvelopeData(t, body, &out)
+	if out.Template == "" {
+		t.Fatal("expected non-empty architect-system template")
+	}
+	if len(out.Variables) != 0 {
+		t.Fatalf("architect-system variables = %v, want none", out.Variables)
+	}
+
+	// bogus kind → 400
+	status, _ = request(t, handler, http.MethodGet, "/api/architects/hiveryn/config/default-prompt?kind=bogus", nil)
 	if status != http.StatusBadRequest {
-		t.Fatalf("missing kind status = %d", status)
+		t.Fatalf("bogus kind status = %d", status)
 	}
 }
 
 func TestConfigUnknownArchitect404(t *testing.T) {
 	handler, _ := newConfigTestHandler(t)
-	status, body := requestJSON(t, handler, http.MethodPost, "/api/architects/ghost/config/repos", map[string]any{
-		"key": "x", "path": "/x",
-	})
+	status, body := request(t, handler, http.MethodGet, "/api/architects/ghost/config", nil)
 	if status != http.StatusNotFound {
 		t.Fatalf("status = %d, body: %s", status, body)
 	}

@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -19,45 +20,83 @@ type architectConfigHandler struct {
 	logger       *slog.Logger
 }
 
-type kickoffResponse struct {
-	Path    string   `json:"path"`
-	Repos   []string `json:"repos"`
-	Default bool     `json:"default"`
+// --- wire shapes ---
+//
+// architectConfigDocWire is the declarative, round-trippable config document —
+// identical in readArchitectConfig's response and updateArchitectConfig's input.
+type architectConfigDocWire struct {
+	Repos   map[string]string       `json:"repos"`
+	Prompts architectPromptsDocWire `json:"prompts"`
 }
 
-type promptPathResponse struct {
-	Path string `json:"path"`
+type architectPromptsDocWire struct {
+	Architect architectPromptPathsDocWire `json:"architect"`
+	Ticket    ticketKickoffsDocWire       `json:"ticket"`
 }
 
-type architectPromptsResponse struct {
-	System  *promptPathResponse `json:"system"`
-	Kickoff *promptPathResponse `json:"kickoff"`
+type architectPromptPathsDocWire struct {
+	System  string `json:"system,omitempty"`
+	Kickoff string `json:"kickoff,omitempty"`
 }
 
-type addKickoffResponse struct {
-	Path    string   `json:"path"`
-	Repos   []string `json:"repos"`
-	Default bool     `json:"default"`
-	Created bool     `json:"created"`
+type ticketKickoffsDocWire struct {
+	Kickoffs []ticketKickoffDocWire `json:"kickoffs"`
 }
 
-type updateKickoffResponse struct {
-	Path    string   `json:"path"`
-	Repos   []string `json:"repos"`
-	Default bool     `json:"default"`
+type ticketKickoffDocWire struct {
+	Path  string   `json:"path"`
+	Repos []string `json:"repos"`
 }
 
-type removeKickoffResponse struct {
-	FallbackRepos []string `json:"fallbackRepos"`
+// resolvedConfigWire mirrors the config document with absolute paths and, for
+// each wired prompt, whether the file currently exists. Read-only.
+type resolvedConfigWire struct {
+	Repos   map[string]string   `json:"repos"`
+	Prompts resolvedPromptsWire `json:"prompts"`
 }
 
-type setPromptResponse struct {
-	Path    string `json:"path"`
-	Created bool   `json:"created"`
+type resolvedPromptsWire struct {
+	Architect resolvedArchitectPromptsWire `json:"architect"`
+	Ticket    resolvedTicketWire           `json:"ticket"`
 }
 
-type removeRepoResponse struct {
-	Key string `json:"key"`
+type resolvedArchitectPromptsWire struct {
+	System  *resolvedPathWire `json:"system"`
+	Kickoff *resolvedPathWire `json:"kickoff"`
+}
+
+type resolvedTicketWire struct {
+	Kickoffs []resolvedKickoffWire `json:"kickoffs"`
+}
+
+type resolvedPathWire struct {
+	Path   string `json:"path"`
+	Exists bool   `json:"exists"`
+}
+
+type resolvedKickoffWire struct {
+	Path   string   `json:"path"`
+	Repos  []string `json:"repos"`
+	Exists bool     `json:"exists"`
+}
+
+type readArchitectConfigResponse struct {
+	Config   architectConfigDocWire `json:"config"`
+	Resolved resolvedConfigWire     `json:"resolved"`
+	Warnings []string               `json:"warnings"`
+	Version  string                 `json:"version"`
+}
+
+type updateArchitectConfigResponse struct {
+	Config   architectConfigDocWire `json:"config"`
+	Resolved resolvedConfigWire     `json:"resolved"`
+	Created  []string               `json:"created"`
+	Version  string                 `json:"version"`
+}
+
+type readDefaultPromptResponse struct {
+	Template  string                          `json:"template"`
+	Variables []sessionruntime.PromptVariable `json:"variables"`
 }
 
 // architectWorkspace resolves the workspace path for the {key} path param from
@@ -78,241 +117,214 @@ func (h *architectConfigHandler) architectWorkspace(w http.ResponseWriter, r *ht
 	return key, architect.Path, true
 }
 
-func (h *architectConfigHandler) listRepos(w http.ResponseWriter, r *http.Request) {
-	cfg, err := currentConfig(h.config, h.configSource)
-	if err != nil {
-		writeDomainError(w, r, err)
-		return
-	}
-	repos, ok := listRepos(cfg, r.PathValue("key"))
+func (h *architectConfigHandler) readArchitectConfig(w http.ResponseWriter, r *http.Request) {
+	key, workspace, ok := h.architectWorkspace(w, r)
 	if !ok {
-		writeArchitectNotFound(w, r, r.PathValue("key"))
 		return
 	}
-	writeJSON(w, r, http.StatusOK, map[string][]repoResponse{"repos": repos})
-}
-
-func (h *architectConfigHandler) listKickoffs(w http.ResponseWriter, r *http.Request) {
-	cfg, err := currentConfig(h.config, h.configSource)
+	view, err := config.ReadArchitectConfig(workspace, key)
 	if err != nil {
-		writeDomainError(w, r, err)
+		writeConfigError(w, r, err)
 		return
 	}
-	architect, exists := cfg.Architects[r.PathValue("key")]
-	if !exists {
-		writeArchitectNotFound(w, r, r.PathValue("key"))
-		return
-	}
-	kickoffs := make([]kickoffResponse, 0, len(architect.TicketKickoffs))
-	for _, kickoff := range architect.TicketKickoffs {
-		repos := kickoff.Repos
-		if repos == nil {
-			repos = []string{}
-		}
-		kickoffs = append(kickoffs, kickoffResponse{
-			Path:    kickoff.Path,
-			Repos:   repos,
-			Default: len(kickoff.Repos) == 0,
-		})
-	}
-	writeJSON(w, r, http.StatusOK, map[string][]kickoffResponse{"kickoffs": kickoffs})
-}
-
-func (h *architectConfigHandler) getArchitectPrompts(w http.ResponseWriter, r *http.Request) {
-	cfg, err := currentConfig(h.config, h.configSource)
-	if err != nil {
-		writeDomainError(w, r, err)
-		return
-	}
-	architect, exists := cfg.Architects[r.PathValue("key")]
-	if !exists {
-		writeArchitectNotFound(w, r, r.PathValue("key"))
-		return
-	}
-	writeJSON(w, r, http.StatusOK, architectPromptsResponse{
-		System:  promptPathOrNil(architect.SystemPromptPath),
-		Kickoff: promptPathOrNil(architect.KickoffPromptPath),
+	writeJSON(w, r, http.StatusOK, readArchitectConfigResponse{
+		Config:   docToWire(view.Config),
+		Resolved: resolvedToWire(view.Resolved),
+		Warnings: promptWarnings(view.Resolved),
+		Version:  view.Version,
 	})
 }
 
-func (h *architectConfigHandler) describePromptSchema(w http.ResponseWriter, r *http.Request) {
+func (h *architectConfigHandler) updateArchitectConfig(w http.ResponseWriter, r *http.Request) {
+	key, workspace, ok := h.architectWorkspace(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		Config  architectConfigDocWire `json:"config"`
+		Version string                 `json:"version"`
+	}
+	if err := decodeJSON(r, &request); err != nil {
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), err.Error(), nil)
+		return
+	}
+	view, err := config.ReplaceArchitectConfig(workspace, key, request.Version, docFromWire(request.Config))
+	if err != nil {
+		writeConfigError(w, r, err)
+		return
+	}
+	created, err := scaffoldWiredPrompts(view.Resolved)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, updateArchitectConfigResponse{
+		Config:   docToWire(view.Config),
+		Resolved: resolvedToWire(view.Resolved),
+		Created:  created,
+		Version:  view.Version,
+	})
+}
+
+func (h *architectConfigHandler) readDefaultPrompt(w http.ResponseWriter, r *http.Request) {
 	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
 	if kind == "" {
-		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "kind query parameter is required (architect or ticket)", nil)
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "kind query parameter is required (architect-system, architect-kickoff, or ticket-kickoff)", nil)
 		return
 	}
-	variables, err := sessionruntime.PromptSchema(kind)
+	template, err := sessionruntime.DefaultPromptTemplate(kind)
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), err.Error(), nil)
 		return
 	}
-	writeJSON(w, r, http.StatusOK, map[string][]sessionruntime.PromptVariable{"variables": variables})
-}
-
-func (h *architectConfigHandler) addRepo(w http.ResponseWriter, r *http.Request) {
-	key, workspace, ok := h.architectWorkspace(w, r)
-	if !ok {
-		return
-	}
-	var request struct {
-		Key  string `json:"key"`
-		Path string `json:"path"`
-	}
-	if err := decodeJSON(r, &request); err != nil {
+	variables, err := sessionruntime.DefaultPromptVariables(kind)
+	if err != nil {
 		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), err.Error(), nil)
 		return
 	}
-	absPath, err := config.AddRepo(workspace, key, request.Key, request.Path)
-	if err != nil {
-		writeConfigError(w, r, err)
-		return
+	if variables == nil {
+		variables = []sessionruntime.PromptVariable{}
 	}
-	writeJSON(w, r, http.StatusOK, repoResponse{Key: strings.TrimSpace(request.Key), Path: absPath})
-}
-
-func (h *architectConfigHandler) removeRepo(w http.ResponseWriter, r *http.Request) {
-	key, workspace, ok := h.architectWorkspace(w, r)
-	if !ok {
-		return
-	}
-	repoKey := r.PathValue("repoKey")
-	if err := config.RemoveRepo(workspace, key, repoKey); err != nil {
-		writeConfigError(w, r, err)
-		return
-	}
-	writeJSON(w, r, http.StatusOK, removeRepoResponse{Key: repoKey})
-}
-
-func (h *architectConfigHandler) addKickoff(w http.ResponseWriter, r *http.Request) {
-	key, workspace, ok := h.architectWorkspace(w, r)
-	if !ok {
-		return
-	}
-	var request struct {
-		Path  string   `json:"path"`
-		Repos []string `json:"repos,omitempty"`
-	}
-	if err := decodeJSON(r, &request); err != nil {
-		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), err.Error(), nil)
-		return
-	}
-	absPath, err := config.AddKickoff(workspace, key, request.Path, request.Repos)
-	if err != nil {
-		writeConfigError(w, r, err)
-		return
-	}
-	created, err := scaffoldPromptFile(absPath, "ticket-kickoff")
-	if err != nil {
-		writeDomainError(w, r, err)
-		return
-	}
-	writeJSON(w, r, http.StatusOK, addKickoffResponse{
-		Path:    absPath,
-		Repos:   normalizedRepos(request.Repos),
-		Default: len(normalizedRepos(request.Repos)) == 0,
-		Created: created,
+	writeJSON(w, r, http.StatusOK, readDefaultPromptResponse{
+		Template:  string(template),
+		Variables: variables,
 	})
 }
 
-func (h *architectConfigHandler) updateKickoff(w http.ResponseWriter, r *http.Request) {
-	key, workspace, ok := h.architectWorkspace(w, r)
-	if !ok {
-		return
+func docToWire(d config.ArchitectConfigDoc) architectConfigDocWire {
+	repos := d.Repos
+	if repos == nil {
+		repos = map[string]string{}
 	}
-	var request struct {
-		Path  string   `json:"path"`
-		Repos []string `json:"repos,omitempty"`
+	wire := architectConfigDocWire{
+		Repos: repos,
+		Prompts: architectPromptsDocWire{
+			Architect: architectPromptPathsDocWire{
+				System:  d.Prompts.Architect.System,
+				Kickoff: d.Prompts.Architect.Kickoff,
+			},
+			Ticket: ticketKickoffsDocWire{Kickoffs: []ticketKickoffDocWire{}},
+		},
 	}
-	if err := decodeJSON(r, &request); err != nil {
-		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), err.Error(), nil)
-		return
+	for _, k := range d.Prompts.Ticket {
+		wire.Prompts.Ticket.Kickoffs = append(wire.Prompts.Ticket.Kickoffs, ticketKickoffDocWire{
+			Path:  k.Path,
+			Repos: nonNilStrings(k.Repos),
+		})
 	}
-	absPath, err := config.UpdateKickoff(workspace, key, request.Path, request.Repos)
-	if err != nil {
-		writeConfigError(w, r, err)
-		return
-	}
-	writeJSON(w, r, http.StatusOK, updateKickoffResponse{
-		Path:    absPath,
-		Repos:   normalizedRepos(request.Repos),
-		Default: len(normalizedRepos(request.Repos)) == 0,
-	})
+	return wire
 }
 
-func (h *architectConfigHandler) removeKickoff(w http.ResponseWriter, r *http.Request) {
-	key, workspace, ok := h.architectWorkspace(w, r)
-	if !ok {
-		return
+func docFromWire(w architectConfigDocWire) config.ArchitectConfigDoc {
+	doc := config.ArchitectConfigDoc{
+		Repos: w.Repos,
+		Prompts: config.ArchitectPromptsDoc{
+			Architect: config.ArchitectPromptPathsDoc{
+				System:  w.Prompts.Architect.System,
+				Kickoff: w.Prompts.Architect.Kickoff,
+			},
+		},
 	}
-	var request struct {
-		Path string `json:"path"`
+	for _, k := range w.Prompts.Ticket.Kickoffs {
+		doc.Prompts.Ticket = append(doc.Prompts.Ticket, config.TicketKickoffDoc{Path: k.Path, Repos: k.Repos})
 	}
-	if err := decodeJSON(r, &request); err != nil {
-		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), err.Error(), nil)
-		return
-	}
-	fallback, err := config.RemoveKickoff(workspace, key, request.Path)
-	if err != nil {
-		writeConfigError(w, r, err)
-		return
-	}
-	writeJSON(w, r, http.StatusOK, removeKickoffResponse{FallbackRepos: fallback})
+	return doc
 }
 
-func (h *architectConfigHandler) setArchitectSystem(w http.ResponseWriter, r *http.Request) {
-	h.setArchitectPrompt(w, r, config.SetArchitectSystem, "architect-system")
+func resolvedToWire(a config.ArchitectConfig) resolvedConfigWire {
+	repos := a.Repos
+	if repos == nil {
+		repos = map[string]string{}
+	}
+	wire := resolvedConfigWire{
+		Repos: repos,
+		Prompts: resolvedPromptsWire{
+			Architect: resolvedArchitectPromptsWire{
+				System:  resolvedPathOrNil(a.SystemPromptPath),
+				Kickoff: resolvedPathOrNil(a.KickoffPromptPath),
+			},
+			Ticket: resolvedTicketWire{Kickoffs: []resolvedKickoffWire{}},
+		},
+	}
+	for _, k := range a.TicketKickoffs {
+		wire.Prompts.Ticket.Kickoffs = append(wire.Prompts.Ticket.Kickoffs, resolvedKickoffWire{
+			Path:   k.Path,
+			Repos:  nonNilStrings(k.Repos),
+			Exists: fileExists(k.Path),
+		})
+	}
+	return wire
 }
 
-func (h *architectConfigHandler) setArchitectKickoff(w http.ResponseWriter, r *http.Request) {
-	h.setArchitectPrompt(w, r, config.SetArchitectKickoff, "architect-kickoff")
-}
-
-func (h *architectConfigHandler) setArchitectPrompt(
-	w http.ResponseWriter,
-	r *http.Request,
-	set func(workspacePath, architectKey, promptPath string) (string, error),
-	templateKind string,
-) {
-	key, workspace, ok := h.architectWorkspace(w, r)
-	if !ok {
-		return
-	}
-	var request struct {
-		Path string `json:"path"`
-	}
-	if err := decodeJSON(r, &request); err != nil {
-		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), err.Error(), nil)
-		return
-	}
-	absPath, err := set(workspace, key, request.Path)
-	if err != nil {
-		writeConfigError(w, r, err)
-		return
-	}
-	created, err := scaffoldPromptFile(absPath, templateKind)
-	if err != nil {
-		writeDomainError(w, r, err)
-		return
-	}
-	writeJSON(w, r, http.StatusOK, setPromptResponse{Path: absPath, Created: created})
-}
-
-func promptPathOrNil(path string) *promptPathResponse {
+func resolvedPathOrNil(path string) *resolvedPathWire {
 	if strings.TrimSpace(path) == "" {
 		return nil
 	}
-	return &promptPathResponse{Path: path}
+	return &resolvedPathWire{Path: path, Exists: fileExists(path)}
 }
 
-func normalizedRepos(repos []string) []string {
-	scope := make([]string, 0, len(repos))
-	for _, repo := range repos {
-		trimmed := strings.TrimSpace(repo)
-		if trimmed != "" {
-			scope = append(scope, trimmed)
+// promptWarnings lists wired prompt files that do not exist on disk. A missing
+// prompt file passes validation but hard-errors at spawn, so surfacing it lets
+// the agent create the file (updateArchitectConfig also auto-scaffolds these).
+func promptWarnings(a config.ArchitectConfig) []string {
+	warnings := []string{}
+	check := func(path string) {
+		if strings.TrimSpace(path) != "" && !fileExists(path) {
+			warnings = append(warnings, fmt.Sprintf("wired prompt file %q does not exist; create it (fetch a starting point via readDefaultPrompt) or a session using it will fail to start", path))
 		}
 	}
-	return scope
+	check(a.SystemPromptPath)
+	check(a.KickoffPromptPath)
+	for _, k := range a.TicketKickoffs {
+		check(k.Path)
+	}
+	return warnings
+}
+
+// scaffoldWiredPrompts writes the embedded default template for every wired
+// prompt path whose file is missing, returning the absolute paths created.
+func scaffoldWiredPrompts(a config.ArchitectConfig) ([]string, error) {
+	created := []string{}
+	scaffold := func(path, kind string) error {
+		if strings.TrimSpace(path) == "" {
+			return nil
+		}
+		didCreate, err := scaffoldPromptFile(path, kind)
+		if err != nil {
+			return err
+		}
+		if didCreate {
+			created = append(created, path)
+		}
+		return nil
+	}
+	if err := scaffold(a.SystemPromptPath, "architect-system"); err != nil {
+		return nil, err
+	}
+	if err := scaffold(a.KickoffPromptPath, "architect-kickoff"); err != nil {
+		return nil, err
+	}
+	for _, k := range a.TicketKickoffs {
+		if err := scaffold(k.Path, "ticket-kickoff"); err != nil {
+			return nil, err
+		}
+	}
+	return created, nil
+}
+
+func fileExists(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 // scaffoldPromptFile writes the embedded default template to absPath when the

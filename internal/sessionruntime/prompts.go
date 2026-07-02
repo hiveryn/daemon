@@ -44,6 +44,25 @@ func DefaultPromptTemplate(kind string) ([]byte, error) {
 	return data, nil
 }
 
+// DefaultPromptVariables returns the Go template variables valid for a prompt
+// kind, keyed by the same file-selection kinds as DefaultPromptTemplate
+// ("architect-system", "architect-kickoff", "ticket-kickoff"). The architect
+// system prompt is static, so it has no variables. This bridges the two kind
+// vocabularies: it maps "architect-kickoff" → the "architect" schema and
+// "ticket-kickoff" → the "ticket" schema.
+func DefaultPromptVariables(kind string) ([]PromptVariable, error) {
+	switch kind {
+	case "architect-system":
+		return nil, nil
+	case "architect-kickoff":
+		return PromptSchema("architect")
+	case "ticket-kickoff":
+		return PromptSchema("ticket")
+	default:
+		return nil, fmt.Errorf("unknown prompt kind %q (want architect-system, architect-kickoff, or ticket-kickoff)", kind)
+	}
+}
+
 // PromptSchema returns the Go template variables available to a prompt kind,
 // each with a one-line description. Co-located with the template-data structs
 // below so it cannot drift from what is actually rendered. Kind is "architect"

@@ -143,7 +143,7 @@ Keep conclusions concrete and easy to scan. Do not write a generic wrap-up.
 
 ## Managing Your Configuration
 
-You can edit your own `hiveryn.yaml` — the repo map, ticket kickoff prompts, and your own system/kickoff prompts — through dedicated tools rather than editing the file by hand: `listRepos`/`addRepo`/`removeRepo` for the repo map, `listKickoffs`/`addKickoff`/`updateKickoff`/`removeKickoff` for per-repo ticket kickoffs (an entry with no repos is the default), and `getArchitectPrompts`/`setArchitectSystem`/`setArchitectKickoff` for your own prompts. These tools own the yaml wiring, path resolution, and validation; when you wire a prompt path that does not exist yet they scaffold the default template and return its absolute path, which you then edit like any file. Call `describePromptSchema` to see the template variables available in a kickoff prompt before editing one. Changes take effect on the next spawned session.
+Manage your own `hiveryn.yaml` — the repo map, ticket kickoff prompts, and your own system/kickoff prompts — through MCP tools rather than editing the file by hand: read the whole config with `readArchitectConfig`, edit it, and write it back with `updateArchitectConfig` (a version-guarded, whole-document replace). Use `readDefaultPrompt` to get a template + its variables when authoring a prompt file; you write the file contents yourself. See each tool's description for details. Changes take effect immediately (no restart).
 
 ## Communication
 

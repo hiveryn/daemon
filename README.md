@@ -125,7 +125,7 @@ Prompt paths resolve relative to the workspace directory (absolute paths are use
 
 Ticket-kickoff selection: the entry whose `repos` contains the ticket's repo wins over the default (no-`repos`) entry — most specific wins, regardless of list order. When `kickoffs` is absent, the embedded default is used. Configuration fails to load if any kickoff references a repo key not declared under `repos`, if two entries are both default, or if a repo key appears in more than one entry.
 
-The architect can manage this file through MCP tools (`listRepos`/`addRepo`/`removeRepo`, `listKickoffs`/`addKickoff`/`updateKickoff`/`removeKickoff`, `getArchitectPrompts`/`setArchitectSystem`/`setArchitectKickoff`, `describePromptSchema`) instead of editing it by hand. Those tools enforce the rules above and scaffold the embedded default template when wiring a prompt path whose file does not exist yet.
+The architect manages this file through MCP tools instead of editing it by hand: `readArchitectConfig` returns the whole config plus an opaque version token, `updateArchitectConfig` does a version-guarded whole-document replace, and `readDefaultPrompt` returns an embedded template + its variables. Writes enforce the rules above (a write that would fail to load is refused) and auto-scaffold the embedded default template when wiring a prompt path whose file does not exist yet.
 
 ### `tabs.yaml` — tab layout per session type
 
@@ -215,17 +215,9 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `GET` | `/api/architects/{key}/conclusions/{id}` | Read a conclusion by ID |
 | `GET` | `/api/architects/{key}/repos` | List repos for an architect |
 | `GET` | `/api/architects/{key}/repos/{repoKey}` | Get one architect repo by key |
-| `GET` | `/api/architects/{key}/config/repos` | List the architect's `hiveryn.yaml` repos (key + absolute path) |
-| `POST` | `/api/architects/{key}/config/repos` | Add a repo to `hiveryn.yaml`; `CONFLICT` if the key already exists |
-| `DELETE` | `/api/architects/{key}/config/repos/{repoKey}` | Remove a repo; `CONFLICT` if still referenced by a kickoff entry |
-| `GET` | `/api/architects/{key}/config/kickoffs` | List ticket-kickoff entries (path, repo scope, which is default) |
-| `POST` | `/api/architects/{key}/config/kickoffs` | Add a ticket-kickoff entry (empty `repos` = default); scaffolds the embedded default when the file is missing |
-| `PUT` | `/api/architects/{key}/config/kickoffs` | Re-scope an existing ticket-kickoff entry (by `path`) |
-| `DELETE` | `/api/architects/{key}/config/kickoffs` | Remove a ticket-kickoff entry (by `path`); returns repos that fall back to the default |
-| `GET` | `/api/architects/{key}/config/architect-prompts` | Get the architect system/kickoff prompt paths (`null` when unset) |
-| `PUT` | `/api/architects/{key}/config/architect-prompts/system` | Set the architect system prompt path; scaffolds the embedded default when missing |
-| `PUT` | `/api/architects/{key}/config/architect-prompts/kickoff` | Set the architect kickoff prompt path; scaffolds the embedded default when missing |
-| `GET` | `/api/architects/{key}/config/prompt-schema?kind=architect\|ticket` | Describe the Go template variables available to a prompt kind |
+| `GET` | `/api/architects/{key}/config` | Read the whole `hiveryn.yaml` config (repos, prompts, kickoffs — verbatim paths), a resolved view (absolute paths + per-prompt `exists`), warnings for missing wired prompt files, and an opaque `version` token |
+| `PUT` | `/api/architects/{key}/config` | Replace the whole config (declarative), guarded by `version` (`VALIDATION` if missing/invalid, `CONFLICT` if stale); auto-scaffolds missing wired prompt files and returns them in `created` |
+| `GET` | `/api/architects/{key}/config/default-prompt?kind=architect-system\|architect-kickoff\|ticket-kickoff` | Return the embedded default template for a prompt kind plus its valid Go template variables |
 | `GET` | `/api/config/shortcuts` | Get resolved shortcuts config (global + per-pane keybindings) |
 | `POST` | `/api/sessions` | Create a durable session intent for architect planning, ticket work, or freeform exploration |
 | `GET` | `/api/sessions` | List session intents with their current run, if any |
