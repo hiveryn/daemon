@@ -1,6 +1,11 @@
 package api
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/hiveryn/daemon/internal/domain"
+	"github.com/hiveryn/daemon/internal/gitdiff"
+)
 
 func (h *reposHandler) list(w http.ResponseWriter, r *http.Request) {
 	cfg, err := currentConfig(h.config, h.configSource)
@@ -44,4 +49,87 @@ func (h *reposHandler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, r, http.StatusOK, repo)
+}
+
+type diffResponse struct {
+	Repo     string          `json:"repo"`
+	RepoPath string          `json:"repo_path"`
+	Files    []gitdiff.File  `json:"files"`
+	Summary  gitdiff.Summary `json:"summary"`
+}
+
+type commitDiffResponse struct {
+	Repo      string          `json:"repo"`
+	RepoPath  string          `json:"repo_path"`
+	SHA       string          `json:"sha"`
+	ParentSHA string          `json:"parent_sha,omitempty"`
+	IsMerge   bool            `json:"is_merge"`
+	Files     []gitdiff.File  `json:"files"`
+	Summary   gitdiff.Summary `json:"summary"`
+}
+
+func (h *reposHandler) diff(w http.ResponseWriter, r *http.Request) {
+	cfg, err := currentConfig(h.config, h.configSource)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	architectKey := r.PathValue("key")
+	repoKey := r.PathValue("repoKey")
+	repo, architectExists, repoExists := getRepo(cfg, architectKey, repoKey)
+	if !architectExists {
+		writeDomainError(w, r, &domain.NotFoundError{Resource: "architect", ID: architectKey})
+		return
+	}
+	if !repoExists {
+		writeDomainError(w, r, &domain.NotFoundError{Resource: "repo", ID: repoKey})
+		return
+	}
+
+	result, err := gitdiff.LoadWorkingTreeDiff(r.Context(), repo.Path)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, diffResponse{
+		Repo:     repoKey,
+		RepoPath: result.RepoPath,
+		Files:    result.Files,
+		Summary:  result.Summary,
+	})
+}
+
+func (h *reposHandler) commitDiff(w http.ResponseWriter, r *http.Request) {
+	cfg, err := currentConfig(h.config, h.configSource)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	architectKey := r.PathValue("key")
+	repoKey := r.PathValue("repoKey")
+	sha := r.PathValue("sha")
+	repo, architectExists, repoExists := getRepo(cfg, architectKey, repoKey)
+	if !architectExists {
+		writeDomainError(w, r, &domain.NotFoundError{Resource: "architect", ID: architectKey})
+		return
+	}
+	if !repoExists {
+		writeDomainError(w, r, &domain.NotFoundError{Resource: "repo", ID: repoKey})
+		return
+	}
+
+	result, err := gitdiff.LoadCommitDiff(r.Context(), repo.Path, sha)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, commitDiffResponse{
+		Repo:      repoKey,
+		RepoPath:  result.RepoPath,
+		SHA:       result.SHA,
+		ParentSHA: result.ParentSHA,
+		IsMerge:   result.IsMerge,
+		Files:     result.Files,
+		Summary:   result.Summary,
+	})
 }

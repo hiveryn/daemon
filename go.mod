@@ -7,7 +7,6 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/hiveryn/agentruntime v0.0.0
-	github.com/hiveryn/git-diff v0.0.0
 	github.com/hiveryn/shared v0.0.0
 	github.com/hiveryn/tabplugin v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.2.0
@@ -30,8 +29,6 @@ require (
 )
 
 replace github.com/hiveryn/agentruntime => ../agentruntime
-
-replace github.com/hiveryn/git-diff => ../git-diff
 
 replace github.com/hiveryn/shared => ../shared
 

@@ -7,18 +7,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
-	"github.com/hiveryn/daemon/internal/plugin"
 	"github.com/hiveryn/tabplugin"
 )
 
@@ -248,78 +243,6 @@ func TestSessionTabsEndpoint(t *testing.T) {
 	}
 	if tabs[1]["id"] != "term-1" || tabs[1]["command"] != "yazi" || tabs[1]["status"] != "running" || tabs[1]["placement"] != "split" || tabs[1]["base_tab_id"] != "kanban" {
 		t.Fatalf("unexpected terminal tab payload %#v", tabs[1])
-	}
-}
-
-func TestPluginsCallEndpointReturnsStrictEnvelopeForGitDiff(t *testing.T) {
-	t.Parallel()
-
-	repoPath := createTempGitRepoWithMixedChanges(t)
-	intent := domain.SessionIntent{
-		ID:           "intent-gitdiff",
-		ArchitectKey: "hiveryn",
-		SessionType:  domain.SessionTypeTicket,
-		ContextID:    "2026-06-10-0100-sample-ticket",
-		Prompt:       "kickoff",
-		Workdir:      repoPath,
-	}
-	service := &fakeSessionService{
-		getIntentResult: intent,
-		callPlugin: func(_ context.Context, sessionID, pluginType, fn string, args map[string]any) (tabplugin.Response, error) {
-			arch := config.ArchitectConfig{Path: "/tmp/arch", Repos: map[string]string{"daemon": repoPath}}
-			ticket := domain.Ticket{TicketSummary: domain.TicketSummary{ID: "2026-06-10-0100-sample-ticket", Repo: "daemon", Status: domain.TicketStatusProgress, Title: "x", References: []string{}, Warnings: []domain.TicketWarning{}}}
-			ctx := plugin.BuildSessionContext(intent, arch, &ticket)
-			p, ok := tabplugin.Get("git-diff")
-			if !ok {
-				t.Fatal("git-diff plugin not registered")
-			}
-			return p.Call(ctx, fn, args)
-		},
-	}
-	handler := newSessionTestHandler(t, service)
-
-	status, body := request(t, handler, http.MethodPost, "/api/sessions/intent-gitdiff/plugins/call", strings.NewReader(`{"type":"git-diff","fn":"getDiff","args":{"request_id":"req-1"}}`))
-	if status != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", status, string(body))
-	}
-
-	var env struct {
-		Data     json.RawMessage `json:"data"`
-		Error    json.RawMessage `json:"error"`
-		Logs     []any           `json:"logs"`
-		Commands []any           `json:"commands"`
-		Meta     struct {
-			RequestID string `json:"request_id"`
-		} `json:"meta"`
-	}
-	if err := json.Unmarshal(body, &env); err != nil {
-		t.Fatalf("decode response envelope: %v\nbody: %s", err, string(body))
-	}
-	if env.Meta.RequestID == "" {
-		t.Fatal("expected meta.request_id in outer envelope")
-	}
-	if env.Error != nil && string(env.Error) != "null" {
-		t.Fatalf("expected no outer error, got %s", string(env.Error))
-	}
-	if env.Logs == nil || env.Commands == nil {
-		t.Fatalf("expected logs and commands to be arrays (possibly empty), got logs=%#v commands=%#v", env.Logs, env.Commands)
-	}
-
-	var payload struct {
-		Repo     string `json:"repo"`
-		RepoPath string `json:"repo_path"`
-		Summary  struct {
-			Files int `json:"files"`
-		} `json:"summary"`
-	}
-	if err := json.Unmarshal(env.Data, &payload); err != nil {
-		t.Fatalf("decode data: %v\ndata: %s", err, string(env.Data))
-	}
-	if payload.Repo == "" || payload.RepoPath == "" {
-		t.Fatalf("expected repo metadata in plugin data: %#v", payload)
-	}
-	if payload.Summary.Files == 0 {
-		t.Fatalf("expected at least one changed file, got %#v", payload)
 	}
 }
 
@@ -805,31 +728,4 @@ func (f *fakeSessionServiceWithEvents) ListSessionEvents(context.Context, string
 
 func (f *fakeSessionServiceWithEvents) SubscribeSessionEvents(context.Context, string) (domain.SessionEventSubscription, error) {
 	return &fakeEventSubscription{ch: make(chan domain.SessionEvent)}, nil
-}
-
-func createTempGitRepoWithMixedChanges(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	run := func(args ...string) {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
-		}
-	}
-	write := func(name, content string) {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	run("init")
-	run("-c", "user.name=x", "-c", "user.email=x@x", "commit", "--allow-empty", "-m", "init")
-	write("a.txt", "one\n")
-	run("add", "a.txt")
-	run("commit", "-m", "base")
-	write("a.txt", "one\nchanged\n")
-	run("add", "a.txt")
-	write("a.txt", "one\nchanged again\n")
-	write("u.txt", "new\n")
-	return dir
 }

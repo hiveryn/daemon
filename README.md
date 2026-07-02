@@ -148,7 +148,7 @@ freeform:
 
 Terminal entries only support `type` and optional `command`. Entries without `command` default to the user's shell. When a session run starts, the daemon auto-creates PTY terminals for every `type: terminal` entry in the matching session type section and assigns each terminal a UUID.
 
-`tabs.yaml` also accepts pluggable tab types (e.g. `type: git-diff`). These are declarative (no `command`); the daemon calls `Init` on spawn and `Close` on session end for registered plugins, and exposes `POST /api/sessions/{id}/plugins/call` for RPC. Unknown types at call time return a daemon 404 envelope; plugin errors are returned inside the strict plugin envelope at 200. See `internal/plugin` and the `tabplugin` contract repo.
+`tabs.yaml` also accepts pluggable tab types registered via `tabplugin.Register` (e.g. `type: some-plugin`). These are declarative (no `command`); the daemon calls `Init` on spawn and `Close` on session end for registered plugins, and exposes `POST /api/sessions/{id}/plugins/call` for RPC. Unknown types at call time return a daemon 404 envelope; plugin errors are returned inside the strict plugin envelope at 200. See `internal/plugin` and the `tabplugin` contract repo. No plugins are currently registered — git diffs are now served natively via `GET /api/architects/{key}/repos/{repoKey}/diff` and `GET /api/architects/{key}/repos/{repoKey}/commits/{sha}/diff` instead of a plugin.
 
 ### `shortcuts.yaml` — keybindings
 
@@ -215,6 +215,8 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `GET` | `/api/architects/{key}/conclusions/{id}` | Read a conclusion by ID |
 | `GET` | `/api/architects/{key}/repos` | List repos for an architect |
 | `GET` | `/api/architects/{key}/repos/{repoKey}` | Get one architect repo by key |
+| `GET` | `/api/architects/{key}/repos/{repoKey}/diff` | Current working-tree diff (staged + unstaged + untracked) for a repo, read-only |
+| `GET` | `/api/architects/{key}/repos/{repoKey}/commits/{sha}/diff` | Diff of a single commit (root commits diff against the empty tree; merge commits diff against their first parent) |
 | `GET` | `/api/architects/{key}/config` | Read the whole `hiveryn.yaml` config (repos, prompts, kickoffs — verbatim paths), a resolved view (absolute paths + per-prompt `exists`), warnings for missing wired prompt files, and an opaque `version` token |
 | `PUT` | `/api/architects/{key}/config` | Replace the whole config (declarative), guarded by `version` (`VALIDATION` if missing/invalid, `CONFLICT` if stale); auto-scaffolds missing wired prompt files and returns them in `created` |
 | `GET` | `/api/architects/{key}/config/default-prompt?kind=architect-system\|architect-kickoff\|ticket-kickoff` | Return the embedded default template for a prompt kind plus its valid Go template variables |
