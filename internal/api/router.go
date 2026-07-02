@@ -105,6 +105,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	th := &ticketsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
 	eh := &architectEventsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, hub: deps.ArchitectEvents}
 	ach := &architectConfigHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
+	fh := &fsHandler{logger: deps.Logger}
 
 	if deps.ArchitectEvents != nil {
 		hub := deps.ArchitectEvents
@@ -139,6 +140,8 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/architects/{key}/config/default-prompt", ach.readDefaultPrompt)
 	mux.HandleFunc("GET /api/config/shortcuts", sch.get)
 	mux.HandleFunc("GET /api/config/desktop", dch.get)
+	mux.HandleFunc("GET /api/fs/tree", fh.tree)
+	mux.HandleFunc("GET /api/fs/file", fh.file)
 	mux.HandleFunc("GET /api/architects/{key}/events", eh.events)
 	mux.HandleFunc("POST /api/sessions", sh.createIntent)
 	mux.HandleFunc("GET /api/sessions", sh.list)

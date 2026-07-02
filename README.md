@@ -221,6 +221,8 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `PUT` | `/api/architects/{key}/config` | Replace the whole config (declarative), guarded by `version` (`VALIDATION` if missing/invalid, `CONFLICT` if stale); auto-scaffolds missing wired prompt files and returns them in `created` |
 | `GET` | `/api/architects/{key}/config/default-prompt?kind=architect-system\|architect-kickoff\|ticket-kickoff` | Return the embedded default template for a prompt kind plus its valid Go template variables |
 | `GET` | `/api/config/shortcuts` | Get resolved shortcuts config (global + per-pane keybindings) |
+| `GET` | `/api/fs/tree?path=<absolute path>` | List one directory level (name, kind, size, mtime, best-effort gitignore `ignored` flag); not architect-scoped — takes any absolute path. Capped at 2000 entries with a `truncated` flag; symlink entries are reported, not followed |
+| `GET` | `/api/fs/file?path=<absolute path>` | Read a file's raw bytes with a sniffed `Content-Type`, `X-File-Size`, and `X-File-Truncated` headers (2 MiB read cap); not architect-scoped |
 | `POST` | `/api/sessions` | Create a durable session intent for architect planning, ticket work, or freeform exploration |
 | `GET` | `/api/sessions` | List session intents with their current run, if any |
 | `GET` | `/api/sessions/{id}` | Get one session intent |

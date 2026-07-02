@@ -26,9 +26,18 @@ func runGitAllowChanges(ctx context.Context, repoPath string, args ...string) (s
 }
 
 func runGitCommand(ctx context.Context, repoPath string, allowExitCodeOne bool, args ...string) (string, error) {
+	return runGitCommandStdin(ctx, repoPath, "", allowExitCodeOne, args...)
+}
+
+// runGitCommandStdin behaves like runGitCommand but additionally feeds stdin
+// to the git process when non-empty (used by check-ignore's --stdin mode).
+func runGitCommandStdin(ctx context.Context, repoPath, stdin string, allowExitCodeOne bool, args ...string) (string, error) {
 	commandArgs := append([]string{"-c", "core.quotepath=false"}, args...)
 	cmd := exec.CommandContext(ctx, "git", commandArgs...)
 	cmd.Dir = repoPath
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
