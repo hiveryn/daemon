@@ -325,21 +325,34 @@ func (s *Server) updateTicket(ctx context.Context, input UpdateTicketInput) (Tic
 	return output, nil
 }
 
-func (s *Server) concludeSession(ctx context.Context, input ConcludeSessionInput) (ConcludeSessionOutput, error) {
+// concludeRequest is the JSON body POSTed to /request-conclusion. It carries
+// the structured conclusion fields for all three session types; the daemon
+// renders them into the canonical conclusion.md body. Each handler populates
+// only the subset relevant to its session type (omitempty drops the rest).
+type concludeRequest struct {
+	Commits         []domain.CommitRef   `json:"commits,omitempty"`
+	Rejected        bool                 `json:"rejected,omitempty"`
+	RejectionReason string               `json:"rejection_reason,omitempty"`
+	Summary         string               `json:"summary,omitempty"`
+	Narrative       string               `json:"narrative,omitempty"`
+	Implementation  string               `json:"implementation,omitempty"`
+	Findings        string               `json:"findings,omitempty"`
+	Verification    string               `json:"verification,omitempty"`
+	TicketsTouched  []domain.TicketTouch `json:"tickets_touched,omitempty"`
+	Decisions       []string             `json:"decisions,omitempty"`
+	ConfigChanges   []string             `json:"config_changes,omitempty"`
+	UserPriorities  []string             `json:"user_priorities,omitempty"`
+	Deviations      []string             `json:"deviations,omitempty"`
+	FollowUps       []string             `json:"follow_ups,omitempty"`
+	Recommendations []string             `json:"recommendations,omitempty"`
+	OpenQuestions   []string             `json:"open_questions,omitempty"`
+	NextSteps       []string             `json:"next_steps,omitempty"`
+}
+
+func (s *Server) concludeSession(ctx context.Context, payload concludeRequest) (ConcludeSessionOutput, error) {
 	var output ConcludeSessionOutput
 
-	body := map[string]any{"body": input.Body}
-	if len(input.Commits) > 0 {
-		body["commits"] = input.Commits
-	}
-	if input.Rejected {
-		body["rejected"] = true
-	}
-	if input.RejectionReason != "" {
-		body["rejection_reason"] = input.RejectionReason
-	}
-
-	bodyBytes, err := json.Marshal(body)
+	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
 		return ConcludeSessionOutput{}, newInternalError(fmt.Sprintf("marshal conclude body: %v", err))
 	}

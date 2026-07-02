@@ -48,15 +48,47 @@ type DeleteTicketOutput struct {
 	Deleted bool `json:"deleted"`
 }
 
-type ConcludeSessionInput struct {
-	Body            string             `json:"body" jsonschema:"Session conclusion summary — outcome, files changed, and follow-up work or blockers (required)."`
-	Commits         []domain.CommitRef `json:"commits,omitempty" jsonschema:"List of commits produced during this session as objects with sha and repo. Required for work ticket sessions unless rejected=true."`
-	Rejected        bool               `json:"rejected,omitempty" jsonschema:"Set to true if the session produced no work and should be marked as rejected. Work ticket sessions only."`
-	RejectionReason string             `json:"rejection_reason,omitempty" jsonschema:"Required when rejected=true. Explain why the session produced no commits. Work ticket sessions only."`
+// Conclude tools take discrete structured fields; the daemon renders them into
+// the canonical conclusion.md body (fixed section order). Fields without
+// ,omitempty are required by the JSON schema and re-enforced by the daemon.
+// Required forward-looking lists accept the sentinel ["none"] to affirmatively
+// record that there are none.
+
+type TicketTouchInput struct {
+	ID     string `json:"id" jsonschema:"Ticket ID."`
+	Action string `json:"action" jsonschema:"One of: created, updated, deleted."`
+	Note   string `json:"note,omitempty" jsonschema:"Short note on what changed (optional)."`
 }
 
 type ArchitectConcludeSessionInput struct {
-	Body string `json:"body" jsonschema:"Session conclusion summary — topics covered, decisions made, tickets created, follow-up work, and blockers (required)."`
+	Summary        string             `json:"summary" jsonschema:"One or two line TL;DR of the session (required)."`
+	Narrative      string             `json:"narrative" jsonschema:"What happened this session, in markdown (required)."`
+	TicketsTouched []TicketTouchInput `json:"tickets_touched,omitempty" jsonschema:"Board delta — tickets created, updated, or deleted this session (optional)."`
+	Decisions      []string           `json:"decisions,omitempty" jsonschema:"Key decisions locked this session (optional)."`
+	ConfigChanges  []string           `json:"config_changes,omitempty" jsonschema:"Edits to hiveryn.yaml repos, kickoffs, or prompts (optional)."`
+	UserPriorities []string           `json:"user_priorities,omitempty" jsonschema:"User priorities expressed this session (optional)."`
+	OpenQuestions  []string           `json:"open_questions,omitempty" jsonschema:"Unresolved questions or risks (optional)."`
+	NextSteps      []string           `json:"next_steps" jsonschema:"Concrete next steps to resume from (required; pass [\"none\"] if there are none)."`
+}
+
+type TicketConcludeSessionInput struct {
+	Summary         string             `json:"summary" jsonschema:"One or two line TL;DR of the outcome (required)."`
+	Implementation  string             `json:"implementation,omitempty" jsonschema:"What was built, in markdown (required unless rejected=true)."`
+	Deviations      []string           `json:"deviations,omitempty" jsonschema:"Where the build diverged from the ticket spec, and why (optional)."`
+	Verification    string             `json:"verification,omitempty" jsonschema:"Tests/lints/typecheck status and how it was checked (optional)."`
+	FollowUps       []string           `json:"follow_ups,omitempty" jsonschema:"Ticket IDs of candidate follow-up tickets for work discovered but not done (optional). Each must be an existing ticket ID; create the tickets first with createWorkTicket."`
+	OpenQuestions   []string           `json:"open_questions,omitempty" jsonschema:"Unresolved questions or risks (optional)."`
+	Commits         []domain.CommitRef `json:"commits,omitempty" jsonschema:"Commits produced, as {sha, repo} objects. Required unless rejected=true."`
+	Rejected        bool               `json:"rejected,omitempty" jsonschema:"Set true if the session produced no work and the ticket should be rejected."`
+	RejectionReason string             `json:"rejection_reason,omitempty" jsonschema:"Required when rejected=true. Explain why no work was produced."`
+}
+
+type FreeformConcludeSessionInput struct {
+	Summary         string             `json:"summary" jsonschema:"One or two line TL;DR of the session (required)."`
+	Findings        string             `json:"findings" jsonschema:"The substance of the session, in markdown (required)."`
+	Recommendations []string           `json:"recommendations" jsonschema:"Recommended next steps (required; pass [\"none\"] if there are none)."`
+	OpenQuestions   []string           `json:"open_questions" jsonschema:"Unresolved questions (required; pass [\"none\"] if there are none)."`
+	Commits         []domain.CommitRef `json:"commits,omitempty" jsonschema:"Commits produced, as {sha, repo} objects (optional)."`
 }
 
 type MoveTicketToDoneInput struct {

@@ -4,9 +4,9 @@ import "github.com/modelcontextprotocol/go-sdk/mcp"
 
 func (s *Server) registerFreeformTools() {
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
-		Name:        "concludeSession",
-		Description: "End the freeform session. Records a summary of the session. The terminal is killed and the session cannot be resumed. The conclusion is sent to the user for approval. commits are optional, but if provided they must be an array of {sha, repo} objects.",
-	}, s.handleConcludeSession)
+		Name:        "concludeFreeformSession",
+		Description: "End the freeform session. The terminal is killed and the session cannot be resumed. Provide the structured fields (summary, findings, recommendations, open_questions); the daemon renders them into the conclusion, which is sent to the user for approval. commits are optional as an array of {sha, repo} objects.",
+	}, s.handleFreeformConcludeSession)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "createWorkTicket",

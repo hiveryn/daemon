@@ -237,11 +237,28 @@ func (h *sessionsHandler) requestConclusion(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Structured conclusion input. The daemon renders these into the canonical
+	// conclusion.md body (see sessionruntime.render*ConclusionBody); Body is not
+	// accepted from the wire. The [fm] metadata fields (commits/rejected/
+	// rejection_reason) still flow into frontmatter as before.
 	var input struct {
-		Body            string             `json:"body"`
-		Commits         []domain.CommitRef `json:"commits,omitempty"`
-		Rejected        bool               `json:"rejected,omitempty"`
-		RejectionReason string             `json:"rejection_reason,omitempty"`
+		Commits         []domain.CommitRef   `json:"commits,omitempty"`
+		Rejected        bool                 `json:"rejected,omitempty"`
+		RejectionReason string               `json:"rejection_reason,omitempty"`
+		Summary         string               `json:"summary,omitempty"`
+		Narrative       string               `json:"narrative,omitempty"`
+		Implementation  string               `json:"implementation,omitempty"`
+		Findings        string               `json:"findings,omitempty"`
+		Verification    string               `json:"verification,omitempty"`
+		TicketsTouched  []domain.TicketTouch `json:"tickets_touched,omitempty"`
+		Decisions       []string             `json:"decisions,omitempty"`
+		ConfigChanges   []string             `json:"config_changes,omitempty"`
+		UserPriorities  []string             `json:"user_priorities,omitempty"`
+		Deviations      []string             `json:"deviations,omitempty"`
+		FollowUps       []string             `json:"follow_ups,omitempty"`
+		Recommendations []string             `json:"recommendations,omitempty"`
+		OpenQuestions   []string             `json:"open_questions,omitempty"`
+		NextSteps       []string             `json:"next_steps,omitempty"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
@@ -249,10 +266,23 @@ func (h *sessionsHandler) requestConclusion(w http.ResponseWriter, r *http.Reque
 	}
 
 	result, err := h.sessions.RequestConclusion(r.Context(), r.PathValue("id"), domain.ConcludeSessionParams{
-		Body:            input.Body,
 		Commits:         input.Commits,
 		Rejected:        input.Rejected,
 		RejectionReason: input.RejectionReason,
+		Summary:         input.Summary,
+		Narrative:       input.Narrative,
+		Implementation:  input.Implementation,
+		Findings:        input.Findings,
+		Verification:    input.Verification,
+		TicketsTouched:  input.TicketsTouched,
+		Decisions:       input.Decisions,
+		ConfigChanges:   input.ConfigChanges,
+		UserPriorities:  input.UserPriorities,
+		Deviations:      input.Deviations,
+		FollowUps:       input.FollowUps,
+		Recommendations: input.Recommendations,
+		OpenQuestions:   input.OpenQuestions,
+		NextSteps:       input.NextSteps,
 	})
 	if err != nil {
 		writeDomainError(w, r, err)

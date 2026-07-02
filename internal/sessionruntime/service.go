@@ -759,11 +759,40 @@ func validateConclusionCommits(rejected bool, rejectionReason string, commits []
 	return nil
 }
 
-func (s *Service) RequestConclusion(ctx context.Context, id string, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
-	if strings.TrimSpace(params.Body) == "" {
-		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "body", Message: "is required"}
+// validateFollowUpTickets checks that every follow-up entry resolves to an
+// existing ticket in the architect. Follow-ups are candidate-ticket references,
+// so a dangling ID is a validation error the agent must fix (usually by
+// creating the ticket first). Blank entries are ignored — the renderer drops
+// them too. Runs before the approval is stored so the agent gets the error
+// immediately.
+func (s *Service) validateFollowUpTickets(ctx context.Context, architectKey string, followUps []string) error {
+	ids := make([]string, 0, len(followUps))
+	for _, id := range followUps {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			ids = append(ids, trimmed)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
 	}
 
+	architect, err := s.currentArchitect(architectKey)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if _, err := s.tickets.GetTicket(ctx, architect.Path, id); err != nil {
+			var notFound *domain.NotFoundError
+			if errors.As(err, &notFound) {
+				return &domain.ValidationError{Field: "follow_ups", Message: "unknown ticket id: " + id}
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) RequestConclusion(ctx context.Context, id string, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
 	intent, err := s.repo.GetIntent(ctx, id)
 	if err != nil {
 		return domain.ConcludeSessionResult{}, err
@@ -772,12 +801,26 @@ func (s *Service) RequestConclusion(ctx context.Context, id string, params domai
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_id", Message: "session run is not running"}
 	}
 
+	// Render the structured conclusion input into the canonical markdown body
+	// before anything is stored or published. This validates the required
+	// fields (returning the error straight to the agent) and makes the stored
+	// approval — and therefore the desktop approval surface — carry the rendered
+	// markdown, so the approval flow and read path are unchanged in shape.
+	body, err := s.renderConclusionBody(intent.SessionType, params)
+	if err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+	params.Body = body
+
 	// Validate commit/rejection invariants before storing the pending approval
 	// or publishing approval_required, so the agent gets the error immediately
 	// and the desktop approval dialog is never shown. Only ticket sessions carry
 	// commits; architect and freeform conclusions have no such requirement.
 	if intent.SessionType == domain.SessionTypeTicket {
 		if err := validateConclusionCommits(params.Rejected, params.RejectionReason, params.Commits); err != nil {
+			return domain.ConcludeSessionResult{}, err
+		}
+		if err := s.validateFollowUpTickets(ctx, intent.ArchitectKey, params.FollowUps); err != nil {
 			return domain.ConcludeSessionResult{}, err
 		}
 	}

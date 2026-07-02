@@ -4,13 +4,14 @@ import (
 	"context"
 	"strings"
 
+	"github.com/hiveryn/daemon/internal/domain"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func (s *Server) registerArchitectTools() {
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "concludeArchitectSession",
-		Description: "End the architect session. Records a summary of decisions, tickets created, and next steps. The terminal is killed and the session cannot be resumed. The conclusion is sent to the user for approval before taking effect. Fails if any active ticket sessions are in progress.",
+		Description: "End the architect session. Provide the structured fields (summary, narrative, open_questions, next_steps, plus optional tickets_touched/decisions/config_changes/user_priorities); the daemon renders them into the conclusion. The terminal is killed and the session cannot be resumed. The conclusion is sent to the user for approval before taking effect. Fails if any active ticket sessions are in progress.",
 	}, s.handleArchitectConcludeSession)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
@@ -256,36 +257,25 @@ func (s *Server) handleUpdateTicket(
 	return nil, ticket, nil
 }
 
-func (s *Server) handleConcludeSession(
+func (s *Server) handleArchitectConcludeSession(
 	ctx context.Context,
 	_ *mcp.CallToolRequest,
-	input ConcludeSessionInput,
+	input ArchitectConcludeSessionInput,
 ) (*mcp.CallToolResult, ConcludeSessionOutput, error) {
-	if strings.TrimSpace(input.Body) == "" {
-		return nil, ConcludeSessionOutput{}, newValidationError("body", "is required")
-	}
-	if s.sessionType == SessionTypeFreeform {
-		if input.Rejected {
-			return nil, ConcludeSessionOutput{}, newValidationError("rejected", "freeform sessions do not support rejected mode")
-		}
-		if strings.TrimSpace(input.RejectionReason) != "" {
-			return nil, ConcludeSessionOutput{}, newValidationError("rejection_reason", "freeform sessions do not accept a rejection reason")
-		}
-	}
-	for _, commit := range input.Commits {
-		if strings.TrimSpace(commit.SHA) == "" {
-			return nil, ConcludeSessionOutput{}, newValidationError("commits", "commit sha is required")
-		}
-		if strings.TrimSpace(commit.Repo) == "" {
-			return nil, ConcludeSessionOutput{}, newValidationError("commits", "commit repo is required")
-		}
-	}
-
 	if s.sessionID == "" {
 		return nil, ConcludeSessionOutput{}, newInternalError("HIVERYN_SESSION_ID not set")
 	}
 
-	output, err := s.concludeSession(ctx, input)
+	output, err := s.concludeSession(ctx, concludeRequest{
+		Summary:        input.Summary,
+		Narrative:      input.Narrative,
+		TicketsTouched: toDomainTicketTouches(input.TicketsTouched),
+		Decisions:      input.Decisions,
+		ConfigChanges:  input.ConfigChanges,
+		UserPriorities: input.UserPriorities,
+		OpenQuestions:  input.OpenQuestions,
+		NextSteps:      input.NextSteps,
+	})
 	if err != nil {
 		return nil, ConcludeSessionOutput{}, err
 	}
@@ -293,25 +283,83 @@ func (s *Server) handleConcludeSession(
 	return nil, output, nil
 }
 
-func (s *Server) handleArchitectConcludeSession(
+func (s *Server) handleTicketConcludeSession(
 	ctx context.Context,
 	_ *mcp.CallToolRequest,
-	input ArchitectConcludeSessionInput,
+	input TicketConcludeSessionInput,
 ) (*mcp.CallToolResult, ConcludeSessionOutput, error) {
-	if strings.TrimSpace(input.Body) == "" {
-		return nil, ConcludeSessionOutput{}, newValidationError("body", "is required")
+	if err := validateCommitShapes(input.Commits); err != nil {
+		return nil, ConcludeSessionOutput{}, err
 	}
-
 	if s.sessionID == "" {
 		return nil, ConcludeSessionOutput{}, newInternalError("HIVERYN_SESSION_ID not set")
 	}
 
-	output, err := s.concludeSession(ctx, ConcludeSessionInput{Body: input.Body})
+	output, err := s.concludeSession(ctx, concludeRequest{
+		Summary:         input.Summary,
+		Implementation:  input.Implementation,
+		Deviations:      input.Deviations,
+		Verification:    input.Verification,
+		FollowUps:       input.FollowUps,
+		OpenQuestions:   input.OpenQuestions,
+		Commits:         input.Commits,
+		Rejected:        input.Rejected,
+		RejectionReason: input.RejectionReason,
+	})
 	if err != nil {
 		return nil, ConcludeSessionOutput{}, err
 	}
 
 	return nil, output, nil
+}
+
+func (s *Server) handleFreeformConcludeSession(
+	ctx context.Context,
+	_ *mcp.CallToolRequest,
+	input FreeformConcludeSessionInput,
+) (*mcp.CallToolResult, ConcludeSessionOutput, error) {
+	if err := validateCommitShapes(input.Commits); err != nil {
+		return nil, ConcludeSessionOutput{}, err
+	}
+	if s.sessionID == "" {
+		return nil, ConcludeSessionOutput{}, newInternalError("HIVERYN_SESSION_ID not set")
+	}
+
+	output, err := s.concludeSession(ctx, concludeRequest{
+		Summary:         input.Summary,
+		Findings:        input.Findings,
+		Recommendations: input.Recommendations,
+		OpenQuestions:   input.OpenQuestions,
+		Commits:         input.Commits,
+	})
+	if err != nil {
+		return nil, ConcludeSessionOutput{}, err
+	}
+
+	return nil, output, nil
+}
+
+func validateCommitShapes(commits []domain.CommitRef) error {
+	for _, commit := range commits {
+		if strings.TrimSpace(commit.SHA) == "" {
+			return newValidationError("commits", "commit sha is required")
+		}
+		if strings.TrimSpace(commit.Repo) == "" {
+			return newValidationError("commits", "commit repo is required")
+		}
+	}
+	return nil
+}
+
+func toDomainTicketTouches(items []TicketTouchInput) []domain.TicketTouch {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]domain.TicketTouch, 0, len(items))
+	for _, item := range items {
+		out = append(out, domain.TicketTouch{ID: item.ID, Action: item.Action, Note: item.Note})
+	}
+	return out
 }
 
 func (s *Server) handleReadConclusion(

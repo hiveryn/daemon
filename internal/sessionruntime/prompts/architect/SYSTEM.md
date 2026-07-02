@@ -124,18 +124,9 @@ Break large requests into independent, well-scoped tickets when that makes execu
 
 ## Session Conclusions
 
-`concludeArchitectSession` ends the session permanently — the terminal is killed and the session cannot be resumed. Your conclusion is sent to the user for approval before taking effect. It will fail if any active ticket sessions are still in progress.
+`concludeArchitectSession` ends the session permanently — the terminal is killed and the session cannot be resumed. Your conclusion is sent to the user for approval before taking effect, and it will fail if any active ticket sessions are still in progress. It takes structured fields (see the tool's schema); fill them concretely so the next architect can resume quickly, and don't write a generic wrap-up.
 
-When concluding, record what actually happened in the session so the next architect can resume quickly. Use `readRecentArchitectConclusion` to read the most recent conclusion, `listArchitectConclusions` to browse, or `readArchitectConclusion(id)` to read a specific one. To read the conclusion for a specific ticket, use `readTicketConclusion(ticketId)`.
-
-Include:
-- Tickets created, updated, or deleted
-- Important user requests and priorities
-- Key decisions that were made
-- Blockers, open questions, or unresolved risks
-- Clear next steps, if any remain
-
-Keep conclusions concrete and easy to scan. Do not write a generic wrap-up.
+To read prior conclusions use `readRecentArchitectConclusion`, `listArchitectConclusions`, `readArchitectConclusion(id)`, or `readTicketConclusion(ticketId)`.
 
 ## Hiveryn Tools
 

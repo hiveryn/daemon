@@ -225,7 +225,7 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `POST` | `/api/sessions/{id}/runs` | Start a run for a session intent using an agent profile; ticket runs move the ticket backlog → progress on successful launch |
 | `POST` | `/api/sessions/{id}/conclude` | Conclude an intent's running run, publish `ended`, kill its PTYs, and delete the intent row; architect conclude returns `CONFLICT` if same-architect ticket sessions are still running |
 | `POST` | `/api/sessions/{id}/discard` | Discard a ticket session without writing a conclusion: move the ticket progress → backlog, publish `ended` with `raw.lifecycle=discarded`, kill PTYs, delete the run, and delete the intent row |
-| `POST` | `/api/sessions/{id}/request-conclusion` | Request conclusion approval (blocking). Stores pending approval, publishes `approval_required` SSE event, blocks until approved, rejected, or timeout (auto-approves). Called by the MCP `concludeSession` tool. |
+| `POST` | `/api/sessions/{id}/request-conclusion` | Request conclusion approval (blocking). Renders the structured conclusion input into the canonical `conclusion.md` body, stores the pending approval, publishes `approval_required` SSE event, blocks until approved, rejected, or timeout (auto-approves). Called by the MCP conclude tools (`concludeArchitectSession`, `concludeTicketSession`, `concludeFreeformSession`). |
 | `POST` | `/api/sessions/{id}/approve-conclusion` | Approve a pending conclusion request and run the conclusion. Called by the desktop app. |
 | `POST` | `/api/sessions/{id}/reject-conclusion` | Reject a pending conclusion request with a reason. Returns the reason as a validation error to the blocked `request-conclusion` caller so the agent can retry. |
 | `GET` | `/api/sessions/{id}/tabs` | Get the resolved right-pane tab layout for a session intent's current run |
@@ -271,10 +271,10 @@ Desktop consumers should remove the session tab either when the POST succeeds or
 
 ### Conclusion approval flow
 
-When an agent calls `concludeSession` via MCP, the daemon routes through an approval flow so the desktop user can review before the session ends:
+Each session type has its own conclude MCP tool — `concludeArchitectSession`, `concludeTicketSession`, `concludeFreeformSession` (role-scoping ensures a session only sees its own). Each takes **discrete structured fields** rather than a freeform body; the daemon renders them into the canonical `conclusion.md` (unchanged frontmatter metadata + a canonical markdown body with a fixed section order per type). See "Structured conclusions" below. When an agent calls its conclude tool via MCP, the daemon routes through an approval flow so the desktop user can review before the session ends:
 
-1. MCP `concludeSession` calls `POST /api/sessions/{id}/request-conclusion` (blocks)
-2. For ticket sessions, the daemon validates the commit/rejection invariant up front (commits required unless `rejected=true` with a reason) — before storing the approval or publishing the event — so an invalid conclusion returns a `VALIDATION` error to the agent immediately and no dialog is ever shown
+1. The MCP conclude tool calls `POST /api/sessions/{id}/request-conclusion` (blocks)
+2. The daemon renders the structured input into the markdown body and enforces the required fields; a missing required field returns a `VALIDATION` error to the agent immediately, before any dialog. For ticket sessions it also validates the commit/rejection invariant up front (commits required unless `rejected=true` with a reason). All of this happens before storing the approval or publishing the event, so an invalid conclusion is rejected without ever showing a dialog
 3. The daemon stores a pending approval in memory, publishes an `approval_required` SSE event on the session event stream (with `raw.timeout_seconds` so the desktop can show a countdown), and blocks on a channel with the configured `conclusion_approval_timeout` (default 20s)
 4. The desktop receives the SSE event and presents an approval dialog with a countdown timer
 5. The desktop calls `POST /api/sessions/{id}/approve-conclusion` or `POST /api/sessions/{id}/reject-conclusion`
@@ -282,11 +282,9 @@ When an agent calls `concludeSession` via MCP, the daemon routes through an appr
 7. On timeout: the daemon auto-approves and runs the conclusion as if the user clicked approve.
 8. Whenever a pending approval is resolved without a session-ending conclusion — reject, agent disconnect (request context cancelled), or a failed approve — the daemon publishes a durable `approval_resolved` SSE event (`raw.outcome` is `rejected`/`cancelled`/`error`). `approval_required` is persisted and replayed on every desktop (re)connect, but the pending approval lives only in memory; the resolution event is its durable counterpart, so replaying the event log always converges to "no dialog". A successful conclusion needs no resolution event — its `ended`/`concluded` event already dismisses the dialog. On startup the in-memory approval store is empty, so `ReconcilePendingApprovals` scans for any session whose latest approval event is still an unresolved `approval_required` (orphaned by a daemon restart) and appends `approval_resolved` (`outcome: daemon_restart`).
 
-The original `POST /api/sessions/{id}/conclude` endpoint remains available for direct calls without approval.
+The original `POST /api/sessions/{id}/conclude` endpoint remains available for direct calls without approval; it is the low-level bypass and takes a pre-rendered freeform `body` plus structured commit refs. `repo` is the configured repo key from `architects.yaml`, not a filesystem path. Freeform sessions may omit `commits`; when they do provide commits, the daemon validates the same `{sha, repo}` contract.
 
-`POST /api/sessions/{id}/conclude` now requires structured commit refs in requests for ticket sessions. `repo` is the configured repo key from `architects.yaml`, not a filesystem path. Freeform sessions may omit `commits`; when they do provide commits, the daemon validates the same `{sha, repo}` contract.
-
-Request:
+Direct `/conclude` request:
 
 ```json
 {
@@ -297,6 +295,29 @@ Request:
   ],
   "rejected": false,
   "rejection_reason": ""
+}
+```
+
+#### Structured conclusions
+
+The MCP conclude tools (and therefore `request-conclusion`) take **discrete structured fields** instead of a freeform `body`; the daemon renders them into the canonical `conclusion.md`. The frontmatter metadata and the read-path shape (frontmatter + rendered `body`) are unchanged — this is an input contract, not a persisted structured copy. Required fields are rejected if missing; forward-looking required lists accept the sentinel `["none"]` to affirmatively record "nothing". Each type has its own canonical section order:
+
+- **`concludeArchitectSession`** — `summary`*, `narrative`*, `tickets_touched[]{id, action(created|updated|deleted), note}`, `decisions[]`, `config_changes[]`, `user_priorities[]`, `open_questions[]`, `next_steps[]`†
+- **`concludeTicketSession`** — `summary`*, `implementation`* (unless rejected), `deviations[]`, `verification`, `follow_ups[]` (follow-up ticket IDs, each validated to be an existing ticket), `open_questions[]` — plus the `commits`/`rejected`/`rejection_reason` frontmatter metadata
+- **`concludeFreeformSession`** — `summary`*, `findings`*, `recommendations[]`†, `open_questions[]`† — plus optional `commits`; `rejected` is disallowed
+
+(`*` = required; `†` = required, `["none"]` accepted.) Example `request-conclusion` request for a ticket session:
+
+```json
+{
+  "summary": "Implemented multi-repo conclusion support.",
+  "implementation": "Added the render layer and split the conclude tools.",
+  "verification": "go test ./... passed",
+  "follow_ups": ["ticket-52"],
+  "commits": [
+    {"sha": "abc123", "repo": "daemon"},
+    {"sha": "def456", "repo": "desktop"}
+  ]
 }
 ```
 

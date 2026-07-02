@@ -29,6 +29,7 @@ type (
 	AppendSessionEventParams   = sd.AppendSessionEventParams
 	ConcludeSessionParams      = sd.ConcludeSessionParams
 	ConcludeSessionResult      = sd.ConcludeSessionResult
+	TicketTouch                = sd.TicketTouch
 	MoveTicketToDoneParams     = sd.MoveTicketToDoneParams
 	MoveTicketToDoneResult     = sd.MoveTicketToDoneResult
 	TerminalInfo               = sd.TerminalInfo
