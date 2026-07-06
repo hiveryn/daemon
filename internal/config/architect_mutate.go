@@ -81,6 +81,37 @@ func validateArchitect(key string, architect ArchitectConfig) error {
 	return nil
 }
 
+// validateArchitectRepoPaths is a write-time-only backstop, deliberately kept
+// out of validateArchitect (the loader's shared ruleset): if a configured
+// repo directory moves or is deleted after being written, the whole config
+// must still load at daemon startup. A bad repo path only blocks a new
+// mutation, giving the architect agent an actionable error to fix and retry.
+func validateArchitectRepoPaths(key string, architect ArchitectConfig) error {
+	for _, repoKey := range sortedKeys(architect.Repos) {
+		repoPath := architect.Repos[repoKey]
+		info, err := os.Stat(repoPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return mutationErr(MutationErrorValidation,
+					"architects.%s.repos.%s: path does not exist: %s (correct the path, or run `git init` there once it exists)",
+					key, repoKey, repoPath)
+			}
+			return fmt.Errorf("stat architects.%s.repos.%s path %q: %w", key, repoKey, repoPath, err)
+		}
+		if !info.IsDir() {
+			return mutationErr(MutationErrorValidation,
+				"architects.%s.repos.%s: path is not a directory: %s", key, repoKey, repoPath)
+		}
+		gitInfo, err := os.Stat(filepath.Join(repoPath, ".git"))
+		if err != nil || !gitInfo.IsDir() {
+			return mutationErr(MutationErrorValidation,
+				"architects.%s.repos.%s: no .git directory found at %s — run `git init` in that directory, or correct the repo path",
+				key, repoKey, repoPath)
+		}
+	}
+	return nil
+}
+
 // ArchitectConfigDoc is the declarative, whole-document shape of an architect's
 // hiveryn.yaml config, identical in ReadArchitectConfig's result and
 // ReplaceArchitectConfig's input so an agent can read → mutate → write back
@@ -154,6 +185,9 @@ func writeArchitectFile(workspacePath, architectKey string, file architectFile) 
 	}
 	if err := validateArchitect(architectKey, resolved); err != nil {
 		return ArchitectConfig{}, "", mutationErr(MutationErrorValidation, "%s", err.Error())
+	}
+	if err := validateArchitectRepoPaths(architectKey, resolved); err != nil {
+		return ArchitectConfig{}, "", err
 	}
 
 	out, err := yaml.Marshal(file)

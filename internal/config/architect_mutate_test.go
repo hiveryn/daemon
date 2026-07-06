@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,17 @@ func reload(t *testing.T, workspace string) ArchitectConfig {
 		t.Fatalf("validateArchitect after mutation: %v", err)
 	}
 	return architect
+}
+
+// writeGitRepo creates a temp directory containing a .git subdirectory,
+// simulating a real git repo, and returns its absolute path.
+func writeGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	return dir
 }
 
 func rawYAML(t *testing.T, workspace string) string {
@@ -84,6 +96,12 @@ func TestReadArchitectConfigMissingFile(t *testing.T) {
 }
 
 func TestReplaceRoundTripPreservesNameAndVerbatimPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, "repos", "daemon", ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir daemon .git: %v", err)
+	}
+
 	ws := writeWorkspace(t, "name: Hiveryn\nrepos:\n  daemon: ~/repos/daemon\n")
 
 	view, err := ReadArchitectConfig(ws, testArchitectKey)
@@ -91,7 +109,7 @@ func TestReplaceRoundTripPreservesNameAndVerbatimPaths(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 	doc := view.Config
-	doc.Repos["desktop"] = "/repos/desktop"
+	doc.Repos["desktop"] = writeGitRepo(t)
 
 	out, err := ReplaceArchitectConfig(ws, testArchitectKey, view.Version, doc)
 	if err != nil {
@@ -115,7 +133,7 @@ func TestReplaceRoundTripPreservesNameAndVerbatimPaths(t *testing.T) {
 
 	// the returned version is the live one — a chained edit with it succeeds
 	doc2 := out.Config
-	doc2.Repos["shared"] = "/repos/shared"
+	doc2.Repos["shared"] = writeGitRepo(t)
 	if _, err := ReplaceArchitectConfig(ws, testArchitectKey, out.Version, doc2); err != nil {
 		t.Fatalf("chained replace with returned version: %v", err)
 	}
@@ -181,7 +199,8 @@ func TestReplaceEmptyConfigPreservesName(t *testing.T) {
 }
 
 func TestReplaceDropsUnknownTopLevelKeys(t *testing.T) {
-	ws := writeWorkspace(t, "name: Hiveryn\ncustom: keepme\nrepos:\n  daemon: /repos/daemon\n")
+	repo := writeGitRepo(t)
+	ws := writeWorkspace(t, fmt.Sprintf("name: Hiveryn\ncustom: keepme\nrepos:\n  daemon: %s\n", repo))
 	view, _ := ReadArchitectConfig(ws, testArchitectKey)
 	if _, err := ReplaceArchitectConfig(ws, testArchitectKey, view.Version, view.Config); err != nil {
 		t.Fatalf("ReplaceArchitectConfig: %v", err)
@@ -192,7 +211,8 @@ func TestReplaceDropsUnknownTopLevelKeys(t *testing.T) {
 }
 
 func TestReplaceWiresPromptsVerbatim(t *testing.T) {
-	ws := writeWorkspace(t, "name: Hiveryn\nrepos:\n  daemon: /repos/daemon\n")
+	repo := writeGitRepo(t)
+	ws := writeWorkspace(t, fmt.Sprintf("name: Hiveryn\nrepos:\n  daemon: %s\n", repo))
 	view, _ := ReadArchitectConfig(ws, testArchitectKey)
 
 	doc := view.Config
@@ -214,5 +234,92 @@ func TestReplaceWiresPromptsVerbatim(t *testing.T) {
 	// resolved surfaces the absolute path
 	if out.Resolved.SystemPromptPath != filepath.Join(ws, "prompts/SYSTEM.md") {
 		t.Fatalf("resolved system path = %q", out.Resolved.SystemPromptPath)
+	}
+}
+
+func TestReplaceRepoPathMissingRejected(t *testing.T) {
+	repo := writeGitRepo(t)
+	ws := writeWorkspace(t, fmt.Sprintf("name: Hiveryn\nrepos:\n  daemon: %s\n", repo))
+	view, _ := ReadArchitectConfig(ws, testArchitectKey)
+
+	doc := view.Config
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	doc.Repos["ghost"] = missing
+
+	_, err := ReplaceArchitectConfig(ws, testArchitectKey, view.Version, doc)
+	assertMutationKind(t, err, MutationErrorValidation)
+	var mErr *MutationError
+	errors.As(err, &mErr)
+	if !strings.Contains(mErr.Message, "ghost") || !strings.Contains(mErr.Message, "does not exist") {
+		t.Fatalf("message = %q, want it to mention repo key and \"does not exist\"", mErr.Message)
+	}
+
+	architect := reload(t, ws)
+	if _, ok := architect.Repos["ghost"]; ok {
+		t.Fatal("rejected write should not persist ghost repo")
+	}
+}
+
+func TestReplaceRepoPathNotGitRepoRejected(t *testing.T) {
+	repo := writeGitRepo(t)
+	ws := writeWorkspace(t, fmt.Sprintf("name: Hiveryn\nrepos:\n  daemon: %s\n", repo))
+	view, _ := ReadArchitectConfig(ws, testArchitectKey)
+
+	notGit := t.TempDir()
+	doc := view.Config
+	doc.Repos["nogit"] = notGit
+
+	_, err := ReplaceArchitectConfig(ws, testArchitectKey, view.Version, doc)
+	assertMutationKind(t, err, MutationErrorValidation)
+	var mErr *MutationError
+	errors.As(err, &mErr)
+	for _, want := range []string{"nogit", notGit, ".git", "git init"} {
+		if !strings.Contains(mErr.Message, want) {
+			t.Fatalf("message = %q, want it to contain %q", mErr.Message, want)
+		}
+	}
+
+	architect := reload(t, ws)
+	if _, ok := architect.Repos["nogit"]; ok {
+		t.Fatal("rejected write should not persist nogit repo")
+	}
+}
+
+func TestReplaceRepoPathIsFileRejected(t *testing.T) {
+	repo := writeGitRepo(t)
+	ws := writeWorkspace(t, fmt.Sprintf("name: Hiveryn\nrepos:\n  daemon: %s\n", repo))
+	view, _ := ReadArchitectConfig(ws, testArchitectKey)
+
+	filePath := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write file fixture: %v", err)
+	}
+
+	doc := view.Config
+	doc.Repos["file"] = filePath
+
+	_, err := ReplaceArchitectConfig(ws, testArchitectKey, view.Version, doc)
+	assertMutationKind(t, err, MutationErrorValidation)
+	var mErr *MutationError
+	errors.As(err, &mErr)
+	if !strings.Contains(mErr.Message, "not a directory") {
+		t.Fatalf("message = %q, want it to mention \"not a directory\"", mErr.Message)
+	}
+}
+
+func TestReplaceRepoPathWithGitDirAccepted(t *testing.T) {
+	ws := writeWorkspace(t, "name: Hiveryn\nrepos:\n  daemon: /placeholder\n")
+	view, _ := ReadArchitectConfig(ws, testArchitectKey)
+
+	repo := writeGitRepo(t)
+	doc := view.Config
+	doc.Repos["daemon"] = repo
+
+	out, err := ReplaceArchitectConfig(ws, testArchitectKey, view.Version, doc)
+	if err != nil {
+		t.Fatalf("ReplaceArchitectConfig: %v", err)
+	}
+	if out.Resolved.Repos["daemon"] != repo {
+		t.Fatalf("resolved repo path = %q, want %q", out.Resolved.Repos["daemon"], repo)
 	}
 }

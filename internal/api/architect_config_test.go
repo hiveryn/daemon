@@ -11,21 +11,34 @@ import (
 	"github.com/hiveryn/daemon/internal/sessionruntime"
 )
 
+// writeGitRepo creates a temp directory containing a .git subdirectory,
+// simulating a real git repo, and returns its absolute path.
+func writeGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	return dir
+}
+
 // newConfigTestHandler wires a reloading handler over a single architect whose
 // workspace is a temp dir (with a hiveryn.yaml written by writeAPIArchitects),
-// and returns the handler and that workspace path.
-func newConfigTestHandler(t *testing.T) (http.Handler, string) {
+// and returns the handler, that workspace path, and the "daemon" repo's path
+// (a real git repo, since config writes now validate repo paths on disk).
+func newConfigTestHandler(t *testing.T) (http.Handler, string, string) {
 	t.Helper()
 	configDir := t.TempDir()
 	workspace := t.TempDir()
+	daemonRepo := writeGitRepo(t)
 	cfgPath := writeReloadingConfigFiles(t, configDir, map[string]config.ArchitectConfig{
 		"hiveryn": {
 			Name:  "Hiveryn",
 			Path:  workspace,
-			Repos: map[string]string{"daemon": "/repos/daemon"},
+			Repos: map[string]string{"daemon": daemonRepo},
 		},
 	})
-	return newReloadingTestHandler(t, cfgPath, nil), workspace
+	return newReloadingTestHandler(t, cfgPath, nil), workspace, daemonRepo
 }
 
 func readConfig(t *testing.T, handler http.Handler) readArchitectConfigResponse {
@@ -40,25 +53,26 @@ func readConfig(t *testing.T, handler http.Handler) readArchitectConfigResponse 
 }
 
 func TestConfigReadReturnsDocAndVersion(t *testing.T) {
-	handler, _ := newConfigTestHandler(t)
+	handler, _, daemonRepo := newConfigTestHandler(t)
 	out := readConfig(t, handler)
 	if out.Version == "" {
 		t.Fatal("expected non-empty version")
 	}
-	if out.Config.Repos["daemon"] != "/repos/daemon" {
+	if out.Config.Repos["daemon"] != daemonRepo {
 		t.Fatalf("repos = %#v", out.Config.Repos)
 	}
-	if out.Resolved.Repos["daemon"] != "/repos/daemon" {
+	if out.Resolved.Repos["daemon"] != daemonRepo {
 		t.Fatalf("resolved repos = %#v", out.Resolved.Repos)
 	}
 }
 
 func TestConfigUpdateReplacesWholeDoc(t *testing.T) {
-	handler, _ := newConfigTestHandler(t)
+	handler, _, _ := newConfigTestHandler(t)
 	read := readConfig(t, handler)
 
+	desktopRepo := writeGitRepo(t)
 	doc := read.Config
-	doc.Repos["desktop"] = "/repos/desktop"
+	doc.Repos["desktop"] = desktopRepo
 
 	status, body := requestJSON(t, handler, http.MethodPut, "/api/architects/hiveryn/config", map[string]any{
 		"config":  doc,
@@ -69,7 +83,7 @@ func TestConfigUpdateReplacesWholeDoc(t *testing.T) {
 	}
 	var out updateArchitectConfigResponse
 	decodeEnvelopeData(t, body, &out)
-	if out.Config.Repos["desktop"] != "/repos/desktop" {
+	if out.Config.Repos["desktop"] != desktopRepo {
 		t.Fatalf("desktop not persisted: %#v", out.Config.Repos)
 	}
 	if out.Version == read.Version {
@@ -78,7 +92,7 @@ func TestConfigUpdateReplacesWholeDoc(t *testing.T) {
 }
 
 func TestConfigUpdateVersionConflict(t *testing.T) {
-	handler, _ := newConfigTestHandler(t)
+	handler, _, _ := newConfigTestHandler(t)
 	read := readConfig(t, handler)
 
 	status, body := requestJSON(t, handler, http.MethodPut, "/api/architects/hiveryn/config", map[string]any{
@@ -91,7 +105,7 @@ func TestConfigUpdateVersionConflict(t *testing.T) {
 }
 
 func TestConfigUpdateMissingVersionValidation(t *testing.T) {
-	handler, _ := newConfigTestHandler(t)
+	handler, _, _ := newConfigTestHandler(t)
 	read := readConfig(t, handler)
 
 	status, body := requestJSON(t, handler, http.MethodPut, "/api/architects/hiveryn/config", map[string]any{
@@ -104,7 +118,7 @@ func TestConfigUpdateMissingVersionValidation(t *testing.T) {
 }
 
 func TestConfigUpdateInvalidConfigValidation(t *testing.T) {
-	handler, _ := newConfigTestHandler(t)
+	handler, _, _ := newConfigTestHandler(t)
 	read := readConfig(t, handler)
 
 	doc := read.Config
@@ -120,7 +134,7 @@ func TestConfigUpdateInvalidConfigValidation(t *testing.T) {
 }
 
 func TestConfigUpdateScaffoldsMissingPrompt(t *testing.T) {
-	handler, workspace := newConfigTestHandler(t)
+	handler, workspace, _ := newConfigTestHandler(t)
 	read := readConfig(t, handler)
 
 	doc := read.Config
@@ -161,7 +175,7 @@ func TestConfigUpdateScaffoldsMissingPrompt(t *testing.T) {
 }
 
 func TestConfigReadWarnsMissingWiredPrompt(t *testing.T) {
-	handler, _ := newConfigTestHandler(t)
+	handler, _, _ := newConfigTestHandler(t)
 	read := readConfig(t, handler)
 
 	// Wiring a prompt path scaffolds the file; delete it afterward so a fresh
@@ -195,7 +209,7 @@ func TestConfigReadWarnsMissingWiredPrompt(t *testing.T) {
 }
 
 func TestConfigReadDefaultPrompt(t *testing.T) {
-	handler, _ := newConfigTestHandler(t)
+	handler, _, _ := newConfigTestHandler(t)
 
 	status, body := request(t, handler, http.MethodGet, "/api/architects/hiveryn/config/default-prompt?kind=ticket-kickoff", nil)
 	if status != http.StatusOK {
@@ -231,7 +245,7 @@ func TestConfigReadDefaultPrompt(t *testing.T) {
 }
 
 func TestConfigUnknownArchitect404(t *testing.T) {
-	handler, _ := newConfigTestHandler(t)
+	handler, _, _ := newConfigTestHandler(t)
 	status, body := request(t, handler, http.MethodGet, "/api/architects/ghost/config", nil)
 	if status != http.StatusNotFound {
 		t.Fatalf("status = %d, body: %s", status, body)
