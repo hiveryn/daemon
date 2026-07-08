@@ -13,10 +13,11 @@ import (
 // write path (see newArchitectConclusionDocument / newConclusionDocument /
 // newSessionConclusionDocument); these functions produce only the body.
 //
-// Output is deterministic (fixed section order, stable bullet formatting) so
-// conclusions diff cleanly. Required fields return a *domain.ValidationError
-// naming the offending field; the caller surfaces it to the agent before the
-// approval is stored.
+// Every presentational section is a Markdown string authored by the agent and
+// emitted verbatim under its heading, so output is deterministic (fixed section
+// order) and conclusions diff cleanly. Required fields return a
+// *domain.ValidationError naming the offending field; the caller surfaces it to
+// the agent before the approval is stored.
 
 // renderConclusionBody dispatches to the per-type renderer for the session's
 // structured conclusion input, returning the canonical markdown body.
@@ -53,17 +54,13 @@ func renderArchitectConclusionBody(p domain.ConcludeSessionParams) (string, erro
 		section("Narrative", narrative),
 	}
 
-	touched, err := renderTicketsTouched(p.TicketsTouched)
-	if err != nil {
-		return "", err
-	}
-	sections = appendIfPresent(sections, touched)
-	sections = appendIfPresent(sections, renderOptionalList("Decisions", p.Decisions))
-	sections = appendIfPresent(sections, renderOptionalList("Config changes", p.ConfigChanges))
-	sections = appendIfPresent(sections, renderOptionalList("User priorities", p.UserPriorities))
-	sections = appendIfPresent(sections, renderOptionalList("Open questions", p.OpenQuestions))
+	sections = appendIfPresent(sections, renderOptionalSection("Tickets touched", p.TicketsTouched))
+	sections = appendIfPresent(sections, renderOptionalSection("Decisions", p.Decisions))
+	sections = appendIfPresent(sections, renderOptionalSection("Config changes", p.ConfigChanges))
+	sections = appendIfPresent(sections, renderOptionalSection("User priorities", p.UserPriorities))
+	sections = appendIfPresent(sections, renderOptionalSection("Open questions", p.OpenQuestions))
 
-	nextSteps, err := renderRequiredList("next_steps", "Next steps", p.NextSteps)
+	nextSteps, err := renderRequiredSection("next_steps", "Next steps", p.NextSteps)
 	if err != nil {
 		return "", err
 	}
@@ -75,9 +72,8 @@ func renderArchitectConclusionBody(p domain.ConcludeSessionParams) (string, erro
 // renderTicketConclusionBody renders the ticket conclusion body in canonical
 // order: Summary, Implementation, Deviations, Verification, Follow-ups, Open
 // questions. Implementation is required unless the ticket was rejected;
-// Follow-ups (a list of follow-up ticket IDs) and Open questions are optional.
-// Follow-up ticket-ID existence is validated separately in the write path,
-// where the ticket store is available.
+// Follow-ups (Markdown prose naming candidate follow-up tickets) and Open
+// questions are optional.
 func renderTicketConclusionBody(p domain.ConcludeSessionParams) (string, error) {
 	summary, err := requiredString("summary", p.Summary)
 	if err != nil {
@@ -98,12 +94,12 @@ func renderTicketConclusionBody(p domain.ConcludeSessionParams) (string, error) 
 		sections = append(sections, section("Implementation", impl))
 	}
 
-	sections = appendIfPresent(sections, renderOptionalList("Deviations", p.Deviations))
+	sections = appendIfPresent(sections, renderOptionalSection("Deviations", p.Deviations))
 	if verification := strings.TrimSpace(p.Verification); verification != "" {
 		sections = append(sections, section("Verification", verification))
 	}
-	sections = appendIfPresent(sections, renderOptionalList("Follow-ups", p.FollowUps))
-	sections = appendIfPresent(sections, renderOptionalList("Open questions", p.OpenQuestions))
+	sections = appendIfPresent(sections, renderOptionalSection("Follow-ups", p.FollowUps))
+	sections = appendIfPresent(sections, renderOptionalSection("Open questions", p.OpenQuestions))
 
 	return strings.Join(sections, "\n\n"), nil
 }
@@ -125,25 +121,19 @@ func renderFreeformConclusionBody(p domain.ConcludeSessionParams) (string, error
 		section("Findings", findings),
 	}
 
-	recommendations, err := renderRequiredList("recommendations", "Recommendations", p.Recommendations)
+	recommendations, err := renderRequiredSection("recommendations", "Recommendations", p.Recommendations)
 	if err != nil {
 		return "", err
 	}
 	sections = append(sections, recommendations)
 
-	openQuestions, err := renderRequiredList("open_questions", "Open questions", p.OpenQuestions)
+	openQuestions, err := renderRequiredSection("open_questions", "Open questions", p.OpenQuestions)
 	if err != nil {
 		return "", err
 	}
 	sections = append(sections, openQuestions)
 
 	return strings.Join(sections, "\n\n"), nil
-}
-
-var validTicketTouchActions = map[string]bool{
-	"created": true,
-	"updated": true,
-	"deleted": true,
 }
 
 func section(heading, content string) string {
@@ -165,70 +155,23 @@ func requiredString(field, value string) (string, error) {
 	return trimmed, nil
 }
 
-func normalizeList(items []string) []string {
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		if trimmed := strings.TrimSpace(item); trimmed != "" {
-			out = append(out, trimmed)
-		}
-	}
-	return out
-}
-
-func renderOptionalList(heading string, items []string) string {
-	norm := normalizeList(items)
-	if len(norm) == 0 {
+// renderOptionalSection emits the agent-authored Markdown verbatim under its
+// heading, or "" (the section is dropped) when the Markdown is blank.
+func renderOptionalSection(heading, markdown string) string {
+	trimmed := strings.TrimSpace(markdown)
+	if trimmed == "" {
 		return ""
 	}
-	return section(heading, bulletList(norm))
+	return section(heading, trimmed)
 }
 
-func renderRequiredList(field, heading string, items []string) (string, error) {
-	norm := normalizeList(items)
-	if len(norm) == 0 {
-		return "", &domain.ValidationError{Field: field, Message: `is required; pass ["none"] to record explicitly`}
+// renderRequiredSection is renderOptionalSection for sections that must always
+// appear. The agent records "nothing to report" by writing "None" as the
+// Markdown body; a blank string is a validation error naming the field.
+func renderRequiredSection(field, heading, markdown string) (string, error) {
+	content, err := requiredString(field, markdown)
+	if err != nil {
+		return "", err
 	}
-	if len(norm) == 1 && strings.EqualFold(norm[0], "none") {
-		return section(heading, "None"), nil
-	}
-	return section(heading, bulletList(norm)), nil
-}
-
-func bulletList(items []string) string {
-	var b strings.Builder
-	for i, item := range items {
-		if i > 0 {
-			b.WriteString("\n")
-		}
-		b.WriteString("- ")
-		b.WriteString(item)
-	}
-	return b.String()
-}
-
-func renderTicketsTouched(items []domain.TicketTouch) (string, error) {
-	lines := make([]string, 0, len(items))
-	for _, item := range items {
-		id := strings.TrimSpace(item.ID)
-		action := strings.TrimSpace(item.Action)
-		note := strings.TrimSpace(item.Note)
-		if id == "" && action == "" && note == "" {
-			continue
-		}
-		if id == "" {
-			return "", &domain.ValidationError{Field: "tickets_touched", Message: "each entry requires an id"}
-		}
-		if !validTicketTouchActions[action] {
-			return "", &domain.ValidationError{Field: "tickets_touched", Message: "action must be one of: created, updated, deleted"}
-		}
-		line := "- " + id + " — " + action
-		if note != "" {
-			line += ": " + note
-		}
-		lines = append(lines, line)
-	}
-	if len(lines) == 0 {
-		return "", nil
-	}
-	return section("Tickets touched", strings.Join(lines, "\n")), nil
+	return section(heading, content), nil
 }

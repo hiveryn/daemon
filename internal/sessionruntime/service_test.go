@@ -452,49 +452,6 @@ func TestRequestConclusionRejectsMissingCommitsBeforeApproval(t *testing.T) {
 	}
 }
 
-func TestValidateFollowUpTicketsRejectsUnknownID(t *testing.T) {
-	t.Parallel()
-
-	architectPath := t.TempDir()
-	cfg := testRuntimeConfigWithPaths(architectPath, architectPath)
-	cfg.Architects["hiveryn"] = config.ArchitectConfig{Path: architectPath}
-	service := &Service{
-		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg:     cfg,
-		tickets: &fakeTicketService{err: &domain.NotFoundError{Resource: "ticket", ID: "T-404"}},
-	}
-
-	err := service.validateFollowUpTickets(context.Background(), "hiveryn", []string{"T-404"})
-	var validationErr *domain.ValidationError
-	if !errors.As(err, &validationErr) || validationErr.Field != "follow_ups" {
-		t.Fatalf("expected follow_ups validation error, got %v", err)
-	}
-}
-
-func TestValidateFollowUpTicketsAcceptsExistingAndEmpty(t *testing.T) {
-	t.Parallel()
-
-	architectPath := t.TempDir()
-	cfg := testRuntimeConfigWithPaths(architectPath, architectPath)
-	cfg.Architects["hiveryn"] = config.ArchitectConfig{Path: architectPath}
-	service := &Service{
-		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg:     cfg,
-		tickets: &fakeTicketService{ticket: domain.Ticket{TicketSummary: domain.TicketSummary{ID: "T-1"}}},
-	}
-
-	// Existing IDs (blank entries ignored) validate cleanly.
-	if err := service.validateFollowUpTickets(context.Background(), "hiveryn", []string{"T-1", "  "}); err != nil {
-		t.Fatalf("expected existing ticket to validate, got %v", err)
-	}
-
-	// An all-blank/empty list short-circuits without touching config or tickets.
-	empty := &Service{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	if err := empty.validateFollowUpTickets(context.Background(), "hiveryn", []string{"", "   "}); err != nil {
-		t.Fatalf("expected nil for empty follow-ups, got %v", err)
-	}
-}
-
 func TestRejectConclusionPublishesApprovalResolved(t *testing.T) {
 	t.Parallel()
 

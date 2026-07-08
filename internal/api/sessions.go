@@ -241,23 +241,23 @@ func (h *sessionsHandler) requestConclusion(w http.ResponseWriter, r *http.Reque
 	// accepted from the wire. The [fm] metadata fields (commits/rejected/
 	// rejection_reason) still flow into frontmatter as before.
 	var input struct {
-		Commits         []domain.CommitRef   `json:"commits,omitempty"`
-		Rejected        bool                 `json:"rejected,omitempty"`
-		RejectionReason string               `json:"rejection_reason,omitempty"`
-		Summary         string               `json:"summary,omitempty"`
-		Narrative       string               `json:"narrative,omitempty"`
-		Implementation  string               `json:"implementation,omitempty"`
-		Findings        string               `json:"findings,omitempty"`
-		Verification    string               `json:"verification,omitempty"`
-		TicketsTouched  []domain.TicketTouch `json:"tickets_touched,omitempty"`
-		Decisions       []string             `json:"decisions,omitempty"`
-		ConfigChanges   []string             `json:"config_changes,omitempty"`
-		UserPriorities  []string             `json:"user_priorities,omitempty"`
-		Deviations      []string             `json:"deviations,omitempty"`
-		FollowUps       []string             `json:"follow_ups,omitempty"`
-		Recommendations []string             `json:"recommendations,omitempty"`
-		OpenQuestions   []string             `json:"open_questions,omitempty"`
-		NextSteps       []string             `json:"next_steps,omitempty"`
+		Commits         []domain.CommitRef `json:"commits,omitempty"`
+		Rejected        bool               `json:"rejected,omitempty"`
+		RejectionReason string             `json:"rejection_reason,omitempty"`
+		Summary         string             `json:"summary,omitempty"`
+		Narrative       string             `json:"narrative,omitempty"`
+		Implementation  string             `json:"implementation,omitempty"`
+		Findings        string             `json:"findings,omitempty"`
+		Verification    string             `json:"verification,omitempty"`
+		TicketsTouched  string             `json:"tickets_touched,omitempty"`
+		Decisions       string             `json:"decisions,omitempty"`
+		ConfigChanges   string             `json:"config_changes,omitempty"`
+		UserPriorities  string             `json:"user_priorities,omitempty"`
+		Deviations      string             `json:"deviations,omitempty"`
+		FollowUps       string             `json:"follow_ups,omitempty"`
+		Recommendations string             `json:"recommendations,omitempty"`
+		OpenQuestions   string             `json:"open_questions,omitempty"`
+		NextSteps       string             `json:"next_steps,omitempty"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)

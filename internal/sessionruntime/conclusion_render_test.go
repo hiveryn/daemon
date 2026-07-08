@@ -12,17 +12,14 @@ func TestRenderArchitectConclusionBodyFullOrder(t *testing.T) {
 	t.Parallel()
 
 	body, err := renderArchitectConclusionBody(domain.ConcludeSessionParams{
-		Summary:   "Shipped the config tools.",
-		Narrative: "Consolidated the MCP surface.",
-		TicketsTouched: []domain.TicketTouch{
-			{ID: "T-1", Action: "created", Note: "config tool"},
-			{ID: "T-2", Action: "deleted"},
-		},
-		Decisions:      []string{"Split conclude into three tools"},
-		ConfigChanges:  []string{"Added repo key foo"},
-		UserPriorities: []string{"Ship the schema work"},
-		OpenQuestions:  []string{"Should moveTicketToDone also be structured?"},
-		NextSteps:      []string{"Wire the desktop", "Update docs"},
+		Summary:        "Shipped the config tools.",
+		Narrative:      "Consolidated the MCP surface.",
+		TicketsTouched: "- T-1 — created: config tool\n- T-2 — deleted",
+		Decisions:      "- Split conclude into three tools",
+		ConfigChanges:  "- Added repo key foo",
+		UserPriorities: "- Ship the schema work",
+		OpenQuestions:  "- Should moveTicketToDone also be structured?",
+		NextSteps:      "- Wire the desktop\n- Update docs",
 	})
 	if err != nil {
 		t.Fatalf("render failed: %v", err)
@@ -43,27 +40,27 @@ func TestRenderArchitectConclusionBodyFullOrder(t *testing.T) {
 	}
 }
 
-func TestRenderArchitectConclusionBodyOptionalOmittedAndNoneSentinel(t *testing.T) {
+func TestRenderArchitectConclusionBodyOptionalOmittedAndNoneConvention(t *testing.T) {
 	t.Parallel()
 
 	body, err := renderArchitectConclusionBody(domain.ConcludeSessionParams{
 		Summary:   "Quick session.",
 		Narrative: "Nothing much.",
-		NextSteps: []string{"none"},
+		NextSteps: "None",
 	})
 	if err != nil {
 		t.Fatalf("render failed: %v", err)
 	}
 
 	// Every optional section (including the now-optional open_questions) is
-	// omitted when empty.
+	// omitted when its Markdown is blank.
 	for _, heading := range []string{"## Tickets touched", "## Decisions", "## Config changes", "## User priorities", "## Open questions"} {
 		if strings.Contains(body, heading) {
 			t.Fatalf("expected empty optional section %q to be omitted, got:\n%s", heading, body)
 		}
 	}
 	if !strings.Contains(body, "## Next steps\nNone") {
-		t.Fatalf("expected explicit None for next steps, got:\n%s", body)
+		t.Fatalf("expected verbatim None for next steps, got:\n%s", body)
 	}
 }
 
@@ -71,8 +68,8 @@ func TestRenderArchitectConclusionBodyRequiredFields(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]domain.ConcludeSessionParams{
-		"summary":    {Narrative: "x", NextSteps: []string{"none"}},
-		"narrative":  {Summary: "x", NextSteps: []string{"none"}},
+		"summary":    {Narrative: "x", NextSteps: "None"},
+		"narrative":  {Summary: "x", NextSteps: "None"},
 		"next_steps": {Summary: "x", Narrative: "x"},
 	}
 	for field, params := range cases {
@@ -85,29 +82,17 @@ func TestRenderArchitectConclusionBodyRequiredFields(t *testing.T) {
 	}
 }
 
-func TestRenderArchitectConclusionBodyRejectsEmptyRequiredList(t *testing.T) {
+func TestRenderArchitectConclusionBodyRejectsBlankRequiredSection(t *testing.T) {
 	t.Parallel()
 
-	// next_steps is a required list: only-blank strings normalize to empty and
-	// must be rejected.
+	// next_steps is a required section: a whitespace-only string trims to empty
+	// and must be rejected.
 	_, err := renderArchitectConclusionBody(domain.ConcludeSessionParams{
 		Summary:   "x",
 		Narrative: "x",
-		NextSteps: []string{"  ", ""},
+		NextSteps: "   ",
 	})
 	assertValidationField(t, err, "next_steps")
-}
-
-func TestRenderTicketsTouchedInvalidAction(t *testing.T) {
-	t.Parallel()
-
-	_, err := renderArchitectConclusionBody(domain.ConcludeSessionParams{
-		Summary:        "x",
-		Narrative:      "x",
-		TicketsTouched: []domain.TicketTouch{{ID: "T-1", Action: "frobnicated"}},
-		NextSteps:      []string{"none"},
-	})
-	assertValidationField(t, err, "tickets_touched")
 }
 
 func TestRenderTicketConclusionBody(t *testing.T) {
@@ -116,10 +101,10 @@ func TestRenderTicketConclusionBody(t *testing.T) {
 	body, err := renderTicketConclusionBody(domain.ConcludeSessionParams{
 		Summary:        "Added the endpoint.",
 		Implementation: "Wired the handler.",
-		Deviations:     []string{"Skipped the cache"},
+		Deviations:     "- Skipped the cache",
 		Verification:   "go test ./... passed",
-		FollowUps:      []string{"T-9", "T-10"},
-		OpenQuestions:  []string{"Should we cache?"},
+		FollowUps:      "- T-9\n- T-10",
+		OpenQuestions:  "- Should we cache?",
 	})
 	if err != nil {
 		t.Fatalf("render failed: %v", err)
@@ -182,8 +167,8 @@ func TestRenderFreeformConclusionBody(t *testing.T) {
 	body, err := renderFreeformConclusionBody(domain.ConcludeSessionParams{
 		Summary:         "Investigated the flake.",
 		Findings:        "It's a race in the scheduler.",
-		Recommendations: []string{"Add a mutex"},
-		OpenQuestions:   []string{"none"},
+		Recommendations: "- Add a mutex",
+		OpenQuestions:   "None",
 	})
 	if err != nil {
 		t.Fatalf("render failed: %v", err)
@@ -204,10 +189,10 @@ func TestRenderFreeformConclusionBodyRequiredFields(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]domain.ConcludeSessionParams{
-		"summary":         {Findings: "x", Recommendations: []string{"none"}, OpenQuestions: []string{"none"}},
-		"findings":        {Summary: "x", Recommendations: []string{"none"}, OpenQuestions: []string{"none"}},
-		"recommendations": {Summary: "x", Findings: "x", OpenQuestions: []string{"none"}},
-		"open_questions":  {Summary: "x", Findings: "x", Recommendations: []string{"none"}},
+		"summary":         {Findings: "x", Recommendations: "None", OpenQuestions: "None"},
+		"findings":        {Summary: "x", Recommendations: "None", OpenQuestions: "None"},
+		"recommendations": {Summary: "x", Findings: "x", OpenQuestions: "None"},
+		"open_questions":  {Summary: "x", Findings: "x", Recommendations: "None"},
 	}
 	for field, params := range cases {
 		field, params := field, params

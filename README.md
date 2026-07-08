@@ -304,20 +304,20 @@ Direct `/conclude` request:
 
 #### Structured conclusions
 
-The MCP conclude tools (and therefore `request-conclusion`) take **discrete structured fields** instead of a freeform `body`; the daemon renders them into the canonical `conclusion.md`. The frontmatter metadata and the read-path shape (frontmatter + rendered `body`) are unchanged — this is an input contract, not a persisted structured copy. Required fields are rejected if missing; forward-looking required lists accept the sentinel `["none"]` to affirmatively record "nothing". Each type has its own canonical section order:
+The MCP conclude tools (and therefore `request-conclusion`) take **discrete structured fields** instead of a freeform `body`; the daemon renders them into the canonical `conclusion.md`. The frontmatter metadata and the read-path shape (frontmatter + rendered `body`) are unchanged — this is an input contract, not a persisted structured copy. Every presentational section is a **Markdown string** the agent authors itself (bullets/prose as text) — no conclude section is an array, so none can be dropped by the MCP client's required-array serialization bug. Only `commits` stays a structured array, because it is persisted and read back as data. Required fields are rejected if blank; a required section with nothing to report takes the literal Markdown `"None"`. Each type has its own canonical section order:
 
-- **`concludeArchitectSession`** — `summary`*, `narrative`*, `tickets_touched[]{id, action(created|updated|deleted), note}`, `decisions[]`, `config_changes[]`, `user_priorities[]`, `open_questions[]`, `next_steps[]`†
-- **`concludeTicketSession`** — `summary`*, `implementation`* (unless rejected), `deviations[]`, `verification`, `follow_ups[]` (follow-up ticket IDs, each validated to be an existing ticket), `open_questions[]` — plus the `commits`/`rejected`/`rejection_reason` frontmatter metadata
-- **`concludeFreeformSession`** — `summary`*, `findings`*, `recommendations[]`†, `open_questions[]`† — plus optional `commits`; `rejected` is disallowed
+- **`concludeArchitectSession`** — `summary`*, `narrative`*, `tickets_touched`, `decisions`, `config_changes`, `user_priorities`, `open_questions`, `next_steps`†
+- **`concludeTicketSession`** — `summary`*, `implementation`* (unless rejected), `deviations`, `verification`, `follow_ups` (Markdown referencing candidate follow-up ticket IDs), `open_questions` — plus the `commits`/`rejected`/`rejection_reason` frontmatter metadata
+- **`concludeFreeformSession`** — `summary`*, `findings`*, `recommendations`†, `open_questions`† — plus optional `commits`; `rejected` is disallowed
 
-(`*` = required; `†` = required, `["none"]` accepted.) Example `request-conclusion` request for a ticket session:
+(`*` = required; `†` = required, `"None"` accepted. All section fields are Markdown strings; `commits` is the only array.) Example `request-conclusion` request for a ticket session:
 
 ```json
 {
   "summary": "Implemented multi-repo conclusion support.",
   "implementation": "Added the render layer and split the conclude tools.",
   "verification": "go test ./... passed",
-  "follow_ups": ["ticket-52"],
+  "follow_ups": "- ticket-52: wire the desktop approval surface",
   "commits": [
     {"sha": "abc123", "repo": "daemon"},
     {"sha": "def456", "repo": "desktop"}

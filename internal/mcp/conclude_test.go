@@ -23,9 +23,9 @@ func TestHandleArchitectConcludeSessionSuccess(t *testing.T) {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
 		var body struct {
-			Summary   string   `json:"summary"`
-			Narrative string   `json:"narrative"`
-			NextSteps []string `json:"next_steps"`
+			Summary   string `json:"summary"`
+			Narrative string `json:"narrative"`
+			NextSteps string `json:"next_steps"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode request body: %v", err)
@@ -33,7 +33,7 @@ func TestHandleArchitectConcludeSessionSuccess(t *testing.T) {
 		if body.Summary != "Wrapped up." || body.Narrative != "Did the work." {
 			t.Fatalf("unexpected payload: %#v", body)
 		}
-		if len(body.NextSteps) != 1 || body.NextSteps[0] != "none" {
+		if body.NextSteps != "None" {
 			t.Fatalf("unexpected next_steps: %#v", body.NextSteps)
 		}
 		writeEnvelope(t, w, http.StatusOK, map[string]any{
@@ -46,7 +46,7 @@ func TestHandleArchitectConcludeSessionSuccess(t *testing.T) {
 	_, output, err := server.handleArchitectConcludeSession(context.Background(), nil, ArchitectConcludeSessionInput{
 		Summary:   "Wrapped up.",
 		Narrative: "Did the work.",
-		NextSteps: []string{"none"},
+		NextSteps: "None",
 	})
 	if err != nil {
 		t.Fatalf("handleArchitectConcludeSession failed: %v", err)
@@ -128,8 +128,8 @@ func TestHandleFreeformConcludeSessionSuccessWithoutCommits(t *testing.T) {
 	_, output, err := server.handleFreeformConcludeSession(context.Background(), nil, FreeformConcludeSessionInput{
 		Summary:         "Exploration concluded.",
 		Findings:        "Found some things.",
-		Recommendations: []string{"none"},
-		OpenQuestions:   []string{"none"},
+		Recommendations: "None",
+		OpenQuestions:   "None",
 	})
 	if err != nil {
 		t.Fatalf("handleFreeformConcludeSession failed: %v", err)

@@ -269,7 +269,7 @@ func (s *Server) handleArchitectConcludeSession(
 	output, err := s.concludeSession(ctx, concludeRequest{
 		Summary:        input.Summary,
 		Narrative:      input.Narrative,
-		TicketsTouched: toDomainTicketTouches(input.TicketsTouched),
+		TicketsTouched: input.TicketsTouched,
 		Decisions:      input.Decisions,
 		ConfigChanges:  input.ConfigChanges,
 		UserPriorities: input.UserPriorities,
@@ -349,17 +349,6 @@ func validateCommitShapes(commits []domain.CommitRef) error {
 		}
 	}
 	return nil
-}
-
-func toDomainTicketTouches(items []TicketTouchInput) []domain.TicketTouch {
-	if len(items) == 0 {
-		return nil
-	}
-	out := make([]domain.TicketTouch, 0, len(items))
-	for _, item := range items {
-		out = append(out, domain.TicketTouch{ID: item.ID, Action: item.Action, Note: item.Note})
-	}
-	return out
 }
 
 func (s *Server) handleReadConclusion(

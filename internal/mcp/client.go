@@ -330,23 +330,23 @@ func (s *Server) updateTicket(ctx context.Context, input UpdateTicketInput) (Tic
 // renders them into the canonical conclusion.md body. Each handler populates
 // only the subset relevant to its session type (omitempty drops the rest).
 type concludeRequest struct {
-	Commits         []domain.CommitRef   `json:"commits,omitempty"`
-	Rejected        bool                 `json:"rejected,omitempty"`
-	RejectionReason string               `json:"rejection_reason,omitempty"`
-	Summary         string               `json:"summary,omitempty"`
-	Narrative       string               `json:"narrative,omitempty"`
-	Implementation  string               `json:"implementation,omitempty"`
-	Findings        string               `json:"findings,omitempty"`
-	Verification    string               `json:"verification,omitempty"`
-	TicketsTouched  []domain.TicketTouch `json:"tickets_touched,omitempty"`
-	Decisions       []string             `json:"decisions,omitempty"`
-	ConfigChanges   []string             `json:"config_changes,omitempty"`
-	UserPriorities  []string             `json:"user_priorities,omitempty"`
-	Deviations      []string             `json:"deviations,omitempty"`
-	FollowUps       []string             `json:"follow_ups,omitempty"`
-	Recommendations []string             `json:"recommendations,omitempty"`
-	OpenQuestions   []string             `json:"open_questions,omitempty"`
-	NextSteps       []string             `json:"next_steps,omitempty"`
+	Commits         []domain.CommitRef `json:"commits,omitempty"`
+	Rejected        bool               `json:"rejected,omitempty"`
+	RejectionReason string             `json:"rejection_reason,omitempty"`
+	Summary         string             `json:"summary,omitempty"`
+	Narrative       string             `json:"narrative,omitempty"`
+	Implementation  string             `json:"implementation,omitempty"`
+	Findings        string             `json:"findings,omitempty"`
+	Verification    string             `json:"verification,omitempty"`
+	TicketsTouched  string             `json:"tickets_touched,omitempty"`
+	Decisions       string             `json:"decisions,omitempty"`
+	ConfigChanges   string             `json:"config_changes,omitempty"`
+	UserPriorities  string             `json:"user_priorities,omitempty"`
+	Deviations      string             `json:"deviations,omitempty"`
+	FollowUps       string             `json:"follow_ups,omitempty"`
+	Recommendations string             `json:"recommendations,omitempty"`
+	OpenQuestions   string             `json:"open_questions,omitempty"`
+	NextSteps       string             `json:"next_steps,omitempty"`
 }
 
 func (s *Server) concludeSession(ctx context.Context, payload concludeRequest) (ConcludeSessionOutput, error) {
