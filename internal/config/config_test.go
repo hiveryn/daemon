@@ -536,7 +536,7 @@ func TestValidateRejectsBlankTabType(t *testing.T) {
 	}
 }
 
-func TestValidateAllowsPluginTabTypes(t *testing.T) {
+func TestValidateAllowsArbitraryTabTypes(t *testing.T) {
 	t.Parallel()
 
 	err := Config{
@@ -553,7 +553,7 @@ func TestValidateAllowsPluginTabTypes(t *testing.T) {
 		},
 	}.Validate()
 	if err != nil {
-		t.Fatalf("expected plugin tab types to be valid, got %v", err)
+		t.Fatalf("expected arbitrary tab types to be valid, got %v", err)
 	}
 }
 

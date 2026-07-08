@@ -4,7 +4,6 @@ import (
 	"context"
 
 	sd "github.com/hiveryn/shared/domain"
-	"github.com/hiveryn/tabplugin"
 )
 
 // Re-export pure data types from shared. All JSON tags, field names, and
@@ -123,5 +122,4 @@ type SessionService interface {
 	ListTerminals(context.Context, string) ([]TerminalInfo, error)
 	ListSessionTabs(context.Context, string) ([]SessionTab, error)
 	KillTerminal(context.Context, string, string) error
-	CallPlugin(context.Context, string, string, string, map[string]any) (tabplugin.Response, error)
 }

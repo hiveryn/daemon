@@ -14,7 +14,6 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/hiveryn/daemon/internal/domain"
-	"github.com/hiveryn/tabplugin"
 )
 
 func TestCreateIntentArchitectEndpoint(t *testing.T) {
@@ -246,59 +245,6 @@ func TestSessionTabsEndpoint(t *testing.T) {
 	}
 }
 
-func TestPluginsCallEndpointReturnsPluginErrorEnvelopeForBadFn(t *testing.T) {
-	t.Parallel()
-
-	service := &fakeSessionService{
-		getIntentResult: domain.SessionIntent{ID: "s1", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeTicket, ContextID: "t1"},
-		callPlugin: func(_ context.Context, _, _, _ string, args map[string]any) (tabplugin.Response, error) {
-			reqID, _ := args["request_id"].(string)
-			return tabplugin.NewErrorResponse(reqID, "function_not_exposed", "no such fn", nil), nil
-		},
-	}
-	handler := newSessionTestHandler(t, service)
-
-	status, body := request(t, handler, http.MethodPost, "/api/sessions/s1/plugins/call", strings.NewReader(`{"type":"git-diff","fn":"nope","args":{"request_id":"r2"}}`))
-	if status != http.StatusOK {
-		t.Fatalf("expected 200 even for plugin error, got %d: %s", status, string(body))
-	}
-
-	var env struct {
-		Data  json.RawMessage `json:"data"`
-		Error *struct {
-			Code string `json:"code"`
-		} `json:"error"`
-		Logs     []any `json:"logs"`
-		Commands []any `json:"commands"`
-	}
-	if err := json.Unmarshal(body, &env); err != nil {
-		t.Fatalf("decode envelope: %v\n%s", err, string(body))
-	}
-	if env.Error == nil || env.Error.Code != "function_not_exposed" {
-		t.Fatalf("expected plugin error envelope, got %+v", env.Error)
-	}
-	if env.Logs == nil || env.Commands == nil {
-		t.Fatalf("expected logs/commands arrays (possibly empty) on plugin error envelope")
-	}
-}
-
-func TestPluginsCallEndpointRejectsUnknownTypeWithDaemonErrorEnvelope(t *testing.T) {
-	t.Parallel()
-
-	service := &fakeSessionService{
-		getIntentResult: domain.SessionIntent{ID: "s1"},
-	}
-	handler := newSessionTestHandler(t, service)
-
-	status, body := request(t, handler, http.MethodPost, "/api/sessions/s1/plugins/call", strings.NewReader(`{"type":"no-such-plugin","fn":"x","args":{"request_id":"r3"}}`))
-	if status != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d: %s", status, string(body))
-	}
-	if !strings.Contains(string(body), "tab_plugin") && !strings.Contains(string(body), "NOT_FOUND") {
-		t.Fatalf("expected not-found envelope mentioning tab_plugin, got %s", string(body))
-	}
-}
-
 func TestCreateTerminalEndpointPassesPlacement(t *testing.T) {
 	t.Parallel()
 
@@ -509,11 +455,6 @@ type fakeSessionService struct {
 	rejectConclusionErr      error
 	readConclusionResult     domain.ArchitectConclusion
 	readConclusionErr        error
-	callPlugin               func(context.Context, string, string, string, map[string]any) (tabplugin.Response, error)
-	lastCallPluginSession    string
-	lastCallPluginType       string
-	lastCallPluginFn         string
-	lastCallPluginArgs       map[string]any
 }
 
 func (f *fakeSessionService) CreateIntent(_ context.Context, req domain.CreateSessionIntentRequest) (domain.SessionIntent, error) {
@@ -617,19 +558,6 @@ func (f *fakeSessionService) KillTerminal(context.Context, string, string) error
 	return nil
 }
 
-func (f *fakeSessionService) CallPlugin(ctx context.Context, sessionID, pluginType, fn string, args map[string]any) (tabplugin.Response, error) {
-	f.lastCallPluginSession = sessionID
-	f.lastCallPluginType = pluginType
-	f.lastCallPluginFn = fn
-	f.lastCallPluginArgs = args
-	if f.callPlugin != nil {
-		return f.callPlugin(ctx, sessionID, pluginType, fn, args)
-	}
-	if _, ok := tabplugin.Get(pluginType); !ok {
-		return tabplugin.Response{}, &domain.NotFoundError{Resource: "tab_plugin", ID: pluginType}
-	}
-	return tabplugin.Response{Data: map[string]any{}, Logs: []tabplugin.LogEntry{}, Commands: []any{}, Meta: tabplugin.Meta{RequestID: "test"}}, nil
-}
 
 type fakeEventSubscription struct {
 	ch chan domain.SessionEvent

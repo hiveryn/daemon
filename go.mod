@@ -8,7 +8,6 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/hiveryn/agentruntime v0.0.0
 	github.com/hiveryn/shared v0.0.0
-	github.com/hiveryn/tabplugin v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.2.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.53.0
@@ -31,5 +30,3 @@ require (
 replace github.com/hiveryn/agentruntime => ../agentruntime
 
 replace github.com/hiveryn/shared => ../shared
-
-replace github.com/hiveryn/tabplugin => ../tabplugin

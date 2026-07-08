@@ -148,7 +148,7 @@ freeform:
 
 Terminal entries only support `type` and optional `command`. Entries without `command` default to the user's shell. When a session run starts, the daemon auto-creates PTY terminals for every `type: terminal` entry in the matching session type section and assigns each terminal a UUID.
 
-`tabs.yaml` also accepts pluggable tab types registered via `tabplugin.Register` (e.g. `type: some-plugin`). These are declarative (no `command`); the daemon calls `Init` on spawn and `Close` on session end for registered plugins, and exposes `POST /api/sessions/{id}/plugins/call` for RPC. Unknown types at call time return a daemon 404 envelope; plugin errors are returned inside the strict plugin envelope at 200. See `internal/plugin` and the `tabplugin` contract repo. No plugins are currently registered — git diffs are now served natively via `GET /api/architects/{key}/repos/{repoKey}/diff` and `GET /api/architects/{key}/repos/{repoKey}/commits/{sha}/diff` instead of a plugin.
+`tabs.yaml` also accepts arbitrary non-`terminal` tab types (e.g. `type: git-diff`, `type: kanban`). These are declarative (no `command`) and are emitted as plain layout entries with no daemon-side lookup — git diffs, for example, are served natively via `GET /api/architects/{key}/repos/{repoKey}/diff` and `GET /api/architects/{key}/repos/{repoKey}/commits/{sha}/diff`.
 
 ### `shortcuts.yaml` — keybindings
 
@@ -234,7 +234,6 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `POST` | `/api/sessions/{id}/approve-conclusion` | Approve a pending conclusion request and run the conclusion. Called by the desktop app. |
 | `POST` | `/api/sessions/{id}/reject-conclusion` | Reject a pending conclusion request with a reason. Returns the reason as a validation error to the blocked `request-conclusion` caller so the agent can retry. |
 | `GET` | `/api/sessions/{id}/tabs` | Get the resolved right-pane tab layout for a session intent's current run |
-| `POST` | `/api/sessions/{id}/plugins/call` | Call a pluggable tab function: body `{"type":"...","fn":"...","args":{...}}`; returns the strict plugin envelope (200 even if plugin sets inner error); 4xx/5xx only on dispatch failure |
 | `GET` | `/api/sessions/{id}/ticket` | Get the associated ticket for a ticket session (returns NOT_FOUND for non-ticket sessions) |
 | `POST` | `/api/sessions/{id}/terminals` | Create a new user terminal in a session intent's current run using the resolved default shell |
 | `GET` | `/api/sessions/{id}/terminals` | List all terminals for a session intent's current run |
@@ -252,7 +251,7 @@ The legitimate explicit session ends are `POST /api/sessions/{id}/conclude` and,
 
 ### Discard ticket session
 
-`POST /api/sessions/{id}/discard` is for the desktop "discard worker session" action. It accepts no request body. The target session must be a ticket session with a current run; architect and freeform sessions return a `VALIDATION` envelope. The daemon moves the ticket back to `backlog`, emits a live session SSE event with `type=status`, `status=ended`, `message=session discarded`, and `raw.lifecycle=discarded`, kills all PTYs/plugins for the session, deletes the `session_runs` row, and deletes the `session_intents` row. No `conclusion.md` is written and no commit/rejection invariant is checked. Git changes made by the agent are not reverted.
+`POST /api/sessions/{id}/discard` is for the desktop "discard worker session" action. It accepts no request body. The target session must be a ticket session with a current run; architect and freeform sessions return a `VALIDATION` envelope. The daemon moves the ticket back to `backlog`, emits a live session SSE event with `type=status`, `status=ended`, `message=session discarded`, and `raw.lifecycle=discarded`, kills all PTYs for the session, deletes the `session_runs` row, and deletes the `session_intents` row. No `conclusion.md` is written and no commit/rejection invariant is checked. Git changes made by the agent are not reverted.
 
 Successful response:
 

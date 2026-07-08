@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -607,39 +606,6 @@ func (h *sessionsHandler) killTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (h *sessionsHandler) callPlugin(w http.ResponseWriter, r *http.Request) {
-	if h.sessions == nil {
-		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
-		return
-	}
-
-	var input struct {
-		Type string         `json:"type"`
-		Fn   string         `json:"fn"`
-		Args map[string]any `json:"args"`
-	}
-	if err := decodeJSON(r, &input); err != nil {
-		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
-		return
-	}
-	if strings.TrimSpace(input.Type) == "" {
-		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "type is required", nil)
-		return
-	}
-	if strings.TrimSpace(input.Fn) == "" {
-		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "fn is required", nil)
-		return
-	}
-
-	resp, err := h.sessions.CallPlugin(r.Context(), r.PathValue("id"), input.Type, input.Fn, input.Args)
-	if err != nil {
-		writeDomainError(w, r, err)
-		return
-	}
-
-	writeRawJSON(w, http.StatusOK, resp)
 }
 
 func decodeJSON(r *http.Request, dst any) error {
