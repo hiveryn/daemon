@@ -142,6 +142,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/config/desktop", dch.get)
 	mux.HandleFunc("GET /api/fs/tree", fh.tree)
 	mux.HandleFunc("GET /api/fs/file", fh.file)
+	mux.HandleFunc("PUT /api/fs/file", fh.writeFile)
 	mux.HandleFunc("GET /api/fs/search", fh.search)
 	mux.HandleFunc("GET /api/architects/{key}/events", eh.events)
 	mux.HandleFunc("POST /api/sessions", sh.createIntent)

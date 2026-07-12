@@ -351,6 +351,153 @@ func TestFsFileEndpoint_RelativePathRejected(t *testing.T) {
 	}
 }
 
+func TestFsFileWrite_Overwrites(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "file.txt")
+	writeFsTestFile(t, filePath, "old contents")
+	// Give the file a non-default mode to confirm the write preserves it.
+	if err := os.Chmod(filePath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	newContents := "brand new contents\n"
+	handler := newFsTestHandler(t)
+	status, body := requestJSON(t, handler, http.MethodPut, fsFileURL(filePath), map[string]any{"content": newContents})
+	if status != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", status, string(body))
+	}
+
+	var out fsWriteResponse
+	decodeEnvelopeData(t, body, &out)
+	if out.Path != filePath {
+		t.Fatalf("expected path %q, got %q", filePath, out.Path)
+	}
+	if out.Size != int64(len(newContents)) {
+		t.Fatalf("expected size %d, got %d", len(newContents), out.Size)
+	}
+
+	got, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != newContents {
+		t.Fatalf("expected file contents %q, got %q", newContents, string(got))
+	}
+	info, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("expected mode 0600 preserved, got %v", info.Mode().Perm())
+	}
+}
+
+func TestFsFileWrite_EmptyContentTruncates(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "file.txt")
+	writeFsTestFile(t, filePath, "some contents")
+
+	handler := newFsTestHandler(t)
+	status, body := requestJSON(t, handler, http.MethodPut, fsFileURL(filePath), map[string]any{"content": ""})
+	if status != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", status, string(body))
+	}
+
+	got, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty file, got %d bytes", len(got))
+	}
+}
+
+func TestFsFileWrite_NotFound(t *testing.T) {
+	t.Parallel()
+
+	handler := newFsTestHandler(t)
+	status, body := requestJSON(t, handler, http.MethodPut, fsFileURL(filepath.Join(t.TempDir(), "missing.txt")), map[string]any{"content": "x"})
+	if status != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", status, string(body))
+	}
+	if code := decodeEnvelopeError(t, body).Code; code != "NOT_FOUND" {
+		t.Fatalf("expected NOT_FOUND, got %q", code)
+	}
+}
+
+func TestFsFileWrite_Directory(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	handler := newFsTestHandler(t)
+	status, body := requestJSON(t, handler, http.MethodPut, fsFileURL(dir), map[string]any{"content": "x"})
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", status, string(body))
+	}
+	if code := decodeEnvelopeError(t, body).Code; code != "VALIDATION" {
+		t.Fatalf("expected VALIDATION, got %q", code)
+	}
+}
+
+func TestFsFileWrite_RelativePathRejected(t *testing.T) {
+	t.Parallel()
+
+	handler := newFsTestHandler(t)
+	status, body := requestJSON(t, handler, http.MethodPut, "/api/fs/file?path=relative/path", map[string]any{"content": "x"})
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", status, string(body))
+	}
+}
+
+func TestFsFileWrite_OverCap(t *testing.T) {
+	original := maxFileBytes
+	maxFileBytes = 4
+	t.Cleanup(func() { maxFileBytes = original })
+
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "file.txt")
+	writeFsTestFile(t, filePath, "orig")
+
+	handler := newFsTestHandler(t)
+	status, body := requestJSON(t, handler, http.MethodPut, fsFileURL(filePath), map[string]any{"content": "0123456789"})
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", status, string(body))
+	}
+	if code := decodeEnvelopeError(t, body).Code; code != "VALIDATION" {
+		t.Fatalf("expected VALIDATION, got %q", code)
+	}
+	// The oversized write must not have touched the file.
+	got, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "orig" {
+		t.Fatalf("expected file unchanged, got %q", string(got))
+	}
+}
+
+func TestFsFileWrite_UnknownFieldRejected(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "file.txt")
+	writeFsTestFile(t, filePath, "orig")
+
+	handler := newFsTestHandler(t)
+	status, body := requestJSON(t, handler, http.MethodPut, fsFileURL(filePath), map[string]any{"content": "x", "bogus": 1})
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", status, string(body))
+	}
+	if code := decodeEnvelopeError(t, body).Code; code != "VALIDATION" {
+		t.Fatalf("expected VALIDATION, got %q", code)
+	}
+}
+
 func writeFsTestFile(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {

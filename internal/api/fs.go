@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -117,6 +118,64 @@ func entryKind(mode fs.FileMode) string {
 	}
 }
 
+type fsWriteRequest struct {
+	Content string `json:"content"`
+}
+
+type fsWriteResponse struct {
+	Path    string `json:"path"`
+	Size    int64  `json:"size"`
+	ModTime string `json:"mtime"`
+}
+
+// writeFile overwrites an existing file's contents. It is deliberately
+// overwrite-only: the target must already exist (missing → 404), so it can't be
+// used to create arbitrary new files. Like the read endpoints, it accepts any
+// absolute path with no root containment.
+func (h *fsHandler) writeFile(w http.ResponseWriter, r *http.Request) {
+	path, ok := parseAbsPathParam(w, r)
+	if !ok {
+		return
+	}
+
+	var req fsWriteRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), err.Error(), map[string]string{"field": "body"})
+		return
+	}
+	if int64(len(req.Content)) > maxFileBytes {
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "content exceeds max file size of "+strconv.FormatInt(maxFileBytes, 10)+" bytes", map[string]string{"field": "content"})
+		return
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		writeFsOSError(w, r, path, err)
+		return
+	}
+	if info.IsDir() {
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "path is a directory: "+path, map[string]string{"field": "path"})
+		return
+	}
+
+	if err := atomicWriteFile(path, []byte(req.Content), info.Mode().Perm()); err != nil {
+		writeFsOSError(w, r, path, err)
+		return
+	}
+
+	info, err = os.Stat(path)
+	if err != nil {
+		writeFsOSError(w, r, path, err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, fsWriteResponse{
+		Path:    path,
+		Size:    info.Size(),
+		ModTime: info.ModTime().UTC().Format(time.RFC3339),
+	})
+}
+
 func (h *fsHandler) file(w http.ResponseWriter, r *http.Request) {
 	path, ok := parseAbsPathParam(w, r)
 	if !ok {
@@ -184,4 +243,39 @@ func writeFsOSError(w http.ResponseWriter, r *http.Request, path string, err err
 	}
 	slog.Error("fs operation failed", "path", path, "error", err)
 	writeError(w, r, http.StatusInternalServerError, string(domain.ErrCodeInternal), err.Error(), map[string]string{"path": path})
+}
+
+// atomicWriteFile writes data to path by writing a sibling temp file and
+// renaming it into place, so a crash mid-write can't leave a partially written
+// file. Mirrors internal/config.atomicWriteFile, reimplemented here because that
+// copy is unexported and hardcodes a .yaml.tmp suffix.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".hiveryn-fswrite-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file in %q: %w", dir, err)
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp file %q: %w", tmpName, err)
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp file %q: %w", tmpName, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file %q: %w", tmpName, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("rename %q to %q: %w", tmpName, path, err)
+	}
+	cleanup = false
+	return nil
 }
