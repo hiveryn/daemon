@@ -99,7 +99,7 @@ func (s *TicketService) CreateTicket(_ context.Context, architectPath string, pa
 		return domain.Ticket{}, err
 	}
 
-	entry, err := loadTicketEntry(architectPath, status, id)
+	entry, err := getTicketEntry(architectPath, id)
 	if err != nil {
 		return domain.Ticket{}, err
 	}
@@ -141,7 +141,7 @@ func (s *TicketService) EditTicket(_ context.Context, architectPath, id string, 
 		return domain.Ticket{}, err
 	}
 
-	updated, err := loadTicketEntry(architectPath, entry.status, id)
+	updated, err := getTicketEntry(architectPath, id)
 	if err != nil {
 		return domain.Ticket{}, err
 	}
@@ -192,7 +192,7 @@ func (s *TicketService) UpdateTicketMetadata(_ context.Context, architectPath, i
 		return domain.Ticket{}, err
 	}
 
-	updated, err := loadTicketEntry(architectPath, entry.status, id)
+	updated, err := getTicketEntry(architectPath, id)
 	if err != nil {
 		return domain.Ticket{}, err
 	}
@@ -298,7 +298,7 @@ func (s *TicketService) MoveTicket(_ context.Context, architectPath, id string, 
 		return domain.Ticket{}, fmt.Errorf("move ticket directory: %w", err)
 	}
 
-	moved, err := loadTicketEntry(architectPath, params.To, id)
+	moved, err := getTicketEntry(architectPath, id)
 	if err != nil {
 		return domain.Ticket{}, err
 	}

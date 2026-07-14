@@ -390,6 +390,9 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		if len(ticket.References) != 1 || ticket.References[0] != "missing-ticket" {
 			t.Fatalf("expected reference to be stored, got %#v", ticket.References)
 		}
+		if len(ticket.Warnings) != 1 || ticket.Warnings[0].Code != warningBrokenReference {
+			t.Fatalf("expected BROKEN_REFERENCE warning on create, got %#v", ticket.Warnings)
+		}
 	})
 
 	t.Run("broken references on metadata update", func(t *testing.T) {
@@ -403,6 +406,35 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		}
 		if len(ticket.References) != 1 || ticket.References[0] != "missing-ticket" {
 			t.Fatalf("expected reference to be stored, got %#v", ticket.References)
+		}
+		if len(ticket.Warnings) != 1 || ticket.Warnings[0].Code != warningBrokenReference {
+			t.Fatalf("expected BROKEN_REFERENCE warning on metadata update, got %#v", ticket.Warnings)
+		}
+	})
+
+	t.Run("broken references surface on body edit", func(t *testing.T) {
+		root := t.TempDir()
+		writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-edit-refs", "---\ntitle: Edit refs\nreferences:\n  - missing-ticket\n---\n\nalpha\n")
+
+		ticket, err := NewTicketService().EditTicket(context.Background(), root, "2026-05-12-0900-edit-refs", domain.EditTicketParams{OldString: "alpha", NewString: "beta"})
+		if err != nil {
+			t.Fatalf("expected EditTicket to succeed, got: %v", err)
+		}
+		if len(ticket.Warnings) != 1 || ticket.Warnings[0].Code != warningBrokenReference {
+			t.Fatalf("expected BROKEN_REFERENCE warning on body edit, got %#v", ticket.Warnings)
+		}
+	})
+
+	t.Run("broken references surface on move", func(t *testing.T) {
+		root := t.TempDir()
+		writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-move-refs", "---\ntitle: Move refs\nreferences:\n  - missing-ticket\n---\n\nbody\n")
+
+		ticket, err := NewTicketService().MoveTicket(context.Background(), root, "2026-05-12-0900-move-refs", domain.MoveTicketParams{To: domain.TicketStatusProgress})
+		if err != nil {
+			t.Fatalf("expected MoveTicket to succeed, got: %v", err)
+		}
+		if len(ticket.Warnings) != 1 || ticket.Warnings[0].Code != warningBrokenReference {
+			t.Fatalf("expected BROKEN_REFERENCE warning on move, got %#v", ticket.Warnings)
 		}
 	})
 
