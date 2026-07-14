@@ -165,7 +165,7 @@ func (h *sessionsHandler) conclude(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Body            string             `json:"body"`
 		Commits         []domain.CommitRef `json:"commits,omitempty"`
-		Rejected        bool               `json:"rejected,omitempty"`
+		Outcome         string             `json:"outcome,omitempty"`
 		RejectionReason string             `json:"rejection_reason,omitempty"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
@@ -176,7 +176,7 @@ func (h *sessionsHandler) conclude(w http.ResponseWriter, r *http.Request) {
 	result, err := h.sessions.ConcludeSession(r.Context(), r.PathValue("id"), domain.ConcludeSessionParams{
 		Body:            input.Body,
 		Commits:         input.Commits,
-		Rejected:        input.Rejected,
+		Outcome:         domain.TicketOutcome(input.Outcome),
 		RejectionReason: input.RejectionReason,
 	})
 	if err != nil {
@@ -238,11 +238,11 @@ func (h *sessionsHandler) requestConclusion(w http.ResponseWriter, r *http.Reque
 
 	// Structured conclusion input. The daemon renders these into the canonical
 	// conclusion.md body (see sessionruntime.render*ConclusionBody); Body is not
-	// accepted from the wire. The [fm] metadata fields (commits/rejected/
+	// accepted from the wire. The [fm] metadata fields (commits/outcome/
 	// rejection_reason) still flow into frontmatter as before.
 	var input struct {
 		Commits         []domain.CommitRef `json:"commits,omitempty"`
-		Rejected        bool               `json:"rejected,omitempty"`
+		Outcome         string             `json:"outcome,omitempty"`
 		RejectionReason string             `json:"rejection_reason,omitempty"`
 		Summary         string             `json:"summary,omitempty"`
 		Narrative       string             `json:"narrative,omitempty"`
@@ -266,7 +266,7 @@ func (h *sessionsHandler) requestConclusion(w http.ResponseWriter, r *http.Reque
 
 	result, err := h.sessions.RequestConclusion(r.Context(), r.PathValue("id"), domain.ConcludeSessionParams{
 		Commits:         input.Commits,
-		Rejected:        input.Rejected,
+		Outcome:         domain.TicketOutcome(input.Outcome),
 		RejectionReason: input.RejectionReason,
 		Summary:         input.Summary,
 		Narrative:       input.Narrative,

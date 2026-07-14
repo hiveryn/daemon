@@ -208,7 +208,7 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `PATCH` | `/api/architects/{key}/tickets/{id}/metadata` | Update frontmatter (`title`, `repo`, `references`) for a backlog ticket |
 | `DELETE` | `/api/architects/{key}/tickets/{id}` | Delete a backlog ticket folder and its contents |
 | `POST` | `/api/architects/{key}/tickets/{id}/move?to=...` | Move a ticket between backlog, progress, and done |
-| `POST` | `/api/architects/{key}/tickets/{id}/move-to-done` | Architect-driven ticket completion without a worker session: backlog → done (architect resolved it directly) or progress → done (manually closing a dead/stuck worker session — fails with `CONFLICT` if a worker session is currently running). Writes a `conclusion.md`; requires `commits` unless `rejected=true` with a `rejection_reason`. Called by the MCP `moveTicketToDone` tool. |
+| `POST` | `/api/architects/{key}/tickets/{id}/move-to-done` | Architect-driven ticket completion without a worker session: backlog → done (architect resolved it directly) or progress → done (manually closing a dead/stuck worker session — fails with `CONFLICT` if a worker session is currently running). Writes a `conclusion.md`; requires `outcome` (`completed`/`exploratory`/`rejected`) — `completed` requires `commits`, `rejected` requires `rejection_reason`. Called by the MCP `moveTicketToDone` tool. |
 | `GET` | `/api/architects/{key}/events` | Stream architect-scoped workspace_changed SSE hints |
 | `GET` | `/api/architects/{key}/conclusions` | List recent conclusions (IDs + timestamps); supports `?limit=N` |
 | `GET` | `/api/architects/{key}/conclusions/recent` | Read the most recent architect session conclusion |
@@ -279,7 +279,7 @@ Desktop consumers should remove the session tab either when the POST succeeds or
 Each session type has its own conclude MCP tool — `concludeArchitectSession`, `concludeTicketSession`, `concludeFreeformSession` (role-scoping ensures a session only sees its own). Each takes **discrete structured fields** rather than a freeform body; the daemon renders them into the canonical `conclusion.md` (unchanged frontmatter metadata + a canonical markdown body with a fixed section order per type). See "Structured conclusions" below. When an agent calls its conclude tool via MCP, the daemon routes through an approval flow so the desktop user can review before the session ends:
 
 1. The MCP conclude tool calls `POST /api/sessions/{id}/request-conclusion` (blocks)
-2. The daemon renders the structured input into the markdown body and enforces the required fields; a missing required field returns a `VALIDATION` error to the agent immediately, before any dialog. For ticket sessions it also validates the commit/rejection invariant up front (commits required unless `rejected=true` with a reason). All of this happens before storing the approval or publishing the event, so an invalid conclusion is rejected without ever showing a dialog
+2. The daemon renders the structured input into the markdown body and enforces the required fields; a missing required field returns a `VALIDATION` error to the agent immediately, before any dialog. For ticket sessions it also validates the outcome-specific invariant up front (`completed` requires `commits`, `rejected` requires `rejection_reason`, `exploratory` requires neither). All of this happens before storing the approval or publishing the event, so an invalid conclusion is rejected without ever showing a dialog
 3. The daemon stores a pending approval in memory, publishes an `approval_required` SSE event on the session event stream (with `raw.timeout_seconds` so the desktop can show a countdown), and blocks on a channel with the configured `conclusion_approval_timeout` (default 20s)
 4. The desktop receives the SSE event and presents an approval dialog with a countdown timer
 5. The desktop calls `POST /api/sessions/{id}/approve-conclusion` or `POST /api/sessions/{id}/reject-conclusion`
@@ -298,7 +298,7 @@ Direct `/conclude` request:
     {"sha": "abc123", "repo": "daemon"},
     {"sha": "def456", "repo": "desktop"}
   ],
-  "rejected": false,
+  "outcome": "completed",
   "rejection_reason": ""
 }
 ```
@@ -308,8 +308,8 @@ Direct `/conclude` request:
 The MCP conclude tools (and therefore `request-conclusion`) take **discrete structured fields** instead of a freeform `body`; the daemon renders them into the canonical `conclusion.md`. The frontmatter metadata and the read-path shape (frontmatter + rendered `body`) are unchanged — this is an input contract, not a persisted structured copy. Every presentational section is a **Markdown string** the agent authors itself (bullets/prose as text) — no conclude section is an array, so none can be dropped by the MCP client's required-array serialization bug. Only `commits` stays a structured array, because it is persisted and read back as data. Required fields are rejected if blank; a required section with nothing to report takes the literal Markdown `"None"`. Each type has its own canonical section order:
 
 - **`concludeArchitectSession`** — `summary`*, `narrative`*, `tickets_touched`, `decisions`, `config_changes`, `user_priorities`, `open_questions`, `next_steps`†
-- **`concludeTicketSession`** — `summary`*, `implementation`* (unless rejected), `deviations`, `verification`, `follow_ups` (Markdown referencing candidate follow-up ticket IDs), `open_questions` — plus the `commits`/`rejected`/`rejection_reason` frontmatter metadata
-- **`concludeFreeformSession`** — `summary`*, `findings`*, `recommendations`†, `open_questions`† — plus optional `commits`; `rejected` is disallowed
+- **`concludeTicketSession`** — `summary`*, `outcome`* (`completed`/`exploratory`/`rejected`), `implementation`* (the writeup — required for `completed`/`exploratory`, renders as "Implementation" or "Findings" respectively; omitted for `rejected`), `deviations`, `verification`, `follow_ups` (Markdown referencing candidate follow-up ticket IDs), `open_questions` — plus the `commits`/`rejection_reason` frontmatter metadata (`commits` required for `completed`, `rejection_reason` required for `rejected`)
+- **`concludeFreeformSession`** — `summary`*, `findings`*, `recommendations`†, `open_questions`† — plus optional `commits`; `outcome` is disallowed (ticket-only concept)
 
 (`*` = required; `†` = required, `"None"` accepted. All section fields are Markdown strings; `commits` is the only array.) Example `request-conclusion` request for a ticket session:
 
@@ -334,7 +334,7 @@ Ticket/conclusion output always returns the structured shape, including when rea
   "concluded_at": "2026-05-18T14:30:00Z",
   "agent": "codex",
   "profile": "codex",
-  "rejected": false,
+  "outcome": "completed",
   "rejection_reason": "",
   "commits": [
     {"sha": "abc123", "repo": "daemon"},
@@ -343,6 +343,8 @@ Ticket/conclusion output always returns the structured shape, including when rea
   "body": "Implemented multi-repo conclusion support."
 }
 ```
+
+`conclusion.md` files written before the `outcome` field existed have no `outcome` key; the read path infers it once from the legacy `rejected` boolean (`true` → `rejected`, absent/`false` → `completed`, since `exploratory` did not exist as a concept yet) without rewriting the file.
 
 All responses use a standard envelope:
 

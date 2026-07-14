@@ -96,15 +96,6 @@ func setNodeTime(node *yaml.Node, key string, value time.Time) {
 	setMappingValue(node, key, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value.UTC().Format(time.RFC3339Nano)})
 }
 
-func setNodeBool(node *yaml.Node, key string, value bool) {
-	tag := "!!bool"
-	strVal := "false"
-	if value {
-		strVal = "true"
-	}
-	setMappingValue(node, key, &yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: strVal})
-}
-
 func setNodeStrings(node *yaml.Node, key string, values []string) {
 	sequence := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
 	for _, value := range values {

@@ -70,14 +70,14 @@ type ArchitectConcludeSessionInput struct {
 
 type TicketConcludeSessionInput struct {
 	Summary         string             `json:"summary" jsonschema:"One or two line TL;DR of the outcome (required)."`
-	Implementation  string             `json:"implementation,omitempty" jsonschema:"What was built, in markdown (required unless rejected=true)."`
+	Outcome         string             `json:"outcome" jsonschema:"One of: completed, exploratory, rejected (required). completed = shipped commits (commits required, at least one). exploratory = investigation/spike/test-run that produced no commits (commits may be empty; implementation is still required as your findings writeup). rejected = ticket rejected outright (rejection_reason required)."`
+	Implementation  string             `json:"implementation,omitempty" jsonschema:"What was built (completed) or what was found (exploratory), in markdown. Required unless outcome=rejected."`
 	Deviations      string             `json:"deviations,omitempty" jsonschema:"Where the build diverged from the ticket spec, and why, as Markdown (optional)."`
 	Verification    string             `json:"verification,omitempty" jsonschema:"Tests/lints/typecheck status and how it was checked (optional)."`
 	FollowUps       string             `json:"follow_ups,omitempty" jsonschema:"Candidate follow-up tickets for work discovered but not done, as Markdown (optional). Reference existing ticket IDs; create the tickets first with createWorkTicket."`
 	OpenQuestions   string             `json:"open_questions,omitempty" jsonschema:"Unresolved questions or risks, as Markdown (optional)."`
-	Commits         []domain.CommitRef `json:"commits,omitempty" jsonschema:"Commits produced, as {sha, repo} objects. Required unless rejected=true."`
-	Rejected        bool               `json:"rejected,omitempty" jsonschema:"Set true if the session produced no work and the ticket should be rejected."`
-	RejectionReason string             `json:"rejection_reason,omitempty" jsonschema:"Required when rejected=true. Explain why no work was produced."`
+	Commits         []domain.CommitRef `json:"commits,omitempty" jsonschema:"Commits produced, as {sha, repo} objects. Required (at least one) when outcome=completed; not required for exploratory or rejected."`
+	RejectionReason string             `json:"rejection_reason,omitempty" jsonschema:"Required when outcome=rejected. Explain why no work was produced."`
 }
 
 type FreeformConcludeSessionInput struct {
@@ -91,9 +91,9 @@ type FreeformConcludeSessionInput struct {
 type MoveTicketToDoneInput struct {
 	ID              string             `json:"id" jsonschema:"The ticket ID to move to done (required)"`
 	Body            string             `json:"body" jsonschema:"Conclusion summary — what was done and why this ticket is complete, or why it is being closed (required)."`
-	Commits         []domain.CommitRef `json:"commits,omitempty" jsonschema:"List of commits produced as objects with sha and repo (optional — the architect may have no commits to report)."`
-	Rejected        bool               `json:"rejected,omitempty" jsonschema:"Set to true to close the ticket as rejected instead of completed."`
-	RejectionReason string             `json:"rejection_reason,omitempty" jsonschema:"Required when rejected=true. Explain why the ticket is being rejected."`
+	Outcome         string             `json:"outcome" jsonschema:"One of: completed, exploratory, rejected (required). completed = shipped commits (commits required, at least one). exploratory = investigation/spike/test-run that produced no commits. rejected = ticket rejected outright (rejection_reason required)."`
+	Commits         []domain.CommitRef `json:"commits,omitempty" jsonschema:"List of commits produced as objects with sha and repo. Required (at least one) when outcome=completed; not required for exploratory or rejected."`
+	RejectionReason string             `json:"rejection_reason,omitempty" jsonschema:"Required when outcome=rejected. Explain why the ticket is being rejected."`
 }
 
 type MoveTicketToDoneOutput struct {

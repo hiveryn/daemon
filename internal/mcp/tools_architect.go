@@ -46,7 +46,7 @@ func (s *Server) registerArchitectTools() {
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "moveTicketToDone",
-		Description: "Move a ticket directly to done without a worker session — for tickets the architect resolved themselves (backlog → done), or to manually close a ticket whose worker session is dead or stuck (progress → done; fails if a worker session is currently running for the ticket). Supports rejection via rejected=true with a rejection_reason.",
+		Description: "Move a ticket directly to done without a worker session — for tickets the architect resolved themselves (backlog → done), or to manually close a ticket whose worker session is dead or stuck (progress → done; fails if a worker session is currently running for the ticket). Requires outcome=completed/exploratory/rejected; rejected requires rejection_reason.",
 	}, s.handleMoveTicketToDone)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
@@ -200,8 +200,12 @@ func (s *Server) handleMoveTicketToDone(
 	if strings.TrimSpace(input.Body) == "" {
 		return nil, MoveTicketToDoneOutput{}, newValidationError("body", "is required")
 	}
-	if input.Rejected && strings.TrimSpace(input.RejectionReason) == "" {
-		return nil, MoveTicketToDoneOutput{}, newValidationError("rejection_reason", "is required when rejected is true")
+	outcome := domain.TicketOutcome(input.Outcome)
+	if !outcome.Valid() {
+		return nil, MoveTicketToDoneOutput{}, newValidationError("outcome", "must be one of: completed, exploratory, rejected")
+	}
+	if outcome == domain.TicketOutcomeRejected && strings.TrimSpace(input.RejectionReason) == "" {
+		return nil, MoveTicketToDoneOutput{}, newValidationError("rejection_reason", "is required when outcome is rejected")
 	}
 	for _, commit := range input.Commits {
 		if strings.TrimSpace(commit.SHA) == "" {
@@ -291,6 +295,9 @@ func (s *Server) handleTicketConcludeSession(
 	if err := validateCommitShapes(input.Commits); err != nil {
 		return nil, ConcludeSessionOutput{}, err
 	}
+	if !domain.TicketOutcome(input.Outcome).Valid() {
+		return nil, ConcludeSessionOutput{}, newValidationError("outcome", "must be one of: completed, exploratory, rejected")
+	}
 	if s.sessionID == "" {
 		return nil, ConcludeSessionOutput{}, newInternalError("HIVERYN_SESSION_ID not set")
 	}
@@ -303,7 +310,7 @@ func (s *Server) handleTicketConcludeSession(
 		FollowUps:       input.FollowUps,
 		OpenQuestions:   input.OpenQuestions,
 		Commits:         input.Commits,
-		Rejected:        input.Rejected,
+		Outcome:         input.Outcome,
 		RejectionReason: input.RejectionReason,
 	})
 	if err != nil {

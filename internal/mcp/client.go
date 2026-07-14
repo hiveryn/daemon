@@ -144,8 +144,8 @@ func (s *Server) moveTicketToDone(ctx context.Context, input MoveTicketToDoneInp
 	if len(input.Commits) > 0 {
 		body["commits"] = input.Commits
 	}
-	if input.Rejected {
-		body["rejected"] = true
+	if input.Outcome != "" {
+		body["outcome"] = input.Outcome
 	}
 	if input.RejectionReason != "" {
 		body["rejection_reason"] = input.RejectionReason
@@ -331,7 +331,7 @@ func (s *Server) updateTicket(ctx context.Context, input UpdateTicketInput) (Tic
 // only the subset relevant to its session type (omitempty drops the rest).
 type concludeRequest struct {
 	Commits         []domain.CommitRef `json:"commits,omitempty"`
-	Rejected        bool               `json:"rejected,omitempty"`
+	Outcome         string             `json:"outcome,omitempty"`
 	RejectionReason string             `json:"rejection_reason,omitempty"`
 	Summary         string             `json:"summary,omitempty"`
 	Narrative       string             `json:"narrative,omitempty"`

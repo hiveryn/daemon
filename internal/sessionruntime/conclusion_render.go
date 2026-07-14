@@ -70,10 +70,12 @@ func renderArchitectConclusionBody(p domain.ConcludeSessionParams) (string, erro
 }
 
 // renderTicketConclusionBody renders the ticket conclusion body in canonical
-// order: Summary, Implementation, Deviations, Verification, Follow-ups, Open
-// questions. Implementation is required unless the ticket was rejected;
-// Follow-ups (Markdown prose naming candidate follow-up tickets) and Open
-// questions are optional.
+// order: Summary, Implementation/Findings, Deviations, Verification,
+// Follow-ups, Open questions. The Implementation field is reused for both the
+// completed and exploratory outcomes; only the heading differs ("Implementation"
+// vs "Findings"). It is required unless the ticket was rejected. Follow-ups
+// (Markdown prose naming candidate follow-up tickets) and Open questions are
+// optional.
 func renderTicketConclusionBody(p domain.ConcludeSessionParams) (string, error) {
 	summary, err := requiredString("summary", p.Summary)
 	if err != nil {
@@ -82,16 +84,25 @@ func renderTicketConclusionBody(p domain.ConcludeSessionParams) (string, error) 
 
 	sections := []string{section("Summary", summary)}
 
-	if p.Rejected {
+	switch p.Outcome {
+	case domain.TicketOutcomeRejected:
 		if impl := strings.TrimSpace(p.Implementation); impl != "" {
 			sections = append(sections, section("Implementation", impl))
 		}
-	} else {
+	case domain.TicketOutcomeExploratory:
+		findings, err := requiredString("implementation", p.Implementation)
+		if err != nil {
+			return "", err
+		}
+		sections = append(sections, section("Findings", findings))
+	case domain.TicketOutcomeCompleted:
 		impl, err := requiredString("implementation", p.Implementation)
 		if err != nil {
 			return "", err
 		}
 		sections = append(sections, section("Implementation", impl))
+	default:
+		return "", &domain.ValidationError{Field: "outcome", Message: "must be one of: completed, exploratory, rejected"}
 	}
 
 	sections = appendIfPresent(sections, renderOptionalSection("Deviations", p.Deviations))

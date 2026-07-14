@@ -738,20 +738,26 @@ func (s *Service) UnspawnTicketSession(ctx context.Context, id string) (domain.C
 	return domain.ConcludeSessionResult{SessionID: intent.ID, ArchitectKey: intent.ArchitectKey, TicketID: intent.ContextID}, nil
 }
 
-// validateConclusionCommits enforces the commit/rejection invariant shared by
-// ticket conclusion and moveTicketToDone: a conclusion either carries at least
-// one commit, or is explicitly rejected with a reason.
-func validateConclusionCommits(rejected bool, rejectionReason string, commits []domain.CommitRef) error {
-	if rejected {
+// validateConclusionCommits enforces the required-field set per outcome shared
+// by ticket conclusion and moveTicketToDone: completed requires at least one
+// commit, exploratory requires nothing extra, rejected requires a reason.
+func validateConclusionCommits(outcome domain.TicketOutcome, rejectionReason string, commits []domain.CommitRef) error {
+	switch outcome {
+	case domain.TicketOutcomeRejected:
 		if strings.TrimSpace(rejectionReason) == "" {
-			return &domain.ValidationError{Field: "rejection_reason", Message: "is required when rejected is true"}
+			return &domain.ValidationError{Field: "rejection_reason", Message: "is required when outcome is rejected"}
 		}
 		return nil
+	case domain.TicketOutcomeExploratory:
+		return nil
+	case domain.TicketOutcomeCompleted:
+		if len(commits) == 0 {
+			return &domain.ValidationError{Field: "commits", Message: "are required when outcome is completed"}
+		}
+		return nil
+	default:
+		return &domain.ValidationError{Field: "outcome", Message: "must be one of: completed, exploratory, rejected"}
 	}
-	if len(commits) == 0 {
-		return &domain.ValidationError{Field: "commits", Message: "are required when not rejected"}
-	}
-	return nil
 }
 
 func (s *Service) RequestConclusion(ctx context.Context, id string, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
@@ -779,7 +785,7 @@ func (s *Service) RequestConclusion(ctx context.Context, id string, params domai
 	// and the desktop approval dialog is never shown. Only ticket sessions carry
 	// commits; architect and freeform conclusions have no such requirement.
 	if intent.SessionType == domain.SessionTypeTicket {
-		if err := validateConclusionCommits(params.Rejected, params.RejectionReason, params.Commits); err != nil {
+		if err := validateConclusionCommits(params.Outcome, params.RejectionReason, params.Commits); err != nil {
 			return domain.ConcludeSessionResult{}, err
 		}
 	}
@@ -881,8 +887,8 @@ func (s *Service) publishApprovalRequired(ctx context.Context, sessionID string,
 	if len(params.Commits) > 0 {
 		raw["commits"] = params.Commits
 	}
-	if params.Rejected {
-		raw["rejected"] = true
+	if params.Outcome != "" {
+		raw["outcome"] = string(params.Outcome)
 	}
 	if params.RejectionReason != "" {
 		raw["rejection_reason"] = params.RejectionReason
@@ -1169,7 +1175,7 @@ func (s *Service) activeTicketSessionIDs(ctx context.Context, architectKey, excl
 func (s *Service) concludeTicketSession(ctx context.Context, intent domain.SessionIntent, run domain.SessionRun, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
 	// Commit/rejection validation runs earlier in RequestConclusion (before the
 	// approval dialog fires); see validateConclusionCommits.
-	if err := validateConclusionCommits(params.Rejected, params.RejectionReason, params.Commits); err != nil {
+	if err := validateConclusionCommits(params.Outcome, params.RejectionReason, params.Commits); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
 
@@ -1214,7 +1220,7 @@ func (s *Service) concludeTicketSession(ctx context.Context, intent domain.Sessi
 		ConcludedAt:     now,
 		Agent:           run.ProfileName,
 		Profile:         run.ProfileName,
-		Rejected:        params.Rejected,
+		Outcome:         params.Outcome,
 		RejectionReason: params.RejectionReason,
 		Commits:         resolvedCommits,
 		Body:            params.Body,
@@ -1231,7 +1237,7 @@ func (s *Service) concludeTicketSession(ctx context.Context, intent domain.Sessi
 	if err := s.appendAndPublishSessionEnded(ctx, intent.ID, run.ID, "session concluded", "concluded", map[string]any{
 		"body":             params.Body,
 		"commits":          resolvedCommits,
-		"rejected":         params.Rejected,
+		"outcome":          string(params.Outcome),
 		"rejection_reason": params.RejectionReason,
 	}); err != nil {
 		return domain.ConcludeSessionResult{}, err
@@ -1253,7 +1259,7 @@ func (s *Service) MoveTicketToDone(ctx context.Context, architectKey, ticketID s
 	if strings.TrimSpace(params.Body) == "" {
 		return domain.MoveTicketToDoneResult{}, &domain.ValidationError{Field: "body", Message: "is required"}
 	}
-	if err := validateConclusionCommits(params.Rejected, params.RejectionReason, params.Commits); err != nil {
+	if err := validateConclusionCommits(params.Outcome, params.RejectionReason, params.Commits); err != nil {
 		return domain.MoveTicketToDoneResult{}, err
 	}
 
@@ -1295,7 +1301,7 @@ func (s *Service) MoveTicketToDone(ctx context.Context, architectKey, ticketID s
 	conclusion := domain.TicketConclusion{
 		StartedAt:       now,
 		ConcludedAt:     now,
-		Rejected:        params.Rejected,
+		Outcome:         params.Outcome,
 		RejectionReason: params.RejectionReason,
 		Commits:         resolvedCommits,
 		Body:            params.Body,
@@ -1334,8 +1340,8 @@ func (s *Service) runningTicketSessionID(ctx context.Context, architectKey, tick
 }
 
 func (s *Service) concludeFreeformSession(ctx context.Context, intent domain.SessionIntent, run domain.SessionRun, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
-	if params.Rejected {
-		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "rejected", Message: "freeform sessions do not support rejected mode"}
+	if params.Outcome != "" {
+		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "outcome", Message: "freeform sessions do not support an outcome"}
 	}
 	if strings.TrimSpace(params.RejectionReason) != "" {
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "rejection_reason", Message: "freeform sessions do not accept a rejection reason"}

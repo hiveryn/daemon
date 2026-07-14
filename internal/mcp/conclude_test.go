@@ -87,6 +87,7 @@ func TestHandleTicketConcludeSessionSuccess(t *testing.T) {
 
 	_, output, err := server.handleTicketConcludeSession(context.Background(), nil, TicketConcludeSessionInput{
 		Summary:        "Implemented feature.",
+		Outcome:        "completed",
 		Implementation: "Built the thing.",
 		Commits:        []domain.CommitRef{{SHA: "abc123", Repo: "daemon"}, {SHA: "def456", Repo: "desktop"}},
 	})
@@ -153,6 +154,7 @@ func TestHandleTicketConcludeSessionNoSessionID(t *testing.T) {
 
 	_, _, err = server.handleTicketConcludeSession(context.Background(), nil, TicketConcludeSessionInput{
 		Summary:        "done",
+		Outcome:        "completed",
 		Implementation: "done",
 		Commits:        []domain.CommitRef{{SHA: "abc123", Repo: "daemon"}},
 	})
@@ -171,7 +173,7 @@ func TestHandleTicketConcludeSessionDaemonError(t *testing.T) {
 	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		writeErrorEnvelope(t, w, http.StatusBadRequest, &domain.ErrorBody{
 			Code:    string(domain.ErrCodeValidation),
-			Message: "commits are required when not rejected",
+			Message: "commits are required when outcome is completed",
 		})
 	})
 	server.sessionID = "sess-1"
@@ -179,8 +181,74 @@ func TestHandleTicketConcludeSessionDaemonError(t *testing.T) {
 
 	_, _, err := server.handleTicketConcludeSession(context.Background(), nil, TicketConcludeSessionInput{
 		Summary:        "done",
+		Outcome:        "completed",
 		Implementation: "done",
 		Commits:        []domain.CommitRef{{SHA: "abc123", Repo: "daemon"}},
+	})
+	toolErr, ok := err.(*ToolError)
+	if !ok {
+		t.Fatalf("expected ToolError, got %T", err)
+	}
+	if toolErr.Code != ErrorCodeValidation {
+		t.Fatalf("code = %q, want %q", toolErr.Code, ErrorCodeValidation)
+	}
+}
+
+func TestHandleTicketConcludeSessionExploratorySuccessWithoutCommits(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Outcome string             `json:"outcome"`
+			Commits []domain.CommitRef `json:"commits"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if body.Outcome != "exploratory" {
+			t.Fatalf("unexpected outcome: %q", body.Outcome)
+		}
+		if len(body.Commits) != 0 {
+			t.Fatalf("expected no commits payload, got %#v", body.Commits)
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"success":    true,
+			"session_id": "sess-4",
+			"ticket_id":  "ticket-2",
+		})
+	})
+	server.sessionID = "sess-4"
+	server.sessionType = SessionTypeTicket
+
+	_, output, err := server.handleTicketConcludeSession(context.Background(), nil, TicketConcludeSessionInput{
+		Summary:        "Investigated the flake.",
+		Outcome:        "exploratory",
+		Implementation: "Found the root cause; no commits produced.",
+	})
+	if err != nil {
+		t.Fatalf("handleTicketConcludeSession failed: %v", err)
+	}
+	if !output.Success || output.TicketID != "ticket-2" {
+		t.Fatalf("unexpected output: %#v", output)
+	}
+}
+
+func TestHandleTicketConcludeSessionRejectsInvalidOutcome(t *testing.T) {
+	t.Parallel()
+
+	server, err := NewServer(Config{
+		DaemonURL:    "http://127.0.0.1:4200",
+		ArchitectKey: "hiveryn",
+		SessionID:    "sess-1",
+		SessionType:  SessionTypeTicket,
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	_, _, err = server.handleTicketConcludeSession(context.Background(), nil, TicketConcludeSessionInput{
+		Summary:        "done",
+		Implementation: "done",
 	})
 	toolErr, ok := err.(*ToolError)
 	if !ok {
@@ -215,6 +283,91 @@ func TestHandleTicketConcludeSessionRejectsCommitWithoutRepo(t *testing.T) {
 	}
 	if toolErr.Code != ErrorCodeValidation {
 		t.Fatalf("code = %q, want %q", toolErr.Code, ErrorCodeValidation)
+	}
+}
+
+func TestHandleMoveTicketToDoneRejectsInvalidOutcome(t *testing.T) {
+	t.Parallel()
+
+	server, err := NewServer(Config{
+		DaemonURL:    "http://127.0.0.1:4200",
+		ArchitectKey: "hiveryn",
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	_, _, err = server.handleMoveTicketToDone(context.Background(), nil, MoveTicketToDoneInput{
+		ID:   "ticket-1",
+		Body: "done",
+	})
+	toolErr, ok := err.(*ToolError)
+	if !ok {
+		t.Fatalf("expected ToolError, got %T", err)
+	}
+	if toolErr.Code != ErrorCodeValidation {
+		t.Fatalf("code = %q, want %q", toolErr.Code, ErrorCodeValidation)
+	}
+}
+
+func TestHandleMoveTicketToDoneRejectsMissingRejectionReason(t *testing.T) {
+	t.Parallel()
+
+	server, err := NewServer(Config{
+		DaemonURL:    "http://127.0.0.1:4200",
+		ArchitectKey: "hiveryn",
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	_, _, err = server.handleMoveTicketToDone(context.Background(), nil, MoveTicketToDoneInput{
+		ID:      "ticket-1",
+		Body:    "done",
+		Outcome: "rejected",
+	})
+	toolErr, ok := err.(*ToolError)
+	if !ok {
+		t.Fatalf("expected ToolError, got %T", err)
+	}
+	if toolErr.Code != ErrorCodeValidation {
+		t.Fatalf("code = %q, want %q", toolErr.Code, ErrorCodeValidation)
+	}
+}
+
+func TestHandleMoveTicketToDoneExploratorySuccess(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Outcome string             `json:"outcome"`
+			Commits []domain.CommitRef `json:"commits"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if body.Outcome != "exploratory" {
+			t.Fatalf("unexpected outcome: %q", body.Outcome)
+		}
+		if len(body.Commits) != 0 {
+			t.Fatalf("expected no commits payload, got %#v", body.Commits)
+		}
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"success":   true,
+			"ticket_id": "ticket-1",
+		})
+	})
+
+	_, output, err := server.handleMoveTicketToDone(context.Background(), nil, MoveTicketToDoneInput{
+		ID:      "ticket-1",
+		Body:    "Investigated; no commits produced.",
+		Outcome: "exploratory",
+	})
+	if err != nil {
+		t.Fatalf("handleMoveTicketToDone failed: %v", err)
+	}
+	if !output.Success || output.TicketID != "ticket-1" {
+		t.Fatalf("unexpected output: %#v", output)
 	}
 }
 
@@ -260,6 +413,7 @@ func TestWorkerSessionRegistersConcludeTool(t *testing.T) {
 
 	_, _, err = server.handleTicketConcludeSession(context.Background(), nil, TicketConcludeSessionInput{
 		Summary:        "Worker concluded.",
+		Outcome:        "completed",
 		Implementation: "Built it.",
 		Commits:        []domain.CommitRef{{SHA: "def456", Repo: "daemon"}},
 	})

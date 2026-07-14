@@ -61,6 +61,7 @@ func TestTicketServiceConcludeTicketWritesStructuredCommitRefs(t *testing.T) {
 	_, err := service.ConcludeTicket(context.Background(), root, "2026-05-12-1300-structured-write", domain.TicketConclusion{
 		StartedAt:   time.Date(2026, 5, 12, 13, 0, 0, 0, time.UTC),
 		ConcludedAt: time.Date(2026, 5, 12, 13, 30, 0, 0, time.UTC),
+		Outcome:     domain.TicketOutcomeCompleted,
 		Commits:     []domain.CommitRef{{SHA: "abc123", Repo: "daemon"}, {SHA: "def456", Repo: "desktop"}},
 		Body:        "summary",
 	})
@@ -77,6 +78,97 @@ func TestTicketServiceConcludeTicketWritesStructuredCommitRefs(t *testing.T) {
 	}
 	if strings.Contains(content, "\n  - abc123\n") || strings.Contains(content, "\n  - def456\n") {
 		t.Fatalf("expected structured commit objects instead of flat strings, got:\n%s", content)
+	}
+}
+
+func TestTicketServiceConcludeTicketOutcomeRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		outcome    domain.TicketOutcome
+		conclusion domain.TicketConclusion
+	}{
+		{
+			name:    "completed",
+			outcome: domain.TicketOutcomeCompleted,
+			conclusion: domain.TicketConclusion{
+				StartedAt:   time.Date(2026, 5, 12, 13, 0, 0, 0, time.UTC),
+				ConcludedAt: time.Date(2026, 5, 12, 13, 30, 0, 0, time.UTC),
+				Outcome:     domain.TicketOutcomeCompleted,
+				Commits:     []domain.CommitRef{{SHA: "abc123", Repo: "daemon"}},
+				Body:        "## Implementation\nDid the thing.",
+			},
+		},
+		{
+			name:    "exploratory",
+			outcome: domain.TicketOutcomeExploratory,
+			conclusion: domain.TicketConclusion{
+				StartedAt:   time.Date(2026, 5, 12, 13, 0, 0, 0, time.UTC),
+				ConcludedAt: time.Date(2026, 5, 12, 13, 30, 0, 0, time.UTC),
+				Outcome:     domain.TicketOutcomeExploratory,
+				Body:        "## Findings\nRace in the scheduler.",
+			},
+		},
+		{
+			name:    "rejected",
+			outcome: domain.TicketOutcomeRejected,
+			conclusion: domain.TicketConclusion{
+				StartedAt:       time.Date(2026, 5, 12, 13, 0, 0, 0, time.UTC),
+				ConcludedAt:     time.Date(2026, 5, 12, 13, 30, 0, 0, time.UTC),
+				Outcome:         domain.TicketOutcomeRejected,
+				RejectionReason: "duplicate of another ticket",
+				Body:            "## Summary\nDuplicate.",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := t.TempDir()
+			id := "2026-05-12-1400-outcome-" + tc.name
+			writeTicketFile(t, root, domain.TicketStatusProgress, id, "---\ntitle: Outcome round trip\nrepo: daemon\n---\n\nbody\n")
+
+			service := NewTicketService()
+			if _, err := service.ConcludeTicket(context.Background(), root, id, tc.conclusion); err != nil {
+				t.Fatalf("ConcludeTicket: %v", err)
+			}
+
+			ticket, err := service.GetTicket(context.Background(), root, id)
+			if err != nil {
+				t.Fatalf("GetTicket: %v", err)
+			}
+			if ticket.Conclusion == nil || ticket.Conclusion.Outcome != tc.outcome {
+				t.Fatalf("expected outcome %q, got %#v", tc.outcome, ticket.Conclusion)
+			}
+
+			content := readFile(t, filepath.Join(root, ticketsDirName, string(domain.TicketStatusDone), id, conclusionFileName))
+			if !strings.Contains(content, "outcome: "+string(tc.outcome)) {
+				t.Fatalf("expected outcome frontmatter key, got:\n%s", content)
+			}
+			if strings.Contains(content, "rejected:") {
+				t.Fatalf("expected no legacy rejected key in newly written conclusion, got:\n%s", content)
+			}
+		})
+	}
+}
+
+func TestTicketServiceReadConclusionInfersOutcomeForLegacyFileWithNoOutcomeOrRejectedKey(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeTicketFile(t, root, domain.TicketStatusDone, "2026-05-12-1500-legacy", "---\ntitle: Legacy conclusion\nrepo: daemon\n---\n\nbody\n")
+	writeConclusionFile(t, root, domain.TicketStatusDone, "2026-05-12-1500-legacy", "---\nstarted_at: 2026-05-12T15:00:00Z\nconcluded_at: 2026-05-12T15:30:00Z\nagent: codex\ncommits:\n  - abc1234\n---\n\nDone before the outcome field existed.\n")
+
+	service := NewTicketService()
+	ticket, err := service.GetTicket(context.Background(), root, "2026-05-12-1500-legacy")
+	if err != nil {
+		t.Fatalf("GetTicket: %v", err)
+	}
+	if ticket.Conclusion == nil || ticket.Conclusion.Outcome != domain.TicketOutcomeCompleted {
+		t.Fatalf("expected inferred outcome completed, got %#v", ticket.Conclusion)
 	}
 }
 

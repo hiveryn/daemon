@@ -250,9 +250,7 @@ func newConclusionDocument(conclusion domain.TicketConclusion) MarkdownDocument 
 	if conclusion.Profile != "" {
 		setNodeString(meta, "profile", conclusion.Profile)
 	}
-	if conclusion.Rejected {
-		setNodeBool(meta, "rejected", true)
-	}
+	setNodeString(meta, "outcome", string(conclusion.Outcome))
 	if conclusion.RejectionReason != "" {
 		setNodeString(meta, "rejection_reason", conclusion.RejectionReason)
 	}
@@ -634,12 +632,16 @@ func readConclusion(path, ticketRepo string) (*domain.TicketConclusion, error) {
 		return nil, &domain.ValidationError{Field: "conclusion.md", Message: "frontmatter is required"}
 	}
 	var raw struct {
-		StartedAt       time.Time `yaml:"started_at"`
-		ConcludedAt     time.Time `yaml:"concluded_at"`
-		Agent           string    `yaml:"agent"`
-		Profile         string    `yaml:"profile"`
-		Rejected        bool      `yaml:"rejected"`
-		RejectionReason string    `yaml:"rejection_reason"`
+		StartedAt       time.Time            `yaml:"started_at"`
+		ConcludedAt     time.Time            `yaml:"concluded_at"`
+		Agent           string               `yaml:"agent"`
+		Profile         string               `yaml:"profile"`
+		Outcome         domain.TicketOutcome `yaml:"outcome"`
+		RejectionReason string               `yaml:"rejection_reason"`
+		// Rejected is the pre-outcome-enum bool. It is only consulted below to
+		// infer Outcome for conclusion.md files written before this field
+		// existed; it is never part of domain.TicketConclusion.
+		Rejected bool `yaml:"rejected"`
 	}
 	if err := doc.Metadata.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("decode ticket conclusion frontmatter: %w", err)
@@ -654,15 +656,29 @@ func readConclusion(path, ticketRepo string) (*domain.TicketConclusion, error) {
 	if raw.ConcludedAt.IsZero() {
 		return nil, &domain.ValidationError{Field: "concluded_at", Message: "is required in conclusion.md"}
 	}
-	if raw.Rejected && strings.TrimSpace(raw.RejectionReason) == "" {
-		return nil, &domain.ValidationError{Field: "rejection_reason", Message: "is required when rejected is true"}
+	outcome := raw.Outcome
+	if outcome == "" {
+		// Pre-existing file, written before the outcome field existed: infer
+		// from the old rejected bool (exploratory didn't exist as a concept
+		// yet, so every historical non-rejected conclusion was completed).
+		if raw.Rejected {
+			outcome = domain.TicketOutcomeRejected
+		} else {
+			outcome = domain.TicketOutcomeCompleted
+		}
+	}
+	if !outcome.Valid() {
+		return nil, &domain.ValidationError{Field: "outcome", Message: "must be one of: completed, exploratory, rejected"}
+	}
+	if outcome == domain.TicketOutcomeRejected && strings.TrimSpace(raw.RejectionReason) == "" {
+		return nil, &domain.ValidationError{Field: "rejection_reason", Message: "is required when outcome is rejected"}
 	}
 	return &domain.TicketConclusion{
 		StartedAt:       raw.StartedAt.UTC(),
 		ConcludedAt:     raw.ConcludedAt.UTC(),
 		Agent:           raw.Agent,
 		Profile:         raw.Profile,
-		Rejected:        raw.Rejected,
+		Outcome:         outcome,
 		RejectionReason: raw.RejectionReason,
 		Commits:         commits,
 		Body:            doc.Body,

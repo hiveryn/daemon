@@ -351,7 +351,7 @@ func (h *ticketsHandler) moveToDone(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Body            string             `json:"body"`
 		Commits         []domain.CommitRef `json:"commits,omitempty"`
-		Rejected        bool               `json:"rejected,omitempty"`
+		Outcome         string             `json:"outcome,omitempty"`
 		RejectionReason string             `json:"rejection_reason,omitempty"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
@@ -363,7 +363,7 @@ func (h *ticketsHandler) moveToDone(w http.ResponseWriter, r *http.Request) {
 	result, err := h.sessions.MoveTicketToDone(r.Context(), architectKey, r.PathValue("id"), domain.MoveTicketToDoneParams{
 		Body:            input.Body,
 		Commits:         input.Commits,
-		Rejected:        input.Rejected,
+		Outcome:         domain.TicketOutcome(input.Outcome),
 		RejectionReason: input.RejectionReason,
 	})
 	if err != nil {

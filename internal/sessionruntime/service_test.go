@@ -313,7 +313,7 @@ func TestConcludeTicketSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 	_, err := service.ConcludeSession(context.Background(), "intent-work", domain.ConcludeSessionParams{
 		Body:            "worker conclusion",
 		Commits:         []domain.CommitRef{{SHA: daemonCommit, Repo: "daemon"}, {SHA: desktopCommit, Repo: "desktop"}},
-		Rejected:        true,
+		Outcome:         domain.TicketOutcomeRejected,
 		RejectionReason: "needs another pass",
 	})
 	if err != nil {
@@ -325,11 +325,92 @@ func TestConcludeTicketSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 	if !ok || len(commits) != 2 {
 		t.Fatalf("expected commits in raw payload, got %#v", event.Raw["commits"])
 	}
-	if event.Raw["rejected"] != true || event.Raw["rejection_reason"] != "needs another pass" {
+	if event.Raw["outcome"] != "rejected" || event.Raw["rejection_reason"] != "needs another pass" {
 		t.Fatalf("unexpected event raw %#v", event.Raw)
 	}
 	if got, want := strings.Join(operations, ","), "complete,event,kill,delete"; got != want {
 		t.Fatalf("expected operations %q, got %q", want, got)
+	}
+}
+
+func TestConcludeTicketSessionExploratoryAllowsNoCommits(t *testing.T) {
+	t.Parallel()
+
+	architectPath := t.TempDir()
+	daemonRepoPath := t.TempDir()
+	created := time.Date(2026, 5, 13, 15, 30, 0, 0, time.UTC)
+	started := created.Add(5 * time.Minute)
+	operations := []string{}
+	repo := newFakeSessionRepository()
+	repo.operations = &operations
+	repo.createdIntent = domain.SessionIntent{
+		ID:           "intent-work",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeTicket,
+		ContextID:    "ticket-1",
+		Prompt:       "kickoff",
+		Workdir:      daemonRepoPath,
+		CreatedAt:    created,
+		CurrentRun: &domain.SessionRun{
+			ID:          "run-1",
+			Status:      domain.SessionRunStatusRunning,
+			Workdir:     daemonRepoPath,
+			StartedAt:   &started,
+			ProfileName: "codex",
+		},
+	}
+	cfg := testRuntimeConfigWithPaths(architectPath, daemonRepoPath)
+	cfg.Architects["hiveryn"] = config.ArchitectConfig{Path: architectPath, Repos: map[string]string{"daemon": daemonRepoPath}}
+	service := &Service{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:    cfg,
+		repo:   repo,
+		tickets: &fakeTicketService{ticket: domain.Ticket{
+			TicketSummary: domain.TicketSummary{ID: "ticket-1", Title: "Ticket", Repo: "daemon", Status: domain.TicketStatusProgress, Created: &created, Updated: &created},
+			Body:          "body",
+		}},
+		terminal:     &fakeTerminalManager{operations: &operations},
+		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
+	}
+
+	_, err := service.ConcludeSession(context.Background(), "intent-work", domain.ConcludeSessionParams{
+		Body:    "Investigated the flake; no commits produced.",
+		Outcome: domain.TicketOutcomeExploratory,
+	})
+	if err != nil {
+		t.Fatalf("ConcludeSession failed: %v", err)
+	}
+
+	event := repo.lastAppendedEvent(t)
+	if event.Raw["outcome"] != "exploratory" {
+		t.Fatalf("expected outcome exploratory, got %#v", event.Raw["outcome"])
+	}
+}
+
+func TestConcludeTicketSessionInvalidOutcomeRejected(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.createdIntent = domain.SessionIntent{
+		ID:           "intent-work",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeTicket,
+		ContextID:    "ticket-1",
+		CurrentRun: &domain.SessionRun{
+			ID:     "run-1",
+			Status: domain.SessionRunStatusRunning,
+		},
+	}
+	service := &Service{
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repo:         repo,
+		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
+	}
+
+	_, err := service.ConcludeSession(context.Background(), "intent-work", domain.ConcludeSessionParams{Body: "done"})
+	var validationErr *domain.ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Field != "outcome" {
+		t.Fatalf("expected outcome validation error, got %v", err)
 	}
 }
 
@@ -441,6 +522,7 @@ func TestRequestConclusionRejectsMissingCommitsBeforeApproval(t *testing.T) {
 
 	_, err := service.RequestConclusion(context.Background(), "intent-work", domain.ConcludeSessionParams{
 		Summary:        "done",
+		Outcome:        domain.TicketOutcomeCompleted,
 		Implementation: "did it",
 	})
 	var validationErr *domain.ValidationError
@@ -509,6 +591,7 @@ func TestRequestConclusionPublishesApprovalResolvedOnCancel(t *testing.T) {
 
 	_, err := service.RequestConclusion(ctx, "intent-work", domain.ConcludeSessionParams{
 		Summary:        "done",
+		Outcome:        domain.TicketOutcomeCompleted,
 		Implementation: "did it",
 		Commits:        []domain.CommitRef{{Repo: "desktop", SHA: "abc123"}},
 	})
@@ -566,7 +649,7 @@ func TestMoveTicketToDoneRejectsMissingCommits(t *testing.T) {
 
 	service := &Service{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 
-	_, err := service.MoveTicketToDone(context.Background(), "hiveryn", "ticket-1", domain.MoveTicketToDoneParams{Body: "done"})
+	_, err := service.MoveTicketToDone(context.Background(), "hiveryn", "ticket-1", domain.MoveTicketToDoneParams{Body: "done", Outcome: domain.TicketOutcomeCompleted})
 	var validationErr *domain.ValidationError
 	if !errors.As(err, &validationErr) || validationErr.Field != "commits" {
 		t.Fatalf("expected commits validation error, got %v", err)

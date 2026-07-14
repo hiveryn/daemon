@@ -100,6 +100,7 @@ func TestRenderTicketConclusionBody(t *testing.T) {
 
 	body, err := renderTicketConclusionBody(domain.ConcludeSessionParams{
 		Summary:        "Added the endpoint.",
+		Outcome:        domain.TicketOutcomeCompleted,
 		Implementation: "Wired the handler.",
 		Deviations:     "- Skipped the cache",
 		Verification:   "go test ./... passed",
@@ -128,6 +129,7 @@ func TestRenderTicketConclusionBodyOmitsOptionalFollowUpsAndOpenQuestions(t *tes
 
 	body, err := renderTicketConclusionBody(domain.ConcludeSessionParams{
 		Summary:        "Added the endpoint.",
+		Outcome:        domain.TicketOutcomeCompleted,
 		Implementation: "Wired the handler.",
 	})
 	if err != nil {
@@ -142,16 +144,17 @@ func TestRenderTicketConclusionBodyOmitsOptionalFollowUpsAndOpenQuestions(t *tes
 func TestRenderTicketConclusionBodyImplementationRequiredUnlessRejected(t *testing.T) {
 	t.Parallel()
 
-	// Not rejected: implementation is required.
+	// Completed: implementation is required.
 	_, err := renderTicketConclusionBody(domain.ConcludeSessionParams{
 		Summary: "x",
+		Outcome: domain.TicketOutcomeCompleted,
 	})
 	assertValidationField(t, err, "implementation")
 
 	// Rejected: implementation may be omitted and no Implementation section renders.
 	body, err := renderTicketConclusionBody(domain.ConcludeSessionParams{
-		Summary:  "No work produced.",
-		Rejected: true,
+		Summary: "No work produced.",
+		Outcome: domain.TicketOutcomeRejected,
 	})
 	if err != nil {
 		t.Fatalf("rejected render failed: %v", err)
@@ -159,6 +162,42 @@ func TestRenderTicketConclusionBodyImplementationRequiredUnlessRejected(t *testi
 	if strings.Contains(body, "## Implementation") {
 		t.Fatalf("expected no Implementation section when rejected, got:\n%s", body)
 	}
+}
+
+func TestRenderTicketConclusionBodyExploratoryRendersFindingsHeadingAndRequiresImplementation(t *testing.T) {
+	t.Parallel()
+
+	// Exploratory: implementation (the findings writeup) is still required, but
+	// renders under a "Findings" heading instead of "Implementation".
+	_, err := renderTicketConclusionBody(domain.ConcludeSessionParams{
+		Summary: "x",
+		Outcome: domain.TicketOutcomeExploratory,
+	})
+	assertValidationField(t, err, "implementation")
+
+	body, err := renderTicketConclusionBody(domain.ConcludeSessionParams{
+		Summary:        "Investigated the flake, found the root cause.",
+		Outcome:        domain.TicketOutcomeExploratory,
+		Implementation: "It's a race in the scheduler.",
+	})
+	if err != nil {
+		t.Fatalf("exploratory render failed: %v", err)
+	}
+	if !strings.Contains(body, "## Findings\nIt's a race in the scheduler.") {
+		t.Fatalf("expected Findings section, got:\n%s", body)
+	}
+	if strings.Contains(body, "## Implementation") {
+		t.Fatalf("expected no Implementation section for exploratory outcome, got:\n%s", body)
+	}
+}
+
+func TestRenderTicketConclusionBodyInvalidOutcome(t *testing.T) {
+	t.Parallel()
+
+	_, err := renderTicketConclusionBody(domain.ConcludeSessionParams{
+		Summary: "x",
+	})
+	assertValidationField(t, err, "outcome")
 }
 
 func TestRenderFreeformConclusionBody(t *testing.T) {

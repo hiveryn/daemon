@@ -10,6 +10,7 @@ import (
 // any daemon-specific service contracts remain local.
 type (
 	TicketStatus               = sd.TicketStatus
+	TicketOutcome              = sd.TicketOutcome
 	TicketWarning              = sd.TicketWarning
 	TicketSummary              = sd.TicketSummary
 	TicketConclusion           = sd.TicketConclusion
@@ -25,6 +26,12 @@ const (
 	TicketStatusBacklog  = sd.TicketStatusBacklog
 	TicketStatusProgress = sd.TicketStatusProgress
 	TicketStatusDone     = sd.TicketStatusDone
+)
+
+const (
+	TicketOutcomeCompleted   = sd.TicketOutcomeCompleted
+	TicketOutcomeExploratory = sd.TicketOutcomeExploratory
+	TicketOutcomeRejected    = sd.TicketOutcomeRejected
 )
 
 type TicketService interface {
