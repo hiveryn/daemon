@@ -135,6 +135,25 @@ type ListTicketsOutput struct {
 	Tickets []TicketSummary `json:"tickets"`
 }
 
+type PreviewInBrowserTabInput struct {
+	Target string `json:"target" jsonschema:"The file://, absolute path, http://localhost:*, or https:// URL to open (required)"`
+	TabID  string `json:"tab_id,omitempty" jsonschema:"Existing tab id to navigate in place; omit to open a new tab"`
+}
+
+type PreviewInBrowserTabOutput struct {
+	TabID  string `json:"tab_id"`
+	Target string `json:"target"`
+}
+
+type GetBrowserTabsOutput struct {
+	Tabs []BrowserTabSummary `json:"tabs"`
+}
+
+type BrowserTabSummary struct {
+	TabID  string `json:"tab_id"`
+	Target string `json:"target"`
+}
+
 type ReadTicketConclusionInput struct {
 	TicketID string `json:"ticketId" jsonschema:"The ticket ID whose conclusion to read (required)"`
 }

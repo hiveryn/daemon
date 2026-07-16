@@ -70,6 +70,7 @@ func (s *Server) registerArchitectTools() {
 	}, s.handleReadTicketConclusion)
 
 	s.registerConfigTools()
+	s.registerBrowserTools()
 }
 
 // registerConfigTools registers the hiveryn.yaml config-management tools. They

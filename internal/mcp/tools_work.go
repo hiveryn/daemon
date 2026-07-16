@@ -17,4 +17,6 @@ func (s *Server) registerTicketTools() {
 		Name:        "createWorkTicket",
 		Description: "Create a new work ticket in the backlog. Returns the created Ticket.",
 	}, s.handleCreateWorkTicket)
+
+	s.registerBrowserTools()
 }

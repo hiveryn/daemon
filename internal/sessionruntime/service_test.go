@@ -1216,7 +1216,7 @@ func TestCreateTerminalRejectsSecondSplit(t *testing.T) {
 			"intent-1": {
 				tabs: []sessionTabState{
 					{tab: domain.SessionTab{Type: "kanban"}},
-					{tab: domain.SessionTab{Type: "terminal", TerminalID: "term-split", Placement: domain.TerminalPlacementSplit, BaseTabID: "kanban"}},
+					{tab: domain.SessionTab{Type: "terminal", ID: "term-split", Placement: domain.TerminalPlacementSplit, BaseTabID: "kanban"}},
 				},
 			},
 		},
@@ -1262,7 +1262,7 @@ func TestCreateTerminalAllowsSplitOnDifferentBaseTab(t *testing.T) {
 				tabs: []sessionTabState{
 					{tab: domain.SessionTab{Type: "kanban"}},
 					{tab: domain.SessionTab{Type: "event-log"}},
-					{tab: domain.SessionTab{Type: "terminal", TerminalID: "term-split", Placement: domain.TerminalPlacementSplit, BaseTabID: "kanban"}},
+					{tab: domain.SessionTab{Type: "terminal", ID: "term-split", Placement: domain.TerminalPlacementSplit, BaseTabID: "kanban"}},
 				},
 			},
 		},
@@ -1349,6 +1349,129 @@ func TestKillTerminalRejectsMainTerminalID(t *testing.T) {
 	}
 }
 
+func newRunningBrowserTabTestService() (*Service, *fakeSessionRepository) {
+	repo := newFakeSessionRepository()
+	repo.createdIntent = domain.SessionIntent{
+		ID: "intent-1",
+		CurrentRun: &domain.SessionRun{
+			ID:     "run-1",
+			Status: domain.SessionRunStatusRunning,
+		},
+	}
+	service := &Service{
+		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repo:           repo,
+		terminal:       &fakeTerminalManager{},
+		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels:  map[string]func(){},
+		terminalStates: map[string]sessionTerminalState{},
+	}
+	return service, repo
+}
+
+func TestPreviewBrowserTabCreatesNewTab(t *testing.T) {
+	t.Parallel()
+
+	service, repo := newRunningBrowserTabTestService()
+
+	info, err := service.PreviewBrowserTab(context.Background(), "intent-1", domain.PreviewBrowserTabParams{Target: "https://example.com"})
+	if err != nil {
+		t.Fatalf("PreviewBrowserTab failed: %v", err)
+	}
+	if info.TabID == "" || info.Target != "https://example.com" || info.SessionID != "intent-1" {
+		t.Fatalf("unexpected info: %#v", info)
+	}
+
+	tabs := service.terminalStates["intent-1"].tabs
+	if len(tabs) != 1 || tabs[0].tab.Type != "browser" || tabs[0].tab.ID != info.TabID || tabs[0].tab.Target != "https://example.com" {
+		t.Fatalf("unexpected tabs: %#v", tabs)
+	}
+
+	event := repo.lastAppendedEvent(t)
+	if event.Status != "tab_changed" {
+		t.Fatalf("expected tab_changed event, got %#v", event)
+	}
+}
+
+func TestPreviewBrowserTabNavigatesExistingTab(t *testing.T) {
+	t.Parallel()
+
+	service, _ := newRunningBrowserTabTestService()
+	service.terminalStates["intent-1"] = sessionTerminalState{
+		tabs: []sessionTabState{
+			{tab: domain.SessionTab{Type: "browser", ID: "tab-1", Target: "https://old.example.com"}},
+		},
+	}
+
+	info, err := service.PreviewBrowserTab(context.Background(), "intent-1", domain.PreviewBrowserTabParams{Target: "https://new.example.com", TabID: "tab-1"})
+	if err != nil {
+		t.Fatalf("PreviewBrowserTab failed: %v", err)
+	}
+	if info.TabID != "tab-1" || info.Target != "https://new.example.com" {
+		t.Fatalf("unexpected info: %#v", info)
+	}
+
+	tabs := service.terminalStates["intent-1"].tabs
+	if len(tabs) != 1 || tabs[0].tab.Target != "https://new.example.com" {
+		t.Fatalf("unexpected tabs after navigate: %#v", tabs)
+	}
+}
+
+func TestPreviewBrowserTabRejectsInvalidTarget(t *testing.T) {
+	t.Parallel()
+
+	service, _ := newRunningBrowserTabTestService()
+
+	_, err := service.PreviewBrowserTab(context.Background(), "intent-1", domain.PreviewBrowserTabParams{Target: "ftp://example.com"})
+	if _, ok := err.(*domain.ValidationError); !ok {
+		t.Fatalf("expected validation error, got %T %#v", err, err)
+	}
+}
+
+func TestPreviewBrowserTabUnknownTabIDNotFound(t *testing.T) {
+	t.Parallel()
+
+	service, _ := newRunningBrowserTabTestService()
+
+	_, err := service.PreviewBrowserTab(context.Background(), "intent-1", domain.PreviewBrowserTabParams{Target: "https://example.com", TabID: "missing"})
+	if _, ok := err.(*domain.NotFoundError); !ok {
+		t.Fatalf("expected not found error, got %T %#v", err, err)
+	}
+}
+
+func TestCloseBrowserTabRemovesTab(t *testing.T) {
+	t.Parallel()
+
+	service, repo := newRunningBrowserTabTestService()
+	service.terminalStates["intent-1"] = sessionTerminalState{
+		tabs: []sessionTabState{
+			{tab: domain.SessionTab{Type: "browser", ID: "tab-1", Target: "https://example.com"}},
+		},
+	}
+
+	if err := service.CloseBrowserTab(context.Background(), "intent-1", "tab-1"); err != nil {
+		t.Fatalf("CloseBrowserTab failed: %v", err)
+	}
+	if tabs := service.terminalStates["intent-1"].tabs; len(tabs) != 0 {
+		t.Fatalf("expected tab removed, got %#v", tabs)
+	}
+	event := repo.lastAppendedEvent(t)
+	if event.Status != "tab_changed" {
+		t.Fatalf("expected tab_changed event, got %#v", event)
+	}
+}
+
+func TestCloseBrowserTabUnknownIDNotFound(t *testing.T) {
+	t.Parallel()
+
+	service, _ := newRunningBrowserTabTestService()
+
+	err := service.CloseBrowserTab(context.Background(), "intent-1", "missing")
+	if _, ok := err.(*domain.NotFoundError); !ok {
+		t.Fatalf("expected not found error, got %T %#v", err, err)
+	}
+}
+
 func TestListIntentsHydratesMainTerminalID(t *testing.T) {
 	t.Parallel()
 
@@ -1420,7 +1543,7 @@ func TestHandleTerminalExitResumesMainTerminal(t *testing.T) {
 			"intent-1": {
 				mainTerminalID: "term-main-old",
 				tabs: []sessionTabState{{
-					tab: domain.SessionTab{Type: "terminal", TerminalID: "term-extra", Command: "yazi", Status: "running"},
+					tab: domain.SessionTab{Type: "terminal", ID: "term-extra", Command: "yazi", Status: "running"},
 				}},
 			},
 		},
@@ -1439,7 +1562,7 @@ func TestHandleTerminalExitResumesMainTerminal(t *testing.T) {
 	if state.mainTerminalID != startSpec.TerminalID {
 		t.Fatalf("expected terminal state to point at resumed terminal %q, got %#v", startSpec.TerminalID, state)
 	}
-	if len(state.tabs) != 1 || state.tabs[0].tab.TerminalID != "term-extra" {
+	if len(state.tabs) != 1 || state.tabs[0].tab.ID != "term-extra" {
 		t.Fatalf("expected existing tabs to be preserved, got %#v", state.tabs)
 	}
 	event := repo.lastAppendedEvent(t)

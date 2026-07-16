@@ -608,6 +608,40 @@ func (h *sessionsHandler) killTerminal(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *sessionsHandler) previewBrowserTab(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
+		return
+	}
+
+	var input domain.PreviewBrowserTabParams
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
+		return
+	}
+
+	tab, err := h.sessions.PreviewBrowserTab(r.Context(), r.PathValue("id"), input)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, tab)
+}
+
+func (h *sessionsHandler) closeBrowserTab(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
+		return
+	}
+
+	if err := h.sessions.CloseBrowserTab(r.Context(), r.PathValue("id"), r.PathValue("tabID")); err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func decodeJSON(r *http.Request, dst any) error {
 	defer func() {
 		if r.Body != nil {

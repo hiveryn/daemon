@@ -34,6 +34,8 @@ type (
 	TerminalPlacement          = sd.TerminalPlacement
 	CreateTerminalParams       = sd.CreateTerminalParams
 	SessionTab                 = sd.SessionTab
+	PreviewBrowserTabParams    = sd.PreviewBrowserTabParams
+	BrowserTabInfo             = sd.BrowserTabInfo
 	ArchitectConclusion        = sd.ArchitectConclusion
 	ConclusionSummary          = sd.ConclusionSummary
 )
@@ -121,4 +123,6 @@ type SessionService interface {
 	ListTerminals(context.Context, string) ([]TerminalInfo, error)
 	ListSessionTabs(context.Context, string) ([]SessionTab, error)
 	KillTerminal(context.Context, string, string) error
+	PreviewBrowserTab(context.Context, string, PreviewBrowserTabParams) (BrowserTabInfo, error)
+	CloseBrowserTab(context.Context, string, string) error
 }
