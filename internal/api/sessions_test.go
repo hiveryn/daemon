@@ -16,12 +16,12 @@ import (
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
-func TestCreateIntentArchitectEndpoint(t *testing.T) {
+func TestCreateSessionArchitectEndpoint(t *testing.T) {
 	t.Parallel()
 
 	service := &fakeSessionService{
-		createIntentResult: domain.SessionIntent{
-			ID:           "intent-1",
+		createSessionResult: domain.Session{
+			ID:           "session-1",
 			ArchitectKey: "hiveryn",
 			SessionType:  domain.SessionTypeArchitect,
 			ContextID:    "2026-05-13-1500",
@@ -37,22 +37,22 @@ func TestCreateIntentArchitectEndpoint(t *testing.T) {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, status, string(body))
 	}
 
-	var payload domain.SessionIntent
+	var payload domain.Session
 	decodeEnvelopeData(t, body, &payload)
-	if payload.ID != "intent-1" || payload.SessionType != domain.SessionTypeArchitect {
+	if payload.ID != "session-1" || payload.SessionType != domain.SessionTypeArchitect {
 		t.Fatalf("unexpected payload %#v", payload)
 	}
-	if service.lastCreateIntent.ArchitectKey != "hiveryn" || service.lastCreateIntent.SessionType != domain.SessionTypeArchitect {
-		t.Fatalf("unexpected create intent request %#v", service.lastCreateIntent)
+	if service.lastCreateSession.ArchitectKey != "hiveryn" || service.lastCreateSession.SessionType != domain.SessionTypeArchitect {
+		t.Fatalf("unexpected create session request %#v", service.lastCreateSession)
 	}
 }
 
-func TestCreateIntentFreeformEndpoint(t *testing.T) {
+func TestCreateSessionFreeformEndpoint(t *testing.T) {
 	t.Parallel()
 
 	service := &fakeSessionService{
-		createIntentResult: domain.SessionIntent{
-			ID:           "intent-2",
+		createSessionResult: domain.Session{
+			ID:           "session-2",
 			ArchitectKey: "hiveryn",
 			SessionType:  domain.SessionTypeFreeform,
 			ContextID:    "2026-05-13-1500-investigate-login-failure",
@@ -68,13 +68,13 @@ func TestCreateIntentFreeformEndpoint(t *testing.T) {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, status, string(body))
 	}
 
-	var payload domain.SessionIntent
+	var payload domain.Session
 	decodeEnvelopeData(t, body, &payload)
 	if payload.SessionType != domain.SessionTypeFreeform || payload.ContextID != "2026-05-13-1500-investigate-login-failure" {
 		t.Fatalf("unexpected payload %#v", payload)
 	}
-	if service.lastCreateIntent.Workdir != "/tmp/service-a" || service.lastCreateIntent.Slug != "investigate-login-failure" {
-		t.Fatalf("unexpected create intent request %#v", service.lastCreateIntent)
+	if service.lastCreateSession.Workdir != "/tmp/service-a" || service.lastCreateSession.Slug != "investigate-login-failure" {
+		t.Fatalf("unexpected create session request %#v", service.lastCreateSession)
 	}
 }
 
@@ -84,16 +84,16 @@ func TestCreateRunEndpoint(t *testing.T) {
 	service := &fakeSessionService{
 		createRunResult: domain.CreateSessionRunResult{
 			Run: domain.SessionRun{
-				ID:              "run-1",
-				SessionIntentID: "intent-1",
-				Status:          domain.SessionRunStatusRunning,
-				ProfileName:     "codex-work",
-				Workdir:         "/tmp/repo",
+				ID:          "run-1",
+				SessionID:   "session-1",
+				Status:      domain.SessionRunStatusRunning,
+				ProfileName: "codex-work",
+				Workdir:     "/tmp/repo",
 			},
 			MainTerminalID: "term-main-1",
 		},
-		getIntentResult: domain.SessionIntent{
-			ID:           "intent-1",
+		getSessionResult: domain.Session{
+			ID:           "session-1",
 			ArchitectKey: "hiveryn",
 			SessionType:  domain.SessionTypeTicket,
 			ContextID:    "ticket-1",
@@ -103,7 +103,7 @@ func TestCreateRunEndpoint(t *testing.T) {
 	}
 	handler := newSessionTestHandler(t, service)
 
-	status, body := request(t, handler, http.MethodPost, "/api/sessions/intent-1/runs", strings.NewReader(`{"profile_name":"codex-work","cols":120,"rows":40}`))
+	status, body := request(t, handler, http.MethodPost, "/api/sessions/session-1/runs", strings.NewReader(`{"profile_name":"codex-work","cols":120,"rows":40}`))
 	if status != http.StatusCreated {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, status, string(body))
 	}
@@ -114,17 +114,17 @@ func TestCreateRunEndpoint(t *testing.T) {
 		WSURL          string            `json:"ws_url"`
 	}
 	decodeEnvelopeData(t, body, &payload)
-	if payload.Run.ID != "run-1" || payload.Run.SessionIntentID != "intent-1" {
+	if payload.Run.ID != "run-1" || payload.Run.SessionID != "session-1" {
 		t.Fatalf("unexpected payload %#v", payload)
 	}
 	if payload.MainTerminalID != "term-main-1" {
 		t.Fatalf("expected main terminal id, got %#v", payload)
 	}
-	if payload.WSURL != "ws://example.com/ws/session/intent-1/terminal/term-main-1" {
+	if payload.WSURL != "ws://example.com/ws/session/session-1/terminal/term-main-1" {
 		t.Fatalf("unexpected ws url %#v", payload)
 	}
-	if service.lastCreateRunIntentID != "intent-1" {
-		t.Fatalf("unexpected create run intent id %q", service.lastCreateRunIntentID)
+	if service.lastCreateRunSessionID != "session-1" {
+		t.Fatalf("unexpected create run session id %q", service.lastCreateRunSessionID)
 	}
 	if service.lastCreateRun.ProfileName != "codex-work" || service.lastCreateRun.Cols != 120 || service.lastCreateRun.Rows != 40 {
 		t.Fatalf("unexpected create run request %#v", service.lastCreateRun)
@@ -135,8 +135,8 @@ func TestSessionsListEndpoint(t *testing.T) {
 	t.Parallel()
 
 	service := &fakeSessionService{
-		intents: []domain.SessionIntent{{
-			ID:           "intent-1",
+		sessions: []domain.Session{{
+			ID:           "session-1",
 			ArchitectKey: "hiveryn",
 			SessionType:  domain.SessionTypeTicket,
 			ContextID:    "ticket-1",
@@ -157,10 +157,10 @@ func TestSessionsListEndpoint(t *testing.T) {
 	}
 
 	var listed struct {
-		Sessions []domain.SessionIntent `json:"sessions"`
+		Sessions []domain.Session `json:"sessions"`
 	}
 	decodeEnvelopeData(t, body, &listed)
-	if len(listed.Sessions) != 1 || listed.Sessions[0].ID != "intent-1" {
+	if len(listed.Sessions) != 1 || listed.Sessions[0].ID != "session-1" {
 		t.Fatalf("unexpected sessions payload %#v", listed)
 	}
 	if listed.Sessions[0].CurrentRun == nil || listed.Sessions[0].CurrentRun.MainTerminalID != "term-main-1" {
@@ -181,7 +181,7 @@ func TestSessionWebSocketBridge(t *testing.T) {
 	server := httptest.NewServer(newSessionTestHandler(t, service))
 	defer server.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/session/intent-1/terminal/term-1"
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/session/session-1/terminal/term-1"
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
@@ -230,7 +230,7 @@ func TestSessionTabsEndpoint(t *testing.T) {
 	}
 	handler := newSessionTestHandler(t, service)
 
-	status, body := request(t, handler, http.MethodGet, "/api/sessions/intent-1/tabs", nil)
+	status, body := request(t, handler, http.MethodGet, "/api/sessions/session-1/tabs", nil)
 	if status != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, status, string(body))
 	}
@@ -249,15 +249,15 @@ func TestCreateTerminalEndpointPassesPlacement(t *testing.T) {
 	t.Parallel()
 
 	service := &fakeSessionService{
-		createTerminalResult: domain.TerminalInfo{TerminalID: "term-1", SessionID: "intent-1", Command: "/bin/zsh", Status: "running"},
+		createTerminalResult: domain.TerminalInfo{TerminalID: "term-1", SessionID: "session-1", Command: "/bin/zsh", Status: "running"},
 	}
 	handler := newSessionTestHandler(t, service)
 
-	status, body := request(t, handler, http.MethodPost, "/api/sessions/intent-1/terminals", strings.NewReader(`{"placement":"split","base_tab_id":"kanban"}`))
+	status, body := request(t, handler, http.MethodPost, "/api/sessions/session-1/terminals", strings.NewReader(`{"placement":"split","base_tab_id":"kanban"}`))
 	if status != http.StatusCreated {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, status, string(body))
 	}
-	if service.lastCreateTerminalID != "intent-1" {
+	if service.lastCreateTerminalID != "session-1" {
 		t.Fatalf("unexpected session id %q", service.lastCreateTerminalID)
 	}
 	if service.lastCreateTerminalParams.Placement != domain.TerminalPlacementSplit {
@@ -279,7 +279,7 @@ func TestCreateTerminalEndpointRejectsCommandField(t *testing.T) {
 
 	handler := newSessionTestHandler(t, &fakeSessionService{})
 
-	status, body := request(t, handler, http.MethodPost, "/api/sessions/intent-1/terminals", strings.NewReader(`{"command":"yazi"}`))
+	status, body := request(t, handler, http.MethodPost, "/api/sessions/session-1/terminals", strings.NewReader(`{"command":"yazi"}`))
 	if status != http.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, status, string(body))
 	}
@@ -292,15 +292,15 @@ func TestPreviewBrowserTabEndpoint(t *testing.T) {
 	t.Parallel()
 
 	service := &fakeSessionService{
-		previewBrowserTabResult: domain.BrowserTabInfo{TabID: "tab-1", SessionID: "intent-1", Target: "https://example.com"},
+		previewBrowserTabResult: domain.BrowserTabInfo{TabID: "tab-1", SessionID: "session-1", Target: "https://example.com"},
 	}
 	handler := newSessionTestHandler(t, service)
 
-	status, body := request(t, handler, http.MethodPost, "/api/sessions/intent-1/browser-tabs", strings.NewReader(`{"target":"https://example.com"}`))
+	status, body := request(t, handler, http.MethodPost, "/api/sessions/session-1/browser-tabs", strings.NewReader(`{"target":"https://example.com"}`))
 	if status != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, status, string(body))
 	}
-	if service.lastPreviewBrowserTabID != "intent-1" {
+	if service.lastPreviewBrowserTabID != "session-1" {
 		t.Fatalf("unexpected session id %q", service.lastPreviewBrowserTabID)
 	}
 	if service.lastPreviewBrowserParams.Target != "https://example.com" {
@@ -320,11 +320,11 @@ func TestCloseBrowserTabEndpoint(t *testing.T) {
 	service := &fakeSessionService{}
 	handler := newSessionTestHandler(t, service)
 
-	status, body := request(t, handler, http.MethodDelete, "/api/sessions/intent-1/browser-tabs/tab-1", nil)
+	status, body := request(t, handler, http.MethodDelete, "/api/sessions/session-1/browser-tabs/tab-1", nil)
 	if status != http.StatusNoContent {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusNoContent, status, string(body))
 	}
-	if service.lastCloseBrowserTabID != "intent-1" || service.lastCloseBrowserTabTabID != "tab-1" {
+	if service.lastCloseBrowserTabID != "session-1" || service.lastCloseBrowserTabTabID != "tab-1" {
 		t.Fatalf("unexpected close call: id=%q tabID=%q", service.lastCloseBrowserTabID, service.lastCloseBrowserTabTabID)
 	}
 }
@@ -333,11 +333,11 @@ func TestSessionEventsSSEBacklog(t *testing.T) {
 	t.Parallel()
 
 	service := &fakeSessionServiceWithEvents{
-		backlog: []domain.SessionEvent{{ID: "evt-1", SessionIntentID: "intent-1", Type: "status", Status: "working"}},
+		backlog: []domain.SessionEvent{{ID: "evt-1", SessionID: "session-1", Type: "status", Status: "working"}},
 	}
 	handler := newSessionTestHandler(t, service)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/intent-1/events", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/session-1/events", nil)
 	ctx, cancel := context.WithCancel(req.Context())
 	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
@@ -392,11 +392,11 @@ func TestConcludeSessionWorkerSuccess(t *testing.T) {
 	t.Parallel()
 
 	service := &fakeSessionService{
-		concludeResult: domain.ConcludeSessionResult{SessionID: "intent-1", ArchitectKey: "hiveryn", TicketID: "ticket-1"},
+		concludeResult: domain.ConcludeSessionResult{SessionID: "session-1", ArchitectKey: "hiveryn", TicketID: "ticket-1"},
 	}
 	handler := newSessionTestHandler(t, service)
 
-	status, body := requestJSON(t, handler, http.MethodPost, "/api/sessions/intent-1/conclude", map[string]any{
+	status, body := requestJSON(t, handler, http.MethodPost, "/api/sessions/session-1/conclude", map[string]any{
 		"body":    "Implemented feature X.",
 		"commits": []any{map[string]any{"sha": "abc123", "repo": "daemon"}},
 	})
@@ -418,38 +418,38 @@ func TestConcludeSessionEmptyBodySucceeds(t *testing.T) {
 	t.Parallel()
 
 	service := &fakeSessionService{
-		concludeResult: domain.ConcludeSessionResult{SessionID: "intent-1", ArchitectKey: "hiveryn"},
+		concludeResult: domain.ConcludeSessionResult{SessionID: "session-1", ArchitectKey: "hiveryn"},
 	}
 	handler := newSessionTestHandler(t, service)
 
-	status, body := requestJSON(t, handler, http.MethodPost, "/api/sessions/intent-1/conclude", map[string]any{})
+	status, body := requestJSON(t, handler, http.MethodPost, "/api/sessions/session-1/conclude", map[string]any{})
 	if status != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, status, string(body))
 	}
 
 	var payload map[string]any
 	decodeEnvelopeData(t, body, &payload)
-	if payload["session_id"] != "intent-1" {
-		t.Fatalf("expected session_id=intent-1, got %#v", payload)
+	if payload["session_id"] != "session-1" {
+		t.Fatalf("expected session_id=session-1, got %#v", payload)
 	}
 }
 
 func TestDiscardSessionSuccess(t *testing.T) {
 	service := &fakeSessionService{
-		discardResult: domain.ConcludeSessionResult{SessionID: "intent-1", ArchitectKey: "hiveryn", TicketID: "ticket-1"},
+		discardResult: domain.ConcludeSessionResult{SessionID: "session-1", ArchitectKey: "hiveryn", TicketID: "ticket-1"},
 	}
 	handler := newSessionTestHandler(t, service)
 
-	status, body := request(t, handler, http.MethodPost, "/api/sessions/intent-1/discard", nil)
+	status, body := request(t, handler, http.MethodPost, "/api/sessions/session-1/discard", nil)
 	if status != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", status, body)
 	}
-	if service.lastDiscardSessionID != "intent-1" {
-		t.Fatalf("expected discard session intent-1, got %q", service.lastDiscardSessionID)
+	if service.lastDiscardSessionID != "session-1" {
+		t.Fatalf("expected discard session-1, got %q", service.lastDiscardSessionID)
 	}
 	var payload map[string]any
 	decodeEnvelopeData(t, body, &payload)
-	if payload["session_id"] != "intent-1" || payload["ticket_id"] != "ticket-1" {
+	if payload["session_id"] != "session-1" || payload["ticket_id"] != "ticket-1" {
 		t.Fatalf("unexpected payload %#v", payload)
 	}
 }
@@ -467,15 +467,15 @@ func newSessionTestHandler(t *testing.T, sessions domain.SessionService) http.Ha
 }
 
 type fakeSessionService struct {
-	createIntentResult       domain.SessionIntent
-	createIntentErr          error
-	lastCreateIntent         domain.CreateSessionIntentRequest
+	createSessionResult      domain.Session
+	createSessionErr         error
+	lastCreateSession        domain.CreateSessionRequest
 	createRunResult          domain.CreateSessionRunResult
 	createRunErr             error
-	lastCreateRunIntentID    string
+	lastCreateRunSessionID   string
 	lastCreateRun            domain.CreateSessionRunRequest
-	intents                  []domain.SessionIntent
-	getIntentResult          domain.SessionIntent
+	sessions                 []domain.Session
+	getSessionResult         domain.Session
 	attachTerminal           func(context.Context, string, string) (domain.TerminalAttachment, error)
 	createTerminalResult     domain.TerminalInfo
 	createTerminalErr        error
@@ -489,11 +489,17 @@ type fakeSessionService struct {
 	discardResult            domain.ConcludeSessionResult
 	discardErr               error
 	lastDiscardSessionID     string
-	requestConclusionResult  domain.ConcludeSessionResult
+	requestConclusionResult  domain.IntentResolution[domain.ConcludeSessionResult]
 	requestConclusionErr     error
-	approveConclusionResult  domain.ConcludeSessionResult
-	approveConclusionErr     error
-	rejectConclusionErr      error
+	createWorkTicketResult   domain.IntentResolution[domain.Ticket]
+	createWorkTicketErr      error
+	lastCreateWorkTicketID   string
+	lastCreateWorkTicket     domain.CreateTicketParams
+	approveIntentResult      domain.Intent
+	approveIntentErr         error
+	denyIntentErr            error
+	lastIntentID             string
+	lastDenyReason           string
 	readConclusionResult     domain.ArchitectConclusion
 	readConclusionErr        error
 	previewBrowserTabResult  domain.BrowserTabInfo
@@ -505,13 +511,13 @@ type fakeSessionService struct {
 	lastCloseBrowserTabTabID string
 }
 
-func (f *fakeSessionService) CreateIntent(_ context.Context, req domain.CreateSessionIntentRequest) (domain.SessionIntent, error) {
-	f.lastCreateIntent = req
-	return f.createIntentResult, f.createIntentErr
+func (f *fakeSessionService) CreateSession(_ context.Context, req domain.CreateSessionRequest) (domain.Session, error) {
+	f.lastCreateSession = req
+	return f.createSessionResult, f.createSessionErr
 }
 
 func (f *fakeSessionService) CreateRun(_ context.Context, id string, req domain.CreateSessionRunRequest) (domain.CreateSessionRunResult, error) {
-	f.lastCreateRunIntentID = id
+	f.lastCreateRunSessionID = id
 	f.lastCreateRun = req
 	return f.createRunResult, f.createRunErr
 }
@@ -527,22 +533,31 @@ func (f *fakeSessionService) UnspawnTicketSession(_ context.Context, id string) 
 	return f.discardResult, f.discardErr
 }
 
-func (f *fakeSessionService) RequestConclusion(_ context.Context, id string, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
+func (f *fakeSessionService) RequestConclusion(_ context.Context, id string, params domain.ConcludeSessionParams) (domain.IntentResolution[domain.ConcludeSessionResult], error) {
 	f.lastConcludeSessionID = id
 	f.lastConcludeParams = params
 	return f.requestConclusionResult, f.requestConclusionErr
+}
+
+func (f *fakeSessionService) RequestCreateWorkTicket(_ context.Context, id string, params domain.CreateTicketParams) (domain.IntentResolution[domain.Ticket], error) {
+	f.lastCreateWorkTicketID = id
+	f.lastCreateWorkTicket = params
+	return f.createWorkTicketResult, f.createWorkTicketErr
 }
 
 func (f *fakeSessionService) MoveTicketToDone(_ context.Context, architectKey, ticketID string, params domain.MoveTicketToDoneParams) (domain.MoveTicketToDoneResult, error) {
 	return domain.MoveTicketToDoneResult{}, nil
 }
 
-func (f *fakeSessionService) ApproveConclusion(_ context.Context, id string) (domain.ConcludeSessionResult, error) {
-	return f.approveConclusionResult, f.approveConclusionErr
+func (f *fakeSessionService) ApproveIntent(_ context.Context, sessionID, intentID string) (domain.Intent, error) {
+	f.lastIntentID = intentID
+	return f.approveIntentResult, f.approveIntentErr
 }
 
-func (f *fakeSessionService) RejectConclusion(_ context.Context, id string, reason string) error {
-	return f.rejectConclusionErr
+func (f *fakeSessionService) DenyIntent(_ context.Context, sessionID, intentID, reason string) error {
+	f.lastIntentID = intentID
+	f.lastDenyReason = reason
+	return f.denyIntentErr
 }
 
 func (f *fakeSessionService) ReadConclusion(_ context.Context, architectKey, id string) (domain.ArchitectConclusion, error) {
@@ -557,20 +572,20 @@ func (f *fakeSessionService) ListConclusions(_ context.Context, key string, limi
 	return nil, nil
 }
 
-func (f *fakeSessionService) GetIntent(_ context.Context, id string) (domain.SessionIntent, error) {
-	if f.getIntentResult.ID != "" {
-		return f.getIntentResult, nil
+func (f *fakeSessionService) GetSession(_ context.Context, id string) (domain.Session, error) {
+	if f.getSessionResult.ID != "" {
+		return f.getSessionResult, nil
 	}
-	for _, intent := range f.intents {
-		if intent.ID == id {
-			return intent, nil
+	for _, session := range f.sessions {
+		if session.ID == id {
+			return session, nil
 		}
 	}
-	return domain.SessionIntent{ID: id}, nil
+	return domain.Session{ID: id}, nil
 }
 
-func (f *fakeSessionService) ListIntents(context.Context) ([]domain.SessionIntent, error) {
-	return f.intents, nil
+func (f *fakeSessionService) ListSessions(context.Context) ([]domain.Session, error) {
+	return f.sessions, nil
 }
 
 func (f *fakeSessionService) ListSessionEvents(context.Context, string) ([]domain.SessionEvent, error) {
@@ -705,8 +720,8 @@ type fakeSessionServiceWithEvents struct {
 	backlog []domain.SessionEvent
 }
 
-func (f *fakeSessionServiceWithEvents) GetIntent(context.Context, string) (domain.SessionIntent, error) {
-	return domain.SessionIntent{ID: "intent-1"}, nil
+func (f *fakeSessionServiceWithEvents) GetSession(context.Context, string) (domain.Session, error) {
+	return domain.Session{ID: "session-1"}, nil
 }
 
 func (f *fakeSessionServiceWithEvents) ListSessionEvents(context.Context, string) ([]domain.SessionEvent, error) {

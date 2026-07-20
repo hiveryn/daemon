@@ -225,7 +225,7 @@ func TestArchitectsStatusAPI(t *testing.T) {
 	ticketStartedAt := time.Date(2026, 6, 7, 18, 21, 42, 123456000, time.UTC)
 	freeformStartedAt := time.Date(2026, 6, 7, 18, 25, 10, 0, time.UTC)
 	service := &fakeSessionService{
-		intents: []domain.SessionIntent{
+		sessions: []domain.Session{
 			{
 				ID:           "architect-session",
 				ArchitectKey: "hiveryn",
@@ -431,7 +431,7 @@ func TestArchitectsStatusAPIFailsWhenRunningTicketIsMissing(t *testing.T) {
 		Config:       cfg,
 		ConfigSource: source,
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Sessions: &fakeSessionService{intents: []domain.SessionIntent{{
+		Sessions: &fakeSessionService{sessions: []domain.Session{{
 			ID:           "ticket-session",
 			ArchitectKey: "hiveryn",
 			SessionType:  domain.SessionTypeTicket,

@@ -75,40 +75,40 @@ func (h *architectsHandler) listStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	statuses, byKey := architectStatusesFromConfig(cfg)
-	intents, err := h.sessions.ListIntents(r.Context())
+	sessions, err := h.sessions.ListSessions(r.Context())
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
 	}
 
-	for _, intent := range intents {
-		if intent.CurrentRun == nil || intent.CurrentRun.Status != domain.SessionRunStatusRunning {
+	for _, session := range sessions {
+		if session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
 			continue
 		}
 
-		architectStatus, ok := byKey[intent.ArchitectKey]
+		architectStatus, ok := byKey[session.ArchitectKey]
 		if !ok {
-			writeDomainError(w, r, fmt.Errorf("running session %s references architect %q not found in config", intent.ID, intent.ArchitectKey))
+			writeDomainError(w, r, fmt.Errorf("running session %s references architect %q not found in config", session.ID, session.ArchitectKey))
 			return
 		}
 
-		switch intent.SessionType {
+		switch session.SessionType {
 		case domain.SessionTypeArchitect:
 			if architectStatus.Status != nil {
-				writeDomainError(w, r, fmt.Errorf("multiple running architect sessions found for architect %q", intent.ArchitectKey))
+				writeDomainError(w, r, fmt.Errorf("multiple running architect sessions found for architect %q", session.ArchitectKey))
 				return
 			}
-			status := intent.CurrentRun.AgentStatus
+			status := session.CurrentRun.AgentStatus
 			architectStatus.Status = &status
 		case domain.SessionTypeTicket, domain.SessionTypeFreeform:
-			session, err := h.buildArchitectWorkerSession(r.Context(), architectStatus.Path, intent)
+			session, err := h.buildArchitectWorkerSession(r.Context(), architectStatus.Path, session)
 			if err != nil {
 				writeDomainError(w, r, err)
 				return
 			}
 			architectStatus.Sessions = append(architectStatus.Sessions, session)
 		default:
-			writeDomainError(w, r, fmt.Errorf("session %s has unsupported session type %q", intent.ID, intent.SessionType))
+			writeDomainError(w, r, fmt.Errorf("session %s has unsupported session type %q", session.ID, session.SessionType))
 			return
 		}
 	}
@@ -145,40 +145,40 @@ func architectStatusesFromConfig(cfg config.Config) ([]architectStatusResponse, 
 	return statuses, byKey
 }
 
-func (h *architectsHandler) buildArchitectWorkerSession(ctx context.Context, architectPath string, intent domain.SessionIntent) (architectWorkerSessionResponse, error) {
-	if intent.CurrentRun == nil {
-		return architectWorkerSessionResponse{}, fmt.Errorf("running session %s is missing current run", intent.ID)
+func (h *architectsHandler) buildArchitectWorkerSession(ctx context.Context, architectPath string, session domain.Session) (architectWorkerSessionResponse, error) {
+	if session.CurrentRun == nil {
+		return architectWorkerSessionResponse{}, fmt.Errorf("running session %s is missing current run", session.ID)
 	}
-	if intent.CurrentRun.StartedAt == nil {
-		return architectWorkerSessionResponse{}, fmt.Errorf("running session %s current run is missing started_at", intent.ID)
+	if session.CurrentRun.StartedAt == nil {
+		return architectWorkerSessionResponse{}, fmt.Errorf("running session %s current run is missing started_at", session.ID)
 	}
 
-	title, err := h.architectWorkerSessionTitle(ctx, architectPath, intent)
+	title, err := h.architectWorkerSessionTitle(ctx, architectPath, session)
 	if err != nil {
 		return architectWorkerSessionResponse{}, err
 	}
 
 	return architectWorkerSessionResponse{
-		ID:          intent.ID,
+		ID:          session.ID,
 		Title:       title,
-		Status:      intent.CurrentRun.Status,
-		AgentStatus: intent.CurrentRun.AgentStatus,
-		StartedAt:   intent.CurrentRun.StartedAt.UTC(),
+		Status:      session.CurrentRun.Status,
+		AgentStatus: session.CurrentRun.AgentStatus,
+		StartedAt:   session.CurrentRun.StartedAt.UTC(),
 	}, nil
 }
 
-func (h *architectsHandler) architectWorkerSessionTitle(ctx context.Context, architectPath string, intent domain.SessionIntent) (string, error) {
-	switch intent.SessionType {
+func (h *architectsHandler) architectWorkerSessionTitle(ctx context.Context, architectPath string, session domain.Session) (string, error) {
+	switch session.SessionType {
 	case domain.SessionTypeTicket:
-		ticket, err := h.tickets.GetTicket(ctx, architectPath, intent.ContextID)
+		ticket, err := h.tickets.GetTicket(ctx, architectPath, session.ContextID)
 		if err != nil {
-			return "", fmt.Errorf("read ticket title for session %s: %w", intent.ID, err)
+			return "", fmt.Errorf("read ticket title for session %s: %w", session.ID, err)
 		}
 		return ticket.Title, nil
 	case domain.SessionTypeFreeform:
-		return readableFreeformTitle(intent.ContextID)
+		return readableFreeformTitle(session.ContextID)
 	default:
-		return "", fmt.Errorf("session %s has unsupported session type %q", intent.ID, intent.SessionType)
+		return "", fmt.Errorf("session %s has unsupported session type %q", session.ID, session.SessionType)
 	}
 }
 

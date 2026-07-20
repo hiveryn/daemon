@@ -47,6 +47,14 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("unsupported HIVERYN_SESSION_TYPE %q", sessionType)
 	}
 
+	// Every session type registers at least one intent-routed tool
+	// (createWorkTicket and a conclude tool), and intents are addressed by
+	// session id — so this is required up front rather than checked lazily per
+	// handler. Not role-conditional on purpose.
+	if strings.TrimSpace(cfg.SessionID) == "" {
+		return nil, fmt.Errorf("mcp server requires HIVERYN_SESSION_ID to be set")
+	}
+
 	server := &Server{
 		mcpServer: mcp.NewServer(&mcp.Implementation{
 			Name:    "hiveryn-daemon-mcp",

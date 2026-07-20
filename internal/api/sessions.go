@@ -15,25 +15,25 @@ var wsUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-func (h *sessionsHandler) createIntent(w http.ResponseWriter, r *http.Request) {
+func (h *sessionsHandler) createSession(w http.ResponseWriter, r *http.Request) {
 	if h.sessions == nil {
 		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
 		return
 	}
 
-	var input domain.CreateSessionIntentRequest
+	var input domain.CreateSessionRequest
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
 		return
 	}
 
-	intent, err := h.sessions.CreateIntent(r.Context(), input)
+	session, err := h.sessions.CreateSession(r.Context(), input)
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
 	}
 
-	writeJSON(w, r, http.StatusCreated, intent)
+	writeJSON(w, r, http.StatusCreated, session)
 }
 
 func (h *sessionsHandler) list(w http.ResponseWriter, r *http.Request) {
@@ -42,14 +42,14 @@ func (h *sessionsHandler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	intents, err := h.sessions.ListIntents(r.Context())
+	sessions, err := h.sessions.ListSessions(r.Context())
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string][]domain.SessionIntent{
-		"sessions": intents,
+	writeJSON(w, r, http.StatusOK, map[string][]domain.Session{
+		"sessions": sessions,
 	})
 }
 
@@ -59,13 +59,13 @@ func (h *sessionsHandler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	intent, err := h.sessions.GetIntent(r.Context(), r.PathValue("id"))
+	session, err := h.sessions.GetSession(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
 	}
 
-	writeJSON(w, r, http.StatusOK, intent)
+	writeJSON(w, r, http.StatusOK, session)
 }
 
 func (h *sessionsHandler) getTicket(w http.ResponseWriter, r *http.Request) {
@@ -74,13 +74,13 @@ func (h *sessionsHandler) getTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	intent, err := h.sessions.GetIntent(r.Context(), r.PathValue("id"))
+	session, err := h.sessions.GetSession(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
 	}
 
-	if intent.SessionType != domain.SessionTypeTicket {
+	if session.SessionType != domain.SessionTypeTicket {
 		writeDomainError(w, r, &domain.NotFoundError{
 			Resource: "ticket",
 			ID:       r.PathValue("id"),
@@ -99,13 +99,13 @@ func (h *sessionsHandler) getTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	architectPath, ok := getArchitectPath(cfg, intent.ArchitectKey)
+	architectPath, ok := getArchitectPath(cfg, session.ArchitectKey)
 	if !ok {
-		writeArchitectNotFound(w, r, intent.ArchitectKey)
+		writeArchitectNotFound(w, r, session.ArchitectKey)
 		return
 	}
 
-	ticket, err := h.tickets.GetTicket(r.Context(), architectPath, intent.ContextID)
+	ticket, err := h.tickets.GetTicket(r.Context(), architectPath, session.ContextID)
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
@@ -133,17 +133,17 @@ func (h *sessionsHandler) createRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.publishArchitect != nil {
-		intent, intentErr := h.sessions.GetIntent(r.Context(), r.PathValue("id"))
+		session, intentErr := h.sessions.GetSession(r.Context(), r.PathValue("id"))
 		if intentErr != nil {
 			writeDomainError(w, r, intentErr)
 			return
 		}
-		if intent.SessionType == domain.SessionTypeTicket {
-			h.publishArchitect(intent.ArchitectKey, domain.ArchitectEvent{
+		if session.SessionType == domain.SessionTypeTicket {
+			h.publishArchitect(session.ArchitectKey, domain.ArchitectEvent{
 				Type:         "workspace_changed",
-				ArchitectKey: intent.ArchitectKey,
+				ArchitectKey: session.ArchitectKey,
 				Reason:       "ticket_moved",
-				TicketID:     intent.ContextID,
+				TicketID:     session.ContextID,
 				At:           time.Now().UTC(),
 			})
 		}
@@ -228,132 +228,6 @@ func (h *sessionsHandler) discard(w http.ResponseWriter, r *http.Request) {
 		"session_id": result.SessionID,
 		"ticket_id":  result.TicketID,
 	})
-}
-
-func (h *sessionsHandler) requestConclusion(w http.ResponseWriter, r *http.Request) {
-	if h.sessions == nil {
-		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
-		return
-	}
-
-	// Structured conclusion input. The daemon renders these into the canonical
-	// conclusion.md body (see sessionruntime.render*ConclusionBody); Body is not
-	// accepted from the wire. The [fm] metadata fields (commits/outcome/
-	// rejection_reason) still flow into frontmatter as before.
-	var input struct {
-		Commits         []domain.CommitRef `json:"commits,omitempty"`
-		Outcome         string             `json:"outcome,omitempty"`
-		RejectionReason string             `json:"rejection_reason,omitempty"`
-		Summary         string             `json:"summary,omitempty"`
-		Narrative       string             `json:"narrative,omitempty"`
-		Implementation  string             `json:"implementation,omitempty"`
-		Findings        string             `json:"findings,omitempty"`
-		Verification    string             `json:"verification,omitempty"`
-		TicketsTouched  string             `json:"tickets_touched,omitempty"`
-		Decisions       string             `json:"decisions,omitempty"`
-		ConfigChanges   string             `json:"config_changes,omitempty"`
-		UserPriorities  string             `json:"user_priorities,omitempty"`
-		Deviations      string             `json:"deviations,omitempty"`
-		FollowUps       string             `json:"follow_ups,omitempty"`
-		Recommendations string             `json:"recommendations,omitempty"`
-		OpenQuestions   string             `json:"open_questions,omitempty"`
-		NextSteps       string             `json:"next_steps,omitempty"`
-	}
-	if err := decodeJSON(r, &input); err != nil {
-		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
-		return
-	}
-
-	result, err := h.sessions.RequestConclusion(r.Context(), r.PathValue("id"), domain.ConcludeSessionParams{
-		Commits:         input.Commits,
-		Outcome:         domain.TicketOutcome(input.Outcome),
-		RejectionReason: input.RejectionReason,
-		Summary:         input.Summary,
-		Narrative:       input.Narrative,
-		Implementation:  input.Implementation,
-		Findings:        input.Findings,
-		Verification:    input.Verification,
-		TicketsTouched:  input.TicketsTouched,
-		Decisions:       input.Decisions,
-		ConfigChanges:   input.ConfigChanges,
-		UserPriorities:  input.UserPriorities,
-		Deviations:      input.Deviations,
-		FollowUps:       input.FollowUps,
-		Recommendations: input.Recommendations,
-		OpenQuestions:   input.OpenQuestions,
-		NextSteps:       input.NextSteps,
-	})
-	if err != nil {
-		writeDomainError(w, r, err)
-		return
-	}
-
-	if result.TicketID != "" && h.publishArchitect != nil {
-		h.publishArchitect(result.ArchitectKey, domain.ArchitectEvent{
-			Type:         "workspace_changed",
-			ArchitectKey: result.ArchitectKey,
-			Reason:       "ticket_concluded",
-			TicketID:     result.TicketID,
-			At:           time.Now().UTC(),
-		})
-	}
-
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"success":    true,
-		"session_id": result.SessionID,
-		"ticket_id":  result.TicketID,
-	})
-}
-
-func (h *sessionsHandler) approveConclusion(w http.ResponseWriter, r *http.Request) {
-	if h.sessions == nil {
-		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
-		return
-	}
-
-	result, err := h.sessions.ApproveConclusion(r.Context(), r.PathValue("id"))
-	if err != nil {
-		writeDomainError(w, r, err)
-		return
-	}
-
-	if result.TicketID != "" && h.publishArchitect != nil {
-		h.publishArchitect(result.ArchitectKey, domain.ArchitectEvent{
-			Type:         "workspace_changed",
-			ArchitectKey: result.ArchitectKey,
-			Reason:       "ticket_concluded",
-			TicketID:     result.TicketID,
-			At:           time.Now().UTC(),
-		})
-	}
-
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"success":    true,
-		"session_id": result.SessionID,
-		"ticket_id":  result.TicketID,
-	})
-}
-
-func (h *sessionsHandler) rejectConclusion(w http.ResponseWriter, r *http.Request) {
-	if h.sessions == nil {
-		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
-		return
-	}
-
-	var input struct {
-		Reason string `json:"reason"`
-	}
-	if err := decodeJSON(r, &input); err != nil {
-		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
-		return
-	}
-
-	if err := h.sessions.RejectConclusion(r.Context(), r.PathValue("id"), input.Reason); err != nil {
-		writeDomainError(w, r, err)
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *sessionsHandler) events(w http.ResponseWriter, r *http.Request) {

@@ -50,7 +50,7 @@ shell: /bin/zsh
 port: 4201
 bind_address: 127.0.0.1
 log_level: info
-conclusion_approval_timeout: 20
+intent_wait_timeout: 20
 ```
 
 | Field | Default |
@@ -59,7 +59,7 @@ conclusion_approval_timeout: 20
 | `port` | `4201` |
 | `bind_address` | `127.0.0.1` (localhost only) |
 | `log_level` | `info` |
-| `conclusion_approval_timeout` | `20` (seconds; 0 = infinite, auto-approves on timeout) |
+| `intent_wait_timeout` | `20` (seconds) — how long a pending intent waits for the user before its tool's policy fires. Values `<= 0` are coerced back to the default. Must stay safely under the smallest agent-runtime tool-call ceiling (~60s). |
 
 ### `variants.yaml` — agent variants
 
@@ -188,6 +188,8 @@ Maps are two-level: top-level keys are sections (`global`, `kanban`, `event-log`
 
 Local runtime state is stored at `HIVERYN_HOME/daemon.db` by default and managed by the daemon through migrations. Schema changes should be written as new migration files in `internal/store/migrations/`. Variants, architects, repo mappings, and tab layouts live in `HIVERYN_HOME/*.yaml` by default. Your architect workspace (tickets, conclusions) is stored separately as markdown files and is never affected. `--db` overrides the SQLite path explicitly.
 
+> Pre-release note: the base schema (`0001_sessions.sql`) is rewritten in place rather than migrated — the daemon carries no migration debt while it has no users. A `daemon.db` created before such a rewrite will fail loudly on the first query (`no such table: sessions`). Delete `HIVERYN_HOME/daemon.db*` and restart to recreate it.
+
 The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/daemon.jsonl` and `HIVERYN_HOME/logs/requests.jsonl` by default. `daemon.jsonl` contains app/runtime logs with source location metadata; `requests.jsonl` contains one JSON object per HTTP request/response, including the response envelope for JSON API calls.
 
 ## API
@@ -225,23 +227,24 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `GET` | `/api/fs/file?path=<absolute path>` | Read a file's raw bytes with a sniffed `Content-Type`, `X-File-Size`, and `X-File-Truncated` headers (2 MiB read cap); not architect-scoped |
 | `PUT` | `/api/fs/file?path=<absolute path>` | Overwrite an existing file from a JSON `{ "content": "<string>" }` body (atomic temp-file+rename, preserves the file's mode); returns `{ path, size, mtime }`. Overwrite-only (`NOT_FOUND` if missing, `VALIDATION` if a directory or over the 2 MiB cap); not architect-scoped |
 | `GET` | `/api/fs/search?path=<absolute path>&q=<query>&limit=<1..100>` | Ranked filename search under a root (case-insensitive substring/subsequence, basename matches first). Git-aware: roots inside a work tree list via `git ls-files` (tracked + untracked-unignored); plain roots are walked, with nested repos listed the same way, so gitignored files never appear. 100-result cap, 200k-candidate walk budget with a `truncated` flag |
-| `POST` | `/api/sessions` | Create a durable session intent for architect planning, ticket work, or freeform exploration |
-| `GET` | `/api/sessions` | List session intents with their current run, if any |
-| `GET` | `/api/sessions/{id}` | Get one session intent |
-| `POST` | `/api/sessions/{id}/runs` | Start a run for a session intent using an agent profile; ticket runs move the ticket backlog → progress on successful launch |
-| `POST` | `/api/sessions/{id}/conclude` | Conclude an intent's running run, publish `ended`, kill its PTYs, and delete the intent row; architect conclude returns `CONFLICT` if same-architect ticket sessions are still running |
-| `POST` | `/api/sessions/{id}/discard` | Discard a ticket session without writing a conclusion: move the ticket progress → backlog, publish `ended` with `raw.lifecycle=discarded`, kill PTYs, delete the run, and delete the intent row |
-| `POST` | `/api/sessions/{id}/request-conclusion` | Request conclusion approval (blocking). Renders the structured conclusion input into the canonical `conclusion.md` body, stores the pending approval, publishes `approval_required` SSE event, blocks until approved, rejected, or timeout (auto-approves). Called by the MCP conclude tools (`concludeArchitectSession`, `concludeTicketSession`, `concludeFreeformSession`). |
-| `POST` | `/api/sessions/{id}/approve-conclusion` | Approve a pending conclusion request and run the conclusion. Called by the desktop app. |
-| `POST` | `/api/sessions/{id}/reject-conclusion` | Reject a pending conclusion request with a reason. Returns the reason as a validation error to the blocked `request-conclusion` caller so the agent can retry. |
-| `GET` | `/api/sessions/{id}/tabs` | Get the resolved right-pane tab layout for a session intent's current run |
+| `POST` | `/api/sessions` | Create a durable session for architect planning, ticket work, or freeform exploration |
+| `GET` | `/api/sessions` | List sessions with their current run, if any |
+| `GET` | `/api/sessions/{id}` | Get one session |
+| `POST` | `/api/sessions/{id}/runs` | Start a run for a session using an agent profile; ticket runs move the ticket backlog → progress on successful launch |
+| `POST` | `/api/sessions/{id}/conclude` | Conclude a session's running run, publish `ended`, kill its PTYs, and delete the session row; architect conclude returns `CONFLICT` if same-architect ticket sessions are still running |
+| `POST` | `/api/sessions/{id}/discard` | Discard a ticket session without writing a conclusion: move the ticket progress → backlog, publish `ended` with `raw.lifecycle=discarded`, kill PTYs, delete the run, and delete the session row |
+| `POST` | `/api/sessions/{id}/intents/conclude-session` | **Blocking.** Raise a conclude intent: render the structured input into the canonical `conclusion.md` body, publish `intent`/`required`, and block until the user answers or the policy fires. Returns an intent resolution. Called by the MCP conclude tools (`concludeArchitectSession`, `concludeTicketSession`, `concludeFreeformSession`). |
+| `POST` | `/api/sessions/{id}/intents/create-work-ticket` | **Blocking.** Raise a createWorkTicket intent; the ticket is written only on approval. Session-scoped so the architect key comes from the stored session, never the request. Called by the MCP `createWorkTicket` tool. |
+| `POST` | `/api/sessions/{id}/intents/{intentID}/approve` | Approve a pending intent and run its side effect. Called by the desktop app. |
+| `POST` | `/api/sessions/{id}/intents/{intentID}/deny` | Deny a pending intent with a reason. The side effect never runs; the blocked agent call returns `outcome: denied_by_user`. Called by the desktop app. |
+| `GET` | `/api/sessions/{id}/tabs` | Get the resolved right-pane tab layout for a session's current run |
 | `GET` | `/api/sessions/{id}/ticket` | Get the associated ticket for a ticket session (returns NOT_FOUND for non-ticket sessions) |
-| `POST` | `/api/sessions/{id}/terminals` | Create a new user terminal in a session intent's current run using the resolved default shell |
-| `GET` | `/api/sessions/{id}/terminals` | List all terminals for a session intent's current run |
+| `POST` | `/api/sessions/{id}/terminals` | Create a new user terminal in a session's current run using the resolved default shell |
+| `GET` | `/api/sessions/{id}/terminals` | List all terminals for a session's current run |
 | `DELETE` | `/api/sessions/{id}/terminals/{uuid}` | Kill a specific user terminal by UUID |
 | `POST` | `/api/sessions/{id}/browser-tabs` | Open a new browser tab (omit `tab_id`) or navigate an existing one (`tab_id` + `target`); called by the MCP `previewInBrowserTab` tool |
 | `DELETE` | `/api/sessions/{id}/browser-tabs/{tabID}` | Close a browser tab by ID |
-| `GET` | `/api/sessions/{id}/events` | Stream structured session intent events over SSE |
+| `GET` | `/api/sessions/{id}/events` | Stream structured session events over SSE |
 | `WS` | `/ws/session/{id}/terminal/{uuid}` | Stream PTY output and send terminal input for a terminal UUID |
 
 The `HIVERYN_HOME`-level config endpoints (profiles, architect registry, tabs, shortcuts) are read-only — edit `HIVERYN_HOME/*.yaml` directly unless you launched with `--config`. The per-architect `hiveryn.yaml`, however, is editable through the `/api/architects/{key}/config/...` endpoints above (surfaced to the architect as MCP tools), which own the yaml wiring, path resolution, and validation: every write is validated against the same rules the loader enforces and refused if it would fail to load. Changes in `variants.yaml`, `architects.yaml`, `tabs.yaml`, `shortcuts.yaml`, and each `hiveryn.yaml` apply without restarting the daemon.
@@ -254,7 +257,7 @@ The legitimate explicit session ends are `POST /api/sessions/{id}/conclude` and,
 
 ### Discard ticket session
 
-`POST /api/sessions/{id}/discard` is for the desktop "discard worker session" action. It accepts no request body. The target session must be a ticket session with a current run; architect and freeform sessions return a `VALIDATION` envelope. The daemon moves the ticket back to `backlog`, emits a live session SSE event with `type=status`, `status=ended`, `message=session discarded`, and `raw.lifecycle=discarded`, kills all PTYs for the session, deletes the `session_runs` row, and deletes the `session_intents` row. No `conclusion.md` is written and no commit/rejection invariant is checked. Git changes made by the agent are not reverted.
+`POST /api/sessions/{id}/discard` is for the desktop "discard worker session" action. It accepts no request body. The target session must be a ticket session with a current run; architect and freeform sessions return a `VALIDATION` envelope. The daemon moves the ticket back to `backlog`, emits a live session SSE event with `type=status`, `status=ended`, `message=session discarded`, and `raw.lifecycle=discarded`, kills all PTYs for the session, deletes the `session_runs` row, and deletes the `sessions` row. No `conclusion.md` is written and no commit/rejection invariant is checked. Git changes made by the agent are not reverted.
 
 Successful response:
 
@@ -276,20 +279,26 @@ Successful response:
 
 Desktop consumers should remove the session tab either when the POST succeeds or when they receive the `ended` SSE event with `raw.lifecycle=discarded`. The architect event stream also receives a `workspace_changed` hint with `reason=ticket_moved` and the ticket ID so ticket boards can refresh.
 
-### Conclusion approval flow
+### Intent approval flow
 
-Each session type has its own conclude MCP tool — `concludeArchitectSession`, `concludeTicketSession`, `concludeFreeformSession` (role-scoping ensures a session only sees its own). Each takes **discrete structured fields** rather than a freeform body; the daemon renders them into the canonical `conclusion.md` (unchanged frontmatter metadata + a canonical markdown body with a fixed section order per type). See "Structured conclusions" below. When an agent calls its conclude tool via MCP, the daemon routes through an approval flow so the desktop user can review before the session ends:
+Agent tool calls that mutate user-visible state route through the **intent system** so the desktop user can approve them before they take effect. Two tools are routed today: the conclude tools (`concludeArchitectSession`, `concludeTicketSession`, `concludeFreeformSession`, role-scoped so a session only sees its own) and `createWorkTicket` (registered for all three session types). Each takes **discrete structured fields** rather than a freeform body; the daemon renders/validates them and, for conclusions, produces the canonical `conclusion.md`. See "Structured conclusions" below.
 
-1. The MCP conclude tool calls `POST /api/sessions/{id}/request-conclusion` (blocks)
-2. The daemon renders the structured input into the markdown body and enforces the required fields; a missing required field returns a `VALIDATION` error to the agent immediately, before any dialog. For ticket sessions it also validates the outcome-specific invariant up front (`completed` requires `commits`, `rejected` requires `rejection_reason`, `exploratory` requires neither). All of this happens before storing the approval or publishing the event, so an invalid conclusion is rejected without ever showing a dialog
-3. The daemon stores a pending approval in memory, publishes an `approval_required` SSE event on the session event stream (with `raw.timeout_seconds` so the desktop can show a countdown), and blocks on a channel with the configured `conclusion_approval_timeout` (default 20s)
-4. The desktop receives the SSE event and presents an approval dialog with a countdown timer
-5. The desktop calls `POST /api/sessions/{id}/approve-conclusion` or `POST /api/sessions/{id}/reject-conclusion`
-6. On approve: the daemon runs the conclusion and returns the result. On reject: the rejection reason propagates back as a `VALIDATION` error to the blocked MCP call so the agent can retry.
-7. On timeout: the daemon auto-approves and runs the conclusion as if the user clicked approve.
-8. Whenever a pending approval is resolved without a session-ending conclusion — reject, agent disconnect (request context cancelled), or a failed approve — the daemon publishes a durable `approval_resolved` SSE event (`raw.outcome` is `rejected`/`cancelled`/`error`). `approval_required` is persisted and replayed on every desktop (re)connect, but the pending approval lives only in memory; the resolution event is its durable counterpart, so replaying the event log always converges to "no dialog". A successful conclusion needs no resolution event — its `ended`/`concluded` event already dismisses the dialog. On startup the in-memory approval store is empty, so `ReconcilePendingApprovals` scans for any session whose latest approval event is still an unresolved `approval_required` (orphaned by a daemon restart) and appends `approval_resolved` (`outcome: daemon_restart`).
+An intent is a pending tool call awaiting the user's answer. The write lives daemon-side and runs only on approval, so the agent cannot bypass it.
 
-The original `POST /api/sessions/{id}/conclude` endpoint remains available for direct calls without approval; it is the low-level bypass and takes a pre-rendered freeform `body` plus structured commit refs. `repo` is the configured repo key from `architects.yaml`, not a filesystem path. Freeform sessions may omit `commits`; when they do provide commits, the daemon validates the same `{sha, repo}` contract.
+1. The MCP tool calls its blocking endpoint — `POST /api/sessions/{id}/intents/conclude-session` or `.../intents/create-work-ticket` — held open by an untimed HTTP client. No polling.
+2. The daemon validates the input up front (required conclusion fields; ticket outcome invariants; a non-blank title and a configured repo for createWorkTicket). A failure returns a `VALIDATION` error to the agent immediately, before any intent is raised — an invalid call never shows a dialog.
+3. The daemon raises a pending intent, publishes a durable `type: "intent"` / `status: "required"` SSE event carrying `{intent_id, intent_type, summary, payload, origin, wait_seconds, policy}` (origin = architect key / session / ticket, so the desktop can render one popup across all sessions), and blocks on a channel.
+4. The desktop presents a popup with a countdown seeded from `wait_seconds`.
+5. The desktop calls `POST /api/sessions/{id}/intents/{intentID}/approve` or `.../deny`.
+6. On approve: the daemon runs the tool's side effect and returns the result. On deny: the blocked call returns `outcome: denied_by_user` with the reason — **not** a tool error, so the agent knows not to retry.
+7. On timeout: the tool's hardcoded policy fires. Both current tools are `wait-then-allow`, so the action runs and the agent is told `auto_approved`. (A `wait-then-deny` tool would return `auto_denied` and run nothing.)
+8. Every resolution publishes a durable `type: "intent"` / `status: "resolved"` event (`raw.outcome` + optional `reason`/`result`), paired to the `required` event by `intent_id`. The `required` event replays on every desktop (re)connect but the pending intent lives only in memory, so the resolution event is its durable counterpart and the log always converges to "no popup". On startup the intent store is empty, so `ReconcileIntents` resolves any still-unpaired `required` (orphaned by a restart) with `outcome: error`.
+
+**Idempotency.** Intents dedup within a 1h window on `hash(session, tool, normalized-args)`. A retry (e.g. after an agent-runtime tool-call timeout) attaches to the live intent, or replays the resolved outcome if it already finished — so a duplicated `createWorkTicket` yields one ticket, not two. Because a tool-call timeout is itself a context cancellation, the intent does not die with the caller's context; a detached owner goroutine holds the wait window.
+
+**Outcome catalog.** Every intent resolves to exactly one of `approved`, `auto_approved`, `denied_by_user`, `auto_denied`, `error`. The two `denied_*` outcomes read as "do not retry"; `error` reads as "maybe retry". Denials come back as successful tool results carrying the outcome, never as tool errors.
+
+The direct `POST /api/sessions/{id}/conclude` and `POST /api/architects/{key}/tickets` endpoints remain available without approval — they are the desktop's own paths, since approval gates the agent, not the user. `repo` is the configured repo key from the architect's `hiveryn.yaml`, not a filesystem path.
 
 Direct `/conclude` request:
 
@@ -307,13 +316,13 @@ Direct `/conclude` request:
 
 #### Structured conclusions
 
-The MCP conclude tools (and therefore `request-conclusion`) take **discrete structured fields** instead of a freeform `body`; the daemon renders them into the canonical `conclusion.md`. The frontmatter metadata and the read-path shape (frontmatter + rendered `body`) are unchanged — this is an input contract, not a persisted structured copy. Every presentational section is a **Markdown string** the agent authors itself (bullets/prose as text) — no conclude section is an array, so none can be dropped by the MCP client's required-array serialization bug. Only `commits` stays a structured array, because it is persisted and read back as data. Required fields are rejected if blank; a required section with nothing to report takes the literal Markdown `"None"`. Each type has its own canonical section order:
+The MCP conclude tools (and therefore `intents/conclude-session`) take **discrete structured fields** instead of a freeform `body`; the daemon renders them into the canonical `conclusion.md`. The frontmatter metadata and the read-path shape (frontmatter + rendered `body`) are unchanged — this is an input contract, not a persisted structured copy. Every presentational section is a **Markdown string** the agent authors itself (bullets/prose as text) — no conclude section is an array, so none can be dropped by the MCP client's required-array serialization bug. Only `commits` stays a structured array, because it is persisted and read back as data. Required fields are rejected if blank; a required section with nothing to report takes the literal Markdown `"None"`. Each type has its own canonical section order:
 
 - **`concludeArchitectSession`** — `summary`*, `narrative`*, `tickets_touched`, `decisions`, `config_changes`, `user_priorities`, `open_questions`, `next_steps`†
 - **`concludeTicketSession`** — `summary`*, `outcome`* (`completed`/`exploratory`/`rejected`), `implementation`* (the writeup — required for `completed`/`exploratory`, renders as "Implementation" or "Findings" respectively; omitted for `rejected`), `deviations`, `verification`, `follow_ups` (Markdown referencing candidate follow-up ticket IDs), `open_questions` — plus the `commits`/`rejection_reason` frontmatter metadata (`commits` required for `completed`, `rejection_reason` required for `rejected`)
 - **`concludeFreeformSession`** — `summary`*, `findings`*, `recommendations`†, `open_questions`† — plus optional `commits`; `outcome` is disallowed (ticket-only concept)
 
-(`*` = required; `†` = required, `"None"` accepted. All section fields are Markdown strings; `commits` is the only array.) Example `request-conclusion` request for a ticket session:
+(`*` = required; `†` = required, `"None"` accepted. All section fields are Markdown strings; `commits` is the only array.) Example `intents/conclude-session` request for a ticket session:
 
 ```json
 {

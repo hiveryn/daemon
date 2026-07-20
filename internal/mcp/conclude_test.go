@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/hiveryn/daemon/internal/domain"
@@ -19,7 +20,7 @@ func TestHandleArchitectConcludeSessionSuccess(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %s", r.Method)
 		}
-		if r.URL.Path != "/api/sessions/sess-1/request-conclusion" {
+		if r.URL.Path != "/api/sessions/sess-1/intents/conclude-session" {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
 		var body struct {
@@ -37,8 +38,9 @@ func TestHandleArchitectConcludeSessionSuccess(t *testing.T) {
 			t.Fatalf("unexpected next_steps: %#v", body.NextSteps)
 		}
 		writeEnvelope(t, w, http.StatusOK, map[string]any{
-			"success":    true,
-			"session_id": "sess-1",
+			"intent_id": "intent-1",
+			"outcome":   "approved",
+			"result":    map[string]any{"session_id": "sess-1"},
 		})
 	})
 	server.sessionID = "sess-1"
@@ -51,7 +53,7 @@ func TestHandleArchitectConcludeSessionSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleArchitectConcludeSession failed: %v", err)
 	}
-	if !output.Success || output.SessionID != "sess-1" {
+	if output.Outcome != intentOutcomeApproved || output.Session == nil || output.Session.SessionID != "sess-1" {
 		t.Fatalf("unexpected output: %#v", output)
 	}
 }
@@ -63,7 +65,7 @@ func TestHandleTicketConcludeSessionSuccess(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %s", r.Method)
 		}
-		if r.URL.Path != "/api/sessions/sess-2/request-conclusion" {
+		if r.URL.Path != "/api/sessions/sess-2/intents/conclude-session" {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
 		var body struct {
@@ -77,9 +79,9 @@ func TestHandleTicketConcludeSessionSuccess(t *testing.T) {
 			t.Fatalf("unexpected commits payload: %#v", body.Commits)
 		}
 		writeEnvelope(t, w, http.StatusOK, map[string]any{
-			"success":    true,
-			"session_id": "sess-2",
-			"ticket_id":  "ticket-1",
+			"intent_id": "intent-2",
+			"outcome":   "approved",
+			"result":    map[string]any{"session_id": "sess-2", "ticket_id": "ticket-1"},
 		})
 	})
 	server.sessionID = "sess-2"
@@ -94,7 +96,7 @@ func TestHandleTicketConcludeSessionSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleTicketConcludeSession failed: %v", err)
 	}
-	if !output.Success || output.TicketID != "ticket-1" {
+	if output.Outcome != intentOutcomeApproved || output.Session == nil || output.Session.TicketID != "ticket-1" {
 		t.Fatalf("unexpected output: %#v", output)
 	}
 }
@@ -106,7 +108,7 @@ func TestHandleFreeformConcludeSessionSuccessWithoutCommits(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %s", r.Method)
 		}
-		if r.URL.Path != "/api/sessions/sess-3/request-conclusion" {
+		if r.URL.Path != "/api/sessions/sess-3/intents/conclude-session" {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
 		var body struct {
@@ -119,8 +121,9 @@ func TestHandleFreeformConcludeSessionSuccessWithoutCommits(t *testing.T) {
 			t.Fatalf("expected no commits payload, got %#v", body.Commits)
 		}
 		writeEnvelope(t, w, http.StatusOK, map[string]any{
-			"success":    true,
-			"session_id": "sess-3",
+			"intent_id": "intent-3",
+			"outcome":   "approved",
+			"result":    map[string]any{"session_id": "sess-3"},
 		})
 	})
 	server.sessionID = "sess-3"
@@ -135,35 +138,29 @@ func TestHandleFreeformConcludeSessionSuccessWithoutCommits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleFreeformConcludeSession failed: %v", err)
 	}
-	if !output.Success || output.SessionID != "sess-3" {
+	if output.Outcome != intentOutcomeApproved || output.Session == nil || output.Session.SessionID != "sess-3" {
 		t.Fatalf("unexpected output: %#v", output)
 	}
 }
 
-func TestHandleTicketConcludeSessionNoSessionID(t *testing.T) {
+// Intents are addressed by session id, and every session type registers at
+// least one intent-routed tool, so a missing session id is rejected at
+// construction rather than lazily per handler.
+func TestNewServerRequiresSessionID(t *testing.T) {
 	t.Parallel()
 
-	server, err := NewServer(Config{
-		DaemonURL:    "http://127.0.0.1:4200",
-		ArchitectKey: "hiveryn",
-		SessionType:  SessionTypeTicket,
-	})
-	if err != nil {
-		t.Fatalf("NewServer failed: %v", err)
-	}
-
-	_, _, err = server.handleTicketConcludeSession(context.Background(), nil, TicketConcludeSessionInput{
-		Summary:        "done",
-		Outcome:        "completed",
-		Implementation: "done",
-		Commits:        []domain.CommitRef{{SHA: "abc123", Repo: "daemon"}},
-	})
-	toolErr, ok := err.(*ToolError)
-	if !ok {
-		t.Fatalf("expected ToolError, got %T", err)
-	}
-	if toolErr.Code != ErrorCodeInternal {
-		t.Fatalf("code = %q, want %q", toolErr.Code, ErrorCodeInternal)
+	for _, sessionType := range []SessionType{SessionTypeArchitect, SessionTypeTicket, SessionTypeFreeform} {
+		_, err := NewServer(Config{
+			DaemonURL:    "http://127.0.0.1:4200",
+			ArchitectKey: "hiveryn",
+			SessionType:  sessionType,
+		})
+		if err == nil {
+			t.Fatalf("%s: expected NewServer to reject an empty SessionID", sessionType)
+		}
+		if !strings.Contains(err.Error(), "HIVERYN_SESSION_ID") {
+			t.Fatalf("%s: error should name the missing env var, got %v", sessionType, err)
+		}
 	}
 }
 
@@ -212,9 +209,9 @@ func TestHandleTicketConcludeSessionExploratorySuccessWithoutCommits(t *testing.
 			t.Fatalf("expected no commits payload, got %#v", body.Commits)
 		}
 		writeEnvelope(t, w, http.StatusOK, map[string]any{
-			"success":    true,
-			"session_id": "sess-4",
-			"ticket_id":  "ticket-2",
+			"intent_id": "intent-4",
+			"outcome":   "approved",
+			"result":    map[string]any{"session_id": "sess-4", "ticket_id": "ticket-2"},
 		})
 	})
 	server.sessionID = "sess-4"
@@ -228,7 +225,7 @@ func TestHandleTicketConcludeSessionExploratorySuccessWithoutCommits(t *testing.
 	if err != nil {
 		t.Fatalf("handleTicketConcludeSession failed: %v", err)
 	}
-	if !output.Success || output.TicketID != "ticket-2" {
+	if output.Outcome != intentOutcomeApproved || output.Session == nil || output.Session.TicketID != "ticket-2" {
 		t.Fatalf("unexpected output: %#v", output)
 	}
 }
@@ -292,6 +289,7 @@ func TestHandleMoveTicketToDoneRejectsInvalidOutcome(t *testing.T) {
 	server, err := NewServer(Config{
 		DaemonURL:    "http://127.0.0.1:4200",
 		ArchitectKey: "hiveryn",
+		SessionID:    "sess-test",
 	})
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
@@ -316,6 +314,7 @@ func TestHandleMoveTicketToDoneRejectsMissingRejectionReason(t *testing.T) {
 	server, err := NewServer(Config{
 		DaemonURL:    "http://127.0.0.1:4200",
 		ArchitectKey: "hiveryn",
+		SessionID:    "sess-test",
 	})
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
@@ -392,7 +391,11 @@ func TestWorkerSessionRegistersConcludeTool(t *testing.T) {
 	t.Parallel()
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeEnvelope(t, w, http.StatusOK, domain.Ticket{})
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"intent_id": "intent-worker",
+			"outcome":   "approved",
+			"result":    map[string]any{"session_id": "worker-sess"},
+		})
 	}))
 	t.Cleanup(ts.Close)
 

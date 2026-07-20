@@ -20,6 +20,7 @@ func TestNewServerDefaultsToArchitect(t *testing.T) {
 	server, err := NewServer(Config{
 		DaemonURL:    "http://127.0.0.1:4200",
 		ArchitectKey: "hiveryn",
+		SessionID:    "sess-test",
 	})
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
@@ -36,6 +37,7 @@ func TestNewServerTicketSession(t *testing.T) {
 	server, err := NewServer(Config{
 		DaemonURL:    "http://127.0.0.1:4200",
 		ArchitectKey: "hiveryn",
+		SessionID:    "sess-test",
 		SessionType:  SessionTypeTicket,
 	})
 	if err != nil {
@@ -53,6 +55,7 @@ func TestNewServerFreeformSession(t *testing.T) {
 	server, err := NewServer(Config{
 		DaemonURL:    "http://127.0.0.1:4200",
 		ArchitectKey: "hiveryn",
+		SessionID:    "sess-test",
 		SessionType:  SessionTypeFreeform,
 	})
 	if err != nil {
@@ -122,6 +125,7 @@ func TestHandleReadTicketValidation(t *testing.T) {
 	server, err := NewServer(Config{
 		DaemonURL:    "http://127.0.0.1:4200",
 		ArchitectKey: "hiveryn",
+		SessionID:    "sess-test",
 	})
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
@@ -216,6 +220,7 @@ func TestHandleListTicketsMissingStatus(t *testing.T) {
 	server, err := NewServer(Config{
 		DaemonURL:    "http://127.0.0.1:4200",
 		ArchitectKey: "hiveryn",
+		SessionID:    "sess-test",
 	})
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
@@ -237,6 +242,7 @@ func TestHandleListTicketsBadStatus(t *testing.T) {
 	server, err := NewServer(Config{
 		DaemonURL:    "http://127.0.0.1:4200",
 		ArchitectKey: "hiveryn",
+		SessionID:    "sess-test",
 	})
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
@@ -276,19 +282,23 @@ func TestHandleCreateWorkTicketSuccess(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %s", r.Method)
 		}
-		writeEnvelope(t, w, http.StatusCreated, domain.Ticket{
-			TicketSummary: domain.TicketSummary{
-				ID:            "2026-05-13-1430-new-ticket",
-				Status:        domain.TicketStatusBacklog,
-				Title:         "New Ticket",
-				Repo:          "daemon",
-				Created:       &created,
-				References:    []string{},
-				HasConclusion: false,
-				Warnings:      []domain.TicketWarning{},
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"intent_id": "intent-1",
+			"outcome":   "approved",
+			"result": domain.Ticket{
+				TicketSummary: domain.TicketSummary{
+					ID:            "2026-05-13-1430-new-ticket",
+					Status:        domain.TicketStatusBacklog,
+					Title:         "New Ticket",
+					Repo:          "daemon",
+					Created:       &created,
+					References:    []string{},
+					HasConclusion: false,
+					Warnings:      []domain.TicketWarning{},
+				},
+				Body:       "ticket body",
+				Conclusion: nil,
 			},
-			Body:       "ticket body",
-			Conclusion: nil,
 		})
 	})
 
@@ -300,7 +310,10 @@ func TestHandleCreateWorkTicketSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleCreateWorkTicket failed: %v", err)
 	}
-	if output.ID != "2026-05-13-1430-new-ticket" {
+	if output.Outcome != intentOutcomeApproved {
+		t.Fatalf("expected an approved outcome, got %#v", output)
+	}
+	if output.Ticket == nil || output.Ticket.ID != "2026-05-13-1430-new-ticket" {
 		t.Fatalf("unexpected output: %#v", output)
 	}
 }
@@ -311,6 +324,7 @@ func TestHandleCreateWorkTicketMissingTitle(t *testing.T) {
 	server, err := NewServer(Config{
 		DaemonURL:    "http://127.0.0.1:4200",
 		ArchitectKey: "hiveryn",
+		SessionID:    "sess-test",
 	})
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
@@ -369,11 +383,15 @@ func TestHandleCreateWorkTicketOptionalFieldsOmitted(t *testing.T) {
 		if _, hasRefs := body["references"]; hasRefs {
 			t.Fatalf("references should be absent when empty")
 		}
-		writeEnvelope(t, w, http.StatusCreated, domain.Ticket{
-			TicketSummary: domain.TicketSummary{
-				ID:     "minimal-ticket",
-				Status: domain.TicketStatusBacklog,
-				Title:  "Minimal",
+		writeEnvelope(t, w, http.StatusOK, map[string]any{
+			"intent_id": "intent-2",
+			"outcome":   "approved",
+			"result": domain.Ticket{
+				TicketSummary: domain.TicketSummary{
+					ID:     "minimal-ticket",
+					Status: domain.TicketStatusBacklog,
+					Title:  "Minimal",
+				},
 			},
 		})
 	})
@@ -384,7 +402,7 @@ func TestHandleCreateWorkTicketOptionalFieldsOmitted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleCreateWorkTicket failed: %v", err)
 	}
-	if output.ID != "minimal-ticket" {
+	if output.Ticket == nil || output.Ticket.ID != "minimal-ticket" {
 		t.Fatalf("unexpected output: %#v", output)
 	}
 }
@@ -480,6 +498,7 @@ func TestHandleEditTicketBodyMissingID(t *testing.T) {
 	server, err := NewServer(Config{
 		DaemonURL:    "http://127.0.0.1:4200",
 		ArchitectKey: "hiveryn",
+		SessionID:    "sess-test",
 	})
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
@@ -501,6 +520,7 @@ func TestHandleEditTicketBodyMissingOldString(t *testing.T) {
 	server, err := NewServer(Config{
 		DaemonURL:    "http://127.0.0.1:4200",
 		ArchitectKey: "hiveryn",
+		SessionID:    "sess-test",
 	})
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
@@ -623,6 +643,7 @@ func TestHandleUpdateTicketMissingID(t *testing.T) {
 	server, err := NewServer(Config{
 		DaemonURL:    "http://127.0.0.1:4200",
 		ArchitectKey: "hiveryn",
+		SessionID:    "sess-test",
 	})
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
@@ -671,6 +692,7 @@ func TestWorkerReadTicketRegisteredAndFunctional(t *testing.T) {
 	server, err := NewServer(Config{
 		DaemonURL:    ts.URL,
 		ArchitectKey: "hiveryn",
+		SessionID:    "sess-test",
 		SessionType:  SessionTypeTicket,
 		HTTPClient:   ts.Client(),
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -700,6 +722,7 @@ func newTestServer(t *testing.T, handler func(w http.ResponseWriter, r *http.Req
 	server, err := NewServer(Config{
 		DaemonURL:    ts.URL,
 		ArchitectKey: "hiveryn",
+		SessionID:    "sess-test",
 		HTTPClient:   ts.Client(),
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})

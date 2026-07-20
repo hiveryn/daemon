@@ -82,10 +82,14 @@ func Run(configPath, databasePath string, portOverride int) error {
 	if err := service.RestoreRunningSessions(ctx); err != nil {
 		return err
 	}
-	if err := service.ReconcilePendingApprovals(ctx); err != nil {
+	if err := service.ReconcileIntents(ctx); err != nil {
 		return err
 	}
 	architectHub := archevents.New(logger)
+	// Intent side effects (ticket created/concluded) publish workspace_changed
+	// from inside the service, because a generic approve path cannot know which
+	// tool touched a ticket.
+	service.SetArchitectPublisher(architectHub.Publish)
 
 	handler := api.NewHandler(api.Dependencies{
 		Config:          cfg,

@@ -197,7 +197,7 @@ func (h *fsHandler) file(w http.ResponseWriter, r *http.Request) {
 		writeFsOSError(w, r, path, err)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	trueSize := info.Size()
 	readLimit := min(trueSize, maxFileBytes)

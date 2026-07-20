@@ -73,7 +73,7 @@ func TestHandleUpdateArchitectConfigSendsBody(t *testing.T) {
 func TestHandleUpdateArchitectConfigVersionValidation(t *testing.T) {
 	t.Parallel()
 
-	server, err := NewServer(Config{DaemonURL: "http://127.0.0.1:4200", ArchitectKey: "hiveryn"})
+	server, err := NewServer(Config{DaemonURL: "http://127.0.0.1:4200", ArchitectKey: "hiveryn", SessionID: "sess-test"})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestHandleUpdateArchitectConfigMapsConflict(t *testing.T) {
 func TestHandleReadDefaultPromptValidation(t *testing.T) {
 	t.Parallel()
 
-	server, err := NewServer(Config{DaemonURL: "http://127.0.0.1:4200", ArchitectKey: "hiveryn"})
+	server, err := NewServer(Config{DaemonURL: "http://127.0.0.1:4200", ArchitectKey: "hiveryn", SessionID: "sess-test"})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

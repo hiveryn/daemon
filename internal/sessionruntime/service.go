@@ -51,7 +51,8 @@ type Service struct {
 	adapters map[agentruntime.AgentKind]agentruntime.Adapter
 	terminal terminalManager
 
-	approvals *approvalStore
+	intents          *intentStore
+	publishArchitect func(string, domain.ArchitectEvent)
 
 	eventMu      sync.RWMutex
 	eventNextID  uint64
@@ -114,7 +115,7 @@ func New(ctx context.Context, cfg config.Config, configSource config.Source, rep
 		executablePath: os.Executable,
 		adapters:       adapters,
 		terminal:       newPTYTerminalManager(logger),
-		approvals:      newApprovalStore(),
+		intents:        newIntentStore(),
 		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
 		bridgeCancels:  map[string]func(){},
 		terminalStates: map[string]sessionTerminalState{},
@@ -145,28 +146,28 @@ func (s *Service) currentArchitect(key string) (config.ArchitectConfig, error) {
 	return architect, nil
 }
 
-func (s *Service) CreateIntent(ctx context.Context, req domain.CreateSessionIntentRequest) (domain.SessionIntent, error) {
+func (s *Service) CreateSession(ctx context.Context, req domain.CreateSessionRequest) (domain.Session, error) {
 	cfg, err := s.currentConfig()
 	if err != nil {
-		return domain.SessionIntent{}, err
+		return domain.Session{}, err
 	}
 
 	architect, ok := cfg.Architects[req.ArchitectKey]
 	if !ok {
-		return domain.SessionIntent{}, &domain.NotFoundError{Resource: "architect", ID: req.ArchitectKey}
+		return domain.Session{}, &domain.NotFoundError{Resource: "architect", ID: req.ArchitectKey}
 	}
 
 	switch req.SessionType {
 	case domain.SessionTypeArchitect:
 		if err := validateArchitectCreateRequest(req); err != nil {
-			return domain.SessionIntent{}, err
+			return domain.Session{}, err
 		}
 		systemContent, kickoffContent, err := loadArchitectPrompts(req.ArchitectKey, architect, cfg)
 		if err != nil {
-			return domain.SessionIntent{}, err
+			return domain.Session{}, err
 		}
 		now := time.Now().UTC()
-		return s.repo.CreateIntent(ctx, domain.CreateSessionIntentParams{
+		return s.repo.CreateSession(ctx, domain.CreateSessionParams{
 			ArchitectKey: req.ArchitectKey,
 			SessionType:  domain.SessionTypeArchitect,
 			ContextID:    now.Format("2006-01-02-1504"),
@@ -177,40 +178,40 @@ func (s *Service) CreateIntent(ctx context.Context, req domain.CreateSessionInte
 		})
 	case domain.SessionTypeTicket:
 		if strings.TrimSpace(req.TicketID) == "" {
-			return domain.SessionIntent{}, &domain.ValidationError{Field: "ticket_id", Message: "is required"}
+			return domain.Session{}, &domain.ValidationError{Field: "ticket_id", Message: "is required"}
 		}
 		if strings.TrimSpace(req.Prompt) != "" {
-			return domain.SessionIntent{}, &domain.ValidationError{Field: "prompt", Message: "ticket intents do not accept a prompt"}
+			return domain.Session{}, &domain.ValidationError{Field: "prompt", Message: "ticket sessions do not accept a prompt"}
 		}
 		if strings.TrimSpace(req.Workdir) != "" {
-			return domain.SessionIntent{}, &domain.ValidationError{Field: "workdir", Message: "ticket intents do not accept a workdir"}
+			return domain.Session{}, &domain.ValidationError{Field: "workdir", Message: "ticket sessions do not accept a workdir"}
 		}
 		if strings.TrimSpace(req.Slug) != "" {
-			return domain.SessionIntent{}, &domain.ValidationError{Field: "slug", Message: "ticket intents do not accept a slug"}
+			return domain.Session{}, &domain.ValidationError{Field: "slug", Message: "ticket sessions do not accept a slug"}
 		}
 		ticket, err := s.tickets.GetTicket(ctx, architect.Path, req.TicketID)
 		if err != nil {
-			return domain.SessionIntent{}, err
+			return domain.Session{}, err
 		}
 		if ticket.Status != domain.TicketStatusBacklog {
-			return domain.SessionIntent{}, &domain.ValidationError{Field: "ticket_id", Message: "ticket must be in backlog to create a ticket intent"}
+			return domain.Session{}, &domain.ValidationError{Field: "ticket_id", Message: "ticket must be in backlog to create a ticket session"}
 		}
 		repoKey := ticket.Repo
 		if repoKey == "" {
-			return domain.SessionIntent{}, &domain.ValidationError{Field: "repo", Message: "ticket has no repo key in frontmatter"}
+			return domain.Session{}, &domain.ValidationError{Field: "repo", Message: "ticket has no repo key in frontmatter"}
 		}
 		repoPath, ok := architect.Repos[repoKey]
 		if !ok {
-			return domain.SessionIntent{}, &domain.ValidationError{Field: "repo", Message: "repo key " + repoKey + " not configured in architect repos"}
+			return domain.Session{}, &domain.ValidationError{Field: "repo", Message: "repo key " + repoKey + " not configured in architect repos"}
 		}
 		if err := validateRepoPath(repoPath); err != nil {
-			return domain.SessionIntent{}, err
+			return domain.Session{}, err
 		}
 		kickoffContent, err := loadWorkerPrompt(req.ArchitectKey, architect, cfg, ticket)
 		if err != nil {
-			return domain.SessionIntent{}, err
+			return domain.Session{}, err
 		}
-		return s.repo.CreateIntent(ctx, domain.CreateSessionIntentParams{
+		return s.repo.CreateSession(ctx, domain.CreateSessionParams{
 			ArchitectKey: req.ArchitectKey,
 			SessionType:  domain.SessionTypeTicket,
 			ContextID:    req.TicketID,
@@ -221,35 +222,35 @@ func (s *Service) CreateIntent(ctx context.Context, req domain.CreateSessionInte
 	case domain.SessionTypeFreeform:
 		prompt := req.Prompt
 		if strings.TrimSpace(prompt) == "" {
-			return domain.SessionIntent{}, &domain.ValidationError{Field: "prompt", Message: "is required"}
+			return domain.Session{}, &domain.ValidationError{Field: "prompt", Message: "is required"}
 		}
 		workdir := strings.TrimSpace(req.Workdir)
 		if workdir == "" {
-			return domain.SessionIntent{}, &domain.ValidationError{Field: "workdir", Message: "is required"}
+			return domain.Session{}, &domain.ValidationError{Field: "workdir", Message: "is required"}
 		}
 		slug := normalizeSlug(req.Slug)
 		if strings.TrimSpace(req.Slug) == "" {
-			return domain.SessionIntent{}, &domain.ValidationError{Field: "slug", Message: "is required"}
+			return domain.Session{}, &domain.ValidationError{Field: "slug", Message: "is required"}
 		}
 		if slug == "" {
-			return domain.SessionIntent{}, &domain.ValidationError{Field: "slug", Message: "must contain at least one letter or digit"}
+			return domain.Session{}, &domain.ValidationError{Field: "slug", Message: "must contain at least one letter or digit"}
 		}
 		if strings.TrimSpace(req.TicketID) != "" {
-			return domain.SessionIntent{}, &domain.ValidationError{Field: "ticket_id", Message: "freeform intents do not accept a ticket ID"}
+			return domain.Session{}, &domain.ValidationError{Field: "ticket_id", Message: "freeform sessions do not accept a ticket ID"}
 		}
 		if err := validateExistingDirectory(workdir, "workdir"); err != nil {
-			return domain.SessionIntent{}, err
+			return domain.Session{}, err
 		}
 
 		now := time.Now().UTC()
 		contextID, err := nextFreeformContextID(architect.Path, now, slug)
 		if err != nil {
-			return domain.SessionIntent{}, err
+			return domain.Session{}, err
 		}
 		if err := writeFreeformPrompt(architect.Path, contextID, prompt); err != nil {
-			return domain.SessionIntent{}, err
+			return domain.Session{}, err
 		}
-		intent, err := s.repo.CreateIntent(ctx, domain.CreateSessionIntentParams{
+		session, err := s.repo.CreateSession(ctx, domain.CreateSessionParams{
 			ArchitectKey: req.ArchitectKey,
 			SessionType:  domain.SessionTypeFreeform,
 			ContextID:    contextID,
@@ -260,18 +261,18 @@ func (s *Service) CreateIntent(ctx context.Context, req domain.CreateSessionInte
 		if err != nil {
 			dir := filepath.Join(architect.Path, "freeform", contextID)
 			if removeErr := os.RemoveAll(dir); removeErr != nil {
-				return domain.SessionIntent{}, fmt.Errorf("create freeform intent: %w (also failed to clean up %s: %v)", err, dir, removeErr)
+				return domain.Session{}, fmt.Errorf("create freeform session: %w (also failed to clean up %s: %v)", err, dir, removeErr)
 			}
-			return domain.SessionIntent{}, err
+			return domain.Session{}, err
 		}
-		return intent, nil
+		return session, nil
 	default:
-		return domain.SessionIntent{}, &domain.ValidationError{Field: "session_type", Message: "must be 'architect', 'ticket', or 'freeform'"}
+		return domain.Session{}, &domain.ValidationError{Field: "session_type", Message: "must be 'architect', 'ticket', or 'freeform'"}
 	}
 }
 
-func (s *Service) CreateRun(ctx context.Context, intentID string, req domain.CreateSessionRunRequest) (domain.CreateSessionRunResult, error) {
-	intent, err := s.repo.GetIntent(ctx, intentID)
+func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.CreateSessionRunRequest) (domain.CreateSessionRunResult, error) {
+	session, err := s.repo.GetSession(ctx, sessionID)
 	if err != nil {
 		return domain.CreateSessionRunResult{}, err
 	}
@@ -281,9 +282,9 @@ func (s *Service) CreateRun(ctx context.Context, intentID string, req domain.Cre
 		return domain.CreateSessionRunResult{}, err
 	}
 
-	architect, ok := cfg.Architects[intent.ArchitectKey]
+	architect, ok := cfg.Architects[session.ArchitectKey]
 	if !ok {
-		return domain.CreateSessionRunResult{}, &domain.NotFoundError{Resource: "architect", ID: intent.ArchitectKey}
+		return domain.CreateSessionRunResult{}, &domain.NotFoundError{Resource: "architect", ID: session.ArchitectKey}
 	}
 
 	profile, ok := cfg.Variants[req.ProfileName]
@@ -296,18 +297,18 @@ func (s *Service) CreateRun(ctx context.Context, intentID string, req domain.Cre
 		return domain.CreateSessionRunResult{}, err
 	}
 
-	if err := validateStoredIntent(intent); err != nil {
+	if err := validateStoredSession(session); err != nil {
 		return domain.CreateSessionRunResult{}, err
 	}
-	if err := validateExistingDirectory(intent.Workdir, "workdir"); err != nil {
+	if err := validateExistingDirectory(session.Workdir, "workdir"); err != nil {
 		return domain.CreateSessionRunResult{}, err
 	}
 
 	run, err := s.repo.CreateRun(ctx, domain.CreateSessionRunParams{
-		SessionIntentID: intent.ID,
+		SessionID:       session.ID,
 		ProfileName:     req.ProfileName,
 		ProfileSnapshot: snapshotVariant(profile),
-		Workdir:         intent.Workdir,
+		Workdir:         session.Workdir,
 		StartedAt:       time.Now().UTC(),
 	})
 	if err != nil {
@@ -315,20 +316,20 @@ func (s *Service) CreateRun(ctx context.Context, intentID string, req domain.Cre
 	}
 
 	s.logger.Info("[spawn] starting session run PTY",
-		"session_intent_id", intent.ID,
+		"session_id", session.ID,
 		"run_id", run.ID,
-		"session_type", intent.SessionType,
+		"session_type", session.SessionType,
 		"requested_cols", req.Cols,
 		"requested_rows", req.Rows,
 	)
 
-	mainTerminalID, err := s.launchSession(ctx, cfg, intent, run, profile, agentKind, agentruntime.StartRequest{
-		Prompt:       intent.Prompt,
+	mainTerminalID, err := s.launchSession(ctx, cfg, session, run, profile, agentKind, agentruntime.StartRequest{
+		Prompt:       session.Prompt,
 		Model:        profile.Model,
 		Yolo:         profile.Yolo,
 		Mode:         agentruntime.Mode(profile.Mode),
-		Instructions: intent.Instructions,
-		Workdir:      intent.Workdir,
+		Instructions: session.Instructions,
+		Workdir:      session.Workdir,
 		Args:         append([]string(nil), profile.Args...),
 		Env:          cloneStringMap(profile.Env),
 	}, terminalSize{Cols: req.Cols, Rows: req.Rows})
@@ -337,15 +338,15 @@ func (s *Service) CreateRun(ctx context.Context, intentID string, req domain.Cre
 		return domain.CreateSessionRunResult{}, fmt.Errorf("launch session run: %w", err)
 	}
 
-	if intent.SessionType == domain.SessionTypeTicket {
-		if _, err := s.tickets.MoveTicket(ctx, architect.Path, intent.ContextID, domain.MoveTicketParams{To: domain.TicketStatusProgress}); err != nil {
-			if killErr := s.terminal.KillBySession(ctx, intent.ID); killErr != nil && !errors.Is(killErr, errTerminalNotFound) {
-				return domain.CreateSessionRunResult{}, fmt.Errorf("move ticket %s to progress: %w (also failed to kill terminals: %v)", intent.ContextID, err, killErr)
+	if session.SessionType == domain.SessionTypeTicket {
+		if _, err := s.tickets.MoveTicket(ctx, architect.Path, session.ContextID, domain.MoveTicketParams{To: domain.TicketStatusProgress}); err != nil {
+			if killErr := s.terminal.KillBySession(ctx, session.ID); killErr != nil && !errors.Is(killErr, errTerminalNotFound) {
+				return domain.CreateSessionRunResult{}, fmt.Errorf("move ticket %s to progress: %w (also failed to kill terminals: %v)", session.ContextID, err, killErr)
 			}
-			s.cancelReceiverBridge(intent.ID)
-			s.removeSessionTerminalState(intent.ID)
+			s.cancelReceiverBridge(session.ID)
+			s.removeSessionTerminalState(session.ID)
 			s.markRunFailed(run.ID, domain.SessionRunFailureLaunchFailed, "move_ticket_to_progress")
-			return domain.CreateSessionRunResult{}, fmt.Errorf("move ticket %s to progress: %w", intent.ContextID, err)
+			return domain.CreateSessionRunResult{}, fmt.Errorf("move ticket %s to progress: %w", session.ContextID, err)
 		}
 	}
 
@@ -373,14 +374,14 @@ func hookCommandForAgent(agentKind agentruntime.AgentKind, endpoint string) agen
 	}
 }
 
-func (s *Service) launchSession(ctx context.Context, cfg config.Config, intent domain.SessionIntent, run domain.SessionRun, profile config.VariantConfig, agentKind agentruntime.AgentKind, startReq agentruntime.StartRequest, size terminalSize) (string, error) {
-	mainTerminalID, spec, err := s.startSessionMainTerminal(ctx, intent, run, profile, agentKind, startReq, size)
+func (s *Service) launchSession(ctx context.Context, cfg config.Config, session domain.Session, run domain.SessionRun, profile config.VariantConfig, agentKind agentruntime.AgentKind, startReq agentruntime.StartRequest, size terminalSize) (string, error) {
+	mainTerminalID, spec, err := s.startSessionMainTerminal(ctx, session, run, profile, agentKind, startReq, size)
 	if err != nil {
 		return "", err
 	}
 
-	tabs := s.startAutoTerminals(ctx, cfg, intent, spec.Workdir, spec.Env, size, spec.CleanupPaths)
-	s.storeSessionTerminalState(intent.ID, sessionTerminalState{
+	tabs := s.startAutoTerminals(ctx, cfg, session, spec.Workdir, spec.Env, size, spec.CleanupPaths)
+	s.storeSessionTerminalState(session.ID, sessionTerminalState{
 		runID:          run.ID,
 		mainTerminalID: mainTerminalID,
 		tabs:           tabs,
@@ -390,28 +391,28 @@ func (s *Service) launchSession(ctx context.Context, cfg config.Config, intent d
 }
 
 func (s *Service) RestoreRunningSessions(ctx context.Context) error {
-	intents, err := s.repo.ListIntents(ctx)
+	sessions, err := s.repo.ListSessions(ctx)
 	if err != nil {
-		return fmt.Errorf("list session intents for restore: %w", err)
+		return fmt.Errorf("list sessions for restore: %w", err)
 	}
 
-	if len(intents) == 0 {
+	if len(sessions) == 0 {
 		return nil
 	}
 
 	restoredCount := 0
 	failedCount := 0
-	for _, intent := range intents {
-		if intent.CurrentRun == nil || intent.CurrentRun.Status != domain.SessionRunStatusRunning {
+	for _, session := range sessions {
+		if session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
 			continue
 		}
-		run := *intent.CurrentRun
-		if err := s.restoreSession(ctx, intent, run); err != nil {
+		run := *session.CurrentRun
+		if err := s.restoreSession(ctx, session, run); err != nil {
 			s.logger.Error("failed to restore session run, marking as failed",
-				"session_intent_id", intent.ID,
+				"session_id", session.ID,
 				"run_id", run.ID,
-				"session_type", intent.SessionType,
-				"architect_key", intent.ArchitectKey,
+				"session_type", session.SessionType,
+				"architect_key", session.ArchitectKey,
 				"error", err,
 			)
 			failedCount++
@@ -423,11 +424,11 @@ func (s *Service) RestoreRunningSessions(ctx context.Context) error {
 				)
 			}
 
-			if intent.SessionType == domain.SessionTypeTicket {
-				if ticketErr := s.moveTicketToBacklog(ctx, intent); ticketErr != nil {
+			if session.SessionType == domain.SessionTypeTicket {
+				if ticketErr := s.moveTicketToBacklog(ctx, session); ticketErr != nil {
 					s.logger.Error("failed to move ticket back to backlog after restore failure",
-						"session_intent_id", intent.ID,
-						"ticket_id", intent.ContextID,
+						"session_id", session.ID,
+						"ticket_id", session.ContextID,
 						"error", ticketErr,
 					)
 				}
@@ -436,10 +437,10 @@ func (s *Service) RestoreRunningSessions(ctx context.Context) error {
 		}
 		restoredCount++
 		s.logger.Info("session run restored",
-			"session_intent_id", intent.ID,
+			"session_id", session.ID,
 			"run_id", run.ID,
-			"session_type", intent.SessionType,
-			"architect_key", intent.ArchitectKey,
+			"session_type", session.SessionType,
+			"architect_key", session.ArchitectKey,
 		)
 	}
 
@@ -453,22 +454,22 @@ func (s *Service) RestoreRunningSessions(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) restoreSession(ctx context.Context, intent domain.SessionIntent, run domain.SessionRun) error {
+func (s *Service) restoreSession(ctx context.Context, session domain.Session, run domain.SessionRun) error {
 	cfg, err := s.currentConfig()
 	if err != nil {
 		return err
 	}
 
-	profile, agentKind, err := s.resolveStoredRunLaunchContext(intent, run)
+	profile, agentKind, err := s.resolveStoredRunLaunchContext(session, run)
 	if err != nil {
 		return err
 	}
 
-	if _, err := s.launchSession(ctx, cfg, intent, run, profile, agentKind, agentruntime.StartRequest{
+	if _, err := s.launchSession(ctx, cfg, session, run, profile, agentKind, agentruntime.StartRequest{
 		Model:        profile.Model,
 		Yolo:         profile.Yolo,
 		Mode:         agentruntime.Mode(profile.Mode),
-		Instructions: intent.Instructions,
+		Instructions: session.Instructions,
 		Workdir:      run.Workdir,
 		Args:         append([]string(nil), profile.Args...),
 		Env:          cloneStringMap(profile.Env),
@@ -481,37 +482,37 @@ func (s *Service) restoreSession(ctx context.Context, intent domain.SessionInten
 	return nil
 }
 
-func (s *Service) moveTicketToBacklog(ctx context.Context, intent domain.SessionIntent) error {
+func (s *Service) moveTicketToBacklog(ctx context.Context, session domain.Session) error {
 	cfg, err := s.currentConfig()
 	if err != nil {
 		return fmt.Errorf("get config: %w", err)
 	}
 
-	architect, ok := cfg.Architects[intent.ArchitectKey]
+	architect, ok := cfg.Architects[session.ArchitectKey]
 	if !ok {
-		return fmt.Errorf("architect %q not found in config", intent.ArchitectKey)
+		return fmt.Errorf("architect %q not found in config", session.ArchitectKey)
 	}
 
-	if _, err := s.tickets.MoveTicket(ctx, architect.Path, intent.ContextID, domain.MoveTicketParams{To: domain.TicketStatusBacklog}); err != nil {
-		return fmt.Errorf("move ticket %q to backlog: %w", intent.ContextID, err)
+	if _, err := s.tickets.MoveTicket(ctx, architect.Path, session.ContextID, domain.MoveTicketParams{To: domain.TicketStatusBacklog}); err != nil {
+		return fmt.Errorf("move ticket %q to backlog: %w", session.ContextID, err)
 	}
 
 	return nil
 }
 
-func (s *Service) startSessionMainTerminal(ctx context.Context, intent domain.SessionIntent, run domain.SessionRun, profile config.VariantConfig, agentKind agentruntime.AgentKind, startReq agentruntime.StartRequest, size terminalSize) (string, agentruntime.LaunchSpec, error) {
-	spec, err := s.prepareLaunchSpec(ctx, intent, run, profile, agentKind, startReq)
+func (s *Service) startSessionMainTerminal(ctx context.Context, session domain.Session, run domain.SessionRun, profile config.VariantConfig, agentKind agentruntime.AgentKind, startReq agentruntime.StartRequest, size terminalSize) (string, agentruntime.LaunchSpec, error) {
+	spec, err := s.prepareLaunchSpec(ctx, session, run, profile, agentKind, startReq)
 	if err != nil {
 		return "", agentruntime.LaunchSpec{}, err
 	}
 
-	s.cancelReceiverBridge(intent.ID)
-	cancelBridge := s.startReceiverBridge(intent.ID)
-	s.storeBridgeCancel(intent.ID, cancelBridge)
+	s.cancelReceiverBridge(session.ID)
+	cancelBridge := s.startReceiverBridge(session.ID)
+	s.storeBridgeCancel(session.ID, cancelBridge)
 
 	mainTerminalID := uuid.NewString()
 	if err := s.terminal.Start(ctx, terminalStartSpec{
-		SessionID:    intent.ID,
+		SessionID:    session.ID,
 		TerminalID:   mainTerminalID,
 		Name:         mainTerminalName,
 		Command:      spec.Command,
@@ -522,25 +523,25 @@ func (s *Service) startSessionMainTerminal(ctx context.Context, intent domain.Se
 		CleanupPaths: append([]string(nil), spec.CleanupPaths...),
 		OnExit:       s.handleTerminalExit,
 	}); err != nil {
-		s.cancelReceiverBridge(intent.ID)
+		s.cancelReceiverBridge(session.ID)
 		return "", agentruntime.LaunchSpec{}, err
 	}
 
 	s.logger.Info("[launch] started agent PTY",
-		"session_intent_id", intent.ID,
+		"session_id", session.ID,
 		"run_id", run.ID,
-		"session_type", intent.SessionType,
+		"session_type", session.SessionType,
 		"command", spec.Command,
 	)
 
 	return mainTerminalID, spec, nil
 }
 
-func (s *Service) prepareLaunchSpec(ctx context.Context, intent domain.SessionIntent, _ domain.SessionRun, profile config.VariantConfig, agentKind agentruntime.AgentKind, startReq agentruntime.StartRequest) (agentruntime.LaunchSpec, error) {
-	startReq.ID = intent.ID
+func (s *Service) prepareLaunchSpec(ctx context.Context, session domain.Session, _ domain.SessionRun, profile config.VariantConfig, agentKind agentruntime.AgentKind, startReq agentruntime.StartRequest) (agentruntime.LaunchSpec, error) {
+	startReq.ID = session.ID
 	startReq.Agent = agentKind
 
-	if err := configureOpenCodeArchitectAgent(intent, agentKind, &startReq); err != nil {
+	if err := configureOpenCodeArchitectAgent(session, agentKind, &startReq); err != nil {
 		return agentruntime.LaunchSpec{}, err
 	}
 
@@ -549,7 +550,7 @@ func (s *Service) prepareLaunchSpec(ctx context.Context, intent domain.SessionIn
 		return agentruntime.LaunchSpec{}, fmt.Errorf("ensure %s setup: %w", agentKind, err)
 	}
 
-	mcpServers, err := s.mcpServersForSession(intent.SessionType, intent.ArchitectKey, intent.ID, profile.MCP)
+	mcpServers, err := s.mcpServersForSession(session.SessionType, session.ArchitectKey, session.ID, profile.MCP)
 	if err != nil {
 		return agentruntime.LaunchSpec{}, err
 	}
@@ -563,21 +564,21 @@ func (s *Service) prepareLaunchSpec(ctx context.Context, intent domain.SessionIn
 	return spec, nil
 }
 
-func configureOpenCodeArchitectAgent(intent domain.SessionIntent, agentKind agentruntime.AgentKind, startReq *agentruntime.StartRequest) error {
-	if agentKind != agentruntime.AgentOpenCode || intent.SessionType != domain.SessionTypeArchitect {
+func configureOpenCodeArchitectAgent(session domain.Session, agentKind agentruntime.AgentKind, startReq *agentruntime.StartRequest) error {
+	if agentKind != agentruntime.AgentOpenCode || session.SessionType != domain.SessionTypeArchitect {
 		return nil
 	}
-	if strings.TrimSpace(intent.ArchitectKey) == "" {
+	if strings.TrimSpace(session.ArchitectKey) == "" {
 		return errors.New("architect OpenCode session missing architect key")
 	}
 	if hasArgFlag(startReq.Args, "--agent") {
-		return fmt.Errorf("architect OpenCode session profile args must not include --agent; daemon manages the agent selection for architect %q", intent.ArchitectKey)
+		return fmt.Errorf("architect OpenCode session profile args must not include --agent; daemon manages the agent selection for architect %q", session.ArchitectKey)
 	}
 	if startReq.Mode == agentruntime.ModePlan {
-		return fmt.Errorf("architect OpenCode session profile must not use mode \"plan\"; daemon manages the agent selection for architect %q", intent.ArchitectKey)
+		return fmt.Errorf("architect OpenCode session profile must not use mode \"plan\"; daemon manages the agent selection for architect %q", session.ArchitectKey)
 	}
 
-	architectKey := intent.ArchitectKey
+	architectKey := session.ArchitectKey
 	startReq.Args = append([]string{"--agent", architectKey}, startReq.Args...)
 	startReq.OpenCodeAgentConfig = map[string]agentruntime.OpenCodeAgentConfig{
 		architectKey: {
@@ -607,14 +608,14 @@ func hasArgFlag(args []string, flag string) bool {
 	return false
 }
 
-func (s *Service) resolveStoredRunLaunchContext(intent domain.SessionIntent, run domain.SessionRun) (config.VariantConfig, agentruntime.AgentKind, error) {
+func (s *Service) resolveStoredRunLaunchContext(session domain.Session, run domain.SessionRun) (config.VariantConfig, agentruntime.AgentKind, error) {
 	cfg, err := s.currentConfig()
 	if err != nil {
 		return config.VariantConfig{}, "", err
 	}
 
-	if _, ok := cfg.Architects[intent.ArchitectKey]; !ok {
-		return config.VariantConfig{}, "", fmt.Errorf("architect %q not found in architects.yaml", intent.ArchitectKey)
+	if _, ok := cfg.Architects[session.ArchitectKey]; !ok {
+		return config.VariantConfig{}, "", fmt.Errorf("architect %q not found in architects.yaml", session.ArchitectKey)
 	}
 	if _, ok := cfg.Variants[run.ProfileName]; !ok {
 		return config.VariantConfig{}, "", fmt.Errorf("agent profile %q not found in variants.yaml", run.ProfileName)
@@ -647,17 +648,17 @@ func (s *Service) resolveStoredRunLaunchContext(intent domain.SessionIntent, run
 	}, agentKind, nil
 }
 
-func (s *Service) resumeSessionMainTerminal(ctx context.Context, intent domain.SessionIntent, run domain.SessionRun, size terminalSize) (string, error) {
-	profile, agentKind, err := s.resolveStoredRunLaunchContext(intent, run)
+func (s *Service) resumeSessionMainTerminal(ctx context.Context, session domain.Session, run domain.SessionRun, size terminalSize) (string, error) {
+	profile, agentKind, err := s.resolveStoredRunLaunchContext(session, run)
 	if err != nil {
 		return "", err
 	}
 
-	mainTerminalID, _, err := s.startSessionMainTerminal(ctx, intent, run, profile, agentKind, agentruntime.StartRequest{
+	mainTerminalID, _, err := s.startSessionMainTerminal(ctx, session, run, profile, agentKind, agentruntime.StartRequest{
 		Model:        profile.Model,
 		Yolo:         profile.Yolo,
 		Mode:         agentruntime.Mode(profile.Mode),
-		Instructions: intent.Instructions,
+		Instructions: session.Instructions,
 		Workdir:      run.Workdir,
 		Args:         append([]string(nil), profile.Args...),
 		Env:          cloneStringMap(profile.Env),
@@ -668,7 +669,7 @@ func (s *Service) resumeSessionMainTerminal(ctx context.Context, intent domain.S
 		return "", err
 	}
 
-	if err := s.replaceSessionMainTerminalID(intent.ID, mainTerminalID); err != nil {
+	if err := s.replaceSessionMainTerminalID(session.ID, mainTerminalID); err != nil {
 		return "", err
 	}
 
@@ -676,66 +677,66 @@ func (s *Service) resumeSessionMainTerminal(ctx context.Context, intent domain.S
 }
 
 func (s *Service) ConcludeSession(ctx context.Context, id string, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
-	intent, err := s.repo.GetIntent(ctx, id)
+	session, err := s.repo.GetSession(ctx, id)
 	if err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
-	if intent.CurrentRun == nil || intent.CurrentRun.Status != domain.SessionRunStatusRunning {
+	if session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_id", Message: "session run is not running"}
 	}
-	run := *intent.CurrentRun
+	run := *session.CurrentRun
 
-	switch intent.SessionType {
+	switch session.SessionType {
 	case domain.SessionTypeArchitect:
-		return s.concludeArchitectSession(ctx, intent, run, params)
+		return s.concludeArchitectSession(ctx, session, run, params)
 	case domain.SessionTypeTicket:
-		return s.concludeTicketSession(ctx, intent, run, params)
+		return s.concludeTicketSession(ctx, session, run, params)
 	case domain.SessionTypeFreeform:
-		return s.concludeFreeformSession(ctx, intent, run, params)
+		return s.concludeFreeformSession(ctx, session, run, params)
 	default:
-		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_type", Message: "cannot conclude session of type " + string(intent.SessionType)}
+		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_type", Message: "cannot conclude session of type " + string(session.SessionType)}
 	}
 }
 
 func (s *Service) UnspawnTicketSession(ctx context.Context, id string) (domain.ConcludeSessionResult, error) {
-	intent, err := s.repo.GetIntent(ctx, id)
+	session, err := s.repo.GetSession(ctx, id)
 	if err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
-	if intent.SessionType != domain.SessionTypeTicket {
+	if session.SessionType != domain.SessionTypeTicket {
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_type", Message: "only ticket sessions can be discarded"}
 	}
-	if strings.TrimSpace(intent.ContextID) == "" {
+	if strings.TrimSpace(session.ContextID) == "" {
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_id", Message: "ticket session has no context ID"}
 	}
-	if intent.CurrentRun == nil {
+	if session.CurrentRun == nil {
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_id", Message: "session has no run to discard"}
 	}
-	run := *intent.CurrentRun
+	run := *session.CurrentRun
 
-	if err := s.moveTicketToBacklog(ctx, intent); err != nil {
+	if err := s.moveTicketToBacklog(ctx, session); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
 
-	if err := s.appendAndPublishSessionEnded(ctx, intent.ID, run.ID, "session discarded", "discarded", map[string]any{
-		"ticket_id": intent.ContextID,
+	if err := s.appendAndPublishSessionEnded(ctx, session.ID, run.ID, "session discarded", "discarded", map[string]any{
+		"ticket_id": session.ContextID,
 	}); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
 
-	if err := s.terminal.KillBySession(ctx, intent.ID); err != nil && !errors.Is(err, errTerminalNotFound) {
+	if err := s.terminal.KillBySession(ctx, session.ID); err != nil && !errors.Is(err, errTerminalNotFound) {
 		return domain.ConcludeSessionResult{}, fmt.Errorf("kill session terminal: %w", err)
 	}
 
 	if err := s.repo.DeleteRun(ctx, run.ID); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
-	if err := s.repo.DeleteIntent(ctx, intent.ID); err != nil {
+	if err := s.repo.DeleteSession(ctx, session.ID); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
-	s.cleanupDeletedSession(intent.ID)
+	s.cleanupDeletedSession(session.ID)
 
-	return domain.ConcludeSessionResult{SessionID: intent.ID, ArchitectKey: intent.ArchitectKey, TicketID: intent.ContextID}, nil
+	return domain.ConcludeSessionResult{SessionID: session.ID, ArchitectKey: session.ArchitectKey, TicketID: session.ContextID}, nil
 }
 
 // validateConclusionCommits enforces the required-field set per outcome shared
@@ -760,212 +761,93 @@ func validateConclusionCommits(outcome domain.TicketOutcome, rejectionReason str
 	}
 }
 
-func (s *Service) RequestConclusion(ctx context.Context, id string, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
-	intent, err := s.repo.GetIntent(ctx, id)
+// RequestConclusion is the agent-facing conclude path: it proposes the
+// conclusion as an intent and blocks until the user answers or the tool's
+// policy fires. The conclusion is written only by the intent's Exec.
+func (s *Service) RequestConclusion(
+	ctx context.Context, id string, params domain.ConcludeSessionParams,
+) (domain.IntentResolution[domain.ConcludeSessionResult], error) {
+	var zero domain.IntentResolution[domain.ConcludeSessionResult]
+
+	session, err := s.repo.GetSession(ctx, id)
 	if err != nil {
-		return domain.ConcludeSessionResult{}, err
+		return zero, err
 	}
-	if intent.CurrentRun == nil || intent.CurrentRun.Status != domain.SessionRunStatusRunning {
-		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_id", Message: "session run is not running"}
+	if session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
+		return zero, &domain.ValidationError{Field: "session_id", Message: "session run is not running"}
 	}
 
 	// Render the structured conclusion input into the canonical markdown body
 	// before anything is stored or published. This validates the required
-	// fields (returning the error straight to the agent) and makes the stored
-	// approval — and therefore the desktop approval surface — carry the rendered
+	// fields (returning the error straight to the agent) and makes the pending
+	// intent — and therefore the desktop approval surface — carry the rendered
 	// markdown, so the approval flow and read path are unchanged in shape.
-	body, err := s.renderConclusionBody(intent.SessionType, params)
+	body, err := s.renderConclusionBody(session.SessionType, params)
 	if err != nil {
-		return domain.ConcludeSessionResult{}, err
+		return zero, err
 	}
 	params.Body = body
 
-	// Validate commit/rejection invariants before storing the pending approval
-	// or publishing approval_required, so the agent gets the error immediately
-	// and the desktop approval dialog is never shown. Only ticket sessions carry
-	// commits; architect and freeform conclusions have no such requirement.
-	if intent.SessionType == domain.SessionTypeTicket {
+	// Validate commit/rejection invariants before raising the intent, so the
+	// agent gets the error immediately and the desktop dialog is never shown.
+	// Only ticket sessions carry commits; architect and freeform conclusions
+	// have no such requirement.
+	if session.SessionType == domain.SessionTypeTicket {
 		if err := validateConclusionCommits(params.Outcome, params.RejectionReason, params.Commits); err != nil {
-			return domain.ConcludeSessionResult{}, err
+			return zero, err
 		}
 	}
 
-	if err := s.repo.UpdateRunAgentStatus(ctx, intent.CurrentRun.ID, domain.AgentStatusWaiting); err != nil {
-		return domain.ConcludeSessionResult{}, err
+	// Deliberately not moved into the generic intent path: restoring the prior
+	// status after resolution would race with other intents open on the same
+	// session, and a conclusion never needs the restore because the run ends.
+	if err := s.repo.UpdateRunAgentStatus(ctx, session.CurrentRun.ID, domain.AgentStatusWaiting); err != nil {
+		return zero, err
 	}
 
-	resultCh, err := s.approvals.Store(id, params)
-	if err != nil {
-		return domain.ConcludeSessionResult{}, err
-	}
-
-	if err := s.publishApprovalRequired(ctx, id, params); err != nil {
-		s.approvals.Delete(id)
-		return domain.ConcludeSessionResult{}, err
-	}
-
-	timeoutDuration := time.Duration(s.cfg.ConclusionApprovalTimeout) * time.Second
-	var timeoutCh <-chan time.Time
-	if timeoutDuration > 0 {
-		timeoutCh = time.After(timeoutDuration)
-	}
-
-	select {
-	case <-ctx.Done():
-		s.approvals.Delete(id)
-		// ctx is cancelled (agent disconnected), so detach it for the durable
-		// resolution write; otherwise a reconnecting desktop replays a dangling
-		// approval_required as a stale dialog.
-		if err := s.publishApprovalResolved(context.WithoutCancel(ctx), id, "cancelled"); err != nil {
-			s.logger.Warn("publish approval_resolved on cancel", "session_id", id, "error", err)
-		}
-		return domain.ConcludeSessionResult{}, ctx.Err()
-	case result := <-resultCh:
-		if result.err != nil {
-			return domain.ConcludeSessionResult{}, result.err
-		}
-		return result.concludeResult, nil
-	case <-timeoutCh:
-	}
-
-	_, claimed := s.approvals.Claim(id)
-	if !claimed {
-		select {
-		case <-ctx.Done():
-			return domain.ConcludeSessionResult{}, ctx.Err()
-		case result := <-resultCh:
-			if result.err != nil {
-				return domain.ConcludeSessionResult{}, result.err
+	return awaitIntent(ctx, s, intentSpec[domain.ConcludeSessionResult]{
+		SessionID: id,
+		Type:      domain.IntentTypeConcludeSession,
+		Summary:   conclusionIntentSummary(params),
+		Payload:   conclusionIntentPayload(params),
+		Origin:    intentOrigin(session),
+		Exec: func(ctx context.Context) (domain.ConcludeSessionResult, error) {
+			result, err := s.ConcludeSession(ctx, id, params)
+			if err != nil {
+				return domain.ConcludeSessionResult{}, err
 			}
-			return result.concludeResult, nil
-		}
-	}
-
-	result, err := s.ConcludeSession(ctx, id, params)
-	return result, err
+			if result.TicketID != "" {
+				s.emitArchitectEvent(result.ArchitectKey, "ticket_concluded", result.TicketID)
+			}
+			return result, nil
+		},
+	})
 }
 
-func (s *Service) ApproveConclusion(ctx context.Context, id string) (domain.ConcludeSessionResult, error) {
-	pending, ok := s.approvals.Claim(id)
-	if !ok {
-		return domain.ConcludeSessionResult{}, &domain.NotFoundError{Resource: "pending_approval", ID: id}
+// conclusionIntentSummary is the one-line popup title. The full rendered body
+// travels in the payload.
+func conclusionIntentSummary(params domain.ConcludeSessionParams) string {
+	if summary := strings.TrimSpace(params.Summary); summary != "" {
+		return summary
 	}
-
-	result, err := s.ConcludeSession(ctx, id, pending.params)
-	if err != nil {
-		// A failed conclusion emits no ended/concluded event, so without this the
-		// approval_required would dangle in the log and replay as a stale dialog.
-		if pubErr := s.publishApprovalResolved(ctx, id, "error"); pubErr != nil {
-			s.logger.Warn("publish approval_resolved after approve failure", "session_id", id, "error", pubErr)
-		}
-	}
-	pending.resultCh <- approvalResult{concludeResult: result, err: err}
-	return result, err
+	return "Conclude session"
 }
 
-func (s *Service) RejectConclusion(ctx context.Context, id string, reason string) error {
-	pending, ok := s.approvals.Claim(id)
-	if !ok {
-		return &domain.NotFoundError{Resource: "pending_approval", ID: id}
-	}
-
-	if err := s.publishApprovalResolved(ctx, id, "rejected"); err != nil {
-		return err
-	}
-
-	pending.resultCh <- approvalResult{
-		err: &domain.ValidationError{Field: "conclusion", Message: "rejected: " + reason},
-	}
-	return nil
-}
-
-func (s *Service) publishApprovalRequired(ctx context.Context, sessionID string, params domain.ConcludeSessionParams) error {
-	raw := map[string]any{
-		"body":            params.Body,
-		"timeout_seconds": s.cfg.ConclusionApprovalTimeout,
-	}
+// conclusionIntentPayload carries exactly the fields the old approval_required
+// event carried, so the conclusion popup renders from the same data — now
+// nested under the generic intent payload.
+func conclusionIntentPayload(params domain.ConcludeSessionParams) map[string]any {
+	payload := map[string]any{"body": params.Body}
 	if len(params.Commits) > 0 {
-		raw["commits"] = params.Commits
+		payload["commits"] = params.Commits
 	}
 	if params.Outcome != "" {
-		raw["outcome"] = string(params.Outcome)
+		payload["outcome"] = string(params.Outcome)
 	}
 	if params.RejectionReason != "" {
-		raw["rejection_reason"] = params.RejectionReason
+		payload["rejection_reason"] = params.RejectionReason
 	}
-	return s.appendAndPublishSessionEvent(ctx, domain.AppendSessionEventParams{
-		SessionIntentID: sessionID,
-		Type:            "status",
-		Status:          "approval_required",
-		Message:         "conclusion approval required",
-		Raw:             raw,
-		At:              time.Now().UTC(),
-	})
-}
-
-// publishApprovalResolved emits the durable counterpart to approval_required.
-// approval_required is persisted and replayed on every client (re)connect, but
-// the pending approval itself lives only in the in-memory approvalStore. Without
-// a resolution event, a rejected/cancelled/orphaned approval leaves a dangling
-// approval_required in the log that a reconnecting desktop replays into a stale,
-// unactionable dialog. Emitting approval_resolved makes the event log converge to
-// "no dialog" under replay. The successful-conclusion path does not need this:
-// it already emits the ended/concluded event that dismisses the dialog.
-func (s *Service) publishApprovalResolved(ctx context.Context, sessionID, outcome string) error {
-	return s.appendAndPublishSessionEvent(ctx, domain.AppendSessionEventParams{
-		SessionIntentID: sessionID,
-		Type:            "status",
-		Status:          "approval_resolved",
-		Message:         "conclusion approval resolved",
-		Raw:             map[string]any{"outcome": outcome},
-		At:              time.Now().UTC(),
-	})
-}
-
-// ReconcilePendingApprovals runs once at daemon startup. Pending approvals live
-// only in the in-memory approvalStore, which is empty after a restart, so any
-// approval_required still trailing in a session's durable log has no live
-// approval backing it and would replay into a stale dialog on the next desktop
-// reconnect. For every such session, append a durable approval_resolved so the
-// log converges to "no dialog". Because the approvalStore is always empty at
-// startup, any unresolved trailing approval_required is by definition orphaned.
-func (s *Service) ReconcilePendingApprovals(ctx context.Context) error {
-	intents, err := s.repo.ListIntents(ctx)
-	if err != nil {
-		return err
-	}
-	for _, intent := range intents {
-		events, err := s.repo.ListSessionEvents(ctx, intent.ID)
-		if err != nil {
-			return err
-		}
-		if !latestApprovalUnresolved(events) {
-			continue
-		}
-		if err := s.publishApprovalResolved(ctx, intent.ID, "daemon_restart"); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// latestApprovalUnresolved reports whether the most recent approval-lifecycle
-// event (events are ordered oldest-first) is an approval_required with no
-// following approval_resolved or session end. Non-approval events are ignored.
-func latestApprovalUnresolved(events []domain.SessionEvent) bool {
-	for i := len(events) - 1; i >= 0; i-- {
-		e := events[i]
-		if e.Type != "status" {
-			continue
-		}
-		switch e.Status {
-		case "approval_required":
-			return true
-		case "approval_resolved", "ended":
-			return false
-		}
-	}
-	return false
+	return payload
 }
 
 func (s *Service) ReadConclusion(ctx context.Context, architectKey, id string) (domain.ArchitectConclusion, error) {
@@ -1092,8 +974,8 @@ func (s *Service) ListConclusions(ctx context.Context, architectKey string, limi
 	return summaries, nil
 }
 
-func (s *Service) concludeArchitectSession(ctx context.Context, intent domain.SessionIntent, run domain.SessionRun, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
-	activeTicketSessionIDs, err := s.activeTicketSessionIDs(ctx, intent.ArchitectKey, intent.ID)
+func (s *Service) concludeArchitectSession(ctx context.Context, session domain.Session, run domain.SessionRun, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
+	activeTicketSessionIDs, err := s.activeTicketSessionIDs(ctx, session.ArchitectKey, session.ID)
 	if err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
@@ -1105,13 +987,13 @@ func (s *Service) concludeArchitectSession(ctx context.Context, intent domain.Se
 		}
 	}
 
-	architect, err := s.currentArchitect(intent.ArchitectKey)
+	architect, err := s.currentArchitect(session.ArchitectKey)
 	if err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
 
 	if strings.TrimSpace(params.Body) != "" {
-		folderName := intent.ContextID
+		folderName := session.ContextID
 		dir := filepath.Join(architect.Path, "architect-sessions", folderName)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return domain.ConcludeSessionResult{}, fmt.Errorf("create architect session directory: %w", err)
@@ -1119,7 +1001,7 @@ func (s *Service) concludeArchitectSession(ctx context.Context, intent domain.Se
 
 		now := time.Now().UTC()
 		conclusionPath := filepath.Join(dir, conclusionFileName)
-		doc := newArchitectConclusionDocument(intent.CreatedAt, now, run.ProfileName, params.Body)
+		doc := newArchitectConclusionDocument(session.CreatedAt, now, run.ProfileName, params.Body)
 		if err := writeConclusionFile(conclusionPath, doc); err != nil {
 			return domain.ConcludeSessionResult{}, err
 		}
@@ -1129,30 +1011,30 @@ func (s *Service) concludeArchitectSession(ctx context.Context, intent domain.Se
 		return domain.ConcludeSessionResult{}, err
 	}
 
-	if err := s.appendAndPublishSessionEnded(ctx, intent.ID, run.ID, "session concluded", "concluded", map[string]any{"body": params.Body}); err != nil {
+	if err := s.appendAndPublishSessionEnded(ctx, session.ID, run.ID, "session concluded", "concluded", map[string]any{"body": params.Body}); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
 
-	if err := s.terminal.KillBySession(ctx, intent.ID); err != nil && !errors.Is(err, errTerminalNotFound) {
+	if err := s.terminal.KillBySession(ctx, session.ID); err != nil && !errors.Is(err, errTerminalNotFound) {
 		return domain.ConcludeSessionResult{}, fmt.Errorf("kill session terminal: %w", err)
 	}
 
-	if err := s.repo.DeleteIntent(ctx, intent.ID); err != nil {
+	if err := s.repo.DeleteSession(ctx, session.ID); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
-	s.cleanupDeletedSession(intent.ID)
+	s.cleanupDeletedSession(session.ID)
 
-	return domain.ConcludeSessionResult{SessionID: intent.ID, ArchitectKey: intent.ArchitectKey}, nil
+	return domain.ConcludeSessionResult{SessionID: session.ID, ArchitectKey: session.ArchitectKey}, nil
 }
 
 func (s *Service) activeTicketSessionIDs(ctx context.Context, architectKey, excludedSessionID string) ([]string, error) {
-	intents, err := s.repo.ListIntents(ctx)
+	sessions, err := s.repo.ListSessions(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list session intents for architect conclude: %w", err)
+		return nil, fmt.Errorf("list sessions for architect conclude: %w", err)
 	}
 
-	ids := make([]string, 0, len(intents))
-	for _, candidate := range intents {
+	ids := make([]string, 0, len(sessions))
+	for _, candidate := range sessions {
 		if candidate.ID == excludedSessionID {
 			continue
 		}
@@ -1172,23 +1054,23 @@ func (s *Service) activeTicketSessionIDs(ctx context.Context, architectKey, excl
 	return ids, nil
 }
 
-func (s *Service) concludeTicketSession(ctx context.Context, intent domain.SessionIntent, run domain.SessionRun, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
+func (s *Service) concludeTicketSession(ctx context.Context, session domain.Session, run domain.SessionRun, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
 	// Commit/rejection validation runs earlier in RequestConclusion (before the
 	// approval dialog fires); see validateConclusionCommits.
 	if err := validateConclusionCommits(params.Outcome, params.RejectionReason, params.Commits); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
 
-	if strings.TrimSpace(intent.ContextID) == "" {
+	if strings.TrimSpace(session.ContextID) == "" {
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_id", Message: "ticket session has no context ID"}
 	}
 
-	architect, err := s.currentArchitect(intent.ArchitectKey)
+	architect, err := s.currentArchitect(session.ArchitectKey)
 	if err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
 
-	ticket, err := s.tickets.GetTicket(ctx, architect.Path, intent.ContextID)
+	ticket, err := s.tickets.GetTicket(ctx, architect.Path, session.ContextID)
 	if err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
@@ -1211,7 +1093,7 @@ func (s *Service) concludeTicketSession(ctx context.Context, intent domain.Sessi
 	}
 
 	now := time.Now().UTC()
-	startedAt := intent.CreatedAt
+	startedAt := session.CreatedAt
 	if run.StartedAt != nil {
 		startedAt = run.StartedAt.UTC()
 	}
@@ -1226,7 +1108,7 @@ func (s *Service) concludeTicketSession(ctx context.Context, intent domain.Sessi
 		Body:            params.Body,
 	}
 
-	if _, err := s.tickets.ConcludeTicket(ctx, architect.Path, intent.ContextID, conclusion); err != nil {
+	if _, err := s.tickets.ConcludeTicket(ctx, architect.Path, session.ContextID, conclusion); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
 
@@ -1234,7 +1116,7 @@ func (s *Service) concludeTicketSession(ctx context.Context, intent domain.Sessi
 		return domain.ConcludeSessionResult{}, err
 	}
 
-	if err := s.appendAndPublishSessionEnded(ctx, intent.ID, run.ID, "session concluded", "concluded", map[string]any{
+	if err := s.appendAndPublishSessionEnded(ctx, session.ID, run.ID, "session concluded", "concluded", map[string]any{
 		"body":             params.Body,
 		"commits":          resolvedCommits,
 		"outcome":          string(params.Outcome),
@@ -1243,16 +1125,16 @@ func (s *Service) concludeTicketSession(ctx context.Context, intent domain.Sessi
 		return domain.ConcludeSessionResult{}, err
 	}
 
-	if err := s.terminal.KillBySession(ctx, intent.ID); err != nil && !errors.Is(err, errTerminalNotFound) {
+	if err := s.terminal.KillBySession(ctx, session.ID); err != nil && !errors.Is(err, errTerminalNotFound) {
 		return domain.ConcludeSessionResult{}, fmt.Errorf("kill session terminal: %w", err)
 	}
 
-	if err := s.repo.DeleteIntent(ctx, intent.ID); err != nil {
+	if err := s.repo.DeleteSession(ctx, session.ID); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
-	s.cleanupDeletedSession(intent.ID)
+	s.cleanupDeletedSession(session.ID)
 
-	return domain.ConcludeSessionResult{SessionID: intent.ID, ArchitectKey: intent.ArchitectKey, TicketID: intent.ContextID}, nil
+	return domain.ConcludeSessionResult{SessionID: session.ID, ArchitectKey: session.ArchitectKey, TicketID: session.ContextID}, nil
 }
 
 func (s *Service) MoveTicketToDone(ctx context.Context, architectKey, ticketID string, params domain.MoveTicketToDoneParams) (domain.MoveTicketToDoneResult, error) {
@@ -1315,12 +1197,12 @@ func (s *Service) MoveTicketToDone(ctx context.Context, architectKey, ticketID s
 }
 
 func (s *Service) runningTicketSessionID(ctx context.Context, architectKey, ticketID string) (string, bool, error) {
-	intents, err := s.repo.ListIntents(ctx)
+	sessions, err := s.repo.ListSessions(ctx)
 	if err != nil {
-		return "", false, fmt.Errorf("list session intents for ticket running check: %w", err)
+		return "", false, fmt.Errorf("list sessions for ticket running check: %w", err)
 	}
 
-	for _, candidate := range intents {
+	for _, candidate := range sessions {
 		if candidate.ArchitectKey != architectKey {
 			continue
 		}
@@ -1339,18 +1221,18 @@ func (s *Service) runningTicketSessionID(ctx context.Context, architectKey, tick
 	return "", false, nil
 }
 
-func (s *Service) concludeFreeformSession(ctx context.Context, intent domain.SessionIntent, run domain.SessionRun, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
+func (s *Service) concludeFreeformSession(ctx context.Context, session domain.Session, run domain.SessionRun, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
 	if params.Outcome != "" {
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "outcome", Message: "freeform sessions do not support an outcome"}
 	}
 	if strings.TrimSpace(params.RejectionReason) != "" {
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "rejection_reason", Message: "freeform sessions do not accept a rejection reason"}
 	}
-	if strings.TrimSpace(intent.ContextID) == "" {
+	if strings.TrimSpace(session.ContextID) == "" {
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_id", Message: "freeform session has no context ID"}
 	}
 
-	architect, err := s.currentArchitect(intent.ArchitectKey)
+	architect, err := s.currentArchitect(session.ArchitectKey)
 	if err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
@@ -1362,11 +1244,11 @@ func (s *Service) concludeFreeformSession(ctx context.Context, intent domain.Ses
 
 	if strings.TrimSpace(params.Body) != "" {
 		now := time.Now().UTC()
-		startedAt := intent.CreatedAt
+		startedAt := session.CreatedAt
 		if run.StartedAt != nil {
 			startedAt = run.StartedAt.UTC()
 		}
-		dir := filepath.Join(architect.Path, "freeform", intent.ContextID)
+		dir := filepath.Join(architect.Path, "freeform", session.ContextID)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return domain.ConcludeSessionResult{}, fmt.Errorf("create freeform session directory: %w", err)
 		}
@@ -1385,38 +1267,46 @@ func (s *Service) concludeFreeformSession(ctx context.Context, intent domain.Ses
 	if len(resolvedCommits) > 0 {
 		raw["commits"] = resolvedCommits
 	}
-	if err := s.appendAndPublishSessionEnded(ctx, intent.ID, run.ID, "session concluded", "concluded", raw); err != nil {
+	if err := s.appendAndPublishSessionEnded(ctx, session.ID, run.ID, "session concluded", "concluded", raw); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
 
-	if err := s.terminal.KillBySession(ctx, intent.ID); err != nil && !errors.Is(err, errTerminalNotFound) {
+	if err := s.terminal.KillBySession(ctx, session.ID); err != nil && !errors.Is(err, errTerminalNotFound) {
 		return domain.ConcludeSessionResult{}, fmt.Errorf("kill session terminal: %w", err)
 	}
 
-	if err := s.repo.DeleteIntent(ctx, intent.ID); err != nil {
+	if err := s.repo.DeleteSession(ctx, session.ID); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
-	s.cleanupDeletedSession(intent.ID)
+	s.cleanupDeletedSession(session.ID)
 
-	return domain.ConcludeSessionResult{SessionID: intent.ID, ArchitectKey: intent.ArchitectKey}, nil
+	return domain.ConcludeSessionResult{SessionID: session.ID, ArchitectKey: session.ArchitectKey}, nil
 }
 
-func (s *Service) appendAndPublishSessionEnded(ctx context.Context, intentID, runID, message, lifecycle string, raw map[string]any) error {
+func (s *Service) appendAndPublishSessionEnded(ctx context.Context, sessionID, runID, message, lifecycle string, raw map[string]any) error {
+	// Every session-ending path funnels through here, and it is the last point
+	// at which the session row still exists — so this is where intents left
+	// open on the session get resolved. Without it a pending createWorkTicket
+	// would outlive its session and fire its write into a dead session when the
+	// wait window expired. The conclude intent driving this teardown is already
+	// claimed, so it is skipped rather than resolved twice.
+	s.failPendingIntents(ctx, sessionID, "session ended before this intent was resolved")
+
 	raw = cloneAnyMap(raw)
 	raw["lifecycle"] = lifecycle
-	raw["session_intent_id"] = intentID
+	raw["session_id"] = sessionID
 	if runID != "" {
 		raw["run_id"] = runID
 	}
 	raw["message"] = message
 	return s.appendAndPublishSessionEvent(ctx, domain.AppendSessionEventParams{
-		SessionIntentID: intentID,
-		RunID:           runID,
-		Type:            "status",
-		Status:          "ended",
-		Message:         message,
-		Raw:             raw,
-		At:              time.Now().UTC(),
+		SessionID: sessionID,
+		RunID:     runID,
+		Type:      "status",
+		Status:    "ended",
+		Message:   message,
+		Raw:       raw,
+		At:        time.Now().UTC(),
 	})
 }
 
@@ -1425,7 +1315,7 @@ func (s *Service) appendAndPublishSessionEvent(ctx context.Context, params domai
 	if err != nil {
 		return fmt.Errorf("append session event: %w", err)
 	}
-	s.publishEvent(params.SessionIntentID, event)
+	s.publishEvent(params.SessionID, event)
 	return nil
 }
 
@@ -1521,7 +1411,7 @@ func writePromptFile(path, body string) error {
 }
 
 func (s *Service) TerminateSession(ctx context.Context, id string) error {
-	if _, err := s.repo.GetIntent(ctx, id); err != nil {
+	if _, err := s.repo.GetSession(ctx, id); err != nil {
 		return err
 	}
 
@@ -1529,7 +1419,7 @@ func (s *Service) TerminateSession(ctx context.Context, id string) error {
 		return err
 	}
 
-	if err := s.repo.DeleteIntent(ctx, id); err != nil {
+	if err := s.repo.DeleteSession(ctx, id); err != nil {
 		return err
 	}
 	s.cleanupDeletedSession(id)
@@ -1542,23 +1432,23 @@ func (s *Service) cleanupDeletedSession(id string) {
 	s.removeSessionTerminalState(id)
 }
 
-func (s *Service) GetIntent(ctx context.Context, id string) (domain.SessionIntent, error) {
-	intent, err := s.repo.GetIntent(ctx, id)
+func (s *Service) GetSession(ctx context.Context, id string) (domain.Session, error) {
+	session, err := s.repo.GetSession(ctx, id)
 	if err != nil {
-		return domain.SessionIntent{}, err
+		return domain.Session{}, err
 	}
-	return s.hydrateIntent(intent), nil
+	return s.hydrateSession(session), nil
 }
 
-func (s *Service) ListIntents(ctx context.Context) ([]domain.SessionIntent, error) {
-	intents, err := s.repo.ListIntents(ctx)
+func (s *Service) ListSessions(ctx context.Context) ([]domain.Session, error) {
+	sessions, err := s.repo.ListSessions(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for i := range intents {
-		intents[i] = s.hydrateIntent(intents[i])
+	for i := range sessions {
+		sessions[i] = s.hydrateSession(sessions[i])
 	}
-	return intents, nil
+	return sessions, nil
 }
 
 func (s *Service) ListSessionEvents(ctx context.Context, id string) ([]domain.SessionEvent, error) {
@@ -1566,7 +1456,7 @@ func (s *Service) ListSessionEvents(ctx context.Context, id string) ([]domain.Se
 }
 
 func (s *Service) SubscribeSessionEvents(ctx context.Context, id string) (domain.SessionEventSubscription, error) {
-	if _, err := s.repo.GetIntent(ctx, id); err != nil {
+	if _, err := s.repo.GetSession(ctx, id); err != nil {
 		return nil, err
 	}
 
@@ -1604,22 +1494,22 @@ func (s *Service) SubscribeSessionEvents(ctx context.Context, id string) (domain
 }
 
 func (s *Service) AttachTerminal(ctx context.Context, sessionID, terminalID string) (domain.TerminalAttachment, error) {
-	if _, err := s.repo.GetIntent(ctx, sessionID); err != nil {
+	if _, err := s.repo.GetSession(ctx, sessionID); err != nil {
 		return nil, err
 	}
 	return s.terminal.Attach(ctx, sessionID, terminalID)
 }
 
 func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params domain.CreateTerminalParams) (domain.TerminalInfo, error) {
-	intent, err := s.repo.GetIntent(ctx, sessionID)
+	session, err := s.repo.GetSession(ctx, sessionID)
 	if err != nil {
 		return domain.TerminalInfo{}, err
 	}
-	if intent.CurrentRun == nil || intent.CurrentRun.Status != domain.SessionRunStatusRunning {
+	if session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
 		return domain.TerminalInfo{}, &domain.ValidationError{Field: "session_id", Message: "session is not running"}
 	}
-	if strings.TrimSpace(intent.CurrentRun.Workdir) == "" {
-		return domain.TerminalInfo{}, fmt.Errorf("session intent %s current run has no workdir", intent.ID)
+	if strings.TrimSpace(session.CurrentRun.Workdir) == "" {
+		return domain.TerminalInfo{}, fmt.Errorf("session %s current run has no workdir", session.ID)
 	}
 	if params.Placement != domain.TerminalPlacementTab && params.Placement != domain.TerminalPlacementSplit {
 		return domain.TerminalInfo{}, &domain.ValidationError{Field: "placement", Message: "must be one of: tab, split"}
@@ -1652,7 +1542,7 @@ func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params d
 		SessionID:  sessionID,
 		TerminalID: terminalID,
 		Command:    command,
-		Workdir:    intent.CurrentRun.Workdir,
+		Workdir:    session.CurrentRun.Workdir,
 		Size:       terminalSize{Cols: defaultPTYCols, Rows: defaultPTYRows},
 		OnExit:     s.handleAuxTerminalExit,
 	}); err != nil {
@@ -1680,14 +1570,14 @@ func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params d
 }
 
 func (s *Service) ListTerminals(ctx context.Context, sessionID string) ([]domain.TerminalInfo, error) {
-	if _, err := s.repo.GetIntent(ctx, sessionID); err != nil {
+	if _, err := s.repo.GetSession(ctx, sessionID); err != nil {
 		return nil, err
 	}
 	return s.terminal.ListBySession(sessionID), nil
 }
 
 func (s *Service) ListSessionTabs(ctx context.Context, sessionID string) ([]domain.SessionTab, error) {
-	if _, err := s.repo.GetIntent(ctx, sessionID); err != nil {
+	if _, err := s.repo.GetSession(ctx, sessionID); err != nil {
 		return nil, err
 	}
 
@@ -1719,7 +1609,7 @@ func (s *Service) ListSessionTabs(ctx context.Context, sessionID string) ([]doma
 }
 
 func (s *Service) KillTerminal(ctx context.Context, sessionID, terminalID string) error {
-	if _, err := s.repo.GetIntent(ctx, sessionID); err != nil {
+	if _, err := s.repo.GetSession(ctx, sessionID); err != nil {
 		return err
 	}
 	if s.mainTerminalID(sessionID) == terminalID {
@@ -1741,11 +1631,11 @@ func (s *Service) PreviewBrowserTab(ctx context.Context, sessionID string, param
 		return domain.BrowserTabInfo{}, &domain.ValidationError{Field: "target", Message: "must be a file://, absolute path, http://localhost, or https:// URL"}
 	}
 
-	intent, err := s.repo.GetIntent(ctx, sessionID)
+	session, err := s.repo.GetSession(ctx, sessionID)
 	if err != nil {
 		return domain.BrowserTabInfo{}, err
 	}
-	if intent.CurrentRun == nil || intent.CurrentRun.Status != domain.SessionRunStatusRunning {
+	if session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
 		return domain.BrowserTabInfo{}, &domain.ValidationError{Field: "session_id", Message: "session is not running"}
 	}
 
@@ -1775,7 +1665,7 @@ func (s *Service) PreviewBrowserTab(ctx context.Context, sessionID string, param
 }
 
 func (s *Service) CloseBrowserTab(ctx context.Context, sessionID, tabID string) error {
-	if _, err := s.repo.GetIntent(ctx, sessionID); err != nil {
+	if _, err := s.repo.GetSession(ctx, sessionID); err != nil {
 		return err
 	}
 	if !s.removeSessionTabByID(sessionID, tabID) {
@@ -1801,11 +1691,11 @@ func isValidBrowserTarget(target string) bool {
 
 func (s *Service) publishTabChanged(ctx context.Context, sessionID string) error {
 	return s.appendAndPublishSessionEvent(ctx, domain.AppendSessionEventParams{
-		SessionIntentID: sessionID,
-		Type:            "status",
-		Status:          "tab_changed",
-		Message:         "session tabs changed",
-		At:              time.Now().UTC(),
+		SessionID: sessionID,
+		Type:      "status",
+		Status:    "tab_changed",
+		Message:   "session tabs changed",
+		At:        time.Now().UTC(),
 	})
 }
 
@@ -1847,14 +1737,14 @@ func (s *Service) startReceiverBridge(sessionID string) func() {
 func (s *Service) handleReceiverEvent(event agentruntime.Event) {
 	run, err := s.repo.GetCurrentRun(context.Background(), event.ID)
 	if err != nil {
-		panic(fmt.Errorf("get current run for session intent %s on receiver event: %w", event.ID, err))
+		panic(fmt.Errorf("get current run for session %s on receiver event: %w", event.ID, err))
 	}
 	if run == nil || run.Status != domain.SessionRunStatusRunning {
-		panic(fmt.Errorf("receiver event for session intent %s has no running run", event.ID))
+		panic(fmt.Errorf("receiver event for session %s has no running run", event.ID))
 	}
 
 	persisted, err := s.repo.AppendSessionEvent(context.Background(), domain.AppendSessionEventParams{
-		SessionIntentID:   event.ID,
+		SessionID:         event.ID,
 		RunID:             run.ID,
 		Type:              "status",
 		Status:            string(event.Status),
@@ -1868,7 +1758,7 @@ func (s *Service) handleReceiverEvent(event agentruntime.Event) {
 		At:                event.At,
 	})
 	if err != nil {
-		panic(fmt.Errorf("persist session event for intent %s run %s: %w", event.ID, run.ID, err))
+		panic(fmt.Errorf("persist session event for session %s run %s: %w", event.ID, run.ID, err))
 	}
 
 	primaryNativeID := event.PrimaryNativeID
@@ -1877,14 +1767,14 @@ func (s *Service) handleReceiverEvent(event agentruntime.Event) {
 	}
 	if primaryNativeID != "" {
 		if err := s.repo.UpdateRunNativeID(context.Background(), run.ID, primaryNativeID); err != nil {
-			panic(fmt.Errorf("update session run native id for intent %s run %s: %w", event.ID, run.ID, err))
+			panic(fmt.Errorf("update session run native id for session %s run %s: %w", event.ID, run.ID, err))
 		}
 	}
 
 	if agentStatus := mapAgentStatusToRunStatus(event.Status); agentStatus != "" {
 		previous := run.AgentStatus
 		if err := s.repo.UpdateRunAgentStatus(context.Background(), run.ID, agentStatus); err != nil {
-			panic(fmt.Errorf("update session run agent status for intent %s run %s: %w", event.ID, run.ID, err))
+			panic(fmt.Errorf("update session run agent status for session %s run %s: %w", event.ID, run.ID, err))
 		}
 		// Emit a live event only when the mapped status actually changes, so the
 		// desktop can re-render the per-session tab icon without polling. A
@@ -1894,13 +1784,13 @@ func (s *Service) handleReceiverEvent(event agentruntime.Event) {
 		// and a freshly-attached client renders the right icon immediately.
 		if agentStatus != previous {
 			if err := s.appendAndPublishSessionEvent(context.Background(), domain.AppendSessionEventParams{
-				SessionIntentID: event.ID,
-				RunID:           run.ID,
-				Type:            "agent_status",
-				Status:          agentStatus,
-				At:              event.At,
+				SessionID: event.ID,
+				RunID:     run.ID,
+				Type:      "agent_status",
+				Status:    agentStatus,
+				At:        event.At,
 			}); err != nil {
-				panic(fmt.Errorf("publish agent_status event for intent %s run %s: %w", event.ID, run.ID, err))
+				panic(fmt.Errorf("publish agent_status event for session %s run %s: %w", event.ID, run.ID, err))
 			}
 		}
 	}
@@ -1909,32 +1799,32 @@ func (s *Service) handleReceiverEvent(event agentruntime.Event) {
 }
 
 func (s *Service) handleTerminalExit(exit terminalExit) {
-	intent, err := s.repo.GetIntent(context.Background(), exit.SessionID)
+	session, err := s.repo.GetSession(context.Background(), exit.SessionID)
 	if err != nil {
-		panic(fmt.Errorf("get session intent %s after main terminal exit: %w", exit.SessionID, err))
+		panic(fmt.Errorf("get session %s after main terminal exit: %w", exit.SessionID, err))
 	}
-	if intent.CurrentRun == nil || intent.CurrentRun.Status != domain.SessionRunStatusRunning {
-		panic(fmt.Errorf("main terminal exited for non-running session intent %s", exit.SessionID))
+	if session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
+		panic(fmt.Errorf("main terminal exited for non-running session %s", exit.SessionID))
 	}
-	run := *intent.CurrentRun
+	run := *session.CurrentRun
 
-	mainTerminalID, err := s.resumeSessionMainTerminal(context.Background(), intent, run, terminalSize{Cols: defaultPTYCols, Rows: defaultPTYRows})
+	mainTerminalID, err := s.resumeSessionMainTerminal(context.Background(), session, run, terminalSize{Cols: defaultPTYCols, Rows: defaultPTYRows})
 	if err != nil {
 		// A single session's resume failure must never crash the daemon (and every
 		// other live session with it). Recover per-session: mark this run failed and,
 		// for tickets, move it back to backlog — mirroring RestoreRunningSessions.
 		s.logger.Error("failed to resume main terminal after exit, marking run as failed",
-			"session_intent_id", exit.SessionID,
+			"session_id", exit.SessionID,
 			"run_id", run.ID,
-			"session_type", intent.SessionType,
+			"session_type", session.SessionType,
 			"error", err,
 		)
 		s.markRunFailed(run.ID, domain.SessionRunFailureLaunchFailed, "resume_main_terminal")
-		if intent.SessionType == domain.SessionTypeTicket {
-			if ticketErr := s.moveTicketToBacklog(context.Background(), intent); ticketErr != nil {
+		if session.SessionType == domain.SessionTypeTicket {
+			if ticketErr := s.moveTicketToBacklog(context.Background(), session); ticketErr != nil {
 				s.logger.Error("failed to move ticket back to backlog after resume failure",
-					"session_intent_id", exit.SessionID,
-					"ticket_id", intent.ContextID,
+					"session_id", exit.SessionID,
+					"ticket_id", session.ContextID,
 					"error", ticketErr,
 				)
 			}
@@ -1943,10 +1833,10 @@ func (s *Service) handleTerminalExit(exit terminalExit) {
 	}
 
 	if err := s.appendAndPublishSessionEvent(context.Background(), domain.AppendSessionEventParams{
-		SessionIntentID: exit.SessionID,
-		RunID:           run.ID,
-		Type:            "main_terminal_resumed",
-		Message:         "main terminal resumed",
+		SessionID: exit.SessionID,
+		RunID:     run.ID,
+		Type:      "main_terminal_resumed",
+		Message:   "main terminal resumed",
 		Raw: map[string]any{
 			"main_terminal_id":     mainTerminalID,
 			"previous_terminal_id": exit.TerminalID,
@@ -1954,7 +1844,7 @@ func (s *Service) handleTerminalExit(exit terminalExit) {
 		},
 		At: time.Now().UTC(),
 	}); err != nil {
-		panic(fmt.Errorf("append main terminal resumed event for session intent %s run %s: %w", exit.SessionID, run.ID, err))
+		panic(fmt.Errorf("append main terminal resumed event for session %s run %s: %w", exit.SessionID, run.ID, err))
 	}
 }
 
@@ -2150,31 +2040,31 @@ func cloneAnyMap(input map[string]any) map[string]any {
 	return cloned
 }
 
-func validateArchitectCreateRequest(req domain.CreateSessionIntentRequest) error {
+func validateArchitectCreateRequest(req domain.CreateSessionRequest) error {
 	if strings.TrimSpace(req.TicketID) != "" {
-		return &domain.ValidationError{Field: "ticket_id", Message: "architect intents do not accept a ticket ID"}
+		return &domain.ValidationError{Field: "ticket_id", Message: "architect sessions do not accept a ticket ID"}
 	}
 	if strings.TrimSpace(req.Prompt) != "" {
-		return &domain.ValidationError{Field: "prompt", Message: "architect intents do not accept a prompt"}
+		return &domain.ValidationError{Field: "prompt", Message: "architect sessions do not accept a prompt"}
 	}
 	if strings.TrimSpace(req.Workdir) != "" {
-		return &domain.ValidationError{Field: "workdir", Message: "architect intents do not accept a workdir"}
+		return &domain.ValidationError{Field: "workdir", Message: "architect sessions do not accept a workdir"}
 	}
 	if strings.TrimSpace(req.Slug) != "" {
-		return &domain.ValidationError{Field: "slug", Message: "architect intents do not accept a slug"}
+		return &domain.ValidationError{Field: "slug", Message: "architect sessions do not accept a slug"}
 	}
 	return nil
 }
 
-func validateStoredIntent(intent domain.SessionIntent) error {
-	if strings.TrimSpace(intent.ContextID) == "" {
-		return fmt.Errorf("session intent %s has no context_id", intent.ID)
+func validateStoredSession(session domain.Session) error {
+	if strings.TrimSpace(session.ContextID) == "" {
+		return fmt.Errorf("session %s has no context_id", session.ID)
 	}
-	if strings.TrimSpace(intent.Prompt) == "" {
-		return fmt.Errorf("session intent %s has no prompt", intent.ID)
+	if strings.TrimSpace(session.Prompt) == "" {
+		return fmt.Errorf("session %s has no prompt", session.ID)
 	}
-	if strings.TrimSpace(intent.Workdir) == "" {
-		return fmt.Errorf("session intent %s has no workdir", intent.ID)
+	if strings.TrimSpace(session.Workdir) == "" {
+		return fmt.Errorf("session %s has no workdir", session.ID)
 	}
 	return nil
 }
@@ -2338,10 +2228,10 @@ func (s *Service) defaultShell() string {
 	return "bash"
 }
 
-func (s *Service) startAutoTerminals(ctx context.Context, cfg config.Config, intent domain.SessionIntent, workdir string, env map[string]string, size terminalSize, cleanupPaths []string) []sessionTabState {
-	tabs, ok := cfg.Tabs[string(intent.SessionType)]
+func (s *Service) startAutoTerminals(ctx context.Context, cfg config.Config, session domain.Session, workdir string, env map[string]string, size terminalSize, cleanupPaths []string) []sessionTabState {
+	tabs, ok := cfg.Tabs[string(session.SessionType)]
 	if !ok || len(tabs) == 0 {
-		tabs = defaultTabsBySessionType[string(intent.SessionType)]
+		tabs = defaultTabsBySessionType[string(session.SessionType)]
 	}
 	if len(tabs) == 0 {
 		return nil
@@ -2359,7 +2249,7 @@ func (s *Service) startAutoTerminals(ctx context.Context, cfg config.Config, int
 		}
 		status := "running"
 		err := s.terminal.Start(ctx, terminalStartSpec{
-			SessionID:    intent.ID,
+			SessionID:    session.ID,
 			TerminalID:   terminalID,
 			Command:      cmd,
 			Env:          cloneStringMap(env),
@@ -2371,7 +2261,7 @@ func (s *Service) startAutoTerminals(ctx context.Context, cfg config.Config, int
 		if err != nil {
 			status = "exited"
 			s.logger.Warn("[spawn] auto-create terminal failed",
-				"session_intent_id", intent.ID,
+				"session_id", session.ID,
 				"terminal_id", terminalID,
 				"command", cmd,
 				"error", err,
@@ -2526,11 +2416,11 @@ func sessionTabID(tab domain.SessionTab) string {
 	return tab.Type
 }
 
-func (s *Service) hydrateIntent(intent domain.SessionIntent) domain.SessionIntent {
-	if intent.CurrentRun != nil {
-		intent.CurrentRun.MainTerminalID = s.mainTerminalID(intent.ID)
+func (s *Service) hydrateSession(session domain.Session) domain.Session {
+	if session.CurrentRun != nil {
+		session.CurrentRun.MainTerminalID = s.mainTerminalID(session.ID)
 	}
-	return intent
+	return session
 }
 
 func yamlNodeTime(node *yaml.Node, key string) time.Time {

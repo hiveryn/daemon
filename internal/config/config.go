@@ -17,7 +17,7 @@ const (
 	DefaultBindAddress               = "127.0.0.1"
 	DefaultLogLevel                  = "info"
 	DefaultDesktopHealthPollInterval = "1s"
-	DefaultConclusionApprovalTimeout = 20
+	DefaultIntentWaitTimeout         = 20
 	configFileName                   = "config.yaml"
 	variantsFileName                 = "variants.yaml"
 	architectsFileName               = "architects.yaml"
@@ -32,7 +32,7 @@ type Config struct {
 	LogLevel                  string                       `yaml:"log_level"`
 	Shell                     string                       `yaml:"shell,omitempty"`
 	DesktopHealthPollInterval string                       `yaml:"desktop_health_poll_interval,omitempty"`
-	ConclusionApprovalTimeout int                          `yaml:"conclusion_approval_timeout,omitempty"`
+	IntentWaitTimeout         int                          `yaml:"intent_wait_timeout,omitempty"`
 	Variants                  map[string]VariantConfig     `yaml:"-"`
 	Architects                map[string]ArchitectConfig   `yaml:"-"`
 	Tabs                      map[string][]TabEntry        `yaml:"-"`
@@ -174,7 +174,7 @@ func Default() Config {
 		BindAddress:               DefaultBindAddress,
 		LogLevel:                  DefaultLogLevel,
 		DesktopHealthPollInterval: DefaultDesktopHealthPollInterval,
-		ConclusionApprovalTimeout: DefaultConclusionApprovalTimeout,
+		IntentWaitTimeout:         DefaultIntentWaitTimeout,
 		Variants:                  map[string]VariantConfig{},
 		Architects:                map[string]ArchitectConfig{},
 		Tabs:                      map[string][]TabEntry{},
@@ -436,7 +436,7 @@ type coreConfig struct {
 	LogLevel                  string `yaml:"log_level"`
 	Shell                     string `yaml:"shell,omitempty"`
 	DesktopHealthPollInterval string `yaml:"desktop_health_poll_interval,omitempty"`
-	ConclusionApprovalTimeout int    `yaml:"conclusion_approval_timeout,omitempty"`
+	IntentWaitTimeout         int    `yaml:"intent_wait_timeout,omitempty"`
 }
 
 func (c Config) Save(path string) error {
@@ -463,7 +463,7 @@ func (c Config) Save(path string) error {
 		LogLevel:                  c.LogLevel,
 		Shell:                     c.Shell,
 		DesktopHealthPollInterval: c.DesktopHealthPollInterval,
-		ConclusionApprovalTimeout: c.ConclusionApprovalTimeout,
+		IntentWaitTimeout:         c.IntentWaitTimeout,
 	}
 
 	data, err := yaml.Marshal(core)
@@ -504,8 +504,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("desktop_health_poll_interval must be greater than 0")
 	}
 
-	if c.ConclusionApprovalTimeout < 0 {
-		return fmt.Errorf("conclusion_approval_timeout must be >= 0")
+	if c.IntentWaitTimeout < 0 {
+		return fmt.Errorf("intent_wait_timeout must be >= 0")
 	}
 
 	variantNames := sortedKeys(c.Variants)
@@ -596,8 +596,8 @@ func (c *Config) normalize() {
 	if c.DesktopHealthPollInterval == "" {
 		c.DesktopHealthPollInterval = DefaultDesktopHealthPollInterval
 	}
-	if c.ConclusionApprovalTimeout <= 0 {
-		c.ConclusionApprovalTimeout = DefaultConclusionApprovalTimeout
+	if c.IntentWaitTimeout <= 0 {
+		c.IntentWaitTimeout = DefaultIntentWaitTimeout
 	}
 	if c.Variants == nil {
 		c.Variants = map[string]VariantConfig{}

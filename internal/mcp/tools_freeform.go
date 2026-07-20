@@ -10,7 +10,7 @@ func (s *Server) registerFreeformTools() {
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "createWorkTicket",
-		Description: "Create a new work ticket in the backlog. Returns the created Ticket.",
+		Description: "Create a new work ticket in the backlog. The user is asked to approve before the ticket is created; this call blocks until they answer. Returns `outcome` — check it before assuming the ticket exists. approved/auto_approved means it was created and `ticket` is populated; denied_by_user/auto_denied means it was NOT created and you must not retry.",
 	}, s.handleCreateWorkTicket)
 
 	s.registerBrowserTools()

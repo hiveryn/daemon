@@ -101,8 +101,15 @@ type MoveTicketToDoneOutput struct {
 	TicketID string `json:"ticket_id"`
 }
 
+// ConcludeSessionOutput carries the approval verdict alongside the conclusion
+// result. Session is present only when the outcome is approved/auto_approved —
+// a denied conclusion means the session is still running.
 type ConcludeSessionOutput struct {
-	Success   bool   `json:"success"`
+	IntentEnvelopeFields
+	Session *ConcludeSessionResult `json:"session,omitempty" jsonschema:"The concluded session. Present only when outcome is approved or auto_approved."`
+}
+
+type ConcludeSessionResult struct {
 	SessionID string `json:"session_id"`
 	TicketID  string `json:"ticket_id,omitempty"`
 }
@@ -159,6 +166,14 @@ type ReadTicketConclusionInput struct {
 }
 
 type TicketOutput = domain.Ticket
+
+// CreateWorkTicketOutput carries the approval verdict alongside the ticket.
+// Ticket is present only when the outcome is approved/auto_approved — always
+// check Outcome before assuming the ticket exists.
+type CreateWorkTicketOutput struct {
+	IntentEnvelopeFields
+	Ticket *TicketOutput `json:"ticket,omitempty" jsonschema:"The created ticket. Present only when outcome is approved or auto_approved."`
+}
 
 type TicketConclusionOutput = domain.TicketConclusion
 

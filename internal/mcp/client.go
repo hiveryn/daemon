@@ -85,9 +85,66 @@ func (s *Server) listTickets(ctx context.Context, status string, limit int) (Lis
 	return output, nil
 }
 
-func (s *Server) createWorkTicket(ctx context.Context, input CreateWorkTicketInput) (TicketOutput, error) {
-	var output TicketOutput
+// intentResolutionResponse is the envelope every blocking intent endpoint
+// returns. Result is the tool's own payload, present only when approved.
+type intentResolutionResponse struct {
+	IntentID string          `json:"intent_id"`
+	Outcome  string          `json:"outcome"`
+	Reason   string          `json:"reason,omitempty"`
+	Result   json.RawMessage `json:"result,omitempty"`
+}
 
+// requestIntent POSTs to a blocking intent endpoint and decodes the resolution.
+// The request is held open by the untimed http.DefaultClient for the whole wait
+// window — that is what lets the agent's tool call block instead of polling.
+// Do not give this client a timeout.
+func (s *Server) requestIntent(ctx context.Context, subPath string, body any) (intentResolutionResponse, error) {
+	if s.sessionID == "" {
+		return intentResolutionResponse{}, newInternalError("HIVERYN_SESSION_ID not set")
+	}
+
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return intentResolutionResponse{}, newInternalError(fmt.Sprintf("marshal %s body: %v", subPath, err))
+	}
+
+	u := fmt.Sprintf("%s/api/sessions/%s/intents/%s", s.daemonURL, url.PathEscape(s.sessionID), subPath)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return intentResolutionResponse{}, fmt.Errorf("build %s request: %w", subPath, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return intentResolutionResponse{}, fmt.Errorf("request %s: %w", subPath, err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	var env daemonEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return intentResolutionResponse{}, newInternalError(fmt.Sprintf("decode daemon response: %v", err))
+	}
+	if env.Error != nil {
+		return intentResolutionResponse{}, mapDaemonError(env.Error)
+	}
+	if len(env.Data) == 0 {
+		return intentResolutionResponse{}, newInternalError("daemon response missing data")
+	}
+
+	var out intentResolutionResponse
+	if err := json.Unmarshal(env.Data, &out); err != nil {
+		return intentResolutionResponse{}, newInternalError(fmt.Sprintf("decode intent resolution: %v", err))
+	}
+	return out, nil
+}
+
+// createWorkTicket asks the user to approve the ticket, blocking until they
+// answer or the wait window expires. The ticket is written daemon-side and only
+// on approval — there is no unapproved path from here to the filesystem.
+func (s *Server) createWorkTicket(ctx context.Context, input CreateWorkTicketInput) (CreateWorkTicketOutput, error) {
 	body := map[string]any{"title": input.Title}
 	if input.Repo != "" {
 		body["repo"] = input.Repo
@@ -99,41 +156,28 @@ func (s *Server) createWorkTicket(ctx context.Context, input CreateWorkTicketInp
 		body["references"] = input.References
 	}
 
-	bodyBytes, err := json.Marshal(body)
+	res, err := s.requestIntent(ctx, "create-work-ticket", body)
 	if err != nil {
-		return TicketOutput{}, newInternalError(fmt.Sprintf("marshal create ticket body: %v", err))
+		return CreateWorkTicketOutput{}, err
 	}
 
-	u := fmt.Sprintf("%s/api/architects/%s/tickets", s.daemonURL, url.PathEscape(s.architectKey))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(bodyBytes))
+	envelope, err := intentEnvelope(res)
 	if err != nil {
-		return TicketOutput{}, fmt.Errorf("build createWorkTicket request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return TicketOutput{}, fmt.Errorf("request createWorkTicket: %w", err)
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	var env daemonEnvelope
-	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
-		return TicketOutput{}, newInternalError(fmt.Sprintf("decode daemon response: %v", err))
+		return CreateWorkTicketOutput{}, err
 	}
 
-	if env.Error != nil {
-		return TicketOutput{}, mapDaemonError(env.Error)
+	output := CreateWorkTicketOutput{IntentEnvelopeFields: envelope}
+	if !intentApproved(res.Outcome) {
+		return output, nil
 	}
-	if len(env.Data) == 0 {
-		return TicketOutput{}, newInternalError("daemon response missing data")
+	if len(res.Result) == 0 {
+		return CreateWorkTicketOutput{}, newInternalError("approved createWorkTicket returned no ticket")
 	}
-	if err := json.Unmarshal(env.Data, &output); err != nil {
-		return TicketOutput{}, newInternalError(fmt.Sprintf("decode ticket payload: %v", err))
+	var ticket TicketOutput
+	if err := json.Unmarshal(res.Result, &ticket); err != nil {
+		return CreateWorkTicketOutput{}, newInternalError(fmt.Sprintf("decode ticket payload: %v", err))
 	}
-
+	output.Ticket = &ticket
 	return output, nil
 }
 
@@ -435,44 +479,32 @@ type concludeRequest struct {
 	NextSteps       string             `json:"next_steps,omitempty"`
 }
 
+// concludeSession asks the user to approve the conclusion, blocking until they
+// answer or the wait window expires. A denial is returned as an outcome, not an
+// error: the session simply stays running.
 func (s *Server) concludeSession(ctx context.Context, payload concludeRequest) (ConcludeSessionOutput, error) {
-	var output ConcludeSessionOutput
-
-	bodyBytes, err := json.Marshal(payload)
+	res, err := s.requestIntent(ctx, "conclude-session", payload)
 	if err != nil {
-		return ConcludeSessionOutput{}, newInternalError(fmt.Sprintf("marshal conclude body: %v", err))
+		return ConcludeSessionOutput{}, err
 	}
 
-	u := fmt.Sprintf("%s/api/sessions/%s/request-conclusion", s.daemonURL, url.PathEscape(s.sessionID))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(bodyBytes))
+	envelope, err := intentEnvelope(res)
 	if err != nil {
-		return ConcludeSessionOutput{}, fmt.Errorf("build concludeSession request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return ConcludeSessionOutput{}, fmt.Errorf("request concludeSession: %w", err)
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	var env daemonEnvelope
-	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
-		return ConcludeSessionOutput{}, newInternalError(fmt.Sprintf("decode daemon response: %v", err))
+		return ConcludeSessionOutput{}, err
 	}
 
-	if env.Error != nil {
-		return ConcludeSessionOutput{}, mapDaemonError(env.Error)
+	output := ConcludeSessionOutput{IntentEnvelopeFields: envelope}
+	if !intentApproved(res.Outcome) {
+		return output, nil
 	}
-	if len(env.Data) == 0 {
-		return ConcludeSessionOutput{}, newInternalError("daemon response missing data")
+	if len(res.Result) == 0 {
+		return ConcludeSessionOutput{}, newInternalError("approved concludeSession returned no result")
 	}
-	if err := json.Unmarshal(env.Data, &output); err != nil {
+	var result ConcludeSessionResult
+	if err := json.Unmarshal(res.Result, &result); err != nil {
 		return ConcludeSessionOutput{}, newInternalError(fmt.Sprintf("decode conclude payload: %v", err))
 	}
-
+	output.Session = &result
 	return output, nil
 }
 

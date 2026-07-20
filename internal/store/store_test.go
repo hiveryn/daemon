@@ -19,7 +19,7 @@ func TestOpenRunsSessionMigrations(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	for _, table := range []string{"schema_migrations", "session_intents", "session_runs", "session_events"} {
+	for _, table := range []string{"schema_migrations", "sessions", "session_runs", "session_events"} {
 		var name string
 		if err := db.QueryRowContext(context.Background(), `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&name); err != nil {
 			t.Fatalf("expected table %q to exist: %v", table, err)
@@ -30,7 +30,7 @@ func TestOpenRunsSessionMigrations(t *testing.T) {
 	}
 }
 
-func TestSessionStoreAllowsOneArchitectIntentPerArchitect(t *testing.T) {
+func TestSessionStoreAllowsOneArchitectSessionPerArchitect(t *testing.T) {
 	t.Parallel()
 
 	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
@@ -40,8 +40,8 @@ func TestSessionStoreAllowsOneArchitectIntentPerArchitect(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	store := NewSessionStore(db)
-	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
-		ID:           "intent-1",
+	if _, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-19-1200",
@@ -49,11 +49,11 @@ func TestSessionStoreAllowsOneArchitectIntentPerArchitect(t *testing.T) {
 		Workdir:      "/tmp/architect",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
-		t.Fatalf("create first architect intent: %v", err)
+		t.Fatalf("create first architect session: %v", err)
 	}
 
-	_, err = store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
-		ID:           "intent-2",
+	_, err = store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID:           "session-2",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-19-1201",
@@ -63,15 +63,15 @@ func TestSessionStoreAllowsOneArchitectIntentPerArchitect(t *testing.T) {
 	})
 	var conflict *domain.ConflictError
 	if !errors.As(err, &conflict) {
-		t.Fatalf("expected conflict for second architect intent, got %v", err)
+		t.Fatalf("expected conflict for second architect session, got %v", err)
 	}
 
-	if err := store.DeleteIntent(context.Background(), "intent-1"); err != nil {
-		t.Fatalf("delete architect intent: %v", err)
+	if err := store.DeleteSession(context.Background(), "session-1"); err != nil {
+		t.Fatalf("delete architect session: %v", err)
 	}
 
-	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
-		ID:           "intent-3",
+	if _, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID:           "session-3",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-19-1202",
@@ -79,7 +79,7 @@ func TestSessionStoreAllowsOneArchitectIntentPerArchitect(t *testing.T) {
 		Workdir:      "/tmp/architect",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
-		t.Fatalf("create architect intent after delete: %v", err)
+		t.Fatalf("create architect session after delete: %v", err)
 	}
 }
 
@@ -93,8 +93,8 @@ func TestSessionStoreDeleteRunErasesRun(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	store := NewSessionStore(db)
-	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
-		ID:           "intent-1",
+	if _, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-19-1200",
@@ -102,13 +102,13 @@ func TestSessionStoreDeleteRunErasesRun(t *testing.T) {
 		Workdir:      "/tmp/architect",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
-		t.Fatalf("create intent: %v", err)
+		t.Fatalf("create session: %v", err)
 	}
 	if _, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
-		ID:              "run-1",
-		SessionIntentID: "intent-1",
-		ProfileName:     "codex",
-		Workdir:         "/tmp/architect",
+		ID:          "run-1",
+		SessionID:   "session-1",
+		ProfileName: "codex",
+		Workdir:     "/tmp/architect",
 	}); err != nil {
 		t.Fatalf("create run: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestSessionStoreDeleteRunErasesRun(t *testing.T) {
 	if !errors.As(err, &notFound) {
 		t.Fatalf("expected deleted run to be missing, got %v", err)
 	}
-	current, err := store.GetCurrentRun(context.Background(), "intent-1")
+	current, err := store.GetCurrentRun(context.Background(), "session-1")
 	if err != nil {
 		t.Fatalf("get current run: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestSessionStoreDeleteRunErasesRun(t *testing.T) {
 	}
 }
 
-func TestSessionStoreAllowsOneTicketIntentPerTicket(t *testing.T) {
+func TestSessionStoreAllowsOneTicketSessionPerTicket(t *testing.T) {
 	t.Parallel()
 
 	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
@@ -141,8 +141,8 @@ func TestSessionStoreAllowsOneTicketIntentPerTicket(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	store := NewSessionStore(db)
-	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
-		ID:           "intent-1",
+	if _, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeTicket,
 		ContextID:    "ticket-1",
@@ -150,11 +150,11 @@ func TestSessionStoreAllowsOneTicketIntentPerTicket(t *testing.T) {
 		Workdir:      "/tmp/repo",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
-		t.Fatalf("create first ticket intent: %v", err)
+		t.Fatalf("create first ticket session: %v", err)
 	}
 
-	_, err = store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
-		ID:           "intent-2",
+	_, err = store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID:           "session-2",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeTicket,
 		ContextID:    "ticket-1",
@@ -164,11 +164,11 @@ func TestSessionStoreAllowsOneTicketIntentPerTicket(t *testing.T) {
 	})
 	var conflict *domain.ConflictError
 	if !errors.As(err, &conflict) {
-		t.Fatalf("expected conflict for second ticket intent on same ticket, got %v", err)
+		t.Fatalf("expected conflict for second ticket session on same ticket, got %v", err)
 	}
 }
 
-func TestSessionStoreAllowsTicketIntentAfterFailedRun(t *testing.T) {
+func TestSessionStoreAllowsTicketSessionAfterFailedRun(t *testing.T) {
 	t.Parallel()
 
 	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
@@ -178,8 +178,8 @@ func TestSessionStoreAllowsTicketIntentAfterFailedRun(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	store := NewSessionStore(db)
-	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
-		ID:           "intent-failed",
+	if _, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID:           "session-failed",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeTicket,
 		ContextID:    "ticket-1",
@@ -187,12 +187,12 @@ func TestSessionStoreAllowsTicketIntentAfterFailedRun(t *testing.T) {
 		Workdir:      "/tmp/repo",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
-		t.Fatalf("create first ticket intent: %v", err)
+		t.Fatalf("create first ticket session: %v", err)
 	}
 
 	if _, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
 		ID:              "run-failed",
-		SessionIntentID: "intent-failed",
+		SessionID:       "session-failed",
 		ProfileName:     "codex-work",
 		ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex"},
 		Workdir:         "/tmp/repo",
@@ -204,8 +204,8 @@ func TestSessionStoreAllowsTicketIntentAfterFailedRun(t *testing.T) {
 		t.Fatalf("mark run failed: %v", err)
 	}
 
-	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
-		ID:           "intent-retry",
+	if _, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID:           "session-retry",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeTicket,
 		ContextID:    "ticket-1",
@@ -213,12 +213,12 @@ func TestSessionStoreAllowsTicketIntentAfterFailedRun(t *testing.T) {
 		Workdir:      "/tmp/repo",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
-		t.Fatalf("create replacement ticket intent: %v", err)
+		t.Fatalf("create replacement ticket session: %v", err)
 	}
 
 	_, err = store.CreateRun(context.Background(), domain.CreateSessionRunParams{
 		ID:              "run-stale-retry",
-		SessionIntentID: "intent-failed",
+		SessionID:       "session-failed",
 		ProfileName:     "codex-work",
 		ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex"},
 		Workdir:         "/tmp/repo",
@@ -226,11 +226,11 @@ func TestSessionStoreAllowsTicketIntentAfterFailedRun(t *testing.T) {
 	})
 	var conflict *domain.ConflictError
 	if !errors.As(err, &conflict) {
-		t.Fatalf("expected stale intent retry to conflict with replacement intent, got %v", err)
+		t.Fatalf("expected stale session retry to conflict with replacement session, got %v", err)
 	}
 }
 
-func TestSessionStoreAllowsOneRunningRunPerIntent(t *testing.T) {
+func TestSessionStoreAllowsOneRunningRunPerSession(t *testing.T) {
 	t.Parallel()
 
 	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
@@ -240,8 +240,8 @@ func TestSessionStoreAllowsOneRunningRunPerIntent(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	store := NewSessionStore(db)
-	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
-		ID:           "intent-1",
+	if _, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-19-1200",
@@ -249,13 +249,13 @@ func TestSessionStoreAllowsOneRunningRunPerIntent(t *testing.T) {
 		Workdir:      "/tmp/architect",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
-		t.Fatalf("create intent: %v", err)
+		t.Fatalf("create session: %v", err)
 	}
 
 	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	if _, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
 		ID:              "run-1",
-		SessionIntentID: "intent-1",
+		SessionID:       "session-1",
 		ProfileName:     "codex-work",
 		ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex", Args: []string{"chat"}, Env: map[string]string{"CODEX_HOME": "/tmp/codex"}},
 		Workdir:         "/tmp/repo",
@@ -266,7 +266,7 @@ func TestSessionStoreAllowsOneRunningRunPerIntent(t *testing.T) {
 
 	_, err = store.CreateRun(context.Background(), domain.CreateSessionRunParams{
 		ID:              "run-2",
-		SessionIntentID: "intent-1",
+		SessionID:       "session-1",
 		ProfileName:     "codex-work",
 		ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex"},
 		Workdir:         "/tmp/repo",
@@ -283,7 +283,7 @@ func TestSessionStoreAllowsOneRunningRunPerIntent(t *testing.T) {
 
 	if _, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
 		ID:              "run-3",
-		SessionIntentID: "intent-1",
+		SessionID:       "session-1",
 		ProfileName:     "codex-work",
 		ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex"},
 		Workdir:         "/tmp/repo",
@@ -293,7 +293,7 @@ func TestSessionStoreAllowsOneRunningRunPerIntent(t *testing.T) {
 	}
 }
 
-func TestSessionStorePersistsFreeformIntentFields(t *testing.T) {
+func TestSessionStorePersistsFreeformSessionFields(t *testing.T) {
 	t.Parallel()
 
 	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
@@ -303,8 +303,8 @@ func TestSessionStorePersistsFreeformIntentFields(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	store := NewSessionStore(db)
-	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
-		ID:           "intent-1",
+	if _, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeFreeform,
 		ContextID:    "2026-05-19-1200-investigate-login-failure",
@@ -312,18 +312,18 @@ func TestSessionStorePersistsFreeformIntentFields(t *testing.T) {
 		Workdir:      "/tmp/service-a",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
-		t.Fatalf("create freeform intent: %v", err)
+		t.Fatalf("create freeform session: %v", err)
 	}
 
-	intent, err := store.GetIntent(context.Background(), "intent-1")
+	session, err := store.GetSession(context.Background(), "session-1")
 	if err != nil {
-		t.Fatalf("get freeform intent: %v", err)
+		t.Fatalf("get freeform session: %v", err)
 	}
-	if intent.SessionType != domain.SessionTypeFreeform || intent.ContextID != "2026-05-19-1200-investigate-login-failure" {
-		t.Fatalf("unexpected intent identity %#v", intent)
+	if session.SessionType != domain.SessionTypeFreeform || session.ContextID != "2026-05-19-1200-investigate-login-failure" {
+		t.Fatalf("unexpected session identity %#v", session)
 	}
-	if intent.Prompt != "Investigate login failure and report root cause" || intent.Workdir != "/tmp/service-a" {
-		t.Fatalf("unexpected persisted freeform fields %#v", intent)
+	if session.Prompt != "Investigate login failure and report root cause" || session.Workdir != "/tmp/service-a" {
+		t.Fatalf("unexpected persisted freeform fields %#v", session)
 	}
 }
 
@@ -337,8 +337,8 @@ func TestSessionStorePersistsMCPServerSnapshot(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	store := NewSessionStore(db)
-	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
-		ID:           "intent-1",
+	if _, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-19-1200",
@@ -346,13 +346,13 @@ func TestSessionStorePersistsMCPServerSnapshot(t *testing.T) {
 		Workdir:      "/tmp/architect",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
-		t.Fatalf("create intent: %v", err)
+		t.Fatalf("create session: %v", err)
 	}
 
 	if _, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
-		ID:              "run-1",
-		SessionIntentID: "intent-1",
-		ProfileName:     "claude-sonnet-plan",
+		ID:          "run-1",
+		SessionID:   "session-1",
+		ProfileName: "claude-sonnet-plan",
 		ProfileSnapshot: domain.AgentProfileSnapshot{
 			Agent: "claude",
 			MCP: map[string]domain.MCPServerSnapshot{
@@ -391,8 +391,8 @@ func TestSessionStoreUpdatesRunNativeID(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	store := NewSessionStore(db)
-	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
-		ID:           "intent-1",
+	if _, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-19-1200",
@@ -400,12 +400,12 @@ func TestSessionStoreUpdatesRunNativeID(t *testing.T) {
 		Workdir:      "/tmp/architect",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
-		t.Fatalf("create intent: %v", err)
+		t.Fatalf("create session: %v", err)
 	}
 
 	if _, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
 		ID:              "run-1",
-		SessionIntentID: "intent-1",
+		SessionID:       "session-1",
 		ProfileName:     "opencode",
 		ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "opencode"},
 		Workdir:         "/tmp/repo",
@@ -438,8 +438,8 @@ func TestSessionStorePrefersRunningCurrentRun(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	store := NewSessionStore(db)
-	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
-		ID:           "intent-1",
+	if _, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-19-1200",
@@ -447,13 +447,13 @@ func TestSessionStorePrefersRunningCurrentRun(t *testing.T) {
 		Workdir:      "/tmp/architect",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
-		t.Fatalf("create intent: %v", err)
+		t.Fatalf("create session: %v", err)
 	}
 
 	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	if _, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
 		ID:              "run-old",
-		SessionIntentID: "intent-1",
+		SessionID:       "session-1",
 		ProfileName:     "codex-work",
 		ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex"},
 		Workdir:         "/tmp/repo",
@@ -466,7 +466,7 @@ func TestSessionStorePrefersRunningCurrentRun(t *testing.T) {
 	}
 	if _, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
 		ID:              "run-new",
-		SessionIntentID: "intent-1",
+		SessionID:       "session-1",
 		ProfileName:     "codex-work",
 		ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex"},
 		Workdir:         "/tmp/repo",
@@ -475,7 +475,7 @@ func TestSessionStorePrefersRunningCurrentRun(t *testing.T) {
 		t.Fatalf("create new run: %v", err)
 	}
 
-	run, err := store.GetCurrentRun(context.Background(), "intent-1")
+	run, err := store.GetCurrentRun(context.Background(), "session-1")
 	if err != nil {
 		t.Fatalf("get current run: %v", err)
 	}
@@ -483,12 +483,12 @@ func TestSessionStorePrefersRunningCurrentRun(t *testing.T) {
 		t.Fatalf("expected current run to be the running retry, got %#v", run)
 	}
 
-	intent, err := store.GetIntent(context.Background(), "intent-1")
+	session, err := store.GetSession(context.Background(), "session-1")
 	if err != nil {
-		t.Fatalf("get intent: %v", err)
+		t.Fatalf("get session: %v", err)
 	}
-	if intent.CurrentRun == nil || intent.CurrentRun.ID != "run-new" {
-		t.Fatalf("expected intent current run to prefer running retry, got %#v", intent.CurrentRun)
+	if session.CurrentRun == nil || session.CurrentRun.ID != "run-new" {
+		t.Fatalf("expected session current run to prefer running retry, got %#v", session.CurrentRun)
 	}
 }
 
@@ -502,8 +502,8 @@ func TestSessionStoreAgentStatusOnCreate(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	store := NewSessionStore(db)
-	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
-		ID:           "intent-1",
+	if _, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-19-1200",
@@ -511,13 +511,13 @@ func TestSessionStoreAgentStatusOnCreate(t *testing.T) {
 		Workdir:      "/tmp/architect",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
-		t.Fatalf("create intent: %v", err)
+		t.Fatalf("create session: %v", err)
 	}
 
 	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	run, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
 		ID:              "run-1",
-		SessionIntentID: "intent-1",
+		SessionID:       "session-1",
 		ProfileName:     "codex-work",
 		ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex"},
 		Workdir:         "/tmp/repo",
@@ -541,8 +541,8 @@ func TestSessionStoreUpdateRunAgentStatus(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	store := NewSessionStore(db)
-	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
-		ID:           "intent-1",
+	if _, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-19-1200",
@@ -550,12 +550,12 @@ func TestSessionStoreUpdateRunAgentStatus(t *testing.T) {
 		Workdir:      "/tmp/architect",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
-		t.Fatalf("create intent: %v", err)
+		t.Fatalf("create session: %v", err)
 	}
 
 	if _, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
 		ID:              "run-1",
-		SessionIntentID: "intent-1",
+		SessionID:       "session-1",
 		ProfileName:     "codex-work",
 		ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex"},
 		Workdir:         "/tmp/repo",
@@ -598,8 +598,8 @@ func TestSessionStoreMarkRunCompletedSetsAgentStatusStopped(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	store := NewSessionStore(db)
-	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
-		ID:           "intent-1",
+	if _, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-19-1200",
@@ -607,12 +607,12 @@ func TestSessionStoreMarkRunCompletedSetsAgentStatusStopped(t *testing.T) {
 		Workdir:      "/tmp/architect",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
-		t.Fatalf("create intent: %v", err)
+		t.Fatalf("create session: %v", err)
 	}
 
 	if _, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
 		ID:              "run-1",
-		SessionIntentID: "intent-1",
+		SessionID:       "session-1",
 		ProfileName:     "codex-work",
 		ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex"},
 		Workdir:         "/tmp/repo",
@@ -647,8 +647,8 @@ func TestSessionStoreMarkRunFailedSetsAgentStatusStopped(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	store := NewSessionStore(db)
-	if _, err := store.CreateIntent(context.Background(), domain.CreateSessionIntentParams{
-		ID:           "intent-1",
+	if _, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-19-1200",
@@ -656,12 +656,12 @@ func TestSessionStoreMarkRunFailedSetsAgentStatusStopped(t *testing.T) {
 		Workdir:      "/tmp/architect",
 		CreatedBy:    domain.SessionCreatedByDesktop,
 	}); err != nil {
-		t.Fatalf("create intent: %v", err)
+		t.Fatalf("create session: %v", err)
 	}
 
 	if _, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
 		ID:              "run-1",
-		SessionIntentID: "intent-1",
+		SessionID:       "session-1",
 		ProfileName:     "codex-work",
 		ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex"},
 		Workdir:         "/tmp/repo",

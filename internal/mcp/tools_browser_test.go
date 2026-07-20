@@ -59,7 +59,7 @@ func TestHandlePreviewInBrowserTabCreate(t *testing.T) {
 func TestHandlePreviewInBrowserTabRequiresTarget(t *testing.T) {
 	t.Parallel()
 
-	server, err := NewServer(Config{DaemonURL: "http://127.0.0.1:4200", ArchitectKey: "hiveryn"})
+	server, err := NewServer(Config{DaemonURL: "http://127.0.0.1:4200", ArchitectKey: "hiveryn", SessionID: "sess-test"})
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
 	}

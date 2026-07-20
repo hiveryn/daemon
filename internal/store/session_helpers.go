@@ -15,15 +15,15 @@ const sqliteTimeLayout = "2006-01-02 15:04:05"
 
 const preciseTimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
-func scanSessionIntentWithCurrentRun(scanner interface{ Scan(...any) error }) (domain.SessionIntent, error) {
-	var intent domain.SessionIntent
+func scanSessionWithCurrentRun(scanner interface{ Scan(...any) error }) (domain.Session, error) {
+	var session domain.Session
 	var sessionType string
 	var createdBy string
 	var createdAt string
 	var updatedAt string
 
 	var runID sql.NullString
-	var runIntentID sql.NullString
+	var runSessionID sql.NullString
 	var runStatus sql.NullString
 	var runAgentStatus sql.NullString
 	var runProfileName sql.NullString
@@ -37,18 +37,18 @@ func scanSessionIntentWithCurrentRun(scanner interface{ Scan(...any) error }) (d
 	var runUpdatedAt sql.NullString
 
 	if err := scanner.Scan(
-		&intent.ID,
-		&intent.ArchitectKey,
+		&session.ID,
+		&session.ArchitectKey,
 		&sessionType,
-		&intent.ContextID,
-		&intent.Prompt,
-		&intent.Workdir,
-		&intent.Instructions,
+		&session.ContextID,
+		&session.Prompt,
+		&session.Workdir,
+		&session.Instructions,
 		&createdBy,
 		&createdAt,
 		&updatedAt,
 		&runID,
-		&runIntentID,
+		&runSessionID,
 		&runStatus,
 		&runAgentStatus,
 		&runProfileName,
@@ -61,25 +61,25 @@ func scanSessionIntentWithCurrentRun(scanner interface{ Scan(...any) error }) (d
 		&runCreatedAt,
 		&runUpdatedAt,
 	); err != nil {
-		return domain.SessionIntent{}, err
+		return domain.Session{}, err
 	}
 
-	intent.SessionType = domain.SessionType(sessionType)
-	intent.CreatedBy = domain.SessionCreatedBy(createdBy)
+	session.SessionType = domain.SessionType(sessionType)
+	session.CreatedBy = domain.SessionCreatedBy(createdBy)
 	var err error
-	intent.CreatedAt, err = parseSQLiteTime(createdAt)
+	session.CreatedAt, err = parseSQLiteTime(createdAt)
 	if err != nil {
-		return domain.SessionIntent{}, fmt.Errorf("parse created_at: %w", err)
+		return domain.Session{}, fmt.Errorf("parse created_at: %w", err)
 	}
-	intent.UpdatedAt, err = parseSQLiteTime(updatedAt)
+	session.UpdatedAt, err = parseSQLiteTime(updatedAt)
 	if err != nil {
-		return domain.SessionIntent{}, fmt.Errorf("parse updated_at: %w", err)
+		return domain.Session{}, fmt.Errorf("parse updated_at: %w", err)
 	}
 
 	if runID.Valid && runID.String != "" {
 		run, err := scanSessionRunValues(
 			runID.String,
-			runIntentID.String,
+			runSessionID.String,
 			runStatus.String,
 			runAgentStatus.String,
 			runProfileName.String,
@@ -93,24 +93,24 @@ func scanSessionIntentWithCurrentRun(scanner interface{ Scan(...any) error }) (d
 			runUpdatedAt.String,
 		)
 		if err != nil {
-			return domain.SessionIntent{}, err
+			return domain.Session{}, err
 		}
-		intent.CurrentRun = &run
+		session.CurrentRun = &run
 	}
 
-	return intent, nil
+	return session, nil
 }
 
-func scanSessionRunValues(id, intentID, status, agentStatus, profileName, profileSnapshotJSON, workdir, nativeID, failureReason, startedAt, endedAt, createdAt, updatedAt string) (domain.SessionRun, error) {
+func scanSessionRunValues(id, sessionID, status, agentStatus, profileName, profileSnapshotJSON, workdir, nativeID, failureReason, startedAt, endedAt, createdAt, updatedAt string) (domain.SessionRun, error) {
 	run := domain.SessionRun{
-		ID:              id,
-		SessionIntentID: intentID,
-		Status:          domain.SessionRunStatus(status),
-		AgentStatus:     agentStatus,
-		ProfileName:     profileName,
-		Workdir:         workdir,
-		NativeID:        nativeID,
-		FailureReason:   domain.SessionRunFailureReason(failureReason),
+		ID:            id,
+		SessionID:     sessionID,
+		Status:        domain.SessionRunStatus(status),
+		AgentStatus:   agentStatus,
+		ProfileName:   profileName,
+		Workdir:       workdir,
+		NativeID:      nativeID,
+		FailureReason: domain.SessionRunFailureReason(failureReason),
 	}
 	if profileSnapshotJSON != "" {
 		var snapshot domain.AgentProfileSnapshot
@@ -140,16 +140,16 @@ func scanSessionRunValues(id, intentID, status, agentStatus, profileName, profil
 	return run, nil
 }
 
-func ensureIntentExistsTx(ctx context.Context, tx *sql.Tx, id string) error {
+func ensureSessionExistsTx(ctx context.Context, tx *sql.Tx, id string) error {
 	var exists int
-	err := tx.QueryRowContext(ctx, `SELECT 1 FROM session_intents WHERE id = ?`, id).Scan(&exists)
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM sessions WHERE id = ?`, id).Scan(&exists)
 	if err == nil {
 		return nil
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		return &domain.NotFoundError{Resource: "session_intent", ID: id}
+		return &domain.NotFoundError{Resource: "session", ID: id}
 	}
-	return fmt.Errorf("check session intent %s: %w", id, err)
+	return fmt.Errorf("check session %s: %w", id, err)
 }
 
 func ensureRowsAffected(result sql.Result, resource, id string) error {

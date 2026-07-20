@@ -145,15 +145,19 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("PUT /api/fs/file", fh.writeFile)
 	mux.HandleFunc("GET /api/fs/search", fh.search)
 	mux.HandleFunc("GET /api/architects/{key}/events", eh.events)
-	mux.HandleFunc("POST /api/sessions", sh.createIntent)
+	mux.HandleFunc("POST /api/sessions", sh.createSession)
 	mux.HandleFunc("GET /api/sessions", sh.list)
 	mux.HandleFunc("GET /api/sessions/{id}", sh.get)
 	mux.HandleFunc("POST /api/sessions/{id}/runs", sh.createRun)
 	mux.HandleFunc("POST /api/sessions/{id}/conclude", sh.conclude)
 	mux.HandleFunc("POST /api/sessions/{id}/discard", sh.discard)
-	mux.HandleFunc("POST /api/sessions/{id}/request-conclusion", sh.requestConclusion)
-	mux.HandleFunc("POST /api/sessions/{id}/approve-conclusion", sh.approveConclusion)
-	mux.HandleFunc("POST /api/sessions/{id}/reject-conclusion", sh.rejectConclusion)
+	// Agent-facing intent requests. These block until the user answers or the
+	// tool's policy fires.
+	mux.HandleFunc("POST /api/sessions/{id}/intents/conclude-session", sh.concludeSessionIntent)
+	mux.HandleFunc("POST /api/sessions/{id}/intents/create-work-ticket", sh.createWorkTicketIntent)
+	// Desktop-facing intent resolution, addressed by intent id.
+	mux.HandleFunc("POST /api/sessions/{id}/intents/{intentID}/approve", sh.approveIntent)
+	mux.HandleFunc("POST /api/sessions/{id}/intents/{intentID}/deny", sh.denyIntent)
 	mux.HandleFunc("GET /api/sessions/{id}/events", sh.events)
 	mux.HandleFunc("GET /api/sessions/{id}/tabs", sh.listTabs)
 	mux.HandleFunc("GET /api/sessions/{id}/ticket", sh.getTicket)

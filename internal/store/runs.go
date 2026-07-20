@@ -32,20 +32,20 @@ func (s *SessionStore) CreateRun(ctx context.Context, params domain.CreateSessio
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := ensureIntentExistsTx(ctx, tx, params.SessionIntentID); err != nil {
+	if err := ensureSessionExistsTx(ctx, tx, params.SessionID); err != nil {
 		return domain.SessionRun{}, err
 	}
-	if err := ensureNoActiveSiblingIntentTx(ctx, tx, params.SessionIntentID); err != nil {
+	if err := ensureNoActiveSiblingSessionTx(ctx, tx, params.SessionID); err != nil {
 		return domain.SessionRun{}, err
 	}
-	if err := ensureNoRunningRunTx(ctx, tx, params.SessionIntentID); err != nil {
+	if err := ensureNoRunningRunTx(ctx, tx, params.SessionID); err != nil {
 		return domain.SessionRun{}, err
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO session_runs (id, session_intent_id, status, agent_status, profile_name, profile_snapshot, workdir, native_id, started_at, created_at, updated_at)
+		INSERT INTO session_runs (id, session_id, status, agent_status, profile_name, profile_snapshot, workdir, native_id, started_at, created_at, updated_at)
 		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
-	`, params.ID, params.SessionIntentID, string(domain.SessionRunStatusRunning), params.ProfileName, profileSnapshotJSON, params.Workdir, nullIfEmpty(params.NativeID), formatPreciseTime(params.StartedAt), formatPreciseTime(createdAt), formatPreciseTime(createdAt))
+	`, params.ID, params.SessionID, string(domain.SessionRunStatusRunning), params.ProfileName, profileSnapshotJSON, params.Workdir, nullIfEmpty(params.NativeID), formatPreciseTime(params.StartedAt), formatPreciseTime(createdAt), formatPreciseTime(createdAt))
 	if err != nil {
 		return domain.SessionRun{}, fmt.Errorf("insert session run: %w", err)
 	}
@@ -59,7 +59,7 @@ func (s *SessionStore) CreateRun(ctx context.Context, params domain.CreateSessio
 
 func (s *SessionStore) GetRun(ctx context.Context, id string) (domain.SessionRun, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, session_intent_id, status, COALESCE(agent_status, ''), profile_name, COALESCE(profile_snapshot, ''), workdir, COALESCE(native_id, ''),
+		SELECT id, session_id, status, COALESCE(agent_status, ''), profile_name, COALESCE(profile_snapshot, ''), workdir, COALESCE(native_id, ''),
 		       COALESCE(failure_reason, ''), COALESCE(started_at, ''), COALESCE(ended_at, ''), created_at, updated_at
 		FROM session_runs
 		WHERE id = ?
@@ -74,21 +74,21 @@ func (s *SessionStore) GetRun(ctx context.Context, id string) (domain.SessionRun
 	return run, nil
 }
 
-func (s *SessionStore) GetCurrentRun(ctx context.Context, intentID string) (*domain.SessionRun, error) {
+func (s *SessionStore) GetCurrentRun(ctx context.Context, sessionID string) (*domain.SessionRun, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, session_intent_id, status, COALESCE(agent_status, ''), profile_name, COALESCE(profile_snapshot, ''), workdir, COALESCE(native_id, ''),
+		SELECT id, session_id, status, COALESCE(agent_status, ''), profile_name, COALESCE(profile_snapshot, ''), workdir, COALESCE(native_id, ''),
 		       COALESCE(failure_reason, ''), COALESCE(started_at, ''), COALESCE(ended_at, ''), created_at, updated_at
 		FROM session_runs
-		WHERE session_intent_id = ?
+		WHERE session_id = ?
 		ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, created_at DESC, id DESC
 		LIMIT 1
-	`, intentID)
+	`, sessionID)
 	run, err := scanSessionRun(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("get current session run for %s: %w", intentID, err)
+		return nil, fmt.Errorf("get current session run for %s: %w", sessionID, err)
 	}
 	return &run, nil
 }
@@ -153,21 +153,21 @@ func (s *SessionStore) UpdateRunAgentStatus(ctx context.Context, id, agentStatus
 	return ensureRowsAffected(result, "session_run", id)
 }
 
-func (s *SessionStore) ListSessionEvents(ctx context.Context, intentID string) ([]domain.SessionEvent, error) {
-	if _, err := s.GetIntent(ctx, intentID); err != nil {
+func (s *SessionStore) ListSessionEvents(ctx context.Context, sessionID string) ([]domain.SessionEvent, error) {
+	if _, err := s.GetSession(ctx, sessionID); err != nil {
 		return nil, err
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, session_intent_id, COALESCE(run_id, ''), seq, type, COALESCE(status, ''), COALESCE(tool, ''), COALESCE(message, ''),
+		SELECT id, session_id, COALESCE(run_id, ''), seq, type, COALESCE(status, ''), COALESCE(tool, ''), COALESCE(message, ''),
 		       COALESCE(native_id, ''), COALESCE(primary_native_id, ''), COALESCE(native_session_role, ''),
 		       COALESCE(metadata, ''), COALESCE(raw, ''), at
 		FROM session_events
-		WHERE session_intent_id = ?
+		WHERE session_id = ?
 		ORDER BY seq ASC
-	`, intentID)
+	`, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("list session events %s: %w", intentID, err)
+		return nil, fmt.Errorf("list session events %s: %w", sessionID, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -180,14 +180,14 @@ func (s *SessionStore) ListSessionEvents(ctx context.Context, intentID string) (
 		events = append(events, event)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate session events %s: %w", intentID, err)
+		return nil, fmt.Errorf("iterate session events %s: %w", sessionID, err)
 	}
 	return events, nil
 }
 
 func (s *SessionStore) AppendSessionEvent(ctx context.Context, params domain.AppendSessionEventParams) (domain.SessionEvent, error) {
-	if params.SessionIntentID == "" {
-		return domain.SessionEvent{}, fmt.Errorf("missing session intent ID")
+	if params.SessionID == "" {
+		return domain.SessionEvent{}, fmt.Errorf("missing session ID")
 	}
 	if params.Type == "" {
 		params.Type = "status"
@@ -202,17 +202,17 @@ func (s *SessionStore) AppendSessionEvent(ctx context.Context, params domain.App
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := ensureIntentExistsTx(ctx, tx, params.SessionIntentID); err != nil {
+	if err := ensureSessionExistsTx(ctx, tx, params.SessionID); err != nil {
 		return domain.SessionEvent{}, err
 	}
 	if params.RunID != "" {
-		if err := ensureRunBelongsToIntentTx(ctx, tx, params.RunID, params.SessionIntentID); err != nil {
+		if err := ensureRunBelongsToSessionTx(ctx, tx, params.RunID, params.SessionID); err != nil {
 			return domain.SessionEvent{}, err
 		}
 	}
 
 	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_events WHERE session_intent_id = ?`, params.SessionIntentID).Scan(&count); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_events WHERE session_id = ?`, params.SessionID).Scan(&count); err != nil {
 		return domain.SessionEvent{}, fmt.Errorf("count session events: %w", err)
 	}
 	if count >= 100 {
@@ -220,23 +220,23 @@ func (s *SessionStore) AppendSessionEvent(ctx context.Context, params domain.App
 			DELETE FROM session_events
 			WHERE id = (
 				SELECT id FROM session_events
-				WHERE session_intent_id = ?
+				WHERE session_id = ?
 				ORDER BY seq ASC
 				LIMIT 1
 			)
-		`, params.SessionIntentID); err != nil {
+		`, params.SessionID); err != nil {
 			return domain.SessionEvent{}, fmt.Errorf("trim session events: %w", err)
 		}
 	}
 
 	var seq int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) + 1 FROM session_events WHERE session_intent_id = ?`, params.SessionIntentID).Scan(&seq); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) + 1 FROM session_events WHERE session_id = ?`, params.SessionID).Scan(&seq); err != nil {
 		return domain.SessionEvent{}, fmt.Errorf("next session event seq: %w", err)
 	}
 
 	event := domain.SessionEvent{
 		ID:                uuid.NewString(),
-		SessionIntentID:   params.SessionIntentID,
+		SessionID:         params.SessionID,
 		RunID:             params.RunID,
 		Seq:               seq,
 		Type:              params.Type,
@@ -262,9 +262,9 @@ func (s *SessionStore) AppendSessionEvent(ctx context.Context, params domain.App
 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO session_events (
-			id, session_intent_id, run_id, seq, type, status, tool, message, native_id, primary_native_id, native_session_role, metadata, raw, at
+			id, session_id, run_id, seq, type, status, tool, message, native_id, primary_native_id, native_session_role, metadata, raw, at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, event.ID, event.SessionIntentID, nullIfEmpty(event.RunID), event.Seq, event.Type, nullIfEmpty(event.Status), nullIfEmpty(event.Tool),
+	`, event.ID, event.SessionID, nullIfEmpty(event.RunID), event.Seq, event.Type, nullIfEmpty(event.Status), nullIfEmpty(event.Tool),
 		nullIfEmpty(event.Message), nullIfEmpty(event.NativeID), nullIfEmpty(event.PrimaryNativeID), nullIfEmpty(event.NativeSessionRole), metadataJSON, rawJSON, event.At.Format(time.RFC3339Nano))
 	if err != nil {
 		return domain.SessionEvent{}, fmt.Errorf("insert session event: %w", err)
@@ -276,14 +276,14 @@ func (s *SessionStore) AppendSessionEvent(ctx context.Context, params domain.App
 	return event, nil
 }
 
-func ensureNoRunningRunTx(ctx context.Context, tx *sql.Tx, intentID string) error {
+func ensureNoRunningRunTx(ctx context.Context, tx *sql.Tx, sessionID string) error {
 	var existingID string
-	err := tx.QueryRowContext(ctx, `SELECT id FROM session_runs WHERE session_intent_id = ? AND status = ? LIMIT 1`, intentID, string(domain.SessionRunStatusRunning)).Scan(&existingID)
+	err := tx.QueryRowContext(ctx, `SELECT id FROM session_runs WHERE session_id = ? AND status = ? LIMIT 1`, sessionID, string(domain.SessionRunStatusRunning)).Scan(&existingID)
 	if err == nil {
 		return &domain.ConflictError{
 			Resource: "session_run",
-			Field:    "session_intent_id",
-			Message:  fmt.Sprintf("session intent %s already has a running run", intentID),
+			Field:    "session_id",
+			Message:  fmt.Sprintf("session %s already has a running run", sessionID),
 		}
 	}
 	if errors.Is(err, sql.ErrNoRows) {
@@ -292,16 +292,16 @@ func ensureNoRunningRunTx(ctx context.Context, tx *sql.Tx, intentID string) erro
 	return fmt.Errorf("check running session run: %w", err)
 }
 
-func ensureRunBelongsToIntentTx(ctx context.Context, tx *sql.Tx, runID, intentID string) error {
+func ensureRunBelongsToSessionTx(ctx context.Context, tx *sql.Tx, runID, sessionID string) error {
 	var exists int
-	err := tx.QueryRowContext(ctx, `SELECT 1 FROM session_runs WHERE id = ? AND session_intent_id = ?`, runID, intentID).Scan(&exists)
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM session_runs WHERE id = ? AND session_id = ?`, runID, sessionID).Scan(&exists)
 	if err == nil {
 		return nil
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return &domain.NotFoundError{Resource: "session_run", ID: runID}
 	}
-	return fmt.Errorf("check session run %s on intent %s: %w", runID, intentID, err)
+	return fmt.Errorf("check session run %s on session %s: %w", runID, sessionID, err)
 }
 
 func scanSessionEvent(scanner interface{ Scan(...any) error }) (domain.SessionEvent, error) {
@@ -311,7 +311,7 @@ func scanSessionEvent(scanner interface{ Scan(...any) error }) (domain.SessionEv
 	var at string
 	if err := scanner.Scan(
 		&event.ID,
-		&event.SessionIntentID,
+		&event.SessionID,
 		&event.RunID,
 		&event.Seq,
 		&event.Type,
@@ -356,7 +356,7 @@ func scanSessionRun(scanner interface{ Scan(...any) error }) (domain.SessionRun,
 	var updatedAt string
 	if err := scanner.Scan(
 		&run.ID,
-		&run.SessionIntentID,
+		&run.SessionID,
 		&status,
 		&agentStatus,
 		&run.ProfileName,

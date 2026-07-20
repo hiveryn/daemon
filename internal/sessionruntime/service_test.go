@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,8 +25,8 @@ func TestCreateRunMarksRunFailedWhenTerminalStartFails(t *testing.T) {
 	t.Parallel()
 
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-1",
+	repo.createdSession = domain.Session{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-13-1500",
@@ -36,9 +37,10 @@ func TestCreateRunMarksRunFailedWhenTerminalStartFails(t *testing.T) {
 	terminal := &fakeTerminalManager{startErr: errors.New("terminal unavailable")}
 	adapter := &fakeAdapter{}
 	service := &Service{
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg:    testRuntimeConfig(t),
-		repo:   repo,
+		intents: newIntentStore(),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:     testRuntimeConfig(t),
+		repo:    repo,
 		receiver: ingest.NewReceiver(
 			adapter,
 		),
@@ -50,7 +52,7 @@ func TestCreateRunMarksRunFailedWhenTerminalStartFails(t *testing.T) {
 		bridgeCancels: map[string]func(){},
 	}
 
-	_, err := service.CreateRun(context.Background(), "intent-1", domain.CreateSessionRunRequest{
+	_, err := service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{
 		ProfileName: "codex",
 		Cols:        132,
 		Rows:        48,
@@ -62,8 +64,8 @@ func TestCreateRunMarksRunFailedWhenTerminalStartFails(t *testing.T) {
 	if repo.createdRun.ID == "" {
 		t.Fatal("expected run to be reserved before terminal start")
 	}
-	if terminal.firstStartSpec().SessionID != "intent-1" {
-		t.Fatalf("expected terminal to start on intent-1, got %#v", terminal.firstStartSpec())
+	if terminal.firstStartSpec().SessionID != "session-1" {
+		t.Fatalf("expected terminal to start on session-1, got %#v", terminal.firstStartSpec())
 	}
 	if terminal.firstStartSpec().Size.Cols != 132 || terminal.firstStartSpec().Size.Rows != 48 {
 		t.Fatalf("expected requested dimensions, got %#v", terminal.firstStartSpec().Size)
@@ -80,8 +82,8 @@ func TestRestoreRunningSessionsMarksRestoreFailure(t *testing.T) {
 	t.Parallel()
 
 	repo := newFakeSessionRepository()
-	repo.listedIntents = []domain.SessionIntent{{
-		ID:           "intent-1",
+	repo.listedSessions = []domain.Session{{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-13-1500",
@@ -94,9 +96,10 @@ func TestRestoreRunningSessionsMarksRestoreFailure(t *testing.T) {
 		},
 	}}
 	service := &Service{
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg:    testRuntimeConfig(t),
-		repo:   repo,
+		intents: newIntentStore(),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:     testRuntimeConfig(t),
+		repo:    repo,
 	}
 
 	err := service.RestoreRunningSessions(context.Background())
@@ -112,11 +115,12 @@ func TestResolveStoredRunLaunchContextAllowsEmptyNativeID(t *testing.T) {
 	t.Parallel()
 
 	service := &Service{
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg:    testRuntimeConfig(t),
-		repo:   newFakeSessionRepository(),
+		intents: newIntentStore(),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:     testRuntimeConfig(t),
+		repo:    newFakeSessionRepository(),
 	}
-	intent := domain.SessionIntent{ID: "intent-1", ArchitectKey: "hiveryn"}
+	session := domain.Session{ID: "session-1", ArchitectKey: "hiveryn"}
 	run := domain.SessionRun{
 		ID:          "run-1",
 		ProfileName: "codex",
@@ -127,7 +131,7 @@ func TestResolveStoredRunLaunchContextAllowsEmptyNativeID(t *testing.T) {
 		},
 	}
 
-	profile, agentKind, err := service.resolveStoredRunLaunchContext(intent, run)
+	profile, agentKind, err := service.resolveStoredRunLaunchContext(session, run)
 	if err != nil {
 		t.Fatalf("expected empty NativeID to resolve, got %v", err)
 	}
@@ -143,8 +147,8 @@ func TestRestoreRunningSessionsMovesTicketToBacklogOnRestoreFailure(t *testing.T
 	t.Parallel()
 
 	repo := newFakeSessionRepository()
-	repo.listedIntents = []domain.SessionIntent{{
-		ID:           "intent-1",
+	repo.listedSessions = []domain.Session{{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeTicket,
 		ContextID:    "ticket-1",
@@ -158,6 +162,7 @@ func TestRestoreRunningSessionsMovesTicketToBacklogOnRestoreFailure(t *testing.T
 	}}
 	tickets := &fakeTicketService{}
 	service := &Service{
+		intents: newIntentStore(),
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg:     testRuntimeConfig(t),
 		repo:    repo,
@@ -179,8 +184,8 @@ func TestConcludeArchitectSessionAppendsEndedEventRawBody(t *testing.T) {
 	operations := []string{}
 	repo := newFakeSessionRepository()
 	repo.operations = &operations
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-architect",
+	repo.createdSession = domain.Session{
+		ID:           "session-architect",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-13-1500",
@@ -194,6 +199,7 @@ func TestConcludeArchitectSessionAppendsEndedEventRawBody(t *testing.T) {
 		},
 	}
 	service := &Service{
+		intents:      newIntentStore(),
 		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg:          testRuntimeConfig(t),
 		repo:         repo,
@@ -201,7 +207,7 @@ func TestConcludeArchitectSessionAppendsEndedEventRawBody(t *testing.T) {
 		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
 	}
 
-	_, err := service.ConcludeSession(context.Background(), "intent-architect", domain.ConcludeSessionParams{Body: "architect conclusion"})
+	_, err := service.ConcludeSession(context.Background(), "session-architect", domain.ConcludeSessionParams{Body: "architect conclusion"})
 	if err != nil {
 		t.Fatalf("ConcludeSession failed: %v", err)
 	}
@@ -224,8 +230,8 @@ func TestConcludeArchitectSessionConflictsWhenWorkerRunsStillRunning(t *testing.
 	operations := []string{}
 	repo := newFakeSessionRepository()
 	repo.operations = &operations
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-architect",
+	repo.createdSession = domain.Session{
+		ID:           "session-architect",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-13-1500",
@@ -236,13 +242,14 @@ func TestConcludeArchitectSessionConflictsWhenWorkerRunsStillRunning(t *testing.
 			Status: domain.SessionRunStatusRunning,
 		},
 	}
-	repo.listedIntents = []domain.SessionIntent{
-		repo.createdIntent,
-		{ID: "intent-ticket-2", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeTicket, ContextID: "ticket-2", Prompt: "kickoff", Workdir: t.TempDir(), CurrentRun: &domain.SessionRun{ID: "run-2", Status: domain.SessionRunStatusRunning}},
-		{ID: "intent-ticket-1", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeTicket, ContextID: "ticket-1", Prompt: "kickoff", Workdir: t.TempDir(), CurrentRun: &domain.SessionRun{ID: "run-3", Status: domain.SessionRunStatusRunning}},
-		{ID: "intent-other", ArchitectKey: "other", SessionType: domain.SessionTypeTicket, ContextID: "ticket-3", Prompt: "kickoff", Workdir: t.TempDir(), CurrentRun: &domain.SessionRun{ID: "run-4", Status: domain.SessionRunStatusRunning}},
+	repo.listedSessions = []domain.Session{
+		repo.createdSession,
+		{ID: "session-ticket-2", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeTicket, ContextID: "ticket-2", Prompt: "kickoff", Workdir: t.TempDir(), CurrentRun: &domain.SessionRun{ID: "run-2", Status: domain.SessionRunStatusRunning}},
+		{ID: "session-ticket-1", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeTicket, ContextID: "ticket-1", Prompt: "kickoff", Workdir: t.TempDir(), CurrentRun: &domain.SessionRun{ID: "run-3", Status: domain.SessionRunStatusRunning}},
+		{ID: "session-other", ArchitectKey: "other", SessionType: domain.SessionTypeTicket, ContextID: "ticket-3", Prompt: "kickoff", Workdir: t.TempDir(), CurrentRun: &domain.SessionRun{ID: "run-4", Status: domain.SessionRunStatusRunning}},
 	}
 	service := &Service{
+		intents:      newIntentStore(),
 		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg:          testRuntimeConfig(t),
 		repo:         repo,
@@ -250,7 +257,7 @@ func TestConcludeArchitectSessionConflictsWhenWorkerRunsStillRunning(t *testing.
 		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
 	}
 
-	_, err := service.ConcludeSession(context.Background(), "intent-architect", domain.ConcludeSessionParams{Body: "architect conclusion"})
+	_, err := service.ConcludeSession(context.Background(), "session-architect", domain.ConcludeSessionParams{Body: "architect conclusion"})
 	if err == nil {
 		t.Fatal("expected conflict error")
 	}
@@ -259,7 +266,7 @@ func TestConcludeArchitectSessionConflictsWhenWorkerRunsStillRunning(t *testing.
 	if !errors.As(err, &conflict) {
 		t.Fatalf("expected conflict error, got %v", err)
 	}
-	if got, want := conflict.Message, "Cannot conclude architect session: 2 ticket session(s) still active: intent-ticket-1, intent-ticket-2"; got != want {
+	if got, want := conflict.Message, "Cannot conclude architect session: 2 ticket session(s) still active: session-ticket-1, session-ticket-2"; got != want {
 		t.Fatalf("expected conflict message %q, got %q", want, got)
 	}
 	if len(operations) != 0 {
@@ -280,8 +287,8 @@ func TestConcludeTicketSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 	operations := []string{}
 	repo := newFakeSessionRepository()
 	repo.operations = &operations
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-work",
+	repo.createdSession = domain.Session{
+		ID:           "session-work",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeTicket,
 		ContextID:    "ticket-1",
@@ -299,9 +306,10 @@ func TestConcludeTicketSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 	cfg := testRuntimeConfigWithPaths(architectPath, daemonRepoPath)
 	cfg.Architects["hiveryn"] = config.ArchitectConfig{Path: architectPath, Repos: map[string]string{"daemon": daemonRepoPath, "desktop": desktopRepoPath}}
 	service := &Service{
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg:    cfg,
-		repo:   repo,
+		intents: newIntentStore(),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:     cfg,
+		repo:    repo,
 		tickets: &fakeTicketService{ticket: domain.Ticket{
 			TicketSummary: domain.TicketSummary{ID: "ticket-1", Title: "Ticket", Repo: "daemon", Status: domain.TicketStatusProgress, Created: &created, Updated: &created},
 			Body:          "body",
@@ -310,7 +318,7 @@ func TestConcludeTicketSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
 	}
 
-	_, err := service.ConcludeSession(context.Background(), "intent-work", domain.ConcludeSessionParams{
+	_, err := service.ConcludeSession(context.Background(), "session-work", domain.ConcludeSessionParams{
 		Body:            "worker conclusion",
 		Commits:         []domain.CommitRef{{SHA: daemonCommit, Repo: "daemon"}, {SHA: desktopCommit, Repo: "desktop"}},
 		Outcome:         domain.TicketOutcomeRejected,
@@ -343,8 +351,8 @@ func TestConcludeTicketSessionExploratoryAllowsNoCommits(t *testing.T) {
 	operations := []string{}
 	repo := newFakeSessionRepository()
 	repo.operations = &operations
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-work",
+	repo.createdSession = domain.Session{
+		ID:           "session-work",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeTicket,
 		ContextID:    "ticket-1",
@@ -362,9 +370,10 @@ func TestConcludeTicketSessionExploratoryAllowsNoCommits(t *testing.T) {
 	cfg := testRuntimeConfigWithPaths(architectPath, daemonRepoPath)
 	cfg.Architects["hiveryn"] = config.ArchitectConfig{Path: architectPath, Repos: map[string]string{"daemon": daemonRepoPath}}
 	service := &Service{
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg:    cfg,
-		repo:   repo,
+		intents: newIntentStore(),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:     cfg,
+		repo:    repo,
 		tickets: &fakeTicketService{ticket: domain.Ticket{
 			TicketSummary: domain.TicketSummary{ID: "ticket-1", Title: "Ticket", Repo: "daemon", Status: domain.TicketStatusProgress, Created: &created, Updated: &created},
 			Body:          "body",
@@ -373,7 +382,7 @@ func TestConcludeTicketSessionExploratoryAllowsNoCommits(t *testing.T) {
 		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
 	}
 
-	_, err := service.ConcludeSession(context.Background(), "intent-work", domain.ConcludeSessionParams{
+	_, err := service.ConcludeSession(context.Background(), "session-work", domain.ConcludeSessionParams{
 		Body:    "Investigated the flake; no commits produced.",
 		Outcome: domain.TicketOutcomeExploratory,
 	})
@@ -391,8 +400,8 @@ func TestConcludeTicketSessionInvalidOutcomeRejected(t *testing.T) {
 	t.Parallel()
 
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-work",
+	repo.createdSession = domain.Session{
+		ID:           "session-work",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeTicket,
 		ContextID:    "ticket-1",
@@ -402,12 +411,13 @@ func TestConcludeTicketSessionInvalidOutcomeRejected(t *testing.T) {
 		},
 	}
 	service := &Service{
+		intents:      newIntentStore(),
 		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		repo:         repo,
 		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
 	}
 
-	_, err := service.ConcludeSession(context.Background(), "intent-work", domain.ConcludeSessionParams{Body: "done"})
+	_, err := service.ConcludeSession(context.Background(), "session-work", domain.ConcludeSessionParams{Body: "done"})
 	var validationErr *domain.ValidationError
 	if !errors.As(err, &validationErr) || validationErr.Field != "outcome" {
 		t.Fatalf("expected outcome validation error, got %v", err)
@@ -423,8 +433,8 @@ func TestUnspawnTicketSessionMovesTicketBackAndDeletesRun(t *testing.T) {
 	operations := []string{}
 	repo := newFakeSessionRepository()
 	repo.operations = &operations
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-work",
+	repo.createdSession = domain.Session{
+		ID:           "session-work",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeTicket,
 		ContextID:    "ticket-1",
@@ -443,6 +453,7 @@ func TestUnspawnTicketSessionMovesTicketBackAndDeletesRun(t *testing.T) {
 		Body:          "body",
 	}}
 	service := &Service{
+		intents:      newIntentStore(),
 		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg:          testRuntimeConfigWithPaths(architectPath, repoPath),
 		repo:         repo,
@@ -451,12 +462,12 @@ func TestUnspawnTicketSessionMovesTicketBackAndDeletesRun(t *testing.T) {
 		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
 	}
 
-	result, err := service.UnspawnTicketSession(context.Background(), "intent-work")
+	result, err := service.UnspawnTicketSession(context.Background(), "session-work")
 	if err != nil {
 		t.Fatalf("UnspawnTicketSession failed: %v", err)
 	}
 
-	if result.SessionID != "intent-work" || result.TicketID != "ticket-1" || result.ArchitectKey != "hiveryn" {
+	if result.SessionID != "session-work" || result.TicketID != "ticket-1" || result.ArchitectKey != "hiveryn" {
 		t.Fatalf("unexpected result %#v", result)
 	}
 	if tickets.movedTo != domain.TicketStatusBacklog {
@@ -478,8 +489,8 @@ func TestUnspawnTicketSessionRejectsNonTicketSession(t *testing.T) {
 	t.Parallel()
 
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-architect",
+	repo.createdSession = domain.Session{
+		ID:           "session-architect",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-13-1500",
@@ -487,9 +498,9 @@ func TestUnspawnTicketSessionRejectsNonTicketSession(t *testing.T) {
 		Workdir:      t.TempDir(),
 		CurrentRun:   &domain.SessionRun{ID: "run-1", Status: domain.SessionRunStatusRunning},
 	}
-	service := &Service{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), repo: repo}
+	service := &Service{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), repo: repo, intents: newIntentStore()}
 
-	_, err := service.UnspawnTicketSession(context.Background(), "intent-architect")
+	_, err := service.UnspawnTicketSession(context.Background(), "session-architect")
 	var validationErr *domain.ValidationError
 	if !errors.As(err, &validationErr) || validationErr.Field != "session_type" {
 		t.Fatalf("expected session_type validation error, got %v", err)
@@ -502,8 +513,8 @@ func TestRequestConclusionRejectsMissingCommitsBeforeApproval(t *testing.T) {
 	created := time.Date(2026, 5, 13, 15, 30, 0, 0, time.UTC)
 	started := created.Add(5 * time.Minute)
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-work",
+	repo.createdSession = domain.Session{
+		ID:           "session-work",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeTicket,
 		ContextID:    "ticket-1",
@@ -515,12 +526,13 @@ func TestRequestConclusionRejectsMissingCommitsBeforeApproval(t *testing.T) {
 		},
 	}
 	service := &Service{
+		intents:      newIntentStore(),
 		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		repo:         repo,
 		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
 	}
 
-	_, err := service.RequestConclusion(context.Background(), "intent-work", domain.ConcludeSessionParams{
+	_, err := service.RequestConclusion(context.Background(), "session-work", domain.ConcludeSessionParams{
 		Summary:        "done",
 		Outcome:        domain.TicketOutcomeCompleted,
 		Implementation: "did it",
@@ -534,120 +546,163 @@ func TestRequestConclusionRejectsMissingCommitsBeforeApproval(t *testing.T) {
 	}
 }
 
-func TestRejectConclusionPublishesApprovalResolved(t *testing.T) {
+func TestDenyIntentResolvesWithoutRunningExec(t *testing.T) {
 	t.Parallel()
 
 	repo := newFakeSessionRepository()
 	service := &Service{
 		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		repo:         repo,
-		approvals:    newApprovalStore(),
-		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
-	}
-	if _, err := service.approvals.Store("intent-work", domain.ConcludeSessionParams{Body: "done"}); err != nil {
-		t.Fatalf("store approval: %v", err)
-	}
-
-	if err := service.RejectConclusion(context.Background(), "intent-work", "needs work"); err != nil {
-		t.Fatalf("reject: %v", err)
-	}
-
-	event := repo.lastAppendedEvent(t)
-	if event.Status != "approval_resolved" {
-		t.Fatalf("expected approval_resolved event, got %q", event.Status)
-	}
-	if event.Raw["outcome"] != "rejected" {
-		t.Fatalf("expected outcome rejected, got %#v", event.Raw["outcome"])
-	}
-}
-
-func TestRequestConclusionPublishesApprovalResolvedOnCancel(t *testing.T) {
-	t.Parallel()
-
-	created := time.Date(2026, 5, 13, 15, 30, 0, 0, time.UTC)
-	started := created.Add(5 * time.Minute)
-	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-work",
-		ArchitectKey: "hiveryn",
-		SessionType:  domain.SessionTypeTicket,
-		ContextID:    "ticket-1",
-		CreatedAt:    created,
-		CurrentRun: &domain.SessionRun{
-			ID:        "run-1",
-			Status:    domain.SessionRunStatusRunning,
-			StartedAt: &started,
-		},
-	}
-	service := &Service{
-		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
-		repo:         repo,
-		approvals:    newApprovalStore(),
+		intents:      newIntentStore(),
 		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err := service.RequestConclusion(ctx, "intent-work", domain.ConcludeSessionParams{
-		Summary:        "done",
-		Outcome:        domain.TicketOutcomeCompleted,
-		Implementation: "did it",
-		Commits:        []domain.CommitRef{{Repo: "desktop", SHA: "abc123"}},
+	executed := false
+	in := domain.Intent{
+		ID:      "intent-1",
+		Type:    domain.IntentTypeConcludeSession,
+		Summary: "done",
+		Origin:  domain.IntentOrigin{SessionID: "session-work", ArchitectKey: "hiveryn"},
+	}
+	_, ch, _, _ := service.intents.Begin("key-1", in, func(context.Context) (any, error) {
+		executed = true
+		return nil, nil
 	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
+
+	if err := service.DenyIntent(context.Background(), "session-work", "intent-1", "needs work"); err != nil {
+		t.Fatalf("deny: %v", err)
+	}
+
+	if executed {
+		t.Fatal("a denied intent must never run its side effect")
 	}
 
 	event := repo.lastAppendedEvent(t)
-	if event.Status != "approval_resolved" || event.Raw["outcome"] != "cancelled" {
-		t.Fatalf("expected approval_resolved/cancelled, got %q %#v", event.Status, event.Raw["outcome"])
+	if event.Type != sessionEventTypeIntent || event.Status != sessionEventStatusResolvd {
+		t.Fatalf("expected an intent/resolved event, got %q/%q", event.Type, event.Status)
+	}
+	if event.Raw["outcome"] != string(domain.IntentOutcomeDeniedByUser) {
+		t.Fatalf("expected outcome denied_by_user, got %#v", event.Raw["outcome"])
+	}
+	if event.Raw["reason"] != "needs work" {
+		t.Fatalf("expected the denial reason to reach the event, got %#v", event.Raw["reason"])
+	}
+
+	// The blocked agent call must be released with the denial.
+	select {
+	case res := <-ch:
+		if res.Outcome != domain.IntentOutcomeDeniedByUser {
+			t.Fatalf("waiter got outcome %q, want denied_by_user", res.Outcome)
+		}
+	default:
+		t.Fatal("waiter was not released by the denial")
 	}
 }
 
-func TestReconcilePendingApprovalsResolvesDanglingRequired(t *testing.T) {
+// A cancelled agent ctx must NOT kill the intent. An agent-runtime tool-call
+// timeout cancels ctx and retries, and the retry has to be able to replay the
+// original outcome rather than mint a duplicate. This is the deliberate
+// behavior change from the old approval flow, which resolved as "cancelled".
+func TestRequestConclusionCancelledCtxLeavesIntentAlive(t *testing.T) {
 	t.Parallel()
 
 	repo := newFakeSessionRepository()
-	repo.listedIntents = []domain.SessionIntent{
+	service := &Service{
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repo:         repo,
+		intents:      newIntentStore(),
+		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
+	}
+
+	in := domain.Intent{
+		ID:     "intent-1",
+		Type:   domain.IntentTypeCreateWorkTicket,
+		Origin: domain.IntentOrigin{SessionID: "session-work"},
+	}
+	id, ch, _, _ := service.intents.Begin("key-1", in, func(context.Context) (any, error) {
+		return domain.Ticket{}, nil
+	})
+
+	// The requester walks away.
+	service.intents.Detach(id, ch)
+
+	if got := service.intents.PendingForSession("session-work"); len(got) != 1 {
+		t.Fatalf("intent did not survive the caller's cancellation: pending = %v", got)
+	}
+
+	// It still resolves, and the resolution is replayable by the retry.
+	service.intents.Finish(id, intentResult{Outcome: domain.IntentOutcomeAutoApproved, Result: domain.Ticket{}})
+	_, _, replayed, disposition := service.intents.Begin("key-1", in, nil)
+	if disposition != intentReplayed || replayed.Outcome != domain.IntentOutcomeAutoApproved {
+		t.Fatalf("retry did not replay the resolved outcome: disposition=%v outcome=%q", disposition, replayed.Outcome)
+	}
+}
+
+func TestReconcileIntentsResolvesDanglingRequired(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.listedSessions = []domain.Session{
 		{ID: "dangling", SessionType: domain.SessionTypeTicket},
 		{ID: "resolved", SessionType: domain.SessionTypeTicket},
 		{ID: "ended", SessionType: domain.SessionTypeTicket},
+		{ID: "multi", SessionType: domain.SessionTypeTicket},
+	}
+	required := func(id string) domain.SessionEvent {
+		return domain.SessionEvent{
+			Type:   sessionEventTypeIntent,
+			Status: sessionEventStatusReqd,
+			Raw:    map[string]any{"intent_id": id, "intent_type": string(domain.IntentTypeCreateWorkTicket)},
+		}
+	}
+	resolved := func(id string) domain.SessionEvent {
+		return domain.SessionEvent{
+			Type:   sessionEventTypeIntent,
+			Status: sessionEventStatusResolvd,
+			Raw:    map[string]any{"intent_id": id},
+		}
 	}
 	repo.sessionEvents = map[string][]domain.SessionEvent{
-		"dangling": {{Type: "status", Status: "approval_required"}},
-		"resolved": {
-			{Type: "status", Status: "approval_required"},
-			{Type: "status", Status: "approval_resolved"},
-		},
-		"ended": {
-			{Type: "status", Status: "approval_required"},
-			{Type: "status", Status: "ended"},
-		},
+		"dangling": {required("i-1")},
+		"resolved": {required("i-1"), resolved("i-1")},
+		"ended":    {required("i-1"), {Type: "status", Status: "ended"}},
+		// N-per-session: only the still-open one gets reconciled.
+		"multi": {required("i-1"), required("i-2"), resolved("i-1")},
 	}
 	service := &Service{
+		intents:      newIntentStore(),
 		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		repo:         repo,
 		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
 	}
 
-	if err := service.ReconcilePendingApprovals(context.Background()); err != nil {
+	if err := service.ReconcileIntents(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	if len(repo.appendedEvents) != 1 {
-		t.Fatalf("expected exactly one resolution event, got %#v", repo.appendedEvents)
+	if len(repo.appendedEvents) != 2 {
+		t.Fatalf("expected exactly two resolution events (dangling + multi/i-2), got %#v", repo.appendedEvents)
 	}
-	event := repo.appendedEvents[0]
-	if event.SessionIntentID != "dangling" || event.Status != "approval_resolved" || event.Raw["outcome"] != "daemon_restart" {
-		t.Fatalf("unexpected reconciliation event: %#v", event)
+	for _, event := range repo.appendedEvents {
+		if event.Status != sessionEventStatusResolvd {
+			t.Fatalf("unexpected reconciliation event: %#v", event)
+		}
+		if event.Raw["outcome"] != string(domain.IntentOutcomeError) {
+			t.Fatalf("expected outcome error, got %#v", event.Raw["outcome"])
+		}
+	}
+	if repo.appendedEvents[0].SessionID != "dangling" {
+		t.Fatalf("expected the dangling session first, got %q", repo.appendedEvents[0].SessionID)
+	}
+	if repo.appendedEvents[1].SessionID != "multi" || repo.appendedEvents[1].Raw["intent_id"] != "i-2" {
+		t.Fatalf("expected multi/i-2 to be the only other orphan, got %#v", repo.appendedEvents[1])
 	}
 }
 
 func TestMoveTicketToDoneRejectsMissingCommits(t *testing.T) {
 	t.Parallel()
 
-	service := &Service{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	service := &Service{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), intents: newIntentStore()}
 
 	_, err := service.MoveTicketToDone(context.Background(), "hiveryn", "ticket-1", domain.MoveTicketToDoneParams{Body: "done", Outcome: domain.TicketOutcomeCompleted})
 	var validationErr *domain.ValidationError
@@ -666,8 +721,8 @@ func TestConcludeFreeformSessionWritesConclusionAndAllowsNoCommits(t *testing.T)
 	operations := []string{}
 	repo := newFakeSessionRepository()
 	repo.operations = &operations
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-freeform",
+	repo.createdSession = domain.Session{
+		ID:           "session-freeform",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeFreeform,
 		ContextID:    "2026-05-13-1600-investigate-login-failure",
@@ -682,7 +737,8 @@ func TestConcludeFreeformSessionWritesConclusionAndAllowsNoCommits(t *testing.T)
 		},
 	}
 	service := &Service{
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		intents: newIntentStore(),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg: config.Config{
 			Architects: map[string]config.ArchitectConfig{
 				"hiveryn": {Path: architectPath, Repos: map[string]string{}},
@@ -693,12 +749,12 @@ func TestConcludeFreeformSessionWritesConclusionAndAllowsNoCommits(t *testing.T)
 		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
 	}
 
-	_, err := service.ConcludeSession(context.Background(), "intent-freeform", domain.ConcludeSessionParams{Body: "Root cause identified."})
+	_, err := service.ConcludeSession(context.Background(), "session-freeform", domain.ConcludeSessionParams{Body: "Root cause identified."})
 	if err != nil {
 		t.Fatalf("ConcludeSession failed: %v", err)
 	}
 
-	path := filepath.Join(architectPath, "freeform", repo.createdIntent.ContextID, "conclusion.md")
+	path := filepath.Join(architectPath, "freeform", repo.createdSession.ContextID, "conclusion.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read conclusion: %v", err)
@@ -722,8 +778,8 @@ func TestConcludeFreeformSessionValidatesProvidedCommits(t *testing.T) {
 	repoPath := t.TempDir()
 	createTestGitCommit(t, repoPath)
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-freeform",
+	repo.createdSession = domain.Session{
+		ID:           "session-freeform",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeFreeform,
 		ContextID:    "2026-05-13-1600-investigate-login-failure",
@@ -736,7 +792,8 @@ func TestConcludeFreeformSessionValidatesProvidedCommits(t *testing.T) {
 		},
 	}
 	service := &Service{
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		intents: newIntentStore(),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg: config.Config{
 			Architects: map[string]config.ArchitectConfig{
 				"hiveryn": {Path: architectPath, Repos: map[string]string{"daemon": repoPath}},
@@ -747,7 +804,7 @@ func TestConcludeFreeformSessionValidatesProvidedCommits(t *testing.T) {
 		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
 	}
 
-	_, err := service.ConcludeSession(context.Background(), "intent-freeform", domain.ConcludeSessionParams{
+	_, err := service.ConcludeSession(context.Background(), "session-freeform", domain.ConcludeSessionParams{
 		Body:    "Root cause identified.",
 		Commits: []domain.CommitRef{{SHA: "deadbeef", Repo: "daemon"}},
 	})
@@ -767,8 +824,8 @@ func TestConcludeArchitectSessionEmptyBodySkipsConclusionFile(t *testing.T) {
 	operations := []string{}
 	repo := newFakeSessionRepository()
 	repo.operations = &operations
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-architect",
+	repo.createdSession = domain.Session{
+		ID:           "session-architect",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-13-1500",
@@ -782,6 +839,7 @@ func TestConcludeArchitectSessionEmptyBodySkipsConclusionFile(t *testing.T) {
 		},
 	}
 	service := &Service{
+		intents:      newIntentStore(),
 		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg:          testRuntimeConfig(t),
 		repo:         repo,
@@ -790,7 +848,7 @@ func TestConcludeArchitectSessionEmptyBodySkipsConclusionFile(t *testing.T) {
 	}
 	service.cfg.Architects["hiveryn"] = config.ArchitectConfig{Path: architectPath, Repos: map[string]string{}}
 
-	_, err := service.ConcludeSession(context.Background(), "intent-architect", domain.ConcludeSessionParams{Body: ""})
+	_, err := service.ConcludeSession(context.Background(), "session-architect", domain.ConcludeSessionParams{Body: ""})
 	if err != nil {
 		t.Fatalf("ConcludeSession failed: %v", err)
 	}
@@ -820,8 +878,8 @@ func TestConcludeFreeformSessionEmptyBodySkipsConclusionFile(t *testing.T) {
 	operations := []string{}
 	repo := newFakeSessionRepository()
 	repo.operations = &operations
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-freeform",
+	repo.createdSession = domain.Session{
+		ID:           "session-freeform",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeFreeform,
 		ContextID:    "2026-05-13-1600-investigate-login-failure",
@@ -835,7 +893,8 @@ func TestConcludeFreeformSessionEmptyBodySkipsConclusionFile(t *testing.T) {
 		},
 	}
 	service := &Service{
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		intents: newIntentStore(),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg: config.Config{
 			Architects: map[string]config.ArchitectConfig{
 				"hiveryn": {Path: architectPath, Repos: map[string]string{}},
@@ -846,7 +905,7 @@ func TestConcludeFreeformSessionEmptyBodySkipsConclusionFile(t *testing.T) {
 		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
 	}
 
-	_, err := service.ConcludeSession(context.Background(), "intent-freeform", domain.ConcludeSessionParams{Body: ""})
+	_, err := service.ConcludeSession(context.Background(), "session-freeform", domain.ConcludeSessionParams{Body: ""})
 	if err != nil {
 		t.Fatalf("ConcludeSession failed: %v", err)
 	}
@@ -860,21 +919,22 @@ func TestConcludeFreeformSessionEmptyBodySkipsConclusionFile(t *testing.T) {
 		t.Fatalf("expected empty body in ended event, got %#v", event.Raw["body"])
 	}
 
-	dir := filepath.Join(architectPath, "freeform", repo.createdIntent.ContextID)
+	dir := filepath.Join(architectPath, "freeform", repo.createdSession.ContextID)
 	conclusionPath := filepath.Join(dir, "conclusion.md")
 	if _, err := os.Stat(conclusionPath); !os.IsNotExist(err) {
 		t.Fatal("expected no conclusion.md written for discarded freeform session")
 	}
 }
 
-func TestCreateIntentFreeformWritesPromptFile(t *testing.T) {
+func TestCreateSessionFreeformWritesPromptFile(t *testing.T) {
 	t.Parallel()
 
 	architectPath := t.TempDir()
 	workdir := t.TempDir()
 	repo := newFakeSessionRepository()
 	service := &Service{
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		intents: newIntentStore(),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg: config.Config{
 			Architects: map[string]config.ArchitectConfig{
 				"hiveryn": {Path: architectPath, Repos: map[string]string{}},
@@ -885,7 +945,7 @@ func TestCreateIntentFreeformWritesPromptFile(t *testing.T) {
 	}
 
 	prompt := "Investigate login failure and report root cause"
-	intent, err := service.CreateIntent(context.Background(), domain.CreateSessionIntentRequest{
+	session, err := service.CreateSession(context.Background(), domain.CreateSessionRequest{
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeFreeform,
 		Prompt:       prompt,
@@ -893,18 +953,18 @@ func TestCreateIntentFreeformWritesPromptFile(t *testing.T) {
 		Slug:         "Investigate Login Failure",
 	})
 	if err != nil {
-		t.Fatalf("CreateIntent failed: %v", err)
+		t.Fatalf("CreateSession failed: %v", err)
 	}
-	if intent.SessionType != domain.SessionTypeFreeform {
-		t.Fatalf("unexpected intent %#v", intent)
+	if session.SessionType != domain.SessionTypeFreeform {
+		t.Fatalf("unexpected session %#v", session)
 	}
-	if !strings.HasSuffix(intent.ContextID, "investigate-login-failure") {
-		t.Fatalf("expected normalized freeform context id, got %#v", intent)
+	if !strings.HasSuffix(session.ContextID, "investigate-login-failure") {
+		t.Fatalf("expected normalized freeform context id, got %#v", session)
 	}
-	if intent.Workdir != workdir || intent.Prompt != prompt {
-		t.Fatalf("unexpected persisted intent %#v", intent)
+	if session.Workdir != workdir || session.Prompt != prompt {
+		t.Fatalf("unexpected persisted session %#v", session)
 	}
-	data, err := os.ReadFile(filepath.Join(architectPath, "freeform", intent.ContextID, "prompt.md"))
+	data, err := os.ReadFile(filepath.Join(architectPath, "freeform", session.ContextID, "prompt.md"))
 	if err != nil {
 		t.Fatalf("read prompt.md: %v", err)
 	}
@@ -913,13 +973,13 @@ func TestCreateIntentFreeformWritesPromptFile(t *testing.T) {
 	}
 }
 
-func TestCreateRunFreeformUsesStoredIntentWorkdir(t *testing.T) {
+func TestCreateRunFreeformUsesStoredSessionWorkdir(t *testing.T) {
 	t.Parallel()
 
 	workdir := t.TempDir()
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-1",
+	repo.createdSession = domain.Session{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeFreeform,
 		ContextID:    "2026-05-13-1600-investigate-login-failure",
@@ -929,9 +989,10 @@ func TestCreateRunFreeformUsesStoredIntentWorkdir(t *testing.T) {
 	adapter := &fakeAdapter{}
 	terminal := &fakeTerminalManager{}
 	service := &Service{
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg:    testRuntimeConfig(t),
-		repo:   repo,
+		intents: newIntentStore(),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:     testRuntimeConfig(t),
+		repo:    repo,
 		receiver: ingest.NewReceiver(
 			adapter,
 		),
@@ -943,7 +1004,7 @@ func TestCreateRunFreeformUsesStoredIntentWorkdir(t *testing.T) {
 		bridgeCancels: map[string]func(){},
 	}
 
-	if _, err := service.CreateRun(context.Background(), "intent-1", domain.CreateSessionRunRequest{ProfileName: "codex"}); err != nil {
+	if _, err := service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{ProfileName: "codex"}); err != nil {
 		t.Fatalf("CreateRun failed: %v", err)
 	}
 	if repo.createdRun.Workdir != workdir {
@@ -954,7 +1015,7 @@ func TestCreateRunFreeformUsesStoredIntentWorkdir(t *testing.T) {
 	}
 }
 
-func TestCreateIntentReloadsArchitectsFile(t *testing.T) {
+func TestCreateSessionReloadsArchitectsFile(t *testing.T) {
 	t.Parallel()
 
 	configDir := t.TempDir()
@@ -977,6 +1038,7 @@ func TestCreateIntentReloadsArchitectsFile(t *testing.T) {
 
 	repo := newFakeSessionRepository()
 	service := &Service{
+		intents:      newIntentStore(),
 		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg:          cfg,
 		configSource: source,
@@ -984,7 +1046,7 @@ func TestCreateIntentReloadsArchitectsFile(t *testing.T) {
 		tickets:      &fakeTicketService{},
 	}
 
-	_, err = service.CreateIntent(context.Background(), domain.CreateSessionIntentRequest{
+	_, err = service.CreateSession(context.Background(), domain.CreateSessionRequest{
 		ArchitectKey: "litho",
 		SessionType:  domain.SessionTypeArchitect,
 	})
@@ -1006,15 +1068,15 @@ func TestCreateIntentReloadsArchitectsFile(t *testing.T) {
 		},
 	})
 
-	intent, err := service.CreateIntent(context.Background(), domain.CreateSessionIntentRequest{
+	session, err := service.CreateSession(context.Background(), domain.CreateSessionRequest{
 		ArchitectKey: "litho",
 		SessionType:  domain.SessionTypeArchitect,
 	})
 	if err != nil {
-		t.Fatalf("CreateIntent after reload failed: %v", err)
+		t.Fatalf("CreateSession after reload failed: %v", err)
 	}
-	if intent.ArchitectKey != "litho" || intent.SessionType != domain.SessionTypeArchitect {
-		t.Fatalf("unexpected intent after reload: %#v", intent)
+	if session.ArchitectKey != "litho" || session.SessionType != domain.SessionTypeArchitect {
+		t.Fatalf("unexpected session after reload: %#v", session)
 	}
 }
 
@@ -1057,8 +1119,8 @@ func TestCreateRunReloadsTabsFileForSessionLayouts(t *testing.T) {
 			}
 
 			repo := newFakeSessionRepository()
-			repo.createdIntent = domain.SessionIntent{
-				ID:           "intent-1",
+			repo.createdSession = domain.Session{
+				ID:           "session-1",
 				ArchitectKey: "hiveryn",
 				SessionType:  tt.sessionType,
 				ContextID:    tt.contextID,
@@ -1068,6 +1130,7 @@ func TestCreateRunReloadsTabsFileForSessionLayouts(t *testing.T) {
 			adapter := &fakeAdapter{}
 			terminal := &fakeTerminalManager{}
 			service := &Service{
+				intents:      newIntentStore(),
 				logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 				cfg:          cfg,
 				configSource: source,
@@ -1089,11 +1152,11 @@ func TestCreateRunReloadsTabsFileForSessionLayouts(t *testing.T) {
 				string(tt.sessionType): {{Type: "terminal", Command: tt.updatedCmd}},
 			})
 
-			if _, err := service.CreateRun(context.Background(), "intent-1", domain.CreateSessionRunRequest{ProfileName: "codex"}); err != nil {
+			if _, err := service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{ProfileName: "codex"}); err != nil {
 				t.Fatalf("CreateRun failed: %v", err)
 			}
 
-			tabs, err := service.ListSessionTabs(context.Background(), "intent-1")
+			tabs, err := service.ListSessionTabs(context.Background(), "session-1")
 			if err != nil {
 				t.Fatalf("ListSessionTabs failed: %v", err)
 			}
@@ -1112,8 +1175,8 @@ func TestCreateTerminalUsesCurrentRunWorkdirAndConfiguredShell(t *testing.T) {
 
 	repoPath := t.TempDir()
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-1",
+	repo.createdSession = domain.Session{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeTicket,
 		ContextID:    "ticket-1",
@@ -1127,6 +1190,7 @@ func TestCreateTerminalUsesCurrentRunWorkdirAndConfiguredShell(t *testing.T) {
 	}
 	terminal := &fakeTerminalManager{}
 	service := &Service{
+		intents:        newIntentStore(),
 		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg:            config.Config{Shell: "/bin/zsh"},
 		repo:           repo,
@@ -1136,7 +1200,7 @@ func TestCreateTerminalUsesCurrentRunWorkdirAndConfiguredShell(t *testing.T) {
 		terminalStates: map[string]sessionTerminalState{},
 	}
 
-	info, err := service.CreateTerminal(context.Background(), "intent-1", domain.CreateTerminalParams{Placement: domain.TerminalPlacementTab})
+	info, err := service.CreateTerminal(context.Background(), "session-1", domain.CreateTerminalParams{Placement: domain.TerminalPlacementTab})
 	if err != nil {
 		t.Fatalf("CreateTerminal failed: %v", err)
 	}
@@ -1146,7 +1210,7 @@ func TestCreateTerminalUsesCurrentRunWorkdirAndConfiguredShell(t *testing.T) {
 	if got := terminal.firstStartSpec(); got.Command != "/bin/zsh" || got.Workdir != repoPath {
 		t.Fatalf("unexpected terminal start spec %#v", got)
 	}
-	if tabs := service.terminalStates["intent-1"].tabs; len(tabs) != 1 || tabs[0].tab.Placement != domain.TerminalPlacementTab {
+	if tabs := service.terminalStates["session-1"].tabs; len(tabs) != 1 || tabs[0].tab.Placement != domain.TerminalPlacementTab {
 		t.Fatalf("expected created tab placement to be stored, got %#v", tabs)
 	}
 }
@@ -1156,8 +1220,8 @@ func TestCreateTerminalRejectsMissingPlacement(t *testing.T) {
 
 	repoPath := t.TempDir()
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-1",
+	repo.createdSession = domain.Session{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeTicket,
 		ContextID:    "ticket-1",
@@ -1170,6 +1234,7 @@ func TestCreateTerminalRejectsMissingPlacement(t *testing.T) {
 		},
 	}
 	service := &Service{
+		intents:        newIntentStore(),
 		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		repo:           repo,
 		terminal:       &fakeTerminalManager{},
@@ -1178,7 +1243,7 @@ func TestCreateTerminalRejectsMissingPlacement(t *testing.T) {
 		terminalStates: map[string]sessionTerminalState{},
 	}
 
-	_, err := service.CreateTerminal(context.Background(), "intent-1", domain.CreateTerminalParams{})
+	_, err := service.CreateTerminal(context.Background(), "session-1", domain.CreateTerminalParams{})
 	if err == nil {
 		t.Fatal("expected missing placement to be rejected")
 	}
@@ -1193,8 +1258,8 @@ func TestCreateTerminalRejectsSecondSplit(t *testing.T) {
 
 	repoPath := t.TempDir()
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-1",
+	repo.createdSession = domain.Session{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeTicket,
 		ContextID:    "ticket-1",
@@ -1207,13 +1272,14 @@ func TestCreateTerminalRejectsSecondSplit(t *testing.T) {
 		},
 	}
 	service := &Service{
+		intents:       newIntentStore(),
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		repo:          repo,
 		terminal:      &fakeTerminalManager{},
 		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
 		bridgeCancels: map[string]func(){},
 		terminalStates: map[string]sessionTerminalState{
-			"intent-1": {
+			"session-1": {
 				tabs: []sessionTabState{
 					{tab: domain.SessionTab{Type: "kanban"}},
 					{tab: domain.SessionTab{Type: "terminal", ID: "term-split", Placement: domain.TerminalPlacementSplit, BaseTabID: "kanban"}},
@@ -1222,7 +1288,7 @@ func TestCreateTerminalRejectsSecondSplit(t *testing.T) {
 		},
 	}
 
-	_, err := service.CreateTerminal(context.Background(), "intent-1", domain.CreateTerminalParams{Placement: domain.TerminalPlacementSplit, BaseTabID: "kanban"})
+	_, err := service.CreateTerminal(context.Background(), "session-1", domain.CreateTerminalParams{Placement: domain.TerminalPlacementSplit, BaseTabID: "kanban"})
 	if err == nil {
 		t.Fatal("expected duplicate split terminal to be rejected")
 	}
@@ -1237,8 +1303,8 @@ func TestCreateTerminalAllowsSplitOnDifferentBaseTab(t *testing.T) {
 
 	repoPath := t.TempDir()
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-1",
+	repo.createdSession = domain.Session{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeTicket,
 		ContextID:    "ticket-1",
@@ -1252,13 +1318,14 @@ func TestCreateTerminalAllowsSplitOnDifferentBaseTab(t *testing.T) {
 	}
 	terminal := &fakeTerminalManager{}
 	service := &Service{
+		intents:       newIntentStore(),
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		repo:          repo,
 		terminal:      terminal,
 		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
 		bridgeCancels: map[string]func(){},
 		terminalStates: map[string]sessionTerminalState{
-			"intent-1": {
+			"session-1": {
 				tabs: []sessionTabState{
 					{tab: domain.SessionTab{Type: "kanban"}},
 					{tab: domain.SessionTab{Type: "event-log"}},
@@ -1268,14 +1335,14 @@ func TestCreateTerminalAllowsSplitOnDifferentBaseTab(t *testing.T) {
 		},
 	}
 
-	info, err := service.CreateTerminal(context.Background(), "intent-1", domain.CreateTerminalParams{Placement: domain.TerminalPlacementSplit, BaseTabID: "event-log"})
+	info, err := service.CreateTerminal(context.Background(), "session-1", domain.CreateTerminalParams{Placement: domain.TerminalPlacementSplit, BaseTabID: "event-log"})
 	if err != nil {
 		t.Fatalf("CreateTerminal failed: %v", err)
 	}
 	if info.TerminalID == "" {
 		t.Fatalf("expected created terminal info, got %#v", info)
 	}
-	tabs := service.terminalStates["intent-1"].tabs
+	tabs := service.terminalStates["session-1"].tabs
 	created := tabs[len(tabs)-1].tab
 	if created.Placement != domain.TerminalPlacementSplit || created.BaseTabID != "event-log" {
 		t.Fatalf("expected event-log split placement, got %#v", created)
@@ -1290,8 +1357,8 @@ func TestCreateTerminalRejectsSplitWithoutBaseTabID(t *testing.T) {
 
 	repoPath := t.TempDir()
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-1",
+	repo.createdSession = domain.Session{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeTicket,
 		ContextID:    "ticket-1",
@@ -1304,19 +1371,20 @@ func TestCreateTerminalRejectsSplitWithoutBaseTabID(t *testing.T) {
 		},
 	}
 	service := &Service{
+		intents:       newIntentStore(),
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		repo:          repo,
 		terminal:      &fakeTerminalManager{},
 		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
 		bridgeCancels: map[string]func(){},
 		terminalStates: map[string]sessionTerminalState{
-			"intent-1": {
+			"session-1": {
 				tabs: []sessionTabState{{tab: domain.SessionTab{Type: "kanban"}}},
 			},
 		},
 	}
 
-	_, err := service.CreateTerminal(context.Background(), "intent-1", domain.CreateTerminalParams{Placement: domain.TerminalPlacementSplit})
+	_, err := service.CreateTerminal(context.Background(), "session-1", domain.CreateTerminalParams{Placement: domain.TerminalPlacementSplit})
 	if err == nil {
 		t.Fatal("expected split without base tab id to be rejected")
 	}
@@ -1330,17 +1398,18 @@ func TestKillTerminalRejectsMainTerminalID(t *testing.T) {
 	t.Parallel()
 
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{ID: "intent-1"}
+	repo.createdSession = domain.Session{ID: "session-1"}
 	service := &Service{
+		intents:        newIntentStore(),
 		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		repo:           repo,
 		terminal:       &fakeTerminalManager{},
 		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
 		bridgeCancels:  map[string]func(){},
-		terminalStates: map[string]sessionTerminalState{"intent-1": {mainTerminalID: "term-main-1"}},
+		terminalStates: map[string]sessionTerminalState{"session-1": {mainTerminalID: "term-main-1"}},
 	}
 
-	err := service.KillTerminal(context.Background(), "intent-1", "term-main-1")
+	err := service.KillTerminal(context.Background(), "session-1", "term-main-1")
 	if err == nil {
 		t.Fatal("expected main terminal kill to be rejected")
 	}
@@ -1351,14 +1420,15 @@ func TestKillTerminalRejectsMainTerminalID(t *testing.T) {
 
 func newRunningBrowserTabTestService() (*Service, *fakeSessionRepository) {
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{
-		ID: "intent-1",
+	repo.createdSession = domain.Session{
+		ID: "session-1",
 		CurrentRun: &domain.SessionRun{
 			ID:     "run-1",
 			Status: domain.SessionRunStatusRunning,
 		},
 	}
 	service := &Service{
+		intents:        newIntentStore(),
 		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		repo:           repo,
 		terminal:       &fakeTerminalManager{},
@@ -1374,15 +1444,15 @@ func TestPreviewBrowserTabCreatesNewTab(t *testing.T) {
 
 	service, repo := newRunningBrowserTabTestService()
 
-	info, err := service.PreviewBrowserTab(context.Background(), "intent-1", domain.PreviewBrowserTabParams{Target: "https://example.com"})
+	info, err := service.PreviewBrowserTab(context.Background(), "session-1", domain.PreviewBrowserTabParams{Target: "https://example.com"})
 	if err != nil {
 		t.Fatalf("PreviewBrowserTab failed: %v", err)
 	}
-	if info.TabID == "" || info.Target != "https://example.com" || info.SessionID != "intent-1" {
+	if info.TabID == "" || info.Target != "https://example.com" || info.SessionID != "session-1" {
 		t.Fatalf("unexpected info: %#v", info)
 	}
 
-	tabs := service.terminalStates["intent-1"].tabs
+	tabs := service.terminalStates["session-1"].tabs
 	if len(tabs) != 1 || tabs[0].tab.Type != "browser" || tabs[0].tab.ID != info.TabID || tabs[0].tab.Target != "https://example.com" {
 		t.Fatalf("unexpected tabs: %#v", tabs)
 	}
@@ -1397,13 +1467,13 @@ func TestPreviewBrowserTabNavigatesExistingTab(t *testing.T) {
 	t.Parallel()
 
 	service, _ := newRunningBrowserTabTestService()
-	service.terminalStates["intent-1"] = sessionTerminalState{
+	service.terminalStates["session-1"] = sessionTerminalState{
 		tabs: []sessionTabState{
 			{tab: domain.SessionTab{Type: "browser", ID: "tab-1", Target: "https://old.example.com"}},
 		},
 	}
 
-	info, err := service.PreviewBrowserTab(context.Background(), "intent-1", domain.PreviewBrowserTabParams{Target: "https://new.example.com", TabID: "tab-1"})
+	info, err := service.PreviewBrowserTab(context.Background(), "session-1", domain.PreviewBrowserTabParams{Target: "https://new.example.com", TabID: "tab-1"})
 	if err != nil {
 		t.Fatalf("PreviewBrowserTab failed: %v", err)
 	}
@@ -1411,7 +1481,7 @@ func TestPreviewBrowserTabNavigatesExistingTab(t *testing.T) {
 		t.Fatalf("unexpected info: %#v", info)
 	}
 
-	tabs := service.terminalStates["intent-1"].tabs
+	tabs := service.terminalStates["session-1"].tabs
 	if len(tabs) != 1 || tabs[0].tab.Target != "https://new.example.com" {
 		t.Fatalf("unexpected tabs after navigate: %#v", tabs)
 	}
@@ -1422,7 +1492,7 @@ func TestPreviewBrowserTabRejectsInvalidTarget(t *testing.T) {
 
 	service, _ := newRunningBrowserTabTestService()
 
-	_, err := service.PreviewBrowserTab(context.Background(), "intent-1", domain.PreviewBrowserTabParams{Target: "ftp://example.com"})
+	_, err := service.PreviewBrowserTab(context.Background(), "session-1", domain.PreviewBrowserTabParams{Target: "ftp://example.com"})
 	if _, ok := err.(*domain.ValidationError); !ok {
 		t.Fatalf("expected validation error, got %T %#v", err, err)
 	}
@@ -1433,7 +1503,7 @@ func TestPreviewBrowserTabUnknownTabIDNotFound(t *testing.T) {
 
 	service, _ := newRunningBrowserTabTestService()
 
-	_, err := service.PreviewBrowserTab(context.Background(), "intent-1", domain.PreviewBrowserTabParams{Target: "https://example.com", TabID: "missing"})
+	_, err := service.PreviewBrowserTab(context.Background(), "session-1", domain.PreviewBrowserTabParams{Target: "https://example.com", TabID: "missing"})
 	if _, ok := err.(*domain.NotFoundError); !ok {
 		t.Fatalf("expected not found error, got %T %#v", err, err)
 	}
@@ -1443,16 +1513,16 @@ func TestCloseBrowserTabRemovesTab(t *testing.T) {
 	t.Parallel()
 
 	service, repo := newRunningBrowserTabTestService()
-	service.terminalStates["intent-1"] = sessionTerminalState{
+	service.terminalStates["session-1"] = sessionTerminalState{
 		tabs: []sessionTabState{
 			{tab: domain.SessionTab{Type: "browser", ID: "tab-1", Target: "https://example.com"}},
 		},
 	}
 
-	if err := service.CloseBrowserTab(context.Background(), "intent-1", "tab-1"); err != nil {
+	if err := service.CloseBrowserTab(context.Background(), "session-1", "tab-1"); err != nil {
 		t.Fatalf("CloseBrowserTab failed: %v", err)
 	}
-	if tabs := service.terminalStates["intent-1"].tabs; len(tabs) != 0 {
+	if tabs := service.terminalStates["session-1"].tabs; len(tabs) != 0 {
 		t.Fatalf("expected tab removed, got %#v", tabs)
 	}
 	event := repo.lastAppendedEvent(t)
@@ -1466,18 +1536,18 @@ func TestCloseBrowserTabUnknownIDNotFound(t *testing.T) {
 
 	service, _ := newRunningBrowserTabTestService()
 
-	err := service.CloseBrowserTab(context.Background(), "intent-1", "missing")
+	err := service.CloseBrowserTab(context.Background(), "session-1", "missing")
 	if _, ok := err.(*domain.NotFoundError); !ok {
 		t.Fatalf("expected not found error, got %T %#v", err, err)
 	}
 }
 
-func TestListIntentsHydratesMainTerminalID(t *testing.T) {
+func TestListSessionsHydratesMainTerminalID(t *testing.T) {
 	t.Parallel()
 
 	repo := newFakeSessionRepository()
-	repo.listedIntents = []domain.SessionIntent{{
-		ID:           "intent-1",
+	repo.listedSessions = []domain.Session{{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-13-1500",
@@ -1486,17 +1556,18 @@ func TestListIntentsHydratesMainTerminalID(t *testing.T) {
 		CurrentRun:   &domain.SessionRun{ID: "run-1", Status: domain.SessionRunStatusRunning},
 	}}
 	service := &Service{
+		intents:        newIntentStore(),
 		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		repo:           repo,
-		terminalStates: map[string]sessionTerminalState{"intent-1": {mainTerminalID: "term-main-1"}},
+		terminalStates: map[string]sessionTerminalState{"session-1": {mainTerminalID: "term-main-1"}},
 	}
 
-	intents, err := service.ListIntents(context.Background())
+	sessions, err := service.ListSessions(context.Background())
 	if err != nil {
-		t.Fatalf("ListIntents failed: %v", err)
+		t.Fatalf("ListSessions failed: %v", err)
 	}
-	if len(intents) != 1 || intents[0].CurrentRun == nil || intents[0].CurrentRun.MainTerminalID != "term-main-1" {
-		t.Fatalf("expected hydrated main terminal id, got %#v", intents)
+	if len(sessions) != 1 || sessions[0].CurrentRun == nil || sessions[0].CurrentRun.MainTerminalID != "term-main-1" {
+		t.Fatalf("expected hydrated main terminal id, got %#v", sessions)
 	}
 }
 
@@ -1505,8 +1576,8 @@ func TestHandleTerminalExitResumesMainTerminal(t *testing.T) {
 
 	repo := newFakeSessionRepository()
 	started := time.Date(2026, 5, 13, 15, 0, 0, 0, time.UTC)
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-1",
+	repo.createdSession = domain.Session{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-13-1500",
@@ -1527,9 +1598,10 @@ func TestHandleTerminalExitResumesMainTerminal(t *testing.T) {
 	terminal := &fakeTerminalManager{}
 	oldBridgeCancelled := false
 	service := &Service{
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg:    testRuntimeConfig(t),
-		repo:   repo,
+		intents: newIntentStore(),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:     testRuntimeConfig(t),
+		repo:    repo,
 		receiver: ingest.NewReceiver(
 			adapter,
 		),
@@ -1538,9 +1610,9 @@ func TestHandleTerminalExitResumesMainTerminal(t *testing.T) {
 		},
 		terminal:      terminal,
 		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
-		bridgeCancels: map[string]func(){"intent-1": func() { oldBridgeCancelled = true }},
+		bridgeCancels: map[string]func(){"session-1": func() { oldBridgeCancelled = true }},
 		terminalStates: map[string]sessionTerminalState{
-			"intent-1": {
+			"session-1": {
 				mainTerminalID: "term-main-old",
 				tabs: []sessionTabState{{
 					tab: domain.SessionTab{Type: "terminal", ID: "term-extra", Command: "yazi", Status: "running"},
@@ -1549,7 +1621,7 @@ func TestHandleTerminalExitResumesMainTerminal(t *testing.T) {
 		},
 	}
 
-	service.handleTerminalExit(terminalExit{SessionID: "intent-1", TerminalID: "term-main-old", Err: errors.New("process exited")})
+	service.handleTerminalExit(terminalExit{SessionID: "session-1", TerminalID: "term-main-old", Err: errors.New("process exited")})
 
 	if !oldBridgeCancelled {
 		t.Fatal("expected previous receiver bridge to be cancelled")
@@ -1558,7 +1630,7 @@ func TestHandleTerminalExitResumesMainTerminal(t *testing.T) {
 	if !adapter.launchRequest.Resume || adapter.launchRequest.ResumeID != "native-1" {
 		t.Fatalf("expected resume launch request, got %#v", adapter.launchRequest)
 	}
-	state := service.terminalStates["intent-1"]
+	state := service.terminalStates["session-1"]
 	if state.mainTerminalID != startSpec.TerminalID {
 		t.Fatalf("expected terminal state to point at resumed terminal %q, got %#v", startSpec.TerminalID, state)
 	}
@@ -1575,8 +1647,8 @@ func TestHandleReceiverEventUpdatesCurrentRun(t *testing.T) {
 	t.Parallel()
 
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-1",
+	repo.createdSession = domain.Session{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-13-1500",
@@ -1585,12 +1657,13 @@ func TestHandleReceiverEventUpdatesCurrentRun(t *testing.T) {
 		CurrentRun:   &domain.SessionRun{ID: "run-1", Status: domain.SessionRunStatusRunning},
 	}
 	service := &Service{
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		repo:   repo,
+		intents: newIntentStore(),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repo:    repo,
 	}
 
 	service.handleReceiverEvent(agentruntime.Event{
-		ID:       "intent-1",
+		ID:       "session-1",
 		Status:   agentruntime.StatusWorking,
 		NativeID: "native-1",
 		Message:  "hello",
@@ -1598,7 +1671,7 @@ func TestHandleReceiverEventUpdatesCurrentRun(t *testing.T) {
 	})
 
 	event := repo.lastAppendedEvent(t)
-	if event.SessionIntentID != "intent-1" || event.RunID != "run-1" {
+	if event.SessionID != "session-1" || event.RunID != "run-1" {
 		t.Fatalf("unexpected appended event %#v", event)
 	}
 	if repo.updatedRunNativeID != "run-1" || repo.updatedRunNative != "native-1" {
@@ -1610,8 +1683,8 @@ func TestHandleReceiverEventEmitsAgentStatusOnTransition(t *testing.T) {
 	t.Parallel()
 
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-1",
+	repo.createdSession = domain.Session{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-13-1500",
@@ -1619,23 +1692,24 @@ func TestHandleReceiverEventEmitsAgentStatusOnTransition(t *testing.T) {
 		CurrentRun:   &domain.SessionRun{ID: "run-1", Status: domain.SessionRunStatusRunning},
 	}
 	service := &Service{
+		intents:      newIntentStore(),
 		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		repo:         repo,
 		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
 	}
 
-	sub, err := service.SubscribeSessionEvents(context.Background(), "intent-1")
+	sub, err := service.SubscribeSessionEvents(context.Background(), "session-1")
 	if err != nil {
 		t.Fatalf("subscribe session events: %v", err)
 	}
 	defer sub.Close()
 
 	// working -> active is a transition from the zero-value status, so it emits.
-	service.handleReceiverEvent(agentruntime.Event{ID: "intent-1", Status: agentruntime.StatusWorking, At: time.Now().UTC()})
+	service.handleReceiverEvent(agentruntime.Event{ID: "session-1", Status: agentruntime.StatusWorking, At: time.Now().UTC()})
 	// A second working event maps to the same "active" status: no emit.
-	service.handleReceiverEvent(agentruntime.Event{ID: "intent-1", Status: agentruntime.StatusWorking, At: time.Now().UTC()})
+	service.handleReceiverEvent(agentruntime.Event{ID: "session-1", Status: agentruntime.StatusWorking, At: time.Now().UTC()})
 	// awaiting_input -> waiting is a transition: emit.
-	service.handleReceiverEvent(agentruntime.Event{ID: "intent-1", Status: agentruntime.StatusAwaitingInput, At: time.Now().UTC()})
+	service.handleReceiverEvent(agentruntime.Event{ID: "session-1", Status: agentruntime.StatusAwaitingInput, At: time.Now().UTC()})
 
 	want := strings.Join([]string{domain.AgentStatusActive, domain.AgentStatusWaiting}, ",")
 
@@ -1670,8 +1744,8 @@ func TestCreateRunAddsMCPServer(t *testing.T) {
 	t.Parallel()
 
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-1",
+	repo.createdSession = domain.Session{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-13-1500",
@@ -1681,9 +1755,10 @@ func TestCreateRunAddsMCPServer(t *testing.T) {
 	}
 	adapter := &fakeAdapter{}
 	service := &Service{
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg:    testRuntimeConfig(t),
-		repo:   repo,
+		intents: newIntentStore(),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:     testRuntimeConfig(t),
+		repo:    repo,
 		receiver: ingest.NewReceiver(
 			adapter,
 		),
@@ -1697,19 +1772,19 @@ func TestCreateRunAddsMCPServer(t *testing.T) {
 		executablePath: func() (string, error) { return "/tmp/hiverynd", nil },
 	}
 
-	if _, err := service.CreateRun(context.Background(), "intent-1", domain.CreateSessionRunRequest{ProfileName: "codex"}); err != nil {
+	if _, err := service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{ProfileName: "codex"}); err != nil {
 		t.Fatalf("CreateRun failed: %v", err)
 	}
 
-	assertMCPServer(t, adapter.launchRequest.MCPServers, domain.SessionTypeArchitect, "intent-1")
+	assertMCPServer(t, adapter.launchRequest.MCPServers, domain.SessionTypeArchitect, "session-1")
 }
 
 func TestCreateRunMergesVariantMCPServers(t *testing.T) {
 	t.Parallel()
 
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-1",
+	repo.createdSession = domain.Session{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-13-1500",
@@ -1719,7 +1794,8 @@ func TestCreateRunMergesVariantMCPServers(t *testing.T) {
 	}
 	adapter := &fakeAdapter{}
 	service := &Service{
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		intents: newIntentStore(),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg: config.Config{
 			Variants: map[string]config.VariantConfig{
 				"codex-sentrux": {
@@ -1744,7 +1820,7 @@ func TestCreateRunMergesVariantMCPServers(t *testing.T) {
 		executablePath: func() (string, error) { return "/tmp/hiverynd", nil },
 	}
 
-	if _, err := service.CreateRun(context.Background(), "intent-1", domain.CreateSessionRunRequest{ProfileName: "codex-sentrux"}); err != nil {
+	if _, err := service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{ProfileName: "codex-sentrux"}); err != nil {
 		t.Fatalf("CreateRun failed: %v", err)
 	}
 
@@ -1810,8 +1886,8 @@ func TestCreateRunOpenCodeArchitectDefinesNamedAgent(t *testing.T) {
 	t.Parallel()
 
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-1",
+	repo.createdSession = domain.Session{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-13-1500",
@@ -1821,9 +1897,10 @@ func TestCreateRunOpenCodeArchitectDefinesNamedAgent(t *testing.T) {
 	}
 	adapter := &fakeAdapter{}
 	service := &Service{
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg:    testRuntimeConfig(t),
-		repo:   repo,
+		intents: newIntentStore(),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:     testRuntimeConfig(t),
+		repo:    repo,
 		receiver: ingest.NewReceiver(
 			adapter,
 		),
@@ -1835,7 +1912,7 @@ func TestCreateRunOpenCodeArchitectDefinesNamedAgent(t *testing.T) {
 		bridgeCancels: map[string]func(){},
 	}
 
-	if _, err := service.CreateRun(context.Background(), "intent-1", domain.CreateSessionRunRequest{ProfileName: "opencode"}); err != nil {
+	if _, err := service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{ProfileName: "opencode"}); err != nil {
 		t.Fatalf("CreateRun failed: %v", err)
 	}
 
@@ -1846,8 +1923,8 @@ func TestCreateRunOpenCodeLaunchSpecOmitNilAgentPermission(t *testing.T) {
 	t.Parallel()
 
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{
-		ID:           "intent-1",
+	repo.createdSession = domain.Session{
+		ID:           "session-1",
 		ArchitectKey: "hiveryn",
 		SessionType:  domain.SessionTypeArchitect,
 		ContextID:    "2026-05-13-1500",
@@ -1858,9 +1935,10 @@ func TestCreateRunOpenCodeLaunchSpecOmitNilAgentPermission(t *testing.T) {
 	adapter := &fakePrepareLaunchAdapter{delegate: aropencode.New(aropencode.DefaultOptions())}
 	terminal := &fakeTerminalManager{}
 	service := &Service{
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg:    testRuntimeConfig(t),
-		repo:   repo,
+		intents: newIntentStore(),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:     testRuntimeConfig(t),
+		repo:    repo,
 		receiver: ingest.NewReceiver(
 			adapter,
 		),
@@ -1873,7 +1951,7 @@ func TestCreateRunOpenCodeLaunchSpecOmitNilAgentPermission(t *testing.T) {
 		baseURL:       "http://127.0.0.1:4200",
 	}
 
-	if _, err := service.CreateRun(context.Background(), "intent-1", domain.CreateSessionRunRequest{ProfileName: "opencode"}); err != nil {
+	if _, err := service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{ProfileName: "opencode"}); err != nil {
 		t.Fatalf("CreateRun failed: %v", err)
 	}
 
@@ -1893,12 +1971,13 @@ func TestCreateRunOpenCodeFailsWhenProfileAlreadySetsAgentFlag(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	cfg.Variants["opencode"] = config.VariantConfig{Agent: "opencode", Args: []string{"--agent", "custom"}}
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{ID: "intent-1", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeArchitect, ContextID: "2026-05-13-1500", Prompt: "kickoff", Workdir: t.TempDir(), Instructions: "system"}
+	repo.createdSession = domain.Session{ID: "session-1", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeArchitect, ContextID: "2026-05-13-1500", Prompt: "kickoff", Workdir: t.TempDir(), Instructions: "system"}
 	adapter := &fakeAdapter{}
 	service := &Service{
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg:    cfg,
-		repo:   repo,
+		intents: newIntentStore(),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:     cfg,
+		repo:    repo,
 		receiver: ingest.NewReceiver(
 			adapter,
 		),
@@ -1910,7 +1989,7 @@ func TestCreateRunOpenCodeFailsWhenProfileAlreadySetsAgentFlag(t *testing.T) {
 		bridgeCancels: map[string]func(){},
 	}
 
-	_, err := service.CreateRun(context.Background(), "intent-1", domain.CreateSessionRunRequest{ProfileName: "opencode"})
+	_, err := service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{ProfileName: "opencode"})
 	if err == nil {
 		t.Fatal("expected architect OpenCode launch to fail when --agent is preset")
 	}
@@ -1932,9 +2011,10 @@ func TestCreateRunOpenCodeTicketDoesNotDefineNamedAgent(t *testing.T) {
 	}
 	created := time.Date(2026, 5, 13, 14, 30, 0, 0, time.UTC)
 	repo := newFakeSessionRepository()
-	repo.createdIntent = domain.SessionIntent{ID: "intent-1", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeTicket, ContextID: "ticket-1", Prompt: "kickoff", Workdir: repoPath}
+	repo.createdSession = domain.Session{ID: "session-1", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeTicket, ContextID: "ticket-1", Prompt: "kickoff", Workdir: repoPath}
 	adapter := &fakeAdapter{}
 	service := &Service{
+		intents: newIntentStore(),
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg:     testRuntimeConfigWithPaths(architectPath, repoPath),
 		repo:    repo,
@@ -1950,7 +2030,7 @@ func TestCreateRunOpenCodeTicketDoesNotDefineNamedAgent(t *testing.T) {
 		bridgeCancels: map[string]func(){},
 	}
 
-	if _, err := service.CreateRun(context.Background(), "intent-1", domain.CreateSessionRunRequest{ProfileName: "opencode"}); err != nil {
+	if _, err := service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{ProfileName: "opencode"}); err != nil {
 		t.Fatalf("CreateRun failed: %v", err)
 	}
 	if hasArgFlag(adapter.launchRequest.Args, "--agent") {
@@ -2175,9 +2255,12 @@ func (f *fakeTerminalManager) ListBySession(sessionID string) []domain.TerminalI
 func (f *fakeTerminalManager) Shutdown(context.Context) error { return nil }
 
 type fakeSessionRepository struct {
-	createdIntent      domain.SessionIntent
+	// The intent path is genuinely concurrent (an owner goroutine plus N
+	// waiters), so the fake has to be safe to touch from several goroutines.
+	mu                 sync.Mutex
+	createdSession     domain.Session
 	createdRun         domain.SessionRun
-	listedIntents      []domain.SessionIntent
+	listedSessions     []domain.Session
 	failedRunID        string
 	failedRunReason    domain.SessionRunFailureReason
 	completedRunID     string
@@ -2191,39 +2274,39 @@ type fakeSessionRepository struct {
 
 func newFakeSessionRepository() *fakeSessionRepository { return &fakeSessionRepository{} }
 
-func (f *fakeSessionRepository) CreateIntent(_ context.Context, params domain.CreateSessionIntentParams) (domain.SessionIntent, error) {
-	f.createdIntent = domain.SessionIntent{ID: params.ID, ArchitectKey: params.ArchitectKey, SessionType: params.SessionType, ContextID: params.ContextID, Prompt: params.Prompt, Workdir: params.Workdir, Instructions: params.Instructions, CreatedBy: params.CreatedBy}
-	if f.createdIntent.ID == "" {
-		f.createdIntent.ID = "intent-created"
+func (f *fakeSessionRepository) CreateSession(_ context.Context, params domain.CreateSessionParams) (domain.Session, error) {
+	f.createdSession = domain.Session{ID: params.ID, ArchitectKey: params.ArchitectKey, SessionType: params.SessionType, ContextID: params.ContextID, Prompt: params.Prompt, Workdir: params.Workdir, Instructions: params.Instructions, CreatedBy: params.CreatedBy}
+	if f.createdSession.ID == "" {
+		f.createdSession.ID = "session-created"
 	}
-	return f.createdIntent, nil
+	return f.createdSession, nil
 }
 
-func (f *fakeSessionRepository) GetIntent(context.Context, string) (domain.SessionIntent, error) {
-	if f.createdIntent.ID != "" {
-		return cloneIntent(f.createdIntent), nil
+func (f *fakeSessionRepository) GetSession(context.Context, string) (domain.Session, error) {
+	if f.createdSession.ID != "" {
+		return cloneSession(f.createdSession), nil
 	}
-	if len(f.listedIntents) > 0 {
-		return cloneIntent(f.listedIntents[0]), nil
+	if len(f.listedSessions) > 0 {
+		return cloneSession(f.listedSessions[0]), nil
 	}
-	return domain.SessionIntent{}, &domain.NotFoundError{Resource: "session_intent", ID: "missing"}
+	return domain.Session{}, &domain.NotFoundError{Resource: "session", ID: "missing"}
 }
 
-func (f *fakeSessionRepository) ListIntents(context.Context) ([]domain.SessionIntent, error) {
-	if len(f.listedIntents) == 0 {
-		if f.createdIntent.ID == "" {
+func (f *fakeSessionRepository) ListSessions(context.Context) ([]domain.Session, error) {
+	if len(f.listedSessions) == 0 {
+		if f.createdSession.ID == "" {
 			return nil, nil
 		}
-		return []domain.SessionIntent{cloneIntent(f.createdIntent)}, nil
+		return []domain.Session{cloneSession(f.createdSession)}, nil
 	}
-	intents := make([]domain.SessionIntent, len(f.listedIntents))
-	for i := range f.listedIntents {
-		intents[i] = cloneIntent(f.listedIntents[i])
+	sessions := make([]domain.Session, len(f.listedSessions))
+	for i := range f.listedSessions {
+		sessions[i] = cloneSession(f.listedSessions[i])
 	}
-	return intents, nil
+	return sessions, nil
 }
 
-func (f *fakeSessionRepository) DeleteIntent(context.Context, string) error {
+func (f *fakeSessionRepository) DeleteSession(context.Context, string) error {
 	if f.operations != nil {
 		*f.operations = append(*f.operations, "delete")
 	}
@@ -2235,7 +2318,7 @@ func (f *fakeSessionRepository) CreateRun(_ context.Context, params domain.Creat
 	snapshot := params.ProfileSnapshot
 	f.createdRun = domain.SessionRun{
 		ID:              params.ID,
-		SessionIntentID: params.SessionIntentID,
+		SessionID:       params.SessionID,
 		Status:          domain.SessionRunStatusRunning,
 		ProfileName:     params.ProfileName,
 		ProfileSnapshot: &snapshot,
@@ -2246,7 +2329,7 @@ func (f *fakeSessionRepository) CreateRun(_ context.Context, params domain.Creat
 	if f.createdRun.ID == "" {
 		f.createdRun.ID = "run-created"
 	}
-	f.createdIntent.CurrentRun = &f.createdRun
+	f.createdSession.CurrentRun = &f.createdRun
 	return f.createdRun, nil
 }
 
@@ -2255,10 +2338,10 @@ func (f *fakeSessionRepository) GetRun(context.Context, string) (domain.SessionR
 }
 
 func (f *fakeSessionRepository) GetCurrentRun(context.Context, string) (*domain.SessionRun, error) {
-	if f.createdIntent.CurrentRun == nil {
+	if f.createdSession.CurrentRun == nil {
 		return nil, nil
 	}
-	run := *f.createdIntent.CurrentRun
+	run := *f.createdSession.CurrentRun
 	return &run, nil
 }
 
@@ -2267,8 +2350,8 @@ func (f *fakeSessionRepository) DeleteRun(_ context.Context, id string) error {
 		*f.operations = append(*f.operations, "delete_run")
 	}
 	f.deletedRunID = id
-	if f.createdIntent.CurrentRun != nil && f.createdIntent.CurrentRun.ID == id {
-		f.createdIntent.CurrentRun = nil
+	if f.createdSession.CurrentRun != nil && f.createdSession.CurrentRun.ID == id {
+		f.createdSession.CurrentRun = nil
 	}
 	return nil
 }
@@ -2278,8 +2361,8 @@ func (f *fakeSessionRepository) MarkRunCompleted(_ context.Context, id string) e
 		*f.operations = append(*f.operations, "complete")
 	}
 	f.completedRunID = id
-	if f.createdIntent.CurrentRun != nil && f.createdIntent.CurrentRun.ID == id {
-		f.createdIntent.CurrentRun.Status = domain.SessionRunStatusCompleted
+	if f.createdSession.CurrentRun != nil && f.createdSession.CurrentRun.ID == id {
+		f.createdSession.CurrentRun.Status = domain.SessionRunStatusCompleted
 	}
 	return nil
 }
@@ -2287,9 +2370,9 @@ func (f *fakeSessionRepository) MarkRunCompleted(_ context.Context, id string) e
 func (f *fakeSessionRepository) MarkRunFailed(_ context.Context, id string, reason domain.SessionRunFailureReason) error {
 	f.failedRunID = id
 	f.failedRunReason = reason
-	if f.createdIntent.CurrentRun != nil && f.createdIntent.CurrentRun.ID == id {
-		f.createdIntent.CurrentRun.Status = domain.SessionRunStatusFailed
-		f.createdIntent.CurrentRun.FailureReason = reason
+	if f.createdSession.CurrentRun != nil && f.createdSession.CurrentRun.ID == id {
+		f.createdSession.CurrentRun.Status = domain.SessionRunStatusFailed
+		f.createdSession.CurrentRun.FailureReason = reason
 	}
 	return nil
 }
@@ -2297,33 +2380,45 @@ func (f *fakeSessionRepository) MarkRunFailed(_ context.Context, id string, reas
 func (f *fakeSessionRepository) UpdateRunNativeID(_ context.Context, id, nativeID string) error {
 	f.updatedRunNativeID = id
 	f.updatedRunNative = nativeID
-	if f.createdIntent.CurrentRun != nil && f.createdIntent.CurrentRun.ID == id {
-		f.createdIntent.CurrentRun.NativeID = nativeID
+	if f.createdSession.CurrentRun != nil && f.createdSession.CurrentRun.ID == id {
+		f.createdSession.CurrentRun.NativeID = nativeID
 	}
 	return nil
 }
 
 func (f *fakeSessionRepository) UpdateRunAgentStatus(_ context.Context, id, agentStatus string) error {
-	if f.createdIntent.CurrentRun != nil && f.createdIntent.CurrentRun.ID == id {
-		f.createdIntent.CurrentRun.AgentStatus = agentStatus
+	if f.createdSession.CurrentRun != nil && f.createdSession.CurrentRun.ID == id {
+		f.createdSession.CurrentRun.AgentStatus = agentStatus
 	}
 	return nil
 }
 
-func (f *fakeSessionRepository) ListSessionEvents(_ context.Context, intentID string) ([]domain.SessionEvent, error) {
-	return f.sessionEvents[intentID], nil
+func (f *fakeSessionRepository) ListSessionEvents(_ context.Context, sessionID string) ([]domain.SessionEvent, error) {
+	return f.sessionEvents[sessionID], nil
 }
 
 func (f *fakeSessionRepository) AppendSessionEvent(_ context.Context, params domain.AppendSessionEventParams) (domain.SessionEvent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.operations != nil {
 		*f.operations = append(*f.operations, "event")
 	}
 	f.appendedEvents = append(f.appendedEvents, params)
-	return domain.SessionEvent{SessionIntentID: params.SessionIntentID, RunID: params.RunID, Type: params.Type, Status: params.Status, Message: params.Message, Raw: params.Raw, At: params.At}, nil
+	return domain.SessionEvent{SessionID: params.SessionID, RunID: params.RunID, Type: params.Type, Status: params.Status, Message: params.Message, Raw: params.Raw, At: params.At}, nil
+}
+
+// events returns a snapshot under the lock; the intent policy goroutine may
+// still be publishing while a test inspects the log.
+func (f *fakeSessionRepository) events() []domain.AppendSessionEventParams {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]domain.AppendSessionEventParams(nil), f.appendedEvents...)
 }
 
 func (f *fakeSessionRepository) lastAppendedEvent(t *testing.T) domain.AppendSessionEventParams {
 	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if len(f.appendedEvents) == 0 {
 		t.Fatal("expected appended session event")
 	}
@@ -2389,7 +2484,7 @@ func assertOpenCodeArchitectAgentConfig(t *testing.T, req agentruntime.StartRequ
 	}
 }
 
-func assertMCPServer(t *testing.T, servers []agentruntime.MCPServerConfig, sessionType domain.SessionType, intentID string) {
+func assertMCPServer(t *testing.T, servers []agentruntime.MCPServerConfig, sessionType domain.SessionType, sessionID string) {
 	t.Helper()
 	if len(servers) != 1 {
 		t.Fatalf("mcp servers = %#v", servers)
@@ -2398,15 +2493,15 @@ func assertMCPServer(t *testing.T, servers []agentruntime.MCPServerConfig, sessi
 	if server.Name != "hiveryn-daemon" || server.Command != "/tmp/hiverynd" {
 		t.Fatalf("unexpected mcp server %#v", server)
 	}
-	if server.Env["HIVERYN_SESSION_TYPE"] != string(sessionType) || server.Env["HIVERYN_SESSION_ID"] != intentID {
+	if server.Env["HIVERYN_SESSION_TYPE"] != string(sessionType) || server.Env["HIVERYN_SESSION_ID"] != sessionID {
 		t.Fatalf("unexpected mcp env %#v", server.Env)
 	}
 }
 
-func cloneIntent(intent domain.SessionIntent) domain.SessionIntent {
-	cloned := intent
-	if intent.CurrentRun != nil {
-		run := *intent.CurrentRun
+func cloneSession(session domain.Session) domain.Session {
+	cloned := session
+	if session.CurrentRun != nil {
+		run := *session.CurrentRun
 		cloned.CurrentRun = &run
 	}
 	return cloned

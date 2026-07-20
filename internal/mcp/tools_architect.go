@@ -26,7 +26,7 @@ func (s *Server) registerArchitectTools() {
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "createWorkTicket",
-		Description: "Create a new work ticket in the backlog. Returns the created Ticket.",
+		Description: "Create a new work ticket in the backlog. The user is asked to approve before the ticket is created; this call blocks until they answer. Returns `outcome` — check it before assuming the ticket exists. approved/auto_approved means it was created and `ticket` is populated; denied_by_user/auto_denied means it was NOT created and you must not retry.",
 	}, s.handleCreateWorkTicket)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
@@ -160,17 +160,17 @@ func (s *Server) handleCreateWorkTicket(
 	ctx context.Context,
 	_ *mcp.CallToolRequest,
 	input CreateWorkTicketInput,
-) (*mcp.CallToolResult, TicketOutput, error) {
+) (*mcp.CallToolResult, CreateWorkTicketOutput, error) {
 	if strings.TrimSpace(input.Title) == "" {
-		return nil, TicketOutput{}, newValidationError("title", "is required")
+		return nil, CreateWorkTicketOutput{}, newValidationError("title", "is required")
 	}
 
-	ticket, err := s.createWorkTicket(ctx, input)
+	output, err := s.createWorkTicket(ctx, input)
 	if err != nil {
-		return nil, TicketOutput{}, err
+		return nil, CreateWorkTicketOutput{}, err
 	}
 
-	return nil, ticket, nil
+	return nil, output, nil
 }
 
 func (s *Server) handleDeleteTicket(
