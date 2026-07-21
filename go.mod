@@ -6,7 +6,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/hiveryn/agentruntime v0.0.0
+	github.com/hiveryn/agentruntime v0.9.0
 	github.com/hiveryn/shared v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.2.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -26,7 +26,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-replace github.com/hiveryn/agentruntime => ../agentruntime
 
 replace github.com/hiveryn/shared => ../shared
