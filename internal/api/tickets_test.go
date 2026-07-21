@@ -132,7 +132,7 @@ func TestTicketsAPIValidationAndNotFound(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	writeTicketFixture(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-edit", "---\ntitle: Edit me\n---\n\nrepeat\nrepeat\n")
+	writeTicketFixture(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-edit", "---\ntitle: Edit me\nrepo: daemon\n---\n\nrepeat\nrepeat\n")
 	handler := newTicketTestHandler(t, root)
 
 	status, body := request(t, handler, http.MethodGet, "/api/architects/missing/tickets", nil)
@@ -150,6 +150,7 @@ func TestTicketsAPIValidationAndNotFound(t *testing.T) {
 
 	status, body = requestJSON(t, handler, http.MethodPost, "/api/architects/hiveryn/tickets", map[string]any{
 		"title":      "bad refs",
+		"repo":       "daemon",
 		"references": []string{"missing-ticket"},
 	})
 	if status != http.StatusCreated {
@@ -436,6 +437,7 @@ func TestTicketSSEEvents(t *testing.T) {
 
 	createStatus, _ := requestJSON(t, handler, http.MethodPost, "/api/architects/hiveryn/tickets", map[string]any{
 		"title": "SSE test ticket",
+		"repo":  "daemon",
 		"body":  "hello",
 	})
 	if createStatus != http.StatusCreated {
@@ -530,6 +532,7 @@ func TestTicketSSEEventsCleanupOnDisconnect(t *testing.T) {
 
 	createStatus, _ := requestJSON(t, handler, http.MethodPost, "/api/architects/hiveryn/tickets", map[string]any{
 		"title": "After disconnect",
+		"repo":  "daemon",
 	})
 	if createStatus != http.StatusCreated {
 		t.Fatalf("expected create status %d, got %d", http.StatusCreated, createStatus)

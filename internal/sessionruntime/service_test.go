@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -288,19 +289,23 @@ func TestConcludeTicketSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 	repo := newFakeSessionRepository()
 	repo.operations = &operations
 	repo.createdSession = domain.Session{
-		ID:           "session-work",
-		ArchitectKey: "hiveryn",
-		SessionType:  domain.SessionTypeTicket,
-		ContextID:    "ticket-1",
-		Prompt:       "kickoff",
-		Workdir:      daemonRepoPath,
-		CreatedAt:    created,
+		ID:                 "session-work",
+		ArchitectKey:       "hiveryn",
+		SessionType:        domain.SessionTypeTicket,
+		ContextID:          "ticket-1",
+		Prompt:             "kickoff",
+		Workdir:            daemonRepoPath,
+		AdditionalRepos:    []string{"desktop"},
+		AdditionalWorkdirs: []string{desktopRepoPath},
+		CreatedAt:          created,
 		CurrentRun: &domain.SessionRun{
-			ID:          "run-1",
-			Status:      domain.SessionRunStatusRunning,
-			Workdir:     daemonRepoPath,
-			StartedAt:   &started,
-			ProfileName: "codex",
+			ID:                 "run-1",
+			Status:             domain.SessionRunStatusRunning,
+			Workdir:            daemonRepoPath,
+			AdditionalRepos:    []string{"desktop"},
+			AdditionalWorkdirs: []string{desktopRepoPath},
+			StartedAt:          &started,
+			ProfileName:        "codex",
 		},
 	}
 	cfg := testRuntimeConfigWithPaths(architectPath, daemonRepoPath)
@@ -311,7 +316,7 @@ func TestConcludeTicketSessionAppendsEndedEventRawConclusionData(t *testing.T) {
 		cfg:     cfg,
 		repo:    repo,
 		tickets: &fakeTicketService{ticket: domain.Ticket{
-			TicketSummary: domain.TicketSummary{ID: "ticket-1", Title: "Ticket", Repo: "daemon", Status: domain.TicketStatusProgress, Created: &created, Updated: &created},
+			TicketSummary: domain.TicketSummary{ID: "ticket-1", Title: "Ticket", Repo: "daemon", AdditionalRepos: []string{"desktop"}, Status: domain.TicketStatusProgress, Created: &created, Updated: &created},
 			Body:          "body",
 		}},
 		terminal:     &fakeTerminalManager{operations: &operations},
@@ -970,6 +975,28 @@ func TestCreateSessionFreeformWritesPromptFile(t *testing.T) {
 	}
 	if string(data) != prompt {
 		t.Fatalf("unexpected prompt contents %q", string(data))
+	}
+}
+
+func TestResolveAdditionalReposNormalizesAndRejectsPathCollisions(t *testing.T) {
+	t.Parallel()
+	primary := t.TempDir()
+	desktop := t.TempDir()
+	for _, path := range []string{primary, desktop} {
+		if err := os.Mkdir(filepath.Join(path, ".git"), 0o755); err != nil {
+			t.Fatalf("mkdir .git: %v", err)
+		}
+	}
+	keys, paths, err := resolveAdditionalRepos(map[string]string{"daemon": primary, "desktop": desktop}, "daemon", primary, []string{" desktop "})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !slices.Equal(keys, []string{"desktop"}) || !slices.Equal(paths, []string{desktop}) {
+		t.Fatalf("scope = %v %v", keys, paths)
+	}
+	_, _, err = resolveAdditionalRepos(map[string]string{"daemon": primary, "alias": filepath.Join(primary, ".")}, "daemon", primary, []string{"alias"})
+	if err == nil || !strings.Contains(err.Error(), "same cleaned path") {
+		t.Fatalf("expected collision error, got %v", err)
 	}
 }
 
@@ -2275,7 +2302,7 @@ type fakeSessionRepository struct {
 func newFakeSessionRepository() *fakeSessionRepository { return &fakeSessionRepository{} }
 
 func (f *fakeSessionRepository) CreateSession(_ context.Context, params domain.CreateSessionParams) (domain.Session, error) {
-	f.createdSession = domain.Session{ID: params.ID, ArchitectKey: params.ArchitectKey, SessionType: params.SessionType, ContextID: params.ContextID, Prompt: params.Prompt, Workdir: params.Workdir, Instructions: params.Instructions, CreatedBy: params.CreatedBy}
+	f.createdSession = domain.Session{ID: params.ID, ArchitectKey: params.ArchitectKey, SessionType: params.SessionType, ContextID: params.ContextID, Prompt: params.Prompt, Workdir: params.Workdir, AdditionalRepos: append([]string(nil), params.AdditionalRepos...), AdditionalWorkdirs: append([]string(nil), params.AdditionalWorkdirs...), Instructions: params.Instructions, CreatedBy: params.CreatedBy}
 	if f.createdSession.ID == "" {
 		f.createdSession.ID = "session-created"
 	}
@@ -2317,14 +2344,16 @@ func (f *fakeSessionRepository) CreateRun(_ context.Context, params domain.Creat
 	startedAt := params.StartedAt
 	snapshot := params.ProfileSnapshot
 	f.createdRun = domain.SessionRun{
-		ID:              params.ID,
-		SessionID:       params.SessionID,
-		Status:          domain.SessionRunStatusRunning,
-		ProfileName:     params.ProfileName,
-		ProfileSnapshot: &snapshot,
-		Workdir:         params.Workdir,
-		NativeID:        params.NativeID,
-		StartedAt:       &startedAt,
+		ID:                 params.ID,
+		SessionID:          params.SessionID,
+		Status:             domain.SessionRunStatusRunning,
+		ProfileName:        params.ProfileName,
+		ProfileSnapshot:    &snapshot,
+		Workdir:            params.Workdir,
+		AdditionalRepos:    append([]string(nil), params.AdditionalRepos...),
+		AdditionalWorkdirs: append([]string(nil), params.AdditionalWorkdirs...),
+		NativeID:           params.NativeID,
+		StartedAt:          &startedAt,
 	}
 	if f.createdRun.ID == "" {
 		f.createdRun.ID = "run-created"

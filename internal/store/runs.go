@@ -16,6 +16,12 @@ func (s *SessionStore) CreateRun(ctx context.Context, params domain.CreateSessio
 	if params.ID == "" {
 		params.ID = uuid.NewString()
 	}
+	if params.AdditionalRepos == nil {
+		params.AdditionalRepos = []string{}
+	}
+	if params.AdditionalWorkdirs == nil {
+		params.AdditionalWorkdirs = []string{}
+	}
 	if params.StartedAt.IsZero() {
 		params.StartedAt = time.Now().UTC()
 	}
@@ -24,6 +30,14 @@ func (s *SessionStore) CreateRun(ctx context.Context, params domain.CreateSessio
 	profileSnapshotJSON, err := marshalJSONText(params.ProfileSnapshot)
 	if err != nil {
 		return domain.SessionRun{}, fmt.Errorf("marshal profile snapshot: %w", err)
+	}
+	additionalReposJSON, err := marshalJSONText(params.AdditionalRepos)
+	if err != nil {
+		return domain.SessionRun{}, fmt.Errorf("marshal run additional repos: %w", err)
+	}
+	additionalWorkdirsJSON, err := marshalJSONText(params.AdditionalWorkdirs)
+	if err != nil {
+		return domain.SessionRun{}, fmt.Errorf("marshal run additional workdirs: %w", err)
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -43,9 +57,9 @@ func (s *SessionStore) CreateRun(ctx context.Context, params domain.CreateSessio
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO session_runs (id, session_id, status, agent_status, profile_name, profile_snapshot, workdir, native_id, started_at, created_at, updated_at)
-		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
-	`, params.ID, params.SessionID, string(domain.SessionRunStatusRunning), params.ProfileName, profileSnapshotJSON, params.Workdir, nullIfEmpty(params.NativeID), formatPreciseTime(params.StartedAt), formatPreciseTime(createdAt), formatPreciseTime(createdAt))
+		INSERT INTO session_runs (id, session_id, status, agent_status, profile_name, profile_snapshot, workdir, additional_repos, additional_workdirs, native_id, started_at, created_at, updated_at)
+		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, params.ID, params.SessionID, string(domain.SessionRunStatusRunning), params.ProfileName, profileSnapshotJSON, params.Workdir, additionalReposJSON, additionalWorkdirsJSON, nullIfEmpty(params.NativeID), formatPreciseTime(params.StartedAt), formatPreciseTime(createdAt), formatPreciseTime(createdAt))
 	if err != nil {
 		return domain.SessionRun{}, fmt.Errorf("insert session run: %w", err)
 	}
@@ -59,7 +73,7 @@ func (s *SessionStore) CreateRun(ctx context.Context, params domain.CreateSessio
 
 func (s *SessionStore) GetRun(ctx context.Context, id string) (domain.SessionRun, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, session_id, status, COALESCE(agent_status, ''), profile_name, COALESCE(profile_snapshot, ''), workdir, COALESCE(native_id, ''),
+		SELECT id, session_id, status, COALESCE(agent_status, ''), profile_name, COALESCE(profile_snapshot, ''), workdir, additional_repos, additional_workdirs, COALESCE(native_id, ''),
 		       COALESCE(failure_reason, ''), COALESCE(started_at, ''), COALESCE(ended_at, ''), created_at, updated_at
 		FROM session_runs
 		WHERE id = ?
@@ -76,7 +90,7 @@ func (s *SessionStore) GetRun(ctx context.Context, id string) (domain.SessionRun
 
 func (s *SessionStore) GetCurrentRun(ctx context.Context, sessionID string) (*domain.SessionRun, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, session_id, status, COALESCE(agent_status, ''), profile_name, COALESCE(profile_snapshot, ''), workdir, COALESCE(native_id, ''),
+		SELECT id, session_id, status, COALESCE(agent_status, ''), profile_name, COALESCE(profile_snapshot, ''), workdir, additional_repos, additional_workdirs, COALESCE(native_id, ''),
 		       COALESCE(failure_reason, ''), COALESCE(started_at, ''), COALESCE(ended_at, ''), created_at, updated_at
 		FROM session_runs
 		WHERE session_id = ?
@@ -349,6 +363,8 @@ func scanSessionRun(scanner interface{ Scan(...any) error }) (domain.SessionRun,
 	var status string
 	var agentStatus string
 	var profileSnapshotJSON string
+	var additionalReposJSON string
+	var additionalWorkdirsJSON string
 	var failureReason string
 	var startedAt string
 	var endedAt string
@@ -362,6 +378,8 @@ func scanSessionRun(scanner interface{ Scan(...any) error }) (domain.SessionRun,
 		&run.ProfileName,
 		&profileSnapshotJSON,
 		&run.Workdir,
+		&additionalReposJSON,
+		&additionalWorkdirsJSON,
 		&run.NativeID,
 		&failureReason,
 		&startedAt,
@@ -373,6 +391,12 @@ func scanSessionRun(scanner interface{ Scan(...any) error }) (domain.SessionRun,
 	}
 
 	run.Status = domain.SessionRunStatus(status)
+	if err := json.Unmarshal([]byte(additionalReposJSON), &run.AdditionalRepos); err != nil {
+		return domain.SessionRun{}, fmt.Errorf("decode run additional repos: %w", err)
+	}
+	if err := json.Unmarshal([]byte(additionalWorkdirsJSON), &run.AdditionalWorkdirs); err != nil {
+		return domain.SessionRun{}, fmt.Errorf("decode run additional workdirs: %w", err)
+	}
 	run.AgentStatus = agentStatus
 	run.FailureReason = domain.SessionRunFailureReason(failureReason)
 	if profileSnapshotJSON != "" {

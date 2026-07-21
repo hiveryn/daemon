@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -126,27 +127,30 @@ func (h *ticketsHandler) create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request struct {
-		Title      string   `json:"title"`
-		Repo       string   `json:"repo,omitempty"`
-		Body       string   `json:"body,omitempty"`
-		References []string `json:"references,omitempty"`
+		Title           string   `json:"title"`
+		Repo            string   `json:"repo"`
+		AdditionalRepos []string `json:"additional_repos"`
+		Body            string   `json:"body,omitempty"`
+		References      []string `json:"references,omitempty"`
 	}
 	if err := decodeJSON(r, &request); err != nil {
 		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), err.Error(), nil)
 		return
 	}
 
-	if err := validateConfiguredRepo(cfg, architectKey, request.Repo); err != nil {
+	request.AdditionalRepos, err = validateRepoScope(cfg, architectKey, request.Repo, request.AdditionalRepos)
+	if err != nil {
 		writeDomainError(w, r, err)
 		return
 	}
 
 	ticket, err := h.tickets.CreateTicket(r.Context(), architectPath, domain.CreateTicketParams{
-		Title:      request.Title,
-		Repo:       request.Repo,
-		Body:       request.Body,
-		References: request.References,
-		Now:        time.Now().UTC(),
+		Title:           request.Title,
+		Repo:            request.Repo,
+		AdditionalRepos: request.AdditionalRepos,
+		Body:            request.Body,
+		References:      request.References,
+		Now:             time.Now().UTC(),
 	})
 	if err != nil {
 		writeDomainError(w, r, err)
@@ -234,27 +238,44 @@ func (h *ticketsHandler) updateMetadata(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var request struct {
-		Title      *string   `json:"title,omitempty"`
-		Repo       *string   `json:"repo,omitempty"`
-		References *[]string `json:"references,omitempty"`
+		Title           *string   `json:"title,omitempty"`
+		Repo            *string   `json:"repo,omitempty"`
+		AdditionalRepos *[]string `json:"additional_repos,omitempty"`
+		References      *[]string `json:"references,omitempty"`
 	}
 	if err := decodeJSON(r, &request); err != nil {
 		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), err.Error(), nil)
 		return
 	}
 
+	current, err := h.tickets.GetTicket(r.Context(), architectPath, r.PathValue("id"))
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	repo := current.Repo
+	additional := current.AdditionalRepos
 	if request.Repo != nil {
-		if err := validateConfiguredRepo(cfg, architectKey, *request.Repo); err != nil {
-			writeDomainError(w, r, err)
-			return
-		}
+		repo = *request.Repo
+	}
+	if request.AdditionalRepos != nil {
+		additional = *request.AdditionalRepos
+	}
+	normalized, err := validateRepoScope(cfg, architectKey, repo, additional)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	if request.AdditionalRepos != nil {
+		request.AdditionalRepos = &normalized
 	}
 
 	ticket, err := h.tickets.UpdateTicketMetadata(r.Context(), architectPath, r.PathValue("id"), domain.UpdateTicketMetadataParams{
-		Title:      request.Title,
-		Repo:       request.Repo,
-		References: request.References,
-		Now:        time.Now().UTC(),
+		Title:           request.Title,
+		Repo:            request.Repo,
+		AdditionalRepos: request.AdditionalRepos,
+		References:      request.References,
+		Now:             time.Now().UTC(),
 	})
 	if err != nil {
 		writeDomainError(w, r, err)
@@ -401,6 +422,34 @@ func validateConfiguredRepo(cfg config.Config, architectKey, repoKey string) err
 		return &domain.ValidationError{Field: "repo", Message: fmt.Sprintf("repo key '%s' not found in architect config", repoKey)}
 	}
 	return nil
+}
+
+func validateRepoScope(cfg config.Config, architectKey, primary string, additional []string) ([]string, error) {
+	primary = strings.TrimSpace(primary)
+	if primary == "" {
+		return nil, &domain.ValidationError{Field: "repo", Message: "is required"}
+	}
+	if err := validateConfiguredRepo(cfg, architectKey, primary); err != nil {
+		return nil, err
+	}
+	seen := map[string]struct{}{primary: {}}
+	normalized := make([]string, 0, len(additional))
+	for _, raw := range additional {
+		key := strings.TrimSpace(raw)
+		if key == "" {
+			return nil, &domain.ValidationError{Field: "additional_repos", Message: "repo keys cannot be blank"}
+		}
+		if _, duplicate := seen[key]; duplicate {
+			return nil, &domain.ValidationError{Field: "additional_repos", Message: fmt.Sprintf("repo key %q is duplicated or overlaps primary repo", key)}
+		}
+		if err := validateConfiguredRepo(cfg, architectKey, key); err != nil {
+			return nil, &domain.ValidationError{Field: "additional_repos", Message: fmt.Sprintf("repo key %q not found in architect config", key)}
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, key)
+	}
+	sort.Strings(normalized)
+	return normalized, nil
 }
 
 func writeArchitectNotFound(w http.ResponseWriter, r *http.Request, key string) {

@@ -89,11 +89,12 @@ func (s *TicketService) CreateTicket(_ context.Context, architectPath string, pa
 	}
 
 	doc := newTicketDocument(ticketMetadata{
-		Title:      strings.TrimSpace(params.Title),
-		Repo:       strings.TrimSpace(params.Repo),
-		Created:    &now,
-		Updated:    &now,
-		References: references,
+		Title:           strings.TrimSpace(params.Title),
+		Repo:            strings.TrimSpace(params.Repo),
+		AdditionalRepos: normalizeRepoKeys(params.AdditionalRepos),
+		Created:         &now,
+		Updated:         &now,
+		References:      references,
 	}, params.Body)
 	if err := writeMarkdownDocument(filepath.Join(dir, ticketFileName), doc); err != nil {
 		return domain.Ticket{}, err
@@ -172,6 +173,9 @@ func (s *TicketService) UpdateTicketMetadata(_ context.Context, architectPath, i
 		} else {
 			setNodeString(entry.document.Metadata, "repo", repo)
 		}
+	}
+	if params.AdditionalRepos != nil {
+		setNodeStrings(entry.document.Metadata, "additional_repos", normalizeRepoKeys(*params.AdditionalRepos))
 	}
 
 	if params.References != nil {
@@ -317,15 +321,16 @@ type ticketEntry struct {
 
 func (e ticketEntry) summary() domain.TicketSummary {
 	return domain.TicketSummary{
-		ID:            e.id,
-		Status:        e.status,
-		Title:         e.metadata.Title,
-		Repo:          e.metadata.Repo,
-		Created:       e.metadata.Created,
-		Updated:       e.metadata.Updated,
-		References:    nonNilStrings(e.metadata.References),
-		HasConclusion: e.conclusion != nil,
-		Warnings:      cloneWarnings(e.warnings),
+		ID:              e.id,
+		Status:          e.status,
+		Title:           e.metadata.Title,
+		Repo:            e.metadata.Repo,
+		AdditionalRepos: nonNilStrings(e.metadata.AdditionalRepos),
+		Created:         e.metadata.Created,
+		Updated:         e.metadata.Updated,
+		References:      nonNilStrings(e.metadata.References),
+		HasConclusion:   e.conclusion != nil,
+		Warnings:        cloneWarnings(e.warnings),
 	}
 
 }
@@ -547,6 +552,15 @@ func nonNilStrings(s []string) []string {
 	return cloned
 }
 
+func normalizeRepoKeys(keys []string) []string {
+	result := make([]string, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, strings.TrimSpace(key))
+	}
+	sort.Strings(result)
+	return result
+}
+
 func nonNilCommitRefs(commits []domain.CommitRef) []domain.CommitRef {
 	if commits == nil {
 		return []domain.CommitRef{}
@@ -563,11 +577,12 @@ func cloneWarnings(warnings []domain.TicketWarning) []domain.TicketWarning {
 }
 
 type ticketMetadata struct {
-	Title      string
-	Repo       string
-	Created    *time.Time
-	Updated    *time.Time
-	References []string
+	Title           string
+	Repo            string
+	AdditionalRepos []string
+	Created         *time.Time
+	Updated         *time.Time
+	References      []string
 }
 
 func decodeTicketMetadata(node *yaml.Node) (ticketMetadata, error) {
@@ -575,19 +590,21 @@ func decodeTicketMetadata(node *yaml.Node) (ticketMetadata, error) {
 		return ticketMetadata{}, nil
 	}
 	var raw struct {
-		Title      string    `yaml:"title"`
-		Repo       string    `yaml:"repo"`
-		Created    time.Time `yaml:"created"`
-		Updated    time.Time `yaml:"updated"`
-		References []string  `yaml:"references"`
+		Title           string    `yaml:"title"`
+		Repo            string    `yaml:"repo"`
+		AdditionalRepos []string  `yaml:"additional_repos"`
+		Created         time.Time `yaml:"created"`
+		Updated         time.Time `yaml:"updated"`
+		References      []string  `yaml:"references"`
 	}
 	if err := node.Decode(&raw); err != nil {
 		return ticketMetadata{}, fmt.Errorf("decode ticket frontmatter: %w", err)
 	}
 	metadata := ticketMetadata{
-		Title:      raw.Title,
-		Repo:       raw.Repo,
-		References: append([]string(nil), raw.References...),
+		Title:           raw.Title,
+		Repo:            raw.Repo,
+		AdditionalRepos: normalizeRepoKeys(raw.AdditionalRepos),
+		References:      append([]string(nil), raw.References...),
 	}
 	var err error
 	metadata.References, err = normalizeReferences(metadata.References)
@@ -611,6 +628,7 @@ func newTicketDocument(metadata ticketMetadata, body string) MarkdownDocument {
 	if metadata.Repo != "" {
 		setNodeString(meta, "repo", metadata.Repo)
 	}
+	setNodeStrings(meta, "additional_repos", nonNilStrings(metadata.AdditionalRepos))
 	if metadata.Created != nil {
 		setNodeTime(meta, "created", metadata.Created.UTC())
 	}

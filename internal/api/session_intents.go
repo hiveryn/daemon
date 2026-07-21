@@ -118,10 +118,11 @@ func (h *sessionsHandler) createWorkTicketIntent(w http.ResponseWriter, r *http.
 	}
 
 	var input struct {
-		Title      string   `json:"title"`
-		Repo       string   `json:"repo,omitempty"`
-		Body       string   `json:"body,omitempty"`
-		References []string `json:"references,omitempty"`
+		Title           string   `json:"title"`
+		Repo            string   `json:"repo"`
+		AdditionalRepos []string `json:"additional_repos"`
+		Body            string   `json:"body,omitempty"`
+		References      []string `json:"references,omitempty"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
@@ -129,10 +130,11 @@ func (h *sessionsHandler) createWorkTicketIntent(w http.ResponseWriter, r *http.
 	}
 
 	res, err := h.sessions.RequestCreateWorkTicket(r.Context(), r.PathValue("id"), domain.CreateTicketParams{
-		Title:      input.Title,
-		Repo:       input.Repo,
-		Body:       input.Body,
-		References: input.References,
+		Title:           input.Title,
+		Repo:            input.Repo,
+		AdditionalRepos: input.AdditionalRepos,
+		Body:            input.Body,
+		References:      input.References,
 		// Now is deliberately not set here: it is stamped at write time inside
 		// the intent's Exec, so it never enters the dedup hash.
 	})

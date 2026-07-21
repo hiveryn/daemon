@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -22,6 +23,20 @@ func (s *SessionStore) CreateSession(ctx context.Context, params domain.CreateSe
 	if params.ID == "" {
 		params.ID = uuid.NewString()
 	}
+	if params.AdditionalRepos == nil {
+		params.AdditionalRepos = []string{}
+	}
+	if params.AdditionalWorkdirs == nil {
+		params.AdditionalWorkdirs = []string{}
+	}
+	additionalRepos, err := json.Marshal(params.AdditionalRepos)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("marshal session additional repos: %w", err)
+	}
+	additionalWorkdirs, err := json.Marshal(params.AdditionalWorkdirs)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("marshal session additional workdirs: %w", err)
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -34,9 +49,9 @@ func (s *SessionStore) CreateSession(ctx context.Context, params domain.CreateSe
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO sessions (id, architect_key, session_type, context_id, prompt, workdir, instructions, created_by)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, params.ID, params.ArchitectKey, string(params.SessionType), params.ContextID, params.Prompt, params.Workdir, nullIfEmpty(params.Instructions), nullIfEmpty(string(params.CreatedBy)))
+		INSERT INTO sessions (id, architect_key, session_type, context_id, prompt, workdir, additional_repos, additional_workdirs, instructions, created_by)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, params.ID, params.ArchitectKey, string(params.SessionType), params.ContextID, params.Prompt, params.Workdir, string(additionalRepos), string(additionalWorkdirs), nullIfEmpty(params.Instructions), nullIfEmpty(string(params.CreatedBy)))
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("insert session: %w", err)
 	}
@@ -91,9 +106,9 @@ func (s *SessionStore) DeleteSession(ctx context.Context, id string) error {
 
 func intentWithCurrentRunQuery(suffix string) string {
 	return `
-		SELECT i.id, i.architect_key, i.session_type, i.context_id, i.prompt, i.workdir, COALESCE(i.instructions, ''),
+		SELECT i.id, i.architect_key, i.session_type, i.context_id, i.prompt, i.workdir, i.additional_repos, i.additional_workdirs, COALESCE(i.instructions, ''),
 		       COALESCE(i.created_by, ''), i.created_at, i.updated_at,
-		       r.id, r.session_id, r.status, COALESCE(r.agent_status, ''), r.profile_name, COALESCE(r.profile_snapshot, ''), COALESCE(r.workdir, ''),
+		       r.id, r.session_id, r.status, COALESCE(r.agent_status, ''), r.profile_name, COALESCE(r.profile_snapshot, ''), COALESCE(r.workdir, ''), COALESCE(r.additional_repos, '[]'), COALESCE(r.additional_workdirs, '[]'),
 		       COALESCE(r.native_id, ''), COALESCE(r.failure_reason, ''), COALESCE(r.started_at, ''), COALESCE(r.ended_at, ''),
 		       COALESCE(r.created_at, ''), COALESCE(r.updated_at, '')
 		FROM sessions i

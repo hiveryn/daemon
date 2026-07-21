@@ -13,6 +13,7 @@ var migrationsFS embed.FS
 
 var migrationFiles = []string{
 	"migrations/0001_sessions.sql",
+	"migrations/0002_session_repo_scope.sql",
 }
 
 func runMigrations(ctx context.Context, db *sql.DB) error {

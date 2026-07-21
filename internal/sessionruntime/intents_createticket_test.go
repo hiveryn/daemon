@@ -140,7 +140,7 @@ func TestRequestCreateWorkTicketDeniedWritesNothing(t *testing.T) {
 	done := make(chan domain.IntentResolution[domain.Ticket], 1)
 	go func() {
 		res, err := service.RequestCreateWorkTicket(context.Background(), "session-1",
-			domain.CreateTicketParams{Title: "Should never exist"})
+			domain.CreateTicketParams{Title: "Should never exist", Repo: "daemon"})
 		if err != nil {
 			t.Errorf("request: %v", err)
 		}
@@ -206,7 +206,7 @@ func TestRequestCreateWorkTicketAutoApprovesOnTimeout(t *testing.T) {
 	service.cfg.IntentWaitTimeout = 1
 
 	res, err := service.RequestCreateWorkTicket(context.Background(), "session-1",
-		domain.CreateTicketParams{Title: "Nobody answered"})
+		domain.CreateTicketParams{Title: "Nobody answered", Repo: "daemon"})
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestRequestCreateWorkTicketPublishesIntentRequiredWithOrigin(t *testing.T) 
 	service.cfg.IntentWaitTimeout = 1
 
 	if _, err := service.RequestCreateWorkTicket(context.Background(), "session-1",
-		domain.CreateTicketParams{Title: "Popup me"}); err != nil {
+		domain.CreateTicketParams{Title: "Popup me", Repo: "daemon"}); err != nil {
 		t.Fatalf("request: %v", err)
 	}
 

@@ -21,6 +21,8 @@ func scanSessionWithCurrentRun(scanner interface{ Scan(...any) error }) (domain.
 	var createdBy string
 	var createdAt string
 	var updatedAt string
+	var additionalReposJSON string
+	var additionalWorkdirsJSON string
 
 	var runID sql.NullString
 	var runSessionID sql.NullString
@@ -29,6 +31,8 @@ func scanSessionWithCurrentRun(scanner interface{ Scan(...any) error }) (domain.
 	var runProfileName sql.NullString
 	var runProfileSnapshot sql.NullString
 	var runWorkdir sql.NullString
+	var runAdditionalRepos sql.NullString
+	var runAdditionalWorkdirs sql.NullString
 	var runNativeID sql.NullString
 	var runFailureReason sql.NullString
 	var runStartedAt sql.NullString
@@ -43,6 +47,8 @@ func scanSessionWithCurrentRun(scanner interface{ Scan(...any) error }) (domain.
 		&session.ContextID,
 		&session.Prompt,
 		&session.Workdir,
+		&additionalReposJSON,
+		&additionalWorkdirsJSON,
 		&session.Instructions,
 		&createdBy,
 		&createdAt,
@@ -54,6 +60,8 @@ func scanSessionWithCurrentRun(scanner interface{ Scan(...any) error }) (domain.
 		&runProfileName,
 		&runProfileSnapshot,
 		&runWorkdir,
+		&runAdditionalRepos,
+		&runAdditionalWorkdirs,
 		&runNativeID,
 		&runFailureReason,
 		&runStartedAt,
@@ -65,6 +73,12 @@ func scanSessionWithCurrentRun(scanner interface{ Scan(...any) error }) (domain.
 	}
 
 	session.SessionType = domain.SessionType(sessionType)
+	if err := json.Unmarshal([]byte(additionalReposJSON), &session.AdditionalRepos); err != nil {
+		return domain.Session{}, fmt.Errorf("decode session additional repos: %w", err)
+	}
+	if err := json.Unmarshal([]byte(additionalWorkdirsJSON), &session.AdditionalWorkdirs); err != nil {
+		return domain.Session{}, fmt.Errorf("decode session additional workdirs: %w", err)
+	}
 	session.CreatedBy = domain.SessionCreatedBy(createdBy)
 	var err error
 	session.CreatedAt, err = parseSQLiteTime(createdAt)
@@ -85,6 +99,8 @@ func scanSessionWithCurrentRun(scanner interface{ Scan(...any) error }) (domain.
 			runProfileName.String,
 			runProfileSnapshot.String,
 			runWorkdir.String,
+			runAdditionalRepos.String,
+			runAdditionalWorkdirs.String,
 			runNativeID.String,
 			runFailureReason.String,
 			runStartedAt.String,
@@ -101,7 +117,7 @@ func scanSessionWithCurrentRun(scanner interface{ Scan(...any) error }) (domain.
 	return session, nil
 }
 
-func scanSessionRunValues(id, sessionID, status, agentStatus, profileName, profileSnapshotJSON, workdir, nativeID, failureReason, startedAt, endedAt, createdAt, updatedAt string) (domain.SessionRun, error) {
+func scanSessionRunValues(id, sessionID, status, agentStatus, profileName, profileSnapshotJSON, workdir, additionalReposJSON, additionalWorkdirsJSON, nativeID, failureReason, startedAt, endedAt, createdAt, updatedAt string) (domain.SessionRun, error) {
 	run := domain.SessionRun{
 		ID:            id,
 		SessionID:     sessionID,
@@ -111,6 +127,12 @@ func scanSessionRunValues(id, sessionID, status, agentStatus, profileName, profi
 		Workdir:       workdir,
 		NativeID:      nativeID,
 		FailureReason: domain.SessionRunFailureReason(failureReason),
+	}
+	if err := json.Unmarshal([]byte(additionalReposJSON), &run.AdditionalRepos); err != nil {
+		return domain.SessionRun{}, fmt.Errorf("decode run additional repos: %w", err)
+	}
+	if err := json.Unmarshal([]byte(additionalWorkdirsJSON), &run.AdditionalWorkdirs); err != nil {
+		return domain.SessionRun{}, fmt.Errorf("decode run additional workdirs: %w", err)
 	}
 	if profileSnapshotJSON != "" {
 		var snapshot domain.AgentProfileSnapshot

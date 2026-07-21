@@ -3,6 +3,7 @@ package sessionruntime
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -307,20 +308,38 @@ func (s *Service) RequestCreateWorkTicket(
 		return zero, &domain.ValidationError{Field: "title", Message: "is required"}
 	}
 	params.Repo = strings.TrimSpace(params.Repo)
-	if params.Repo != "" {
-		if _, ok := architect.Repos[params.Repo]; !ok {
-			return zero, &domain.ValidationError{
-				Field:   "repo",
-				Message: fmt.Sprintf("repo key %q is not configured for architect %s", params.Repo, session.ArchitectKey),
-			}
+	if params.Repo == "" {
+		return zero, &domain.ValidationError{Field: "repo", Message: "is required"}
+	}
+	if _, ok := architect.Repos[params.Repo]; !ok {
+		return zero, &domain.ValidationError{
+			Field:   "repo",
+			Message: fmt.Sprintf("repo key %q is not configured for architect %s", params.Repo, session.ArchitectKey),
 		}
 	}
+	seen := map[string]struct{}{params.Repo: {}}
+	for i, raw := range params.AdditionalRepos {
+		key := strings.TrimSpace(raw)
+		if key == "" {
+			return zero, &domain.ValidationError{Field: "additional_repos", Message: "repo keys cannot be blank"}
+		}
+		if _, exists := seen[key]; exists {
+			return zero, &domain.ValidationError{Field: "additional_repos", Message: fmt.Sprintf("repo key %q is duplicated or overlaps primary repo", key)}
+		}
+		if _, ok := architect.Repos[key]; !ok {
+			return zero, &domain.ValidationError{Field: "additional_repos", Message: fmt.Sprintf("repo key %q is not configured for architect %s", key, session.ArchitectKey)}
+		}
+		seen[key] = struct{}{}
+		params.AdditionalRepos[i] = key
+	}
+	sort.Strings(params.AdditionalRepos)
 
 	payload := map[string]any{
-		"title":      params.Title,
-		"repo":       params.Repo,
-		"body":       params.Body,
-		"references": params.References,
+		"title":            params.Title,
+		"repo":             params.Repo,
+		"additional_repos": params.AdditionalRepos,
+		"body":             params.Body,
+		"references":       params.References,
 	}
 
 	return awaitIntent(ctx, s, intentSpec[domain.Ticket]{

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +49,25 @@ func TestTicketServiceListAndGet(t *testing.T) {
 	}
 	if len(ticket.Conclusion.Commits) != 1 || ticket.Conclusion.Commits[0] != (domain.CommitRef{SHA: "abc1234", Repo: "daemon"}) {
 		t.Fatalf("expected legacy flat commit to resolve against ticket repo, got %#v", ticket.Conclusion.Commits)
+	}
+}
+
+func TestTicketServiceAdditionalReposRoundTripCanonicalOrder(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	ticket, err := NewTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{
+		Title: "Cross repo", Repo: "daemon", AdditionalRepos: []string{" shared ", "desktop"}, Now: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("CreateTicket: %v", err)
+	}
+	want := []string{"desktop", "shared"}
+	if !slices.Equal(ticket.AdditionalRepos, want) {
+		t.Fatalf("additional repos = %v, want %v", ticket.AdditionalRepos, want)
+	}
+	content := readFile(t, filepath.Join(root, ticketsDirName, string(domain.TicketStatusBacklog), ticket.ID, ticketFileName))
+	if !strings.Contains(content, "additional_repos:") || strings.Index(content, "desktop") > strings.Index(content, "shared") {
+		t.Fatalf("unexpected frontmatter:\n%s", content)
 	}
 }
 

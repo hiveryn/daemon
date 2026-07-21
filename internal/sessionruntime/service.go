@@ -207,17 +207,23 @@ func (s *Service) CreateSession(ctx context.Context, req domain.CreateSessionReq
 		if err := validateRepoPath(repoPath); err != nil {
 			return domain.Session{}, err
 		}
+		additionalRepos, additionalWorkdirs, err := resolveAdditionalRepos(architect.Repos, repoKey, repoPath, ticket.AdditionalRepos)
+		if err != nil {
+			return domain.Session{}, err
+		}
 		kickoffContent, err := loadWorkerPrompt(req.ArchitectKey, architect, cfg, ticket)
 		if err != nil {
 			return domain.Session{}, err
 		}
 		return s.repo.CreateSession(ctx, domain.CreateSessionParams{
-			ArchitectKey: req.ArchitectKey,
-			SessionType:  domain.SessionTypeTicket,
-			ContextID:    req.TicketID,
-			Prompt:       kickoffContent,
-			Workdir:      repoPath,
-			CreatedBy:    domain.SessionCreatedByDesktop,
+			ArchitectKey:       req.ArchitectKey,
+			SessionType:        domain.SessionTypeTicket,
+			ContextID:          req.TicketID,
+			Prompt:             kickoffContent,
+			Workdir:            repoPath,
+			AdditionalRepos:    additionalRepos,
+			AdditionalWorkdirs: additionalWorkdirs,
+			CreatedBy:          domain.SessionCreatedByDesktop,
 		})
 	case domain.SessionTypeFreeform:
 		prompt := req.Prompt
@@ -303,13 +309,20 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 	if err := validateExistingDirectory(session.Workdir, "workdir"); err != nil {
 		return domain.CreateSessionRunResult{}, err
 	}
+	for i, workdir := range session.AdditionalWorkdirs {
+		if err := validateExistingDirectory(workdir, "additional_workdirs"); err != nil {
+			return domain.CreateSessionRunResult{}, fmt.Errorf("validate additional repo %q workdir: %w", session.AdditionalRepos[i], err)
+		}
+	}
 
 	run, err := s.repo.CreateRun(ctx, domain.CreateSessionRunParams{
-		SessionID:       session.ID,
-		ProfileName:     req.ProfileName,
-		ProfileSnapshot: snapshotVariant(profile),
-		Workdir:         session.Workdir,
-		StartedAt:       time.Now().UTC(),
+		SessionID:          session.ID,
+		ProfileName:        req.ProfileName,
+		ProfileSnapshot:    snapshotVariant(profile),
+		Workdir:            session.Workdir,
+		AdditionalRepos:    session.AdditionalRepos,
+		AdditionalWorkdirs: session.AdditionalWorkdirs,
+		StartedAt:          time.Now().UTC(),
 	})
 	if err != nil {
 		return domain.CreateSessionRunResult{}, err
@@ -324,14 +337,15 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 	)
 
 	mainTerminalID, err := s.launchSession(ctx, cfg, session, run, profile, agentKind, agentruntime.StartRequest{
-		Prompt:       session.Prompt,
-		Model:        profile.Model,
-		Yolo:         profile.Yolo,
-		Mode:         agentruntime.Mode(profile.Mode),
-		Instructions: session.Instructions,
-		Workdir:      session.Workdir,
-		Args:         append([]string(nil), profile.Args...),
-		Env:          cloneStringMap(profile.Env),
+		Prompt:             session.Prompt,
+		Model:              profile.Model,
+		Yolo:               profile.Yolo,
+		Mode:               agentruntime.Mode(profile.Mode),
+		Instructions:       session.Instructions,
+		Workdir:            session.Workdir,
+		AdditionalWorkdirs: session.AdditionalWorkdirs,
+		Args:               append([]string(nil), profile.Args...),
+		Env:                cloneStringMap(profile.Env),
 	}, terminalSize{Cols: req.Cols, Rows: req.Rows})
 	if err != nil {
 		s.markRunFailed(run.ID, domain.SessionRunFailureLaunchFailed, "launch")
@@ -466,15 +480,16 @@ func (s *Service) restoreSession(ctx context.Context, session domain.Session, ru
 	}
 
 	if _, err := s.launchSession(ctx, cfg, session, run, profile, agentKind, agentruntime.StartRequest{
-		Model:        profile.Model,
-		Yolo:         profile.Yolo,
-		Mode:         agentruntime.Mode(profile.Mode),
-		Instructions: session.Instructions,
-		Workdir:      run.Workdir,
-		Args:         append([]string(nil), profile.Args...),
-		Env:          cloneStringMap(profile.Env),
-		Resume:       true,
-		ResumeID:     run.NativeID,
+		Model:              profile.Model,
+		Yolo:               profile.Yolo,
+		Mode:               agentruntime.Mode(profile.Mode),
+		Instructions:       session.Instructions,
+		Workdir:            run.Workdir,
+		AdditionalWorkdirs: run.AdditionalWorkdirs,
+		Args:               append([]string(nil), profile.Args...),
+		Env:                cloneStringMap(profile.Env),
+		Resume:             true,
+		ResumeID:           run.NativeID,
 	}, terminalSize{Cols: defaultPTYCols, Rows: defaultPTYRows}); err != nil {
 		return fmt.Errorf("launch session run: %w", err)
 	}
@@ -630,6 +645,12 @@ func (s *Service) resolveStoredRunLaunchContext(session domain.Session, run doma
 	if strings.TrimSpace(run.Workdir) == "" {
 		return config.VariantConfig{}, "", fmt.Errorf("session run %s has no workdir", run.ID)
 	}
+	if len(run.AdditionalRepos) != len(run.AdditionalWorkdirs) {
+		return config.VariantConfig{}, "", fmt.Errorf("session run %s additional repo snapshot has %d keys and %d workdirs", run.ID, len(run.AdditionalRepos), len(run.AdditionalWorkdirs))
+	}
+	if _, err := agentruntime.NormalizeAdditionalWorkdirs(run.Workdir, run.AdditionalWorkdirs); err != nil {
+		return config.VariantConfig{}, "", fmt.Errorf("session run %s additional workdirs: %w", run.ID, err)
+	}
 
 	snapshot := *run.ProfileSnapshot
 	agentKind, err := parseAgentKind(snapshot.Agent)
@@ -655,15 +676,16 @@ func (s *Service) resumeSessionMainTerminal(ctx context.Context, session domain.
 	}
 
 	mainTerminalID, _, err := s.startSessionMainTerminal(ctx, session, run, profile, agentKind, agentruntime.StartRequest{
-		Model:        profile.Model,
-		Yolo:         profile.Yolo,
-		Mode:         agentruntime.Mode(profile.Mode),
-		Instructions: session.Instructions,
-		Workdir:      run.Workdir,
-		Args:         append([]string(nil), profile.Args...),
-		Env:          cloneStringMap(profile.Env),
-		Resume:       true,
-		ResumeID:     run.NativeID,
+		Model:              profile.Model,
+		Yolo:               profile.Yolo,
+		Mode:               agentruntime.Mode(profile.Mode),
+		Instructions:       session.Instructions,
+		Workdir:            run.Workdir,
+		AdditionalWorkdirs: run.AdditionalWorkdirs,
+		Args:               append([]string(nil), profile.Args...),
+		Env:                cloneStringMap(profile.Env),
+		Resume:             true,
+		ResumeID:           run.NativeID,
 	}, size)
 	if err != nil {
 		return "", err
@@ -1087,7 +1109,11 @@ func (s *Service) concludeTicketSession(ctx context.Context, session domain.Sess
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "repo", Message: "repo key " + repoKey + " not configured in architect repos"}
 	}
 
-	resolvedCommits, err := resolveConclusionCommitRefs(ctx, architect.Repos, params.Commits)
+	scopedRepos := map[string]string{ticket.Repo: session.Workdir}
+	for i, key := range session.AdditionalRepos {
+		scopedRepos[key] = session.AdditionalWorkdirs[i]
+	}
+	resolvedCommits, err := resolveConclusionCommitRefs(ctx, scopedRepos, params.Commits)
 	if err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
@@ -1174,7 +1200,11 @@ func (s *Service) MoveTicketToDone(ctx context.Context, architectKey, ticketID s
 		return domain.MoveTicketToDoneResult{}, &domain.ValidationError{Field: "ticket_id", Message: "ticket must be in backlog or progress to move to done"}
 	}
 
-	resolvedCommits, err := resolveConclusionCommitRefs(ctx, architect.Repos, params.Commits)
+	scopedRepos := make(map[string]string, 1+len(ticket.AdditionalRepos))
+	for _, key := range append([]string{ticket.Repo}, ticket.AdditionalRepos...) {
+		scopedRepos[key] = architect.Repos[key]
+	}
+	resolvedCommits, err := resolveConclusionCommitRefs(ctx, scopedRepos, params.Commits)
 	if err != nil {
 		return domain.MoveTicketToDoneResult{}, err
 	}
@@ -2066,6 +2096,12 @@ func validateStoredSession(session domain.Session) error {
 	if strings.TrimSpace(session.Workdir) == "" {
 		return fmt.Errorf("session %s has no workdir", session.ID)
 	}
+	if len(session.AdditionalRepos) != len(session.AdditionalWorkdirs) {
+		return fmt.Errorf("session %s additional repo snapshot has %d keys and %d workdirs", session.ID, len(session.AdditionalRepos), len(session.AdditionalWorkdirs))
+	}
+	if _, err := agentruntime.NormalizeAdditionalWorkdirs(session.Workdir, session.AdditionalWorkdirs); err != nil {
+		return fmt.Errorf("session %s additional workdirs: %w", session.ID, err)
+	}
 	return nil
 }
 
@@ -2156,6 +2192,40 @@ func validateRepoPath(path string) error {
 		return &domain.ValidationError{Field: "repo", Message: "no .git directory found at repo path: " + path}
 	}
 	return nil
+}
+
+func resolveAdditionalRepos(repos map[string]string, primaryKey, primaryPath string, keys []string) ([]string, []string, error) {
+	normalizedKeys := append([]string(nil), keys...)
+	for i := range normalizedKeys {
+		normalizedKeys[i] = strings.TrimSpace(normalizedKeys[i])
+	}
+	sort.Strings(normalizedKeys)
+	seenKeys := map[string]struct{}{primaryKey: {}}
+	seenPaths := map[string]string{filepath.Clean(primaryPath): primaryKey}
+	workdirs := make([]string, 0, len(normalizedKeys))
+	for _, key := range normalizedKeys {
+		if key == "" {
+			return nil, nil, &domain.ValidationError{Field: "additional_repos", Message: "repo keys cannot be blank"}
+		}
+		if _, exists := seenKeys[key]; exists {
+			return nil, nil, &domain.ValidationError{Field: "additional_repos", Message: fmt.Sprintf("repo key %q is duplicated or overlaps primary repo", key)}
+		}
+		path, ok := repos[key]
+		if !ok {
+			return nil, nil, &domain.ValidationError{Field: "additional_repos", Message: fmt.Sprintf("repo key %q is not configured in architect repos", key)}
+		}
+		if err := validateRepoPath(path); err != nil {
+			return nil, nil, fmt.Errorf("validate additional repo %q: %w", key, err)
+		}
+		cleaned := filepath.Clean(path)
+		if other, exists := seenPaths[cleaned]; exists {
+			return nil, nil, &domain.ValidationError{Field: "additional_repos", Message: fmt.Sprintf("repo keys %q and %q resolve to the same cleaned path %q", other, key, cleaned)}
+		}
+		seenKeys[key] = struct{}{}
+		seenPaths[cleaned] = key
+		workdirs = append(workdirs, cleaned)
+	}
+	return normalizedKeys, workdirs, nil
 }
 
 func yamlNodeString(node *yaml.Node, key string) string {

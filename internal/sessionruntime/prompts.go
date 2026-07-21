@@ -87,6 +87,8 @@ func PromptSchema(kind string) ([]PromptVariable, error) {
 			{Name: "TicketID", Description: "The ticket ID."},
 			{Name: "Repo", Description: "The repo key the ticket is scoped to."},
 			{Name: "RepoPath", Description: "Absolute filesystem path to the ticket's repo."},
+			{Name: "AdditionalRepos", Description: "Additional repo keys as a newline-separated list."},
+			{Name: "AdditionalRepoPaths", Description: "Additional repos as a newline-separated \"- key: path\" list."},
 			{Name: "References", Description: "Referenced ticket IDs as a newline-separated \"- id\" list (empty when none)."},
 			{Name: "Created", Description: "Ticket creation time, RFC3339 UTC (empty when unset)."},
 			{Name: "Updated", Description: "Ticket last-update time, RFC3339 UTC (empty when unset)."},
@@ -110,17 +112,19 @@ type kickoffTemplateData struct {
 }
 
 type workerKickoffTemplateData struct {
-	TicketTitle   string
-	TicketBody    string
-	TicketID      string
-	Repo          string
-	RepoPath      string
-	References    string
-	Created       string
-	Updated       string
-	ArchitectName string
-	ProjectPath   string
-	Repos         string
+	TicketTitle         string
+	TicketBody          string
+	TicketID            string
+	Repo                string
+	RepoPath            string
+	AdditionalRepos     string
+	AdditionalRepoPaths string
+	References          string
+	Created             string
+	Updated             string
+	ArchitectName       string
+	ProjectPath         string
+	Repos               string
 }
 
 func loadArchitectPrompts(architectKey string, architect config.ArchitectConfig, cfg config.Config) (string, string, error) {
@@ -173,18 +177,24 @@ func loadWorkerPrompt(architectKey string, architect config.ArchitectConfig, cfg
 		references = strings.Join(lines, "\n")
 	}
 
+	additionalPaths := make(map[string]string, len(ticket.AdditionalRepos))
+	for _, key := range ticket.AdditionalRepos {
+		additionalPaths[key] = architect.Repos[key]
+	}
 	rendered, err := renderWorkerKickoff(kickoffTemplateSource, workerKickoffTemplateData{
-		TicketTitle:   ticket.Title,
-		TicketBody:    ticket.Body,
-		TicketID:      ticket.ID,
-		Repo:          ticket.Repo,
-		RepoPath:      architect.Repos[ticket.Repo],
-		References:    references,
-		Created:       created,
-		Updated:       updated,
-		ArchitectName: architectKey,
-		ProjectPath:   architect.Path,
-		Repos:         renderRepos(architect.Repos),
+		TicketTitle:         ticket.Title,
+		TicketBody:          ticket.Body,
+		TicketID:            ticket.ID,
+		Repo:                ticket.Repo,
+		RepoPath:            architect.Repos[ticket.Repo],
+		AdditionalRepos:     strings.Join(ticket.AdditionalRepos, "\n"),
+		AdditionalRepoPaths: renderRepos(additionalPaths),
+		References:          references,
+		Created:             created,
+		Updated:             updated,
+		ArchitectName:       architectKey,
+		ProjectPath:         architect.Path,
+		Repos:               renderRepos(architect.Repos),
 	})
 	if err != nil {
 		return "", err

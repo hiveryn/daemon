@@ -149,6 +149,9 @@ func (s *Server) createWorkTicket(ctx context.Context, input CreateWorkTicketInp
 	if input.Repo != "" {
 		body["repo"] = input.Repo
 	}
+	if len(input.AdditionalRepos) > 0 {
+		body["additional_repos"] = input.AdditionalRepos
+	}
 	if input.Body != "" {
 		body["body"] = input.Body
 	}
@@ -412,6 +415,9 @@ func (s *Server) updateTicket(ctx context.Context, input UpdateTicketInput) (Tic
 	}
 	if input.Repo != "" {
 		body["repo"] = input.Repo
+	}
+	if input.AdditionalRepos != nil {
+		body["additional_repos"] = *input.AdditionalRepos
 	}
 	if len(input.References) > 0 {
 		body["references"] = input.References

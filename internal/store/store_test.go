@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -165,6 +166,36 @@ func TestSessionStoreAllowsOneTicketSessionPerTicket(t *testing.T) {
 	var conflict *domain.ConflictError
 	if !errors.As(err, &conflict) {
 		t.Fatalf("expected conflict for second ticket session on same ticket, got %v", err)
+	}
+}
+
+func TestSessionStorePersistsRepositoryScopeSnapshots(t *testing.T) {
+	t.Parallel()
+	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	store := NewSessionStore(db)
+	session, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID: "scope-session", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeTicket, ContextID: "ticket-scope",
+		Prompt: "kickoff", Workdir: "/repos/daemon", AdditionalRepos: []string{"desktop", "shared"}, AdditionalWorkdirs: []string{"/repos/desktop", "/repos/shared"},
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if !slices.Equal(session.AdditionalRepos, []string{"desktop", "shared"}) || !slices.Equal(session.AdditionalWorkdirs, []string{"/repos/desktop", "/repos/shared"}) {
+		t.Fatalf("session scope = %#v", session)
+	}
+	run, err := store.CreateRun(context.Background(), domain.CreateSessionRunParams{
+		ID: "scope-run", SessionID: session.ID, ProfileName: "codex", ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex"}, Workdir: session.Workdir,
+		AdditionalRepos: session.AdditionalRepos, AdditionalWorkdirs: session.AdditionalWorkdirs, StartedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if !slices.Equal(run.AdditionalRepos, session.AdditionalRepos) || !slices.Equal(run.AdditionalWorkdirs, session.AdditionalWorkdirs) {
+		t.Fatalf("run scope = %#v", run)
 	}
 }
 

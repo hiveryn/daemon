@@ -20,10 +20,11 @@ type ListTicketsInput struct {
 }
 
 type CreateWorkTicketInput struct {
-	Title      string   `json:"title" jsonschema:"The ticket title (required)"`
-	Repo       string   `json:"repo,omitempty" jsonschema:"Stable repo key for this ticket"`
-	Body       string   `json:"body,omitempty" jsonschema:"The ticket body/description"`
-	References []string `json:"references,omitempty" jsonschema:"Optional list of ticket IDs to reference"`
+	Title           string   `json:"title" jsonschema:"The ticket title (required)"`
+	Repo            string   `json:"repo" jsonschema:"Primary repository key for this ticket (required)"`
+	AdditionalRepos []string `json:"additional_repos,omitempty" jsonschema:"Additional repository keys in scope; unique and distinct from repo"`
+	Body            string   `json:"body,omitempty" jsonschema:"The ticket body/description"`
+	References      []string `json:"references,omitempty" jsonschema:"Optional list of ticket IDs to reference"`
 }
 
 type EditTicketBodyInput struct {
@@ -34,10 +35,11 @@ type EditTicketBodyInput struct {
 }
 
 type UpdateTicketInput struct {
-	ID         string   `json:"id" jsonschema:"The ticket ID to update (required)"`
-	Title      string   `json:"title,omitempty" jsonschema:"New ticket title (optional)"`
-	Repo       string   `json:"repo,omitempty" jsonschema:"New repo key (optional)"`
-	References []string `json:"references,omitempty" jsonschema:"New references list (optional)"`
+	ID              string    `json:"id" jsonschema:"The ticket ID to update (required)"`
+	Title           string    `json:"title,omitempty" jsonschema:"New ticket title (optional)"`
+	Repo            string    `json:"repo,omitempty" jsonschema:"New repo key (optional)"`
+	AdditionalRepos *[]string `json:"additional_repos,omitempty" jsonschema:"Replacement additional repository keys (optional; pass an empty array to clear)"`
+	References      []string  `json:"references,omitempty" jsonschema:"New references list (optional)"`
 }
 
 type DeleteTicketInput struct {
