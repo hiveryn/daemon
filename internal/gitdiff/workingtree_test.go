@@ -93,6 +93,33 @@ func TestLoadWorkingTreeDiff_BinaryFile(t *testing.T) {
 	}
 }
 
+func TestLoadWorkingTreeDiff_PathWithSpaces(t *testing.T) {
+	repoPath := initRepo(t)
+	const relPath = "docs/medibank-overseas-workers-standard-hospital-and-medical (1).pdf"
+
+	writeFile(t, filepath.Join(repoPath, relPath), "a\n")
+	runGitTest(t, repoPath, "add", relPath)
+	runGitTest(t, repoPath, "commit", "-q", "-m", "init")
+
+	writeFile(t, filepath.Join(repoPath, relPath), "a\nb\n")
+
+	result, err := LoadWorkingTreeDiff(context.Background(), repoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	file := findFile(t, result.Files, relPath)
+	if file.Status != "modified" || len(file.Sections) != 1 {
+		t.Fatalf("unexpected file = %#v", file)
+	}
+	if !strings.Contains(file.RawUnifiedDiff, "diff --git "+relPath+" "+relPath) {
+		t.Fatalf("raw diff did not preserve representative header: %q", file.RawUnifiedDiff)
+	}
+	if file.Additions != 1 || file.Deletions != 0 {
+		t.Fatalf("unexpected line counts = %#v", file)
+	}
+}
+
 func TestLoadWorkingTreeDiff_RenamedFile(t *testing.T) {
 	repoPath := initRepo(t)
 	writeFile(t, filepath.Join(repoPath, "old.txt"), "one\ntwo\nthree\nfour\nfive\n")

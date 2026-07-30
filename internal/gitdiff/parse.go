@@ -74,10 +74,7 @@ func parseDiffBlock(block string) (parsedFile, error) {
 		return parsedFile{}, fmt.Errorf("gitdiff: encountered empty diff block")
 	}
 
-	headerOldPath, headerNewPath, err := parseDiffGitHeader(lines[0])
-	if err != nil {
-		return parsedFile{}, err
-	}
+	headerOldPath, headerNewPath, headerErr := parseDiffGitHeader(lines[0])
 
 	file := parsedFile{
 		Path:    headerNewPath,
@@ -129,6 +126,9 @@ func parseDiffBlock(block string) (parsedFile, error) {
 		file.Path = file.OldPath
 	}
 	if file.Path == "" {
+		if headerErr != nil {
+			return parsedFile{}, headerErr
+		}
 		return parsedFile{}, fmt.Errorf("gitdiff: could not determine diff path from block: %q", block)
 	}
 	if file.Path == file.OldPath {
@@ -171,14 +171,32 @@ func parseDiffGitHeader(line string) (string, string, error) {
 	if !strings.HasPrefix(line, prefix) {
 		return "", "", fmt.Errorf("gitdiff: invalid diff header %q", line)
 	}
-	parts, err := parseQuotedFields(strings.TrimPrefix(line, prefix))
+	header := strings.TrimPrefix(line, prefix)
+	parts, err := parseQuotedFields(header)
 	if err != nil {
 		return "", "", fmt.Errorf("gitdiff: could not parse diff header %q: %w", line, err)
 	}
 	if len(parts) != 2 {
+		if repeatedPath, ok := splitRepeatedDiffHeaderPath(header); ok {
+			return repeatedPath, repeatedPath, nil
+		}
 		return "", "", fmt.Errorf("gitdiff: expected exactly two paths in diff header %q, got %v", line, parts)
 	}
 	return parseDiffPathValue(parts[0]), parseDiffPathValue(parts[1]), nil
+}
+
+func splitRepeatedDiffHeaderPath(header string) (string, bool) {
+	if len(header) < 3 || len(header)%2 == 0 {
+		return "", false
+	}
+	mid := len(header) / 2
+	if header[mid] != ' ' {
+		return "", false
+	}
+	if header[:mid] != header[mid+1:] {
+		return "", false
+	}
+	return parseDiffPathValue(header[:mid]), true
 }
 
 // parseQuotedFields splits a header value into space-separated fields,

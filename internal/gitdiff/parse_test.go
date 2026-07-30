@@ -29,6 +29,18 @@ func TestParseDiffGitHeader_UnprefixedLine(t *testing.T) {
 	}
 }
 
+func TestParseDiffGitHeader_UnquotedRepeatedPathWithSpaces(t *testing.T) {
+	const path = "docs/medibank-overseas-workers-standard-hospital-and-medical (1).pdf"
+
+	oldPath, newPath, err := parseDiffGitHeader("diff --git " + path + " " + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldPath != path || newPath != path {
+		t.Fatalf("unexpected paths: %q %q", oldPath, newPath)
+	}
+}
+
 func TestParseDiffBlock_PureDeletionFallsBackToOldPath(t *testing.T) {
 	block := "diff --git gone.txt gone.txt\n" +
 		"deleted file mode 100644\n" +
@@ -62,6 +74,21 @@ func TestParseDiffBlock_SelfRenameCollapsesOldPath(t *testing.T) {
 	}
 	if file.Path != "same.txt" || file.OldPath != "" {
 		t.Fatalf("expected OldPath cleared for self-rename, got %#v", file)
+	}
+}
+
+func TestParseDiffBlock_RenameWithSpacesFallsBackToRenameLines(t *testing.T) {
+	block := "diff --git docs/old name.pdf docs/new name.pdf\n" +
+		"similarity index 100%\n" +
+		"rename from docs/old name.pdf\n" +
+		"rename to docs/new name.pdf\n"
+
+	file, err := parseDiffBlock(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file.Status != "renamed" || file.OldPath != "docs/old name.pdf" || file.Path != "docs/new name.pdf" {
+		t.Fatalf("unexpected parsed file: %#v", file)
 	}
 }
 
