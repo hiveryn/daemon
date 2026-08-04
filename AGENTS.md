@@ -19,8 +19,9 @@ cmd/hiverynd          entrypoint: `serve` daemon mode and `mcp` stdio subcommand
 internal/
   app/                dependency wiring, startup/shutdown orchestration
   archevents/         in-memory publish/subscribe hub for architect-scoped SSE events
+  archive/            optional append-only JSONL archive of normalized agentruntime events (daily rotation, fire-and-forget — failures never block ingestion)
   architectfs/        architect folder filesystem operations (ticket CRUD, frontmatter, body edits)
-  config/             bootstrap config (~/.hiveryn/{config,variants,architects,tabs,shortcuts}.yaml) — port, bind_address, log_level, shell, intent_wait_timeout, variants, architects, tabs, shortcuts
+  config/             bootstrap config (~/.hiveryn/{config,variants,architects,tabs,shortcuts}.yaml) — port, bind_address, log_level, shell, intent_wait_timeout, archive_agent_events, variants, architects, tabs, shortcuts
   domain/             re-exports shared data types (github.com/hiveryn/shared/domain) + local interfaces, Envelope, ArchitectEvent, AgentStatus consts — zero imports of store/api
   gitdiff/            git working-tree + single-commit diff computation (git shell-out, file-level diff parsing) plus batch gitignore checks (`CheckIgnore`) reused by the fs browse API — no session dependency
   logging/            structured JSONL app/request logging to ~/.hiveryn/logs/*.jsonl

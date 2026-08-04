@@ -51,6 +51,7 @@ port: 4201
 bind_address: 127.0.0.1
 log_level: info
 intent_wait_timeout: 20
+archive_agent_events: false
 ```
 
 | Field | Default |
@@ -60,6 +61,7 @@ intent_wait_timeout: 20
 | `bind_address` | `127.0.0.1` (localhost only) |
 | `log_level` | `info` |
 | `intent_wait_timeout` | `20` (seconds) — how long a pending intent waits for the user before its tool's policy fires. Values `<= 0` are coerced back to the default. Must stay safely under the smallest agent-runtime tool-call ceiling (~60s). |
+| `archive_agent_events` | `false` — set `true` to archive every normalized agentruntime event to per-day JSONL files under `HIVERYN_HOME/archive/agent_events/`. Full `Raw` payloads are preserved unredacted; archival failures never block ingestion.
 
 ### `variants.yaml` — agent variants
 
@@ -190,7 +192,7 @@ Local runtime state is stored at `HIVERYN_HOME/daemon.db` by default and managed
 
 > Pre-release note: the base schema (`0001_sessions.sql`) is rewritten in place rather than migrated — the daemon carries no migration debt while it has no users. A `daemon.db` created before such a rewrite will fail loudly on the first query (`no such table: sessions`). Delete `HIVERYN_HOME/daemon.db*` and restart to recreate it.
 
-The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/daemon.jsonl` and `HIVERYN_HOME/logs/requests.jsonl` by default. `daemon.jsonl` contains app/runtime logs with source location metadata; `requests.jsonl` contains one JSON object per HTTP request/response, including the response envelope for JSON API calls.
+The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/daemon.jsonl` and `HIVERYN_HOME/logs/requests.jsonl` by default. `daemon.jsonl` contains app/runtime logs with source location metadata; `requests.jsonl` contains one JSON object per HTTP request/response, including the response envelope for JSON API calls. When `archive_agent_events` is enabled, the daemon also writes per-day JSONL event archives to `HIVERYN_HOME/archive/agent_events/agent_events_YYYY-MM-DD.jsonl`.
 
 ## API
 

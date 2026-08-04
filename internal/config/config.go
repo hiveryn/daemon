@@ -33,6 +33,7 @@ type Config struct {
 	Shell                     string                       `yaml:"shell,omitempty"`
 	DesktopHealthPollInterval string                       `yaml:"desktop_health_poll_interval,omitempty"`
 	IntentWaitTimeout         int                          `yaml:"intent_wait_timeout,omitempty"`
+	ArchiveAgentEvents        bool                         `yaml:"archive_agent_events"`
 	Variants                  map[string]VariantConfig     `yaml:"-"`
 	Architects                map[string]ArchitectConfig   `yaml:"-"`
 	Tabs                      map[string][]TabEntry        `yaml:"-"`

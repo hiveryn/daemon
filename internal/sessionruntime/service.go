@@ -21,6 +21,7 @@ import (
 	"github.com/hiveryn/agentruntime/adapter/opencode"
 	"github.com/hiveryn/agentruntime/ingest"
 	"github.com/hiveryn/daemon/internal/architectfs"
+	"github.com/hiveryn/daemon/internal/archive"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
 	"gopkg.in/yaml.v3"
@@ -63,6 +64,8 @@ type Service struct {
 
 	terminalStateMu sync.RWMutex
 	terminalStates  map[string]sessionTerminalState
+
+	archive *archive.Archiver
 }
 
 type eventSubscription struct {
@@ -124,6 +127,10 @@ func New(ctx context.Context, cfg config.Config, configSource config.Source, rep
 
 func (s *Service) IngestHandler() http.Handler {
 	return s.ingestHTTP
+}
+
+func (s *Service) SetEventArchiver(a *archive.Archiver) {
+	s.archive = a
 }
 
 func (s *Service) currentConfig() (config.Config, error) {
@@ -1733,6 +1740,11 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	terminalErr := s.terminal.Shutdown(ctx)
 	s.cancelReceiverBridges()
 	s.closeEventSubscribers("")
+	if s.archive != nil {
+		if err := s.archive.Close(); err != nil {
+			s.logger.Error("failed to close event archive", "error", err)
+		}
+	}
 	return terminalErr
 }
 
@@ -1764,6 +1776,71 @@ func (s *Service) startReceiverBridge(sessionID string) func() {
 	}
 }
 
+func (s *Service) archiveEvent(event agentruntime.Event, run *domain.SessionRun) {
+	if s.archive == nil {
+		return
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("archive event panicked", "session_id", event.ID, "panic", r)
+		}
+	}()
+
+	session, err := s.repo.GetSession(context.Background(), event.ID)
+	if err != nil {
+		s.logger.Warn("failed to get session for event archival", "session_id", event.ID, "error", err)
+		return
+	}
+
+	architectWorkspace := ""
+	if session.ArchitectKey != "" {
+		architect, err := s.currentArchitect(session.ArchitectKey)
+		if err != nil {
+			s.logger.Warn("failed to get architect for event archival", "session_id", event.ID, "architect_key", session.ArchitectKey, "error", err)
+		} else {
+			architectWorkspace = architect.Path
+		}
+	}
+
+	agentProfile := ""
+	if run.ProfileSnapshot != nil {
+		agentProfile = run.ProfileSnapshot.Agent
+	}
+
+	raw := event.Raw
+	if raw == nil {
+		raw = map[string]any{}
+	}
+
+	record := archive.ArchivedEvent{
+		IngestedAt:         time.Now(),
+		ArchitectKey:       session.ArchitectKey,
+		ArchitectWorkspace: architectWorkspace,
+		SessionID:          event.ID,
+		SessionType:        string(session.SessionType),
+		TicketID:           session.ContextID,
+		ProfileName:        run.ProfileName,
+		Agent:              agentProfile,
+		Workdir:            run.Workdir,
+		AdditionalWorkdirs: run.AdditionalWorkdirs,
+		AdditionalRepos:    run.AdditionalRepos,
+		AgentID:            event.ID,
+		AgentKind:          string(event.Agent),
+		NativeID:           event.NativeID,
+		PrimaryNativeID:    event.PrimaryNativeID,
+		NativeSessionRole:  string(event.NativeSessionRole),
+		Status:             string(event.Status),
+		Tool:               event.Tool,
+		Message:            event.Message,
+		At:                 event.At,
+		Metadata:           cloneStringMap(event.Metadata),
+		Raw:                cloneAnyMap(raw),
+	}
+
+	s.archive.Write(record)
+}
+
 func (s *Service) handleReceiverEvent(event agentruntime.Event) {
 	run, err := s.repo.GetCurrentRun(context.Background(), event.ID)
 	if err != nil {
@@ -1790,6 +1867,8 @@ func (s *Service) handleReceiverEvent(event agentruntime.Event) {
 	if err != nil {
 		panic(fmt.Errorf("persist session event for session %s run %s: %w", event.ID, run.ID, err))
 	}
+
+	s.archiveEvent(event, run)
 
 	primaryNativeID := event.PrimaryNativeID
 	if primaryNativeID == "" {

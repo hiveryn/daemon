@@ -16,6 +16,7 @@ import (
 	"github.com/hiveryn/daemon/internal/api"
 	"github.com/hiveryn/daemon/internal/archevents"
 	"github.com/hiveryn/daemon/internal/architectfs"
+	"github.com/hiveryn/daemon/internal/archive"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/logging"
 	"github.com/hiveryn/daemon/internal/server"
@@ -78,6 +79,14 @@ func Run(configPath, databasePath string, portOverride int) error {
 	service, err := sessionruntime.New(ctx, cfg, configSource, sessionStore, ticketService, logger, resolvedBaseURL)
 	if err != nil {
 		return err
+	}
+	if cfg.ArchiveAgentEvents {
+		archiver, err := archive.New(runtime.Home, logger)
+		if err != nil {
+			return fmt.Errorf("create event archiver: %w", err)
+		}
+		service.SetEventArchiver(archiver)
+		logger.Info("agent event archival enabled", "dir", runtime.Home)
 	}
 	if err := service.RestoreRunningSessions(ctx); err != nil {
 		return err
