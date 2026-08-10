@@ -40,6 +40,13 @@ type (
 	ConclusionSummary        = sd.ConclusionSummary
 )
 
+// SpawnTicketSessionResult is returned by the architect-only spawn intent.
+// The session ID is the durable Hiveryn identity; run details remain available
+// through the normal session APIs.
+type SpawnTicketSessionResult struct {
+	SessionID string `json:"session_id"`
+}
+
 // Daemon-local agent status values used by the runtime bridge and stored on
 // SessionRun. These are intentionally not in shared.
 const (
@@ -113,6 +120,7 @@ type SessionService interface {
 	// tool's policy fires, and performs its write only on approval.
 	RequestConclusion(context.Context, string, ConcludeSessionParams) (IntentResolution[ConcludeSessionResult], error)
 	RequestCreateWorkTicket(context.Context, string, CreateTicketParams) (IntentResolution[Ticket], error)
+	RequestSpawnTicketSession(context.Context, string, string, string) (IntentResolution[SpawnTicketSessionResult], error)
 
 	// Desktop-facing intent resolution, addressed by intent id.
 	ApproveIntent(context.Context, string, string) (Intent, error)

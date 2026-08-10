@@ -30,6 +30,16 @@ func (s *Server) registerArchitectTools() {
 	}, s.handleCreateWorkTicket)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "listAgentProfiles",
+		Description: "List configured agent profile keys and only their decision-relevant runtime, model, and mode. Use this when profile choices are unclear; never infer or silently default a profile.",
+	}, s.handleListAgentProfiles)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "spawnTicketSession",
+		Description: "Request approval to spawn a backlog ticket with an explicit configured profile agreed with Kareem. This call blocks for approval and auto-denies if unanswered. Always check outcome: approved creates session_id; denied_by_user/auto_denied creates nothing and must not be retried automatically. Never infer or default profile.",
+	}, s.handleSpawnTicketSession)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "editTicketBody",
 		Description: "Perform exact string replacements in a ticket body.",
 	}, s.handleEditTicketBody)
@@ -171,6 +181,26 @@ func (s *Server) handleCreateWorkTicket(
 	}
 
 	return nil, output, nil
+}
+
+func (s *Server) handleListAgentProfiles(
+	ctx context.Context, _ *mcp.CallToolRequest, _ ListAgentProfilesInput,
+) (*mcp.CallToolResult, ListAgentProfilesOutput, error) {
+	output, err := s.listAgentProfiles(ctx)
+	return nil, output, err
+}
+
+func (s *Server) handleSpawnTicketSession(
+	ctx context.Context, _ *mcp.CallToolRequest, input SpawnTicketSessionInput,
+) (*mcp.CallToolResult, SpawnTicketSessionOutput, error) {
+	if strings.TrimSpace(input.TicketID) == "" {
+		return nil, SpawnTicketSessionOutput{}, newValidationError("ticket_id", "is required")
+	}
+	if strings.TrimSpace(input.Profile) == "" {
+		return nil, SpawnTicketSessionOutput{}, newValidationError("profile", "is required; no profile is inferred or defaulted")
+	}
+	output, err := s.spawnTicketSession(ctx, input)
+	return nil, output, err
 }
 
 func (s *Server) handleDeleteTicket(

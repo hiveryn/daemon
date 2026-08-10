@@ -15,8 +15,9 @@ import (
 // (intent_wait_timeout, default 20s) and is shared by every tool.
 var intentPolicies = map[domain.IntentType]domain.IntentPolicy{
 	// Preserves today's exact behavior: a conclusion nobody answers is applied.
-	domain.IntentTypeConcludeSession:  domain.IntentPolicyWaitThenAllow,
-	domain.IntentTypeCreateWorkTicket: domain.IntentPolicyWaitThenAllow,
+	domain.IntentTypeConcludeSession:    domain.IntentPolicyWaitThenAllow,
+	domain.IntentTypeCreateWorkTicket:   domain.IntentPolicyWaitThenAllow,
+	domain.IntentTypeSpawnTicketSession: domain.IntentPolicyWaitThenDeny,
 }
 
 // policyFor fails fast on an unregistered tool. A typo must never silently

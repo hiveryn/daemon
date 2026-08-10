@@ -13,8 +13,9 @@ type (
 )
 
 const (
-	IntentTypeConcludeSession  = sd.IntentTypeConcludeSession
-	IntentTypeCreateWorkTicket = sd.IntentTypeCreateWorkTicket
+	IntentTypeConcludeSession    = sd.IntentTypeConcludeSession
+	IntentTypeCreateWorkTicket   = sd.IntentTypeCreateWorkTicket
+	IntentTypeSpawnTicketSession = sd.IntentTypeSpawnTicketSession
 
 	IntentOutcomeApproved     = sd.IntentOutcomeApproved
 	IntentOutcomeAutoApproved = sd.IntentOutcomeAutoApproved

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
@@ -364,4 +365,99 @@ func (s *Service) RequestCreateWorkTicket(
 			return ticket, nil
 		},
 	})
+}
+
+// RequestSpawnTicketSession lets a running architect session request the same
+// create-session then create-run flow used by the desktop. Both the ticket and
+// profile are checked before presenting the intent and again inside Exec, so
+// approval never acts on a stale board or config view.
+func (s *Service) RequestSpawnTicketSession(
+	ctx context.Context, architectSessionID, ticketID, profileName string,
+) (domain.IntentResolution[domain.SpawnTicketSessionResult], error) {
+	var zero domain.IntentResolution[domain.SpawnTicketSessionResult]
+
+	session, err := s.repo.GetSession(ctx, architectSessionID)
+	if err != nil {
+		return zero, err
+	}
+	if session.SessionType != domain.SessionTypeArchitect {
+		return zero, &domain.ValidationError{Field: "session_id", Message: "spawnTicketSession is only available to architect sessions"}
+	}
+	if session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
+		return zero, &domain.ValidationError{Field: "session_id", Message: "session run is not running"}
+	}
+
+	ticketID = strings.TrimSpace(ticketID)
+	if ticketID == "" {
+		return zero, &domain.ValidationError{Field: "ticket_id", Message: "is required"}
+	}
+	profileName = strings.TrimSpace(profileName)
+	if profileName == "" {
+		return zero, &domain.ValidationError{Field: "profile", Message: "is required; no profile is inferred or defaulted"}
+	}
+
+	_, ticket, err := s.validateSpawnTicketRequest(ctx, session.ArchitectKey, ticketID, profileName)
+	if err != nil {
+		return zero, err
+	}
+	repos := append([]string{ticket.Repo}, ticket.AdditionalRepos...)
+	payload := map[string]any{
+		"ticket_id":        ticket.ID,
+		"ticket_title":     ticket.Title,
+		"repository_scope": repos,
+		"profile":          profileName,
+	}
+
+	return awaitIntent(ctx, s, intentSpec[domain.SpawnTicketSessionResult]{
+		SessionID: architectSessionID,
+		Type:      domain.IntentTypeSpawnTicketSession,
+		Summary:   fmt.Sprintf("Spawn ticket %s with profile %s", ticket.ID, profileName),
+		Payload:   payload,
+		Origin:    intentOrigin(session),
+		Exec: func(execCtx context.Context) (domain.SpawnTicketSessionResult, error) {
+			// Reload both YAML sources and ticket state at the moment approval wins.
+			if _, _, err := s.validateSpawnTicketRequest(execCtx, session.ArchitectKey, ticketID, profileName); err != nil {
+				return domain.SpawnTicketSessionResult{}, err
+			}
+			created, err := s.createSession(execCtx, domain.CreateSessionRequest{
+				SessionType:  domain.SessionTypeTicket,
+				ArchitectKey: session.ArchitectKey,
+				TicketID:     ticketID,
+			}, domain.SessionCreatedByArchitectMCP)
+			if err != nil {
+				return domain.SpawnTicketSessionResult{}, err
+			}
+			if _, err := s.CreateRun(execCtx, created.ID, domain.CreateSessionRunRequest{ProfileName: profileName}); err != nil {
+				return domain.SpawnTicketSessionResult{}, fmt.Errorf("spawn ticket session %s: %w", created.ID, err)
+			}
+			s.emitArchitectEvent(session.ArchitectKey, "ticket_moved", ticketID)
+			return domain.SpawnTicketSessionResult{SessionID: created.ID}, nil
+		},
+	})
+}
+
+func (s *Service) validateSpawnTicketRequest(ctx context.Context, architectKey, ticketID, profileName string) (config.ArchitectConfig, domain.Ticket, error) {
+	cfg, err := s.currentConfig()
+	if err != nil {
+		return config.ArchitectConfig{}, domain.Ticket{}, err
+	}
+	architect, ok := cfg.Architects[architectKey]
+	if !ok {
+		return config.ArchitectConfig{}, domain.Ticket{}, &domain.NotFoundError{Resource: "architect", ID: architectKey}
+	}
+	profile, ok := cfg.Variants[profileName]
+	if !ok {
+		return config.ArchitectConfig{}, domain.Ticket{}, &domain.ValidationError{Field: "profile", Message: fmt.Sprintf("configured profile %q does not exist", profileName)}
+	}
+	if _, err := parseAgentKind(profile.Agent); err != nil {
+		return config.ArchitectConfig{}, domain.Ticket{}, &domain.ValidationError{Field: "profile", Message: fmt.Sprintf("configured profile %q is unusable: %v", profileName, err)}
+	}
+	ticket, err := s.tickets.GetTicket(ctx, architect.Path, ticketID)
+	if err != nil {
+		return config.ArchitectConfig{}, domain.Ticket{}, err
+	}
+	if ticket.Status != domain.TicketStatusBacklog {
+		return config.ArchitectConfig{}, domain.Ticket{}, &domain.ConflictError{Resource: "ticket", Field: "status", Message: "ticket " + ticketID + " must be in backlog to spawn"}
+	}
+	return architect, ticket, nil
 }

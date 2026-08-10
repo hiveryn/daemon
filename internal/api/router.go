@@ -81,6 +81,14 @@ type agentProfileResponse struct {
 	Env   map[string]string `json:"env"`
 }
 
+type agentProfileChoiceResponse struct {
+	Name  string `json:"name"`
+	Agent string `json:"agent"`
+	Model string `json:"model,omitempty"`
+	Yolo  bool   `json:"yolo,omitempty"`
+	Mode  string `json:"mode,omitempty"`
+}
+
 type architectResponse struct {
 	Key   string         `json:"key"`
 	Name  string         `json:"name"`
@@ -155,6 +163,8 @@ func NewHandler(deps Dependencies) http.Handler {
 	// tool's policy fires.
 	mux.HandleFunc("POST /api/sessions/{id}/intents/conclude-session", sh.concludeSessionIntent)
 	mux.HandleFunc("POST /api/sessions/{id}/intents/create-work-ticket", sh.createWorkTicketIntent)
+	mux.HandleFunc("POST /api/sessions/{id}/intents/spawn-ticket-session", sh.spawnTicketSessionIntent)
+	mux.HandleFunc("GET /api/sessions/{id}/agent-profiles", sh.listAgentProfileChoices)
 	// Desktop-facing intent resolution, addressed by intent id.
 	mux.HandleFunc("POST /api/sessions/{id}/intents/{intentID}/approve", sh.approveIntent)
 	mux.HandleFunc("POST /api/sessions/{id}/intents/{intentID}/deny", sh.denyIntent)
@@ -172,6 +182,18 @@ func NewHandler(deps Dependencies) http.Handler {
 	}
 
 	return requestID(accessLog(deps.Logger, deps.RequestLogger, recovery(mux)))
+}
+
+func listAgentProfileChoices(cfg config.Config) []agentProfileChoiceResponse {
+	names := configKeys(cfg.Variants)
+	profiles := make([]agentProfileChoiceResponse, 0, len(names))
+	for _, name := range names {
+		profile := cfg.Variants[name]
+		profiles = append(profiles, agentProfileChoiceResponse{
+			Name: name, Agent: profile.Agent, Model: profile.Model, Yolo: profile.Yolo, Mode: profile.Mode,
+		})
+	}
+	return profiles
 }
 
 func listAgentProfiles(cfg config.Config) []agentProfileResponse {

@@ -27,6 +27,30 @@ type CreateWorkTicketInput struct {
 	References      []string `json:"references,omitempty" jsonschema:"Optional list of ticket IDs to reference"`
 }
 
+type ListAgentProfilesInput struct{}
+
+type AgentProfileChoice struct {
+	Name  string `json:"name"`
+	Agent string `json:"agent"`
+	Model string `json:"model,omitempty"`
+	Yolo  bool   `json:"yolo,omitempty"`
+	Mode  string `json:"mode,omitempty"`
+}
+
+type ListAgentProfilesOutput struct {
+	AgentProfiles []AgentProfileChoice `json:"agent_profiles"`
+}
+
+type SpawnTicketSessionInput struct {
+	TicketID string `json:"ticket_id" jsonschema:"Backlog ticket ID to spawn (required)"`
+	Profile  string `json:"profile" jsonschema:"Explicit configured profile key agreed with the user (required; never inferred or defaulted)"`
+}
+
+type SpawnTicketSessionOutput struct {
+	IntentEnvelopeFields
+	SessionID string `json:"session_id,omitempty" jsonschema:"Created Hiveryn session ID. Present only when outcome is approved."`
+}
+
 type EditTicketBodyInput struct {
 	ID         string `json:"id" jsonschema:"The ticket ID to edit (required)"`
 	OldString  string `json:"oldString" jsonschema:"Text to find in the ticket body (required)"`

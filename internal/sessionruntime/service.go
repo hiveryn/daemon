@@ -154,6 +154,10 @@ func (s *Service) currentArchitect(key string) (config.ArchitectConfig, error) {
 }
 
 func (s *Service) CreateSession(ctx context.Context, req domain.CreateSessionRequest) (domain.Session, error) {
+	return s.createSession(ctx, req, domain.SessionCreatedByDesktop)
+}
+
+func (s *Service) createSession(ctx context.Context, req domain.CreateSessionRequest, createdBy domain.SessionCreatedBy) (domain.Session, error) {
 	cfg, err := s.currentConfig()
 	if err != nil {
 		return domain.Session{}, err
@@ -181,7 +185,7 @@ func (s *Service) CreateSession(ctx context.Context, req domain.CreateSessionReq
 			Prompt:       kickoffContent,
 			Workdir:      architect.Path,
 			Instructions: systemContent,
-			CreatedBy:    domain.SessionCreatedByDesktop,
+			CreatedBy:    createdBy,
 		})
 	case domain.SessionTypeTicket:
 		if strings.TrimSpace(req.TicketID) == "" {
@@ -230,7 +234,7 @@ func (s *Service) CreateSession(ctx context.Context, req domain.CreateSessionReq
 			Workdir:            repoPath,
 			AdditionalRepos:    additionalRepos,
 			AdditionalWorkdirs: additionalWorkdirs,
-			CreatedBy:          domain.SessionCreatedByDesktop,
+			CreatedBy:          createdBy,
 		})
 	case domain.SessionTypeFreeform:
 		prompt := req.Prompt
@@ -269,7 +273,7 @@ func (s *Service) CreateSession(ctx context.Context, req domain.CreateSessionReq
 			ContextID:    contextID,
 			Prompt:       prompt,
 			Workdir:      workdir,
-			CreatedBy:    domain.SessionCreatedByDesktop,
+			CreatedBy:    createdBy,
 		})
 		if err != nil {
 			dir := filepath.Join(architect.Path, "freeform", contextID)

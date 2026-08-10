@@ -454,6 +454,42 @@ func TestDiscardSessionSuccess(t *testing.T) {
 	}
 }
 
+func TestSpawnTicketSessionIntent(t *testing.T) {
+	service := &fakeSessionService{spawnTicketResult: domain.IntentResolution[domain.SpawnTicketSessionResult]{
+		IntentID: "intent-1", Outcome: domain.IntentOutcomeApproved,
+		Result: domain.SpawnTicketSessionResult{SessionID: "ticket-session-1"},
+	}}
+	handler := newSessionTestHandler(t, service)
+	status, body := request(t, handler, http.MethodPost, "/api/sessions/architect-session/intents/spawn-ticket-session", strings.NewReader(`{"ticket_id":"ticket-1","profile":"codex"}`))
+	if status != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", status, body)
+	}
+	if service.lastSpawnSessionID != "architect-session" || service.lastSpawnTicketID != "ticket-1" || service.lastSpawnProfile != "codex" {
+		t.Fatalf("unexpected spawn request: %#v", service)
+	}
+	var payload map[string]any
+	decodeEnvelopeData(t, body, &payload)
+	if payload["outcome"] != "approved" || payload["result"].(map[string]any)["session_id"] != "ticket-session-1" {
+		t.Fatalf("unexpected response %#v", payload)
+	}
+}
+
+func TestArchitectAgentProfileChoicesHideLaunchInternals(t *testing.T) {
+	service := &fakeSessionService{getSessionResult: domain.Session{
+		ID: "architect-session", SessionType: domain.SessionTypeArchitect,
+		CurrentRun: &domain.SessionRun{Status: domain.SessionRunStatusRunning},
+	}}
+	handler := newSessionTestHandler(t, service)
+	status, body := request(t, handler, http.MethodGet, "/api/sessions/architect-session/agent-profiles", nil)
+	if status != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", status, body)
+	}
+	bodyText := string(body)
+	if strings.Contains(bodyText, `"env"`) || strings.Contains(bodyText, `"args"`) || strings.Contains(bodyText, `"mcp"`) {
+		t.Fatalf("profile choice response exposed launch internals: %s", body)
+	}
+}
+
 func newSessionTestHandler(t *testing.T, sessions domain.SessionService) http.Handler {
 	t.Helper()
 
@@ -495,6 +531,11 @@ type fakeSessionService struct {
 	createWorkTicketErr      error
 	lastCreateWorkTicketID   string
 	lastCreateWorkTicket     domain.CreateTicketParams
+	spawnTicketResult        domain.IntentResolution[domain.SpawnTicketSessionResult]
+	spawnTicketErr           error
+	lastSpawnSessionID       string
+	lastSpawnTicketID        string
+	lastSpawnProfile         string
 	approveIntentResult      domain.Intent
 	approveIntentErr         error
 	denyIntentErr            error
@@ -543,6 +584,13 @@ func (f *fakeSessionService) RequestCreateWorkTicket(_ context.Context, id strin
 	f.lastCreateWorkTicketID = id
 	f.lastCreateWorkTicket = params
 	return f.createWorkTicketResult, f.createWorkTicketErr
+}
+
+func (f *fakeSessionService) RequestSpawnTicketSession(_ context.Context, sessionID, ticketID, profile string) (domain.IntentResolution[domain.SpawnTicketSessionResult], error) {
+	f.lastSpawnSessionID = sessionID
+	f.lastSpawnTicketID = ticketID
+	f.lastSpawnProfile = profile
+	return f.spawnTicketResult, f.spawnTicketErr
 }
 
 func (f *fakeSessionService) MoveTicketToDone(_ context.Context, architectKey, ticketID string, params domain.MoveTicketToDoneParams) (domain.MoveTicketToDoneResult, error) {
