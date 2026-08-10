@@ -58,6 +58,49 @@ type diffResponse struct {
 	Summary  gitdiff.Summary `json:"summary"`
 }
 
+type statusResponse struct {
+	Repo     string                `json:"repo"`
+	RepoPath string                `json:"repo_path"`
+	Entries  []gitdiff.StatusEntry `json:"entries"`
+}
+
+// status is the lightweight sibling of diff: just the changed paths with
+// their porcelain status columns, for tree decoration — no diff text.
+func (h *reposHandler) status(w http.ResponseWriter, r *http.Request) {
+	cfg, err := currentConfig(h.config, h.configSource)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	architectKey := r.PathValue("key")
+	repoKey := r.PathValue("repoKey")
+	repo, architectExists, repoExists := getRepo(cfg, architectKey, repoKey)
+	if !architectExists {
+		writeDomainError(w, r, &domain.NotFoundError{Resource: "architect", ID: architectKey})
+		return
+	}
+	if !repoExists {
+		writeDomainError(w, r, &domain.NotFoundError{Resource: "repo", ID: repoKey})
+		return
+	}
+
+	repoRoot, err := gitdiff.RepoRoot(r.Context(), repo.Path)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	entries, err := gitdiff.Status(r.Context(), repo.Path)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, statusResponse{
+		Repo:     repoKey,
+		RepoPath: repoRoot,
+		Entries:  entries,
+	})
+}
+
 type commitDiffResponse struct {
 	Repo      string          `json:"repo"`
 	RepoPath  string          `json:"repo_path"`

@@ -128,15 +128,18 @@ type fsWriteResponse struct {
 	ModTime string `json:"mtime"`
 }
 
-// writeFile overwrites an existing file's contents. It is deliberately
-// overwrite-only: the target must already exist (missing → 404), so it can't be
-// used to create arbitrary new files. Like the read endpoints, it accepts any
-// absolute path with no root containment.
+// writeFile writes a file's contents. By default it is overwrite-only: the
+// target must already exist (missing → 404), so a plain save can't scatter
+// new files. With ?create=true the inverse holds — the target must NOT exist
+// (present → 409) and parent directories are created — so the two modes are
+// each precise about intent. Like the read endpoints, it accepts any absolute
+// path with no root containment.
 func (h *fsHandler) writeFile(w http.ResponseWriter, r *http.Request) {
 	path, ok := parseAbsPathParam(w, r)
 	if !ok {
 		return
 	}
+	create := r.URL.Query().Get("create") == "true"
 
 	var req fsWriteRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -148,22 +151,38 @@ func (h *fsHandler) writeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	perm := os.FileMode(0o644)
+	if create {
+		if _, err := os.Stat(path); err == nil {
+			writeError(w, r, http.StatusConflict, string(domain.ErrCodeConflict), "path already exists: "+path, map[string]string{"field": "path"})
+			return
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			writeFsOSError(w, r, path, err)
+			return
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			writeFsOSError(w, r, path, err)
+			return
+		}
+	} else {
+		info, err := os.Stat(path)
+		if err != nil {
+			writeFsOSError(w, r, path, err)
+			return
+		}
+		if info.IsDir() {
+			writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "path is a directory: "+path, map[string]string{"field": "path"})
+			return
+		}
+		perm = info.Mode().Perm()
+	}
+
+	if err := atomicWriteFile(path, []byte(req.Content), perm); err != nil {
+		writeFsOSError(w, r, path, err)
+		return
+	}
+
 	info, err := os.Stat(path)
-	if err != nil {
-		writeFsOSError(w, r, path, err)
-		return
-	}
-	if info.IsDir() {
-		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "path is a directory: "+path, map[string]string{"field": "path"})
-		return
-	}
-
-	if err := atomicWriteFile(path, []byte(req.Content), info.Mode().Perm()); err != nil {
-		writeFsOSError(w, r, path, err)
-		return
-	}
-
-	info, err = os.Stat(path)
 	if err != nil {
 		writeFsOSError(w, r, path, err)
 		return
