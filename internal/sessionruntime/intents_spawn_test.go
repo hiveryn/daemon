@@ -56,7 +56,7 @@ func TestRequestSpawnTicketSessionRequiresArchitectAndExplicitKnownProfile(t *te
 	}
 }
 
-func TestSpawnTicketIntentShowsScopeAndDenialCreatesNoSession(t *testing.T) {
+func TestSpawnTicketIntentShowsScopeAndPolicyAndDenialCreatesNoSession(t *testing.T) {
 	service, repo := newSpawnIntentService(t, domain.SessionTypeArchitect)
 	done := make(chan domain.IntentResolution[domain.SpawnTicketSessionResult], 1)
 	errCh := make(chan error, 1)
@@ -79,7 +79,7 @@ func TestSpawnTicketIntentShowsScopeAndDenialCreatesNoSession(t *testing.T) {
 		t.Fatal("spawn intent was not created")
 	}
 	intent, ok := service.intents.Get(intentID)
-	if !ok || intent.Policy != domain.IntentPolicyWaitThenDeny || intent.Payload["profile"] != "codex" {
+	if !ok || intent.Policy != domain.IntentPolicyWaitThenAllow || intent.Payload["profile"] != "codex" {
 		t.Fatalf("unexpected intent %#v", intent)
 	}
 	scope, ok := intent.Payload["repository_scope"].([]string)

@@ -36,7 +36,7 @@ func (s *Server) registerArchitectTools() {
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "spawnTicketSession",
-		Description: "Request approval to spawn a backlog ticket with an explicit configured profile agreed with Kareem. This call blocks for approval and auto-denies if unanswered. Always check outcome: approved creates session_id; denied_by_user/auto_denied creates nothing and must not be retried automatically. Never infer or default profile.",
+		Description: "Request approval to spawn a backlog ticket with an explicit configured profile agreed with the user. This call blocks for approval and auto-approves on timeout: approved/auto_approved creates session_id; denied_by_user creates nothing and must not be retried automatically. Never infer or default profile.",
 	}, s.handleSpawnTicketSession)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
