@@ -1770,15 +1770,18 @@ drain:
 func TestCreateRunAddsMCPServer(t *testing.T) {
 	t.Parallel()
 
+	configuredRepo := t.TempDir()
 	repo := newFakeSessionRepository()
 	repo.createdSession = domain.Session{
-		ID:           "session-1",
-		ArchitectKey: "hiveryn",
-		SessionType:  domain.SessionTypeArchitect,
-		ContextID:    "2026-05-13-1500",
-		Prompt:       "kickoff",
-		Workdir:      t.TempDir(),
-		Instructions: "system",
+		ID:                 "session-1",
+		ArchitectKey:       "hiveryn",
+		SessionType:        domain.SessionTypeArchitect,
+		ContextID:          "2026-05-13-1500",
+		Prompt:             "kickoff",
+		Workdir:            t.TempDir(),
+		AdditionalRepos:    []string{"daemon"},
+		AdditionalWorkdirs: []string{configuredRepo},
+		Instructions:       "system",
 	}
 	adapter := &fakeAdapter{}
 	service := &Service{
@@ -1804,6 +1807,12 @@ func TestCreateRunAddsMCPServer(t *testing.T) {
 	}
 
 	assertMCPServer(t, adapter.launchRequest.MCPServers, domain.SessionTypeArchitect, "session-1")
+	if len(adapter.launchRequest.AdditionalWorkdirs) != 0 {
+		t.Fatalf("architect launch granted writable additional workdirs: %v", adapter.launchRequest.AdditionalWorkdirs)
+	}
+	if !slices.Equal(repo.createdRun.AdditionalRepos, []string{"daemon"}) || !slices.Equal(repo.createdRun.AdditionalWorkdirs, []string{configuredRepo}) {
+		t.Fatalf("architect run lost configured read-only repo snapshot: %#v", repo.createdRun)
+	}
 }
 
 func TestCreateRunMergesVariantMCPServers(t *testing.T) {

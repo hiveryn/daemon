@@ -178,14 +178,20 @@ func (s *Service) createSession(ctx context.Context, req domain.CreateSessionReq
 			return domain.Session{}, err
 		}
 		now := time.Now().UTC()
+		repoKeys, repoPaths, err := resolveArchitectRepos(architect)
+		if err != nil {
+			return domain.Session{}, err
+		}
 		return s.repo.CreateSession(ctx, domain.CreateSessionParams{
-			ArchitectKey: req.ArchitectKey,
-			SessionType:  domain.SessionTypeArchitect,
-			ContextID:    now.Format("2006-01-02-1504"),
-			Prompt:       kickoffContent,
-			Workdir:      architect.Path,
-			Instructions: systemContent,
-			CreatedBy:    createdBy,
+			ArchitectKey:       req.ArchitectKey,
+			SessionType:        domain.SessionTypeArchitect,
+			ContextID:          now.Format("2006-01-02-1504"),
+			Prompt:             kickoffContent,
+			Workdir:            architect.Path,
+			AdditionalRepos:    repoKeys,
+			AdditionalWorkdirs: repoPaths,
+			Instructions:       systemContent,
+			CreatedBy:          createdBy,
 		})
 	case domain.SessionTypeTicket:
 		if strings.TrimSpace(req.TicketID) == "" {
@@ -354,7 +360,7 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 		Mode:               agentruntime.Mode(profile.Mode),
 		Instructions:       session.Instructions,
 		Workdir:            session.Workdir,
-		AdditionalWorkdirs: session.AdditionalWorkdirs,
+		AdditionalWorkdirs: writableAdditionalWorkdirs(session.SessionType, session.AdditionalWorkdirs),
 		Args:               append([]string(nil), profile.Args...),
 		Env:                cloneStringMap(profile.Env),
 	}, terminalSize{Cols: req.Cols, Rows: req.Rows})
@@ -496,7 +502,7 @@ func (s *Service) restoreSession(ctx context.Context, session domain.Session, ru
 		Mode:               agentruntime.Mode(profile.Mode),
 		Instructions:       session.Instructions,
 		Workdir:            run.Workdir,
-		AdditionalWorkdirs: run.AdditionalWorkdirs,
+		AdditionalWorkdirs: writableAdditionalWorkdirs(session.SessionType, run.AdditionalWorkdirs),
 		Args:               append([]string(nil), profile.Args...),
 		Env:                cloneStringMap(profile.Env),
 		Resume:             true,
@@ -692,7 +698,7 @@ func (s *Service) resumeSessionMainTerminal(ctx context.Context, session domain.
 		Mode:               agentruntime.Mode(profile.Mode),
 		Instructions:       session.Instructions,
 		Workdir:            run.Workdir,
-		AdditionalWorkdirs: run.AdditionalWorkdirs,
+		AdditionalWorkdirs: writableAdditionalWorkdirs(session.SessionType, run.AdditionalWorkdirs),
 		Args:               append([]string(nil), profile.Args...),
 		Env:                cloneStringMap(profile.Env),
 		Resume:             true,
@@ -2079,6 +2085,36 @@ func configKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func resolveArchitectRepos(architect config.ArchitectConfig) ([]string, []string, error) {
+	keys := configKeys(architect.Repos)
+	paths := make([]string, 0, len(keys))
+	seenPaths := make(map[string]string, len(keys)+1)
+	seenPaths[filepath.Clean(architect.Path)] = "architect workspace"
+	for _, key := range keys {
+		path := strings.TrimSpace(architect.Repos[key])
+		if path == "" {
+			return nil, nil, &domain.ValidationError{Field: "repos", Message: fmt.Sprintf("repo %q has a blank path", key)}
+		}
+		cleaned := filepath.Clean(path)
+		if other, exists := seenPaths[cleaned]; exists {
+			return nil, nil, &domain.ValidationError{Field: "repos", Message: fmt.Sprintf("repo %q overlaps %s at %q", key, other, cleaned)}
+		}
+		seenPaths[cleaned] = fmt.Sprintf("repo %q", key)
+		paths = append(paths, cleaned)
+	}
+	return keys, paths, nil
+}
+
+// Architect repo paths are persisted in the session/run scope so the contract
+// records exactly what the architect may inspect. They must never be forwarded
+// through AdditionalWorkdirs, whose cross-agent meaning is a write grant.
+func writableAdditionalWorkdirs(sessionType domain.SessionType, paths []string) []string {
+	if sessionType == domain.SessionTypeArchitect {
+		return nil
+	}
+	return paths
 }
 
 func cloneStringMap(input map[string]string) map[string]string {

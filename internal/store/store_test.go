@@ -31,6 +31,52 @@ func TestOpenRunsSessionMigrations(t *testing.T) {
 	}
 }
 
+func TestSessionEventRingKeepsIntentEventsOutsideCap(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	store := NewSessionStore(db)
+	if _, err := store.CreateSession(ctx, domain.CreateSessionParams{
+		ID: "session-1", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeArchitect,
+		ContextID: "2026-08-11-1200", Prompt: "kickoff", Workdir: "/tmp/architect",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.AppendSessionEvent(ctx, domain.AppendSessionEventParams{
+		SessionID: "session-1", Type: "intent", Status: "required",
+		Raw: map[string]any{"intent_id": "intent-1"},
+	}); err != nil {
+		t.Fatalf("append intent event: %v", err)
+	}
+	for i := 0; i < 105; i++ {
+		if _, err := store.AppendSessionEvent(ctx, domain.AppendSessionEventParams{
+			SessionID: "session-1", Type: "output", Message: "event",
+		}); err != nil {
+			t.Fatalf("append ordinary event %d: %v", i, err)
+		}
+	}
+
+	events, err := store.ListSessionEvents(ctx, "session-1")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 101 {
+		t.Fatalf("got %d events, want 100 capped ordinary events plus intent", len(events))
+	}
+	foundIntent := false
+	for _, event := range events {
+		foundIntent = foundIntent || event.Type == "intent"
+	}
+	if !foundIntent {
+		t.Fatal("intent event was evicted by ordinary event ring")
+	}
+}
+
 func TestSessionStoreAllowsOneArchitectSessionPerArchitect(t *testing.T) {
 	t.Parallel()
 
