@@ -369,7 +369,11 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 		return domain.CreateSessionRunResult{}, fmt.Errorf("launch session run: %w", err)
 	}
 
+	// ContextID is a ticket id only for ticket sessions; architect and freeform
+	// sessions carry something else there and must not claim a ticket.
+	ticketID := ""
 	if session.SessionType == domain.SessionTypeTicket {
+		ticketID = session.ContextID
 		if _, err := s.tickets.MoveTicket(ctx, architect.Path, session.ContextID, domain.MoveTicketParams{To: domain.TicketStatusProgress}); err != nil {
 			if killErr := s.terminal.KillBySession(ctx, session.ID); killErr != nil && !errors.Is(killErr, errTerminalNotFound) {
 				return domain.CreateSessionRunResult{}, fmt.Errorf("move ticket %s to progress: %w (also failed to kill terminals: %v)", session.ContextID, err, killErr)
@@ -379,7 +383,20 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 			s.markRunFailed(run.ID, domain.SessionRunFailureLaunchFailed, "move_ticket_to_progress")
 			return domain.CreateSessionRunResult{}, fmt.Errorf("move ticket %s to progress: %w", session.ContextID, err)
 		}
+		s.emitArchitectEvent(session.ArchitectKey, domain.ArchitectEventTicketMoved, ticketID, session.ID)
 	}
+
+	// Announce the session on the architect stream. This is the single point in
+	// the daemon where a run becomes genuinely live — it has a running run and a
+	// main terminal — and every caller reaches it: the desktop's
+	// POST /api/sessions/{id}/runs and the architect-MCP spawn intent alike.
+	//
+	// It is also the only event anywhere that names a session id, so it is the
+	// only way a client can discover a session it did not create itself. Emitting
+	// it here rather than in the HTTP handler is what keeps the two spawn paths
+	// from drifting apart. Publish last, so a subscriber that reacts by refetching
+	// always observes the fully launched session.
+	s.emitArchitectEvent(session.ArchitectKey, domain.ArchitectEventSessionStarted, ticketID, session.ID)
 
 	return domain.CreateSessionRunResult{Run: run, MainTerminalID: mainTerminalID}, nil
 }
@@ -856,8 +873,9 @@ func (s *Service) RequestConclusion(
 				return domain.ConcludeSessionResult{}, err
 			}
 			if result.TicketID != "" {
-				s.emitArchitectEvent(result.ArchitectKey, "ticket_concluded", result.TicketID)
+				s.emitArchitectEvent(result.ArchitectKey, domain.ArchitectEventTicketConcluded, result.TicketID, result.SessionID)
 			}
+			s.emitArchitectEvent(result.ArchitectKey, domain.ArchitectEventSessionEnded, result.TicketID, result.SessionID)
 			return result, nil
 		},
 	})

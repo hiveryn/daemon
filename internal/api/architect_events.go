@@ -9,6 +9,7 @@ import (
 
 	"github.com/hiveryn/daemon/internal/archevents"
 	"github.com/hiveryn/daemon/internal/config"
+	"github.com/hiveryn/daemon/internal/domain"
 )
 
 type architectEventsHandler struct {
@@ -16,6 +17,33 @@ type architectEventsHandler struct {
 	configSource config.Source
 	logger       *slog.Logger
 	hub          *archevents.Hub
+}
+
+// publishArchitectEvent stamps and fans out one architect event. Every handler
+// that mutates architect-visible state goes through here so the wire shape is
+// built in exactly one place — adding a field to domain.ArchitectEvent must not
+// mean hand-editing a dozen struct literals again.
+//
+// ticketID is empty for reasons that are not about a ticket; sessionID is empty
+// for reasons that are not about a session.
+func publishArchitectEvent(
+	publish func(string, domain.ArchitectEvent),
+	architectKey string,
+	reason domain.ArchitectEventReason,
+	ticketID string,
+	sessionID string,
+) {
+	if publish == nil || architectKey == "" {
+		return
+	}
+	publish(architectKey, domain.ArchitectEvent{
+		Type:         domain.ArchitectEventType,
+		ArchitectKey: architectKey,
+		Reason:       reason,
+		TicketID:     ticketID,
+		SessionID:    sessionID,
+		At:           time.Now().UTC(),
+	})
 }
 
 func (h *architectEventsHandler) events(w http.ResponseWriter, r *http.Request) {

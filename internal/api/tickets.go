@@ -156,15 +156,7 @@ func (h *ticketsHandler) create(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, r, err)
 		return
 	}
-	if h.publishArchitect != nil {
-		h.publishArchitect(architectKey, domain.ArchitectEvent{
-			Type:         "workspace_changed",
-			ArchitectKey: architectKey,
-			Reason:       "ticket_created",
-			TicketID:     ticket.ID,
-			At:           time.Now().UTC(),
-		})
-	}
+	publishArchitectEvent(h.publishArchitect, architectKey, domain.ArchitectEventTicketCreated, ticket.ID, "")
 	writeJSON(w, r, http.StatusCreated, ticket)
 }
 
@@ -206,15 +198,7 @@ func (h *ticketsHandler) edit(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, r, err)
 		return
 	}
-	if h.publishArchitect != nil {
-		h.publishArchitect(r.PathValue("key"), domain.ArchitectEvent{
-			Type:         "workspace_changed",
-			ArchitectKey: r.PathValue("key"),
-			Reason:       "ticket_updated",
-			TicketID:     ticket.ID,
-			At:           time.Now().UTC(),
-		})
-	}
+	publishArchitectEvent(h.publishArchitect, r.PathValue("key"), domain.ArchitectEventTicketUpdated, ticket.ID, "")
 	writeJSON(w, r, http.StatusOK, ticket)
 }
 
@@ -281,15 +265,7 @@ func (h *ticketsHandler) updateMetadata(w http.ResponseWriter, r *http.Request) 
 		writeDomainError(w, r, err)
 		return
 	}
-	if h.publishArchitect != nil {
-		h.publishArchitect(r.PathValue("key"), domain.ArchitectEvent{
-			Type:         "workspace_changed",
-			ArchitectKey: r.PathValue("key"),
-			Reason:       "ticket_updated",
-			TicketID:     ticket.ID,
-			At:           time.Now().UTC(),
-		})
-	}
+	publishArchitectEvent(h.publishArchitect, r.PathValue("key"), domain.ArchitectEventTicketUpdated, ticket.ID, "")
 	writeJSON(w, r, http.StatusOK, ticket)
 }
 
@@ -315,15 +291,7 @@ func (h *ticketsHandler) delete(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, r, err)
 		return
 	}
-	if h.publishArchitect != nil {
-		h.publishArchitect(r.PathValue("key"), domain.ArchitectEvent{
-			Type:         "workspace_changed",
-			ArchitectKey: r.PathValue("key"),
-			Reason:       "ticket_deleted",
-			TicketID:     r.PathValue("id"),
-			At:           time.Now().UTC(),
-		})
-	}
+	publishArchitectEvent(h.publishArchitect, r.PathValue("key"), domain.ArchitectEventTicketDeleted, r.PathValue("id"), "")
 	writeJSON(w, r, http.StatusOK, map[string]bool{"deleted": true})
 }
 
@@ -351,15 +319,7 @@ func (h *ticketsHandler) move(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, r, err)
 		return
 	}
-	if h.publishArchitect != nil {
-		h.publishArchitect(r.PathValue("key"), domain.ArchitectEvent{
-			Type:         "workspace_changed",
-			ArchitectKey: r.PathValue("key"),
-			Reason:       "ticket_moved",
-			TicketID:     ticket.ID,
-			At:           time.Now().UTC(),
-		})
-	}
+	publishArchitectEvent(h.publishArchitect, r.PathValue("key"), domain.ArchitectEventTicketMoved, ticket.ID, "")
 	writeJSON(w, r, http.StatusOK, ticket)
 }
 
@@ -392,15 +352,7 @@ func (h *ticketsHandler) moveToDone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.publishArchitect != nil {
-		h.publishArchitect(architectKey, domain.ArchitectEvent{
-			Type:         "workspace_changed",
-			ArchitectKey: architectKey,
-			Reason:       "ticket_concluded",
-			TicketID:     result.TicketID,
-			At:           time.Now().UTC(),
-		})
-	}
+	publishArchitectEvent(h.publishArchitect, architectKey, domain.ArchitectEventTicketConcluded, result.TicketID, "")
 
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"success":   true,

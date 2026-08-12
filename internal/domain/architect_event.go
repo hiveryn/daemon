@@ -1,11 +1,25 @@
 package domain
 
-import "time"
+import (
+	sd "github.com/hiveryn/shared/domain"
+)
 
-type ArchitectEvent struct {
-	Type         string    `json:"type"`
-	ArchitectKey string    `json:"architect_key"`
-	Reason       string    `json:"reason"`
-	TicketID     string    `json:"ticket_id"`
-	At           time.Time `json:"at"`
-}
+// Re-export the architect event stream contract from shared. All JSON tags,
+// field names, and underlying types are identical, so call sites read
+// `domain.ArchitectEvent` unchanged.
+type (
+	ArchitectEvent       = sd.ArchitectEvent
+	ArchitectEventReason = sd.ArchitectEventReason
+)
+
+const (
+	ArchitectEventType = sd.ArchitectEventType
+
+	ArchitectEventTicketCreated   = sd.ArchitectEventTicketCreated
+	ArchitectEventTicketUpdated   = sd.ArchitectEventTicketUpdated
+	ArchitectEventTicketMoved     = sd.ArchitectEventTicketMoved
+	ArchitectEventTicketDeleted   = sd.ArchitectEventTicketDeleted
+	ArchitectEventTicketConcluded = sd.ArchitectEventTicketConcluded
+	ArchitectEventSessionStarted  = sd.ArchitectEventSessionStarted
+	ArchitectEventSessionEnded    = sd.ArchitectEventSessionEnded
+)

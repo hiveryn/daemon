@@ -266,15 +266,19 @@ func (s *Service) SetArchitectPublisher(publish func(string, domain.ArchitectEve
 // emitArchitectEvent invalidates the desktop's workspace view. It lives on the
 // service (not the API handler) because a generic approve handler cannot know
 // that a given intent touched a ticket — only the tool's Exec knows that.
-func (s *Service) emitArchitectEvent(architectKey, reason, ticketID string) {
-	if s.publishArchitect == nil {
+// emitArchitectEvent stamps and fans out one architect event. ticketID is empty
+// for reasons that are not about a ticket; sessionID is empty for reasons that
+// are not about a session.
+func (s *Service) emitArchitectEvent(architectKey string, reason domain.ArchitectEventReason, ticketID, sessionID string) {
+	if s.publishArchitect == nil || architectKey == "" {
 		return
 	}
 	s.publishArchitect(architectKey, domain.ArchitectEvent{
-		Type:         "workspace_changed",
+		Type:         domain.ArchitectEventType,
 		ArchitectKey: architectKey,
 		Reason:       reason,
 		TicketID:     ticketID,
+		SessionID:    sessionID,
 		At:           time.Now().UTC(),
 	})
 }
@@ -361,7 +365,7 @@ func (s *Service) RequestCreateWorkTicket(
 			if err != nil {
 				return domain.Ticket{}, err
 			}
-			s.emitArchitectEvent(session.ArchitectKey, "ticket_created", ticket.ID)
+			s.emitArchitectEvent(session.ArchitectKey, domain.ArchitectEventTicketCreated, ticket.ID, "")
 			return ticket, nil
 		},
 	})
@@ -427,10 +431,12 @@ func (s *Service) RequestSpawnTicketSession(
 			if err != nil {
 				return domain.SpawnTicketSessionResult{}, err
 			}
+			// CreateRun publishes ticket_moved and session_started itself, so this
+			// path and the desktop's POST /api/sessions/{id}/runs announce the new
+			// session identically. Emitting here as well would double-deliver.
 			if _, err := s.CreateRun(execCtx, created.ID, domain.CreateSessionRunRequest{ProfileName: profileName}); err != nil {
 				return domain.SpawnTicketSessionResult{}, fmt.Errorf("spawn ticket session %s: %w", created.ID, err)
 			}
-			s.emitArchitectEvent(session.ArchitectKey, "ticket_moved", ticketID)
 			return domain.SpawnTicketSessionResult{SessionID: created.ID}, nil
 		},
 	})

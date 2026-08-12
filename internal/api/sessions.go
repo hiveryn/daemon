@@ -132,22 +132,9 @@ func (h *sessionsHandler) createRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.publishArchitect != nil {
-		session, intentErr := h.sessions.GetSession(r.Context(), r.PathValue("id"))
-		if intentErr != nil {
-			writeDomainError(w, r, intentErr)
-			return
-		}
-		if session.SessionType == domain.SessionTypeTicket {
-			h.publishArchitect(session.ArchitectKey, domain.ArchitectEvent{
-				Type:         "workspace_changed",
-				ArchitectKey: session.ArchitectKey,
-				Reason:       "ticket_moved",
-				TicketID:     session.ContextID,
-				At:           time.Now().UTC(),
-			})
-		}
-	}
+	// The ticket_moved and session_started events for a new run are published by
+	// SessionService.CreateRun itself, so the architect-MCP spawn path — which
+	// never touches this handler — emits exactly the same events as this one.
 
 	writeJSON(w, r, http.StatusCreated, map[string]any{
 		"run":              result.Run,
@@ -184,15 +171,13 @@ func (h *sessionsHandler) conclude(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if result.TicketID != "" && h.publishArchitect != nil {
-		h.publishArchitect(result.ArchitectKey, domain.ArchitectEvent{
-			Type:         "workspace_changed",
-			ArchitectKey: result.ArchitectKey,
-			Reason:       "ticket_concluded",
-			TicketID:     result.TicketID,
-			At:           time.Now().UTC(),
-		})
+	if result.TicketID != "" {
+		publishArchitectEvent(h.publishArchitect, result.ArchitectKey, domain.ArchitectEventTicketConcluded, result.TicketID, result.SessionID)
 	}
+	// Session end is announced regardless of ticket scope (architect and freeform
+	// sessions have no ticket) so a window that missed the session-scoped ended
+	// event still drops the tab on its next reconcile.
+	publishArchitectEvent(h.publishArchitect, result.ArchitectKey, domain.ArchitectEventSessionEnded, result.TicketID, result.SessionID)
 
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"success":    true,
@@ -213,15 +198,10 @@ func (h *sessionsHandler) discard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if result.TicketID != "" && h.publishArchitect != nil {
-		h.publishArchitect(result.ArchitectKey, domain.ArchitectEvent{
-			Type:         "workspace_changed",
-			ArchitectKey: result.ArchitectKey,
-			Reason:       "ticket_moved",
-			TicketID:     result.TicketID,
-			At:           time.Now().UTC(),
-		})
+	if result.TicketID != "" {
+		publishArchitectEvent(h.publishArchitect, result.ArchitectKey, domain.ArchitectEventTicketMoved, result.TicketID, result.SessionID)
 	}
+	publishArchitectEvent(h.publishArchitect, result.ArchitectKey, domain.ArchitectEventSessionEnded, result.TicketID, result.SessionID)
 
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"success":    true,
