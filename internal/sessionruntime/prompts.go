@@ -89,7 +89,7 @@ func PromptSchema(kind string) ([]PromptVariable, error) {
 			{Name: "RepoPath", Description: "Absolute filesystem path to the ticket's repo."},
 			{Name: "AdditionalRepos", Description: "Additional repo keys as a newline-separated list."},
 			{Name: "AdditionalRepoPaths", Description: "Additional repos as a newline-separated \"- key: path\" list."},
-			{Name: "References", Description: "Referenced ticket IDs as a newline-separated \"- id\" list (empty when none)."},
+			{Name: "References", Description: "References as a newline-separated list of same-board ticket IDs or absolute read-only filesystem paths (empty when none)."},
 			{Name: "Created", Description: "Ticket creation time, RFC3339 UTC (empty when unset)."},
 			{Name: "Updated", Description: "Ticket last-update time, RFC3339 UTC (empty when unset)."},
 			{Name: "ArchitectName", Description: "The architect key/identifier."},

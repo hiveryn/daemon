@@ -24,7 +24,7 @@ type CreateWorkTicketInput struct {
 	Repo            string   `json:"repo" jsonschema:"Primary repository key for this ticket (required)"`
 	AdditionalRepos []string `json:"additional_repos,omitempty" jsonschema:"Additional repository keys in scope; unique and distinct from repo"`
 	Body            string   `json:"body,omitempty" jsonschema:"The ticket body/description"`
-	References      []string `json:"references,omitempty" jsonschema:"Optional list of ticket IDs to reference"`
+	References      []string `json:"references,omitempty" jsonschema:"Optional list of same-board ticket IDs or absolute filesystem paths. Paths are read-only context and never expand writable repository scope."`
 }
 
 type ListAgentProfilesInput struct{}
@@ -63,7 +63,7 @@ type UpdateTicketInput struct {
 	Title           string    `json:"title,omitempty" jsonschema:"New ticket title (optional)"`
 	Repo            string    `json:"repo,omitempty" jsonschema:"New repo key (optional)"`
 	AdditionalRepos *[]string `json:"additional_repos,omitempty" jsonschema:"Replacement additional repository keys (optional; pass an empty array to clear)"`
-	References      []string  `json:"references,omitempty" jsonschema:"New references list (optional)"`
+	References      []string  `json:"references,omitempty" jsonschema:"New list of same-board ticket IDs or absolute read-only filesystem paths (optional)"`
 }
 
 type DeleteTicketInput struct {

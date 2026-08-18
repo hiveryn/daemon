@@ -12,6 +12,9 @@ type (
 	TicketStatus               = sd.TicketStatus
 	TicketOutcome              = sd.TicketOutcome
 	TicketWarning              = sd.TicketWarning
+	TicketReferenceType        = sd.TicketReferenceType
+	PathReferenceKind          = sd.PathReferenceKind
+	TicketReference            = sd.TicketReference
 	TicketSummary              = sd.TicketSummary
 	TicketConclusion           = sd.TicketConclusion
 	Ticket                     = sd.Ticket
@@ -20,6 +23,13 @@ type (
 	EditTicketParams           = sd.EditTicketParams
 	UpdateTicketMetadataParams = sd.UpdateTicketMetadataParams
 	MoveTicketParams           = sd.MoveTicketParams
+)
+
+const (
+	TicketReferenceTicket  = sd.TicketReferenceTicket
+	TicketReferencePath    = sd.TicketReferencePath
+	PathReferenceFile      = sd.PathReferenceFile
+	PathReferenceDirectory = sd.PathReferenceDirectory
 )
 
 const (

@@ -46,7 +46,7 @@ func (s *Server) registerArchitectTools() {
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "updateTicket",
-		Description: "Update ticket metadata fields (title, repo, references). Only present fields are updated; omitted fields are left unchanged.",
+		Description: "Update ticket metadata fields (title, writable repo scope, references). References may be same-board ticket IDs or absolute filesystem paths used as read-only context; they never grant write access. Only present fields are updated; omitted fields are left unchanged.",
 	}, s.handleUpdateTicket)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{

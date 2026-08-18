@@ -98,7 +98,7 @@ Include:
 - Hard constraints the user explicitly stated
 - Important known details that are already clear
 - Verified context from exploration when it meaningfully reduces ambiguity
-- Related ticket references when applicable
+- Related same-board ticket IDs and absolute filesystem paths when applicable. Filesystem paths are read-only context; repositories that may be modified must be declared in writable repo scope.
 
 Avoid:
 - Speculative implementation steps

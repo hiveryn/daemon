@@ -516,6 +516,43 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 	})
 }
 
+func TestMixedTicketAndPathReferences(t *testing.T) {
+	root := t.TempDir()
+	pathDir := t.TempDir()
+	pathFile := filepath.Join(pathDir, "spec.md")
+	if err := os.WriteFile(pathFile, []byte("spec"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(pathDir, "missing")
+	writeTicketFile(t, root, domain.TicketStatusBacklog, "target", "---\ntitle: Target\n---\n")
+	ticket, err := NewTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{Title: "Mixed", References: []string{"target", pathDir + "/.", pathFile, missing}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ticket.ResolvedReferences) != 4 {
+		t.Fatalf("resolved = %#v", ticket.ResolvedReferences)
+	}
+	if ref := ticket.ResolvedReferences[0]; ref.Type != domain.TicketReferenceTicket || !ref.Exists {
+		t.Fatalf("ticket = %#v", ref)
+	}
+	if ref := ticket.ResolvedReferences[1]; ref.Kind != domain.PathReferenceDirectory || !ref.Exists {
+		t.Fatalf("directory = %#v", ref)
+	}
+	if ref := ticket.ResolvedReferences[2]; ref.Kind != domain.PathReferenceFile || !ref.Exists {
+		t.Fatalf("file = %#v", ref)
+	}
+	if ref := ticket.ResolvedReferences[3]; ref.Exists || ref.Kind != "" {
+		t.Fatalf("missing = %#v", ref)
+	}
+	if len(ticket.Warnings) != 1 || ticket.Warnings[0].Code != warningMissingPathReference {
+		t.Fatalf("warnings = %#v", ticket.Warnings)
+	}
+	_, err = NewTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{Title: "Duplicate", References: []string{pathDir, pathDir + "/."}})
+	if err == nil {
+		t.Fatal("expected normalized duplicate rejection")
+	}
+}
+
 func TestTicketServiceEmptySlicesAreNonNull(t *testing.T) {
 	t.Parallel()
 

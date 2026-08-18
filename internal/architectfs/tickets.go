@@ -21,6 +21,7 @@ const (
 	warningDoneWithoutConclusion = "DONE_WITHOUT_CONCLUSION"
 	warningConclusionOutsideDone = "CONCLUSION_OUTSIDE_DONE"
 	warningBrokenReference       = "BROKEN_REFERENCE"
+	warningMissingPathReference  = "MISSING_PATH_REFERENCE"
 )
 
 type TicketService struct{}
@@ -310,27 +311,29 @@ func (s *TicketService) MoveTicket(_ context.Context, architectPath, id string, 
 }
 
 type ticketEntry struct {
-	id         string
-	status     domain.TicketStatus
-	dir        string
-	document   MarkdownDocument
-	metadata   ticketMetadata
-	conclusion *domain.TicketConclusion
-	warnings   []domain.TicketWarning
+	id                 string
+	status             domain.TicketStatus
+	dir                string
+	document           MarkdownDocument
+	metadata           ticketMetadata
+	conclusion         *domain.TicketConclusion
+	warnings           []domain.TicketWarning
+	resolvedReferences []domain.TicketReference
 }
 
 func (e ticketEntry) summary() domain.TicketSummary {
 	return domain.TicketSummary{
-		ID:              e.id,
-		Status:          e.status,
-		Title:           e.metadata.Title,
-		Repo:            e.metadata.Repo,
-		AdditionalRepos: nonNilStrings(e.metadata.AdditionalRepos),
-		Created:         e.metadata.Created,
-		Updated:         e.metadata.Updated,
-		References:      nonNilStrings(e.metadata.References),
-		HasConclusion:   e.conclusion != nil,
-		Warnings:        cloneWarnings(e.warnings),
+		ID:                 e.id,
+		Status:             e.status,
+		Title:              e.metadata.Title,
+		Repo:               e.metadata.Repo,
+		AdditionalRepos:    nonNilStrings(e.metadata.AdditionalRepos),
+		Created:            e.metadata.Created,
+		Updated:            e.metadata.Updated,
+		References:         nonNilStrings(e.metadata.References),
+		ResolvedReferences: append([]domain.TicketReference{}, e.resolvedReferences...),
+		HasConclusion:      e.conclusion != nil,
+		Warnings:           cloneWarnings(e.warnings),
 	}
 
 }
@@ -760,12 +763,35 @@ func validateAllTicketReferences(entries map[domain.TicketStatus][]ticketEntry) 
 		for i := range entries[status] {
 			entry := &entries[status][i]
 			for _, ref := range entry.metadata.References {
+				if filepath.IsAbs(ref) {
+					resolved := domain.TicketReference{Value: ref, Type: domain.TicketReferencePath}
+					info, err := os.Stat(ref)
+					switch {
+					case err == nil:
+						resolved.Exists = true
+						if info.IsDir() {
+							resolved.Kind = domain.PathReferenceDirectory
+						} else {
+							resolved.Kind = domain.PathReferenceFile
+						}
+					case os.IsNotExist(err):
+						entry.warnings = append(entry.warnings, domain.TicketWarning{Code: warningMissingPathReference, Message: "referenced path does not exist: " + ref})
+					default:
+						entry.warnings = append(entry.warnings, domain.TicketWarning{Code: warningMissingPathReference, Message: "cannot inspect referenced path " + ref + ": " + err.Error()})
+					}
+					entry.resolvedReferences = append(entry.resolvedReferences, resolved)
+					continue
+				}
+				resolved := domain.TicketReference{Value: ref, Type: domain.TicketReferenceTicket}
 				if _, ok := ids[ref]; !ok {
 					entry.warnings = append(entry.warnings, domain.TicketWarning{
 						Code:    warningBrokenReference,
 						Message: "references unknown ticket " + ref,
 					})
+				} else {
+					resolved.Exists = true
 				}
+				entry.resolvedReferences = append(entry.resolvedReferences, resolved)
 			}
 		}
 	}
@@ -786,11 +812,19 @@ func normalizeReferences(references []string) ([]string, error) {
 		return []string{}, nil
 	}
 	normalized := make([]string, 0, len(references))
+	seen := make(map[string]struct{}, len(references))
 	for _, reference := range references {
 		reference = strings.TrimSpace(reference)
 		if reference == "" {
-			return nil, &domain.ValidationError{Field: "references", Message: "must contain only non-empty ticket IDs"}
+			return nil, &domain.ValidationError{Field: "references", Message: "must contain only non-empty ticket IDs or absolute filesystem paths"}
 		}
+		if filepath.IsAbs(reference) {
+			reference = filepath.Clean(reference)
+		}
+		if _, ok := seen[reference]; ok {
+			return nil, &domain.ValidationError{Field: "references", Message: "contains duplicate reference " + reference}
+		}
+		seen[reference] = struct{}{}
 		normalized = append(normalized, reference)
 	}
 	return normalized, nil
