@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/hiveryn/agentruntime"
+	arclaude "github.com/hiveryn/agentruntime/adapter/claude"
+	arcodex "github.com/hiveryn/agentruntime/adapter/codex"
 	aropencode "github.com/hiveryn/agentruntime/adapter/opencode"
 	"github.com/hiveryn/agentruntime/ingest"
 	"github.com/hiveryn/daemon/internal/config"
@@ -76,6 +78,82 @@ func TestCreateRunMarksRunFailedWhenTerminalStartFails(t *testing.T) {
 	}
 	if adapter.ensureRequest.Marker != setupMarker {
 		t.Fatalf("expected setup marker %q, got %q", setupMarker, adapter.ensureRequest.Marker)
+	}
+}
+
+func TestCreateRunTicketReferencesStayInPromptAndOutOfLaunchScope(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		profile config.VariantConfig
+		adapter agentruntime.Adapter
+	}{
+		{name: "claude", profile: config.VariantConfig{Agent: "claude", Yolo: true}, adapter: arclaude.New(arclaude.DefaultOptions())},
+		{name: "codex", profile: config.VariantConfig{Agent: "codex", Yolo: true}, adapter: arcodex.New(arcodex.DefaultOptions())},
+		{name: "opencode", profile: config.VariantConfig{Agent: "opencode", Yolo: true}, adapter: aropencode.New(aropencode.DefaultOptions())},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			workdir := t.TempDir()
+			additionalRepo := t.TempDir()
+			fileRef := filepath.Join(t.TempDir(), "spec.md")
+			dirRef := t.TempDir()
+			missingRef := filepath.Join(t.TempDir(), "missing")
+			prompt := strings.Join([]string{fileRef, dirRef, missingRef}, "\n")
+
+			repo := newFakeSessionRepository()
+			repo.createdSession = domain.Session{
+				ID: "session-1", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeTicket,
+				ContextID: "ticket-1", Prompt: prompt, Workdir: workdir,
+				AdditionalRepos: []string{"shared"}, AdditionalWorkdirs: []string{additionalRepo},
+			}
+			adapter := &fakePrepareLaunchAdapter{delegate: tc.adapter}
+			cfg := testRuntimeConfig(t)
+			cfg.Variants[tc.name] = tc.profile
+			service := &Service{
+				intents: newIntentStore(), logger: slog.New(slog.NewTextHandler(io.Discard, nil)), cfg: cfg,
+				repo: repo, tickets: &fakeTicketService{err: errors.New("launch must not re-resolve ticket references")},
+				receiver: ingest.NewReceiver(adapter), adapters: map[agentruntime.AgentKind]agentruntime.Adapter{tc.adapter.Agent(): adapter},
+				terminal: &fakeTerminalManager{}, eventStreams: map[string]map[uint64]chan domain.SessionEvent{}, bridgeCancels: map[string]func(){},
+			}
+
+			if _, err := service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{ProfileName: tc.name}); err != nil {
+				t.Fatalf("CreateRun failed: %v", err)
+			}
+			if adapter.launchRequest.Prompt != prompt {
+				t.Fatalf("references lost from kickoff prompt: %q", adapter.launchRequest.Prompt)
+			}
+			if !slices.Equal(adapter.launchRequest.AdditionalWorkdirs, []string{additionalRepo}) {
+				t.Fatalf("writable scope changed: %#v", adapter.launchRequest.AdditionalWorkdirs)
+			}
+		})
+	}
+}
+
+func TestCreateRunTicketLaunchFailureLeavesTicketBacklogAndRunInactive(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.createdSession = domain.Session{ID: "session-1", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeTicket, ContextID: "ticket-1", Prompt: "/external/spec.md", Workdir: t.TempDir()}
+	tickets := &fakeTicketService{}
+	adapter := &fakeAdapter{}
+	service := &Service{
+		intents: newIntentStore(), logger: slog.New(slog.NewTextHandler(io.Discard, nil)), cfg: testRuntimeConfig(t),
+		repo: repo, tickets: tickets, receiver: ingest.NewReceiver(adapter),
+		adapters: map[agentruntime.AgentKind]agentruntime.Adapter{agentruntime.AgentCodex: adapter},
+		terminal: &fakeTerminalManager{startErr: errors.New("pty launch failed")}, eventStreams: map[string]map[uint64]chan domain.SessionEvent{}, bridgeCancels: map[string]func(){},
+	}
+
+	_, err := service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{ProfileName: "codex"})
+	if err == nil || !strings.Contains(err.Error(), "pty launch failed") {
+		t.Fatalf("expected original launch error context, got %v", err)
+	}
+	if tickets.movedTo != "" {
+		t.Fatalf("ticket moved despite failed launch: %q", tickets.movedTo)
+	}
+	if repo.createdSession.CurrentRun == nil || repo.createdSession.CurrentRun.Status != domain.SessionRunStatusFailed {
+		t.Fatalf("failed launch left an active run: %#v", repo.createdSession.CurrentRun)
 	}
 }
 
@@ -2200,7 +2278,8 @@ func (fakeAdapter) ParseUsage(context.Context, string) (agentruntime.Usage, erro
 }
 
 type fakePrepareLaunchAdapter struct {
-	delegate agentruntime.Adapter
+	delegate      agentruntime.Adapter
+	launchRequest agentruntime.StartRequest
 }
 
 func (f *fakePrepareLaunchAdapter) Agent() agentruntime.AgentKind { return f.delegate.Agent() }
@@ -2210,6 +2289,7 @@ func (f *fakePrepareLaunchAdapter) ConfigRoot(env map[string]string) string {
 }
 
 func (f *fakePrepareLaunchAdapter) PrepareLaunch(ctx context.Context, req agentruntime.StartRequest) (agentruntime.LaunchSpec, error) {
+	f.launchRequest = req
 	return f.delegate.PrepareLaunch(ctx, req)
 }
 

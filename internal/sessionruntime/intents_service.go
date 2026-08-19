@@ -435,6 +435,10 @@ func (s *Service) RequestSpawnTicketSession(
 			// path and the desktop's POST /api/sessions/{id}/runs announce the new
 			// session identically. Emitting here as well would double-deliver.
 			if _, err := s.CreateRun(execCtx, created.ID, domain.CreateSessionRunRequest{ProfileName: profileName}); err != nil {
+				if deleteErr := s.repo.DeleteSession(execCtx, created.ID); deleteErr != nil {
+					return domain.SpawnTicketSessionResult{}, fmt.Errorf("spawn ticket session %s: %w (also failed to roll back session: %v)", created.ID, err, deleteErr)
+				}
+				s.cleanupDeletedSession(created.ID)
 				return domain.SpawnTicketSessionResult{}, fmt.Errorf("spawn ticket session %s: %w", created.ID, err)
 			}
 			return domain.SpawnTicketSessionResult{SessionID: created.ID}, nil

@@ -352,12 +352,6 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 		"requested_cols", req.Cols,
 		"requested_rows", req.Rows,
 	)
-	readOnlyPaths, err := s.ticketReadOnlyPaths(ctx, architect.Path, session)
-	if err != nil {
-		s.markRunFailed(run.ID, domain.SessionRunFailureLaunchFailed, "resolve_path_references")
-		return domain.CreateSessionRunResult{}, err
-	}
-
 	mainTerminalID, err := s.launchSession(ctx, cfg, session, run, profile, agentKind, agentruntime.StartRequest{
 		Prompt:             session.Prompt,
 		Model:              profile.Model,
@@ -366,7 +360,6 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 		Instructions:       session.Instructions,
 		Workdir:            session.Workdir,
 		AdditionalWorkdirs: writableAdditionalWorkdirs(session.SessionType, session.AdditionalWorkdirs),
-		ReadOnlyPaths:      readOnlyPaths,
 		Args:               append([]string(nil), profile.Args...),
 		Env:                cloneStringMap(profile.Env),
 	}, terminalSize{Cols: req.Cols, Rows: req.Rows})
@@ -405,33 +398,6 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 	s.emitArchitectEvent(session.ArchitectKey, domain.ArchitectEventSessionStarted, ticketID, session.ID)
 
 	return domain.CreateSessionRunResult{Run: run, MainTerminalID: mainTerminalID}, nil
-}
-
-func (s *Service) ticketReadOnlyPaths(ctx context.Context, architectPath string, session domain.Session) ([]string, error) {
-	if session.SessionType != domain.SessionTypeTicket {
-		return nil, nil
-	}
-	ticket, err := s.tickets.GetTicket(ctx, architectPath, session.ContextID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve ticket %s path references for launch: %w", session.ContextID, err)
-	}
-	paths := make([]string, 0, len(ticket.ResolvedReferences))
-	for _, ref := range ticket.ResolvedReferences {
-		if ref.Type == domain.TicketReferencePath && ref.Exists && !withinAnyPath(ref.Value, append([]string{session.Workdir}, session.AdditionalWorkdirs...)) {
-			paths = append(paths, ref.Value)
-		}
-	}
-	return paths, nil
-}
-
-func withinAnyPath(path string, roots []string) bool {
-	for _, root := range roots {
-		rel, err := filepath.Rel(root, path)
-		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return true
-		}
-	}
-	return false
 }
 
 func setupRequestForAgent(adapter agentruntime.Adapter, endpoint string, env map[string]string) agentruntime.SetupRequest {
@@ -545,11 +511,6 @@ func (s *Service) restoreSession(ctx context.Context, session domain.Session, ru
 	if err != nil {
 		return err
 	}
-	readOnlyPaths, err := s.ticketReadOnlyPaths(ctx, cfg.Architects[session.ArchitectKey].Path, session)
-	if err != nil {
-		return err
-	}
-
 	if _, err := s.launchSession(ctx, cfg, session, run, profile, agentKind, agentruntime.StartRequest{
 		Model:              profile.Model,
 		Yolo:               profile.Yolo,
@@ -557,7 +518,6 @@ func (s *Service) restoreSession(ctx context.Context, session domain.Session, ru
 		Instructions:       session.Instructions,
 		Workdir:            run.Workdir,
 		AdditionalWorkdirs: writableAdditionalWorkdirs(session.SessionType, run.AdditionalWorkdirs),
-		ReadOnlyPaths:      readOnlyPaths,
 		Args:               append([]string(nil), profile.Args...),
 		Env:                cloneStringMap(profile.Env),
 		Resume:             true,
@@ -742,19 +702,10 @@ func (s *Service) resolveStoredRunLaunchContext(session domain.Session, run doma
 }
 
 func (s *Service) resumeSessionMainTerminal(ctx context.Context, session domain.Session, run domain.SessionRun, size terminalSize) (string, error) {
-	cfg, err := s.currentConfig()
-	if err != nil {
-		return "", err
-	}
 	profile, agentKind, err := s.resolveStoredRunLaunchContext(session, run)
 	if err != nil {
 		return "", err
 	}
-	readOnlyPaths, err := s.ticketReadOnlyPaths(ctx, cfg.Architects[session.ArchitectKey].Path, session)
-	if err != nil {
-		return "", err
-	}
-
 	mainTerminalID, _, err := s.startSessionMainTerminal(ctx, session, run, profile, agentKind, agentruntime.StartRequest{
 		Model:              profile.Model,
 		Yolo:               profile.Yolo,
@@ -762,7 +713,6 @@ func (s *Service) resumeSessionMainTerminal(ctx context.Context, session domain.
 		Instructions:       session.Instructions,
 		Workdir:            run.Workdir,
 		AdditionalWorkdirs: writableAdditionalWorkdirs(session.SessionType, run.AdditionalWorkdirs),
-		ReadOnlyPaths:      readOnlyPaths,
 		Args:               append([]string(nil), profile.Args...),
 		Env:                cloneStringMap(profile.Env),
 		Resume:             true,

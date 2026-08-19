@@ -2,11 +2,15 @@ package sessionruntime
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/hiveryn/agentruntime"
+	"github.com/hiveryn/agentruntime/ingest"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
 )
@@ -96,4 +100,62 @@ func TestSpawnTicketIntentShowsScopeAndPolicyAndDenialCreatesNoSession(t *testin
 	if res.Outcome != domain.IntentOutcomeDeniedByUser || repo.createdSession.SessionType != domain.SessionTypeArchitect {
 		t.Fatalf("denial outcome/session = %q/%#v", res.Outcome, repo.createdSession)
 	}
+}
+
+func TestApprovedSpawnTicketIntentRollsBackSessionOnLaunchFailure(t *testing.T) {
+	service, repo := newSpawnIntentService(t, domain.SessionTypeArchitect)
+	operations := []string{}
+	repo.operations = &operations
+	for _, repoPath := range service.cfg.Architects["hiveryn"].Repos {
+		createTestGitCommit(t, repoPath)
+	}
+	adapter := &fakeAdapter{}
+	service.adapters = map[agentruntime.AgentKind]agentruntime.Adapter{agentruntime.AgentCodex: adapter}
+	service.receiver = ingest.NewReceiver(adapter)
+	service.terminal = &fakeTerminalManager{startErr: errors.New("pty unavailable")}
+	service.bridgeCancels = map[string]func(){}
+
+	done := make(chan domain.IntentResolution[domain.SpawnTicketSessionResult], 1)
+	errCh := make(chan error, 1)
+	go func() {
+		res, err := service.RequestSpawnTicketSession(context.Background(), "architect-session", "ticket-1", "codex")
+		done <- res
+		errCh <- err
+	}()
+
+	intentID := waitForPendingIntent(t, service, "architect-session")
+	_, approveErr := service.ApproveIntent(context.Background(), "architect-session", intentID)
+	res := <-done
+	err := <-errCh
+	if approveErr == nil || !strings.Contains(approveErr.Error(), "pty unavailable") {
+		t.Fatalf("expected original launch failure, got approveErr=%v resolution=%#v requestErr=%v", approveErr, res, err)
+	}
+	if repo.deletedRunID != "" {
+		t.Fatalf("rollback should delete the session transactionally, not require a separate run repair: %q", repo.deletedRunID)
+	}
+	if !slicesContain(operations, "delete") {
+		t.Fatalf("created session was not rolled back: %#v", operations)
+	}
+}
+
+func waitForPendingIntent(t *testing.T, service *Service, sessionID string) string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ids := service.intents.PendingForSession(sessionID); len(ids) == 1 {
+			return ids[0]
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("intent was not created")
+	return ""
+}
+
+func slicesContain(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
