@@ -103,18 +103,7 @@ type readDefaultPromptResponse struct {
 // fresh config, writing a 404 and returning ok=false when the architect is
 // unknown.
 func (h *architectConfigHandler) architectWorkspace(w http.ResponseWriter, r *http.Request) (key, workspace string, ok bool) {
-	cfg, err := currentConfig(h.config, h.configSource)
-	if err != nil {
-		writeDomainError(w, r, err)
-		return "", "", false
-	}
-	key = r.PathValue("key")
-	architect, exists := cfg.Architects[key]
-	if !exists {
-		writeArchitectNotFound(w, r, key)
-		return "", "", false
-	}
-	return key, architect.Path, true
+	return resolveArchitectWorkspace(w, r, h.config, h.configSource)
 }
 
 func (h *architectConfigHandler) readArchitectConfig(w http.ResponseWriter, r *http.Request) {

@@ -80,7 +80,59 @@ func (s *Server) registerArchitectTools() {
 	}, s.handleReadTicketConclusion)
 
 	s.registerConfigTools()
+	s.registerRoadmapTools()
 	s.registerBrowserTools()
+}
+
+// registerRoadmapTools registers the durable-roadmap tools: one read tool and
+// eight flat single-op mutations, all guarded by an opaque version token.
+// Every mutation returns the next token; there is no delete — archive/restore
+// only.
+func (s *Server) registerRoadmapTools() {
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "readRoadmap",
+		Description: "Read the roadmap. Default: full current view; view=archive lists archived subtrees (add id=root_id for one); id + optional depth focus a current subtree. Returns items, linked-ticket info, warnings, and the version token mutations require.",
+	}, s.handleReadRoadmap)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "createRoadmapItem",
+		Description: "Add a roadmap item (goal, initiative, or milestone).",
+	}, s.handleCreateRoadmapItem)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "updateRoadmapItem",
+		Description: "Change an item's title, status, outcome, success criteria, or dependencies; only provided fields change.",
+	}, s.handleUpdateRoadmapItem)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "moveRoadmapItem",
+		Description: "Re-parent or reorder an item; its subtree moves with it.",
+	}, s.handleMoveRoadmapItem)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "linkRoadmapTicket",
+		Description: "Link a board ticket to a roadmap item. Idempotent.",
+	}, s.handleLinkRoadmapTicket)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "unlinkRoadmapTicket",
+		Description: "Unlink a ticket from a roadmap item. Idempotent.",
+	}, s.handleUnlinkRoadmapTicket)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "archiveRoadmapItem",
+		Description: "Archive an item plus its whole subtree (recoverable with restoreRoadmapItem). Fails if other items still link into the subtree.",
+	}, s.handleArchiveRoadmapItem)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "restoreRoadmapItem",
+		Description: "Restore an archived subtree and remove its archive entry; original parent/order unless overridden.",
+	}, s.handleRestoreRoadmapItem)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "setRoadmapTitle",
+		Description: "Set the roadmap-level title.",
+	}, s.handleSetRoadmapTitle)
 }
 
 // registerConfigTools registers the hiveryn.yaml config-management tools. They

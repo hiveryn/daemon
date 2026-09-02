@@ -19,6 +19,7 @@ import (
 	"github.com/hiveryn/daemon/internal/archive"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/logging"
+	"github.com/hiveryn/daemon/internal/roadmapfs"
 	"github.com/hiveryn/daemon/internal/server"
 	"github.com/hiveryn/daemon/internal/sessionruntime"
 	"github.com/hiveryn/daemon/internal/store"
@@ -76,6 +77,7 @@ func Run(configPath, databasePath string, portOverride int) error {
 
 	sessionStore := store.NewSessionStore(db)
 	ticketService := architectfs.NewTicketService()
+	roadmapService := roadmapfs.NewService(ticketService)
 	service, err := sessionruntime.New(ctx, cfg, configSource, sessionStore, ticketService, logger, resolvedBaseURL)
 	if err != nil {
 		return err
@@ -109,6 +111,7 @@ func Run(configPath, databasePath string, portOverride int) error {
 		RequestLogger:   logManager.RequestLogger(),
 		Sessions:        service,
 		Tickets:         ticketService,
+		Roadmaps:        roadmapService,
 		IngestHandler:   service.IngestHandler(),
 		ArchitectEvents: architectHub,
 	})
