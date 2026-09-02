@@ -657,6 +657,10 @@ func (f *fakeSessionService) CreateTerminal(_ context.Context, id string, params
 	return f.createTerminalResult, f.createTerminalErr
 }
 
+func (f *fakeSessionService) ListTerminalWorkdirs(context.Context, string) ([]domain.TerminalWorkdir, error) {
+	return nil, nil
+}
+
 func (f *fakeSessionService) ListTerminals(context.Context, string) ([]domain.TerminalInfo, error) {
 	return nil, nil
 }

@@ -31,6 +31,7 @@ type (
 	MoveTicketToDoneParams   = sd.MoveTicketToDoneParams
 	MoveTicketToDoneResult   = sd.MoveTicketToDoneResult
 	TerminalInfo             = sd.TerminalInfo
+	TerminalWorkdir          = sd.TerminalWorkdir
 	TerminalPlacement        = sd.TerminalPlacement
 	CreateTerminalParams     = sd.CreateTerminalParams
 	SessionTab               = sd.SessionTab
@@ -134,6 +135,7 @@ type SessionService interface {
 	SubscribeSessionEvents(context.Context, string) (SessionEventSubscription, error)
 	AttachTerminal(context.Context, string, string) (TerminalAttachment, error)
 	CreateTerminal(context.Context, string, CreateTerminalParams) (TerminalInfo, error)
+	ListTerminalWorkdirs(context.Context, string) ([]TerminalWorkdir, error)
 	ListTerminals(context.Context, string) ([]TerminalInfo, error)
 	ListSessionTabs(context.Context, string) ([]SessionTab, error)
 	KillTerminal(context.Context, string, string) error

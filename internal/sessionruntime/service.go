@@ -1570,9 +1570,6 @@ func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params d
 	if session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
 		return domain.TerminalInfo{}, &domain.ValidationError{Field: "session_id", Message: "session is not running"}
 	}
-	if strings.TrimSpace(session.CurrentRun.Workdir) == "" {
-		return domain.TerminalInfo{}, fmt.Errorf("session %s current run has no workdir", session.ID)
-	}
 	if params.Placement != domain.TerminalPlacementTab && params.Placement != domain.TerminalPlacementSplit {
 		return domain.TerminalInfo{}, &domain.ValidationError{Field: "placement", Message: "must be one of: tab, split"}
 	}
@@ -1596,6 +1593,26 @@ func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params d
 			return domain.TerminalInfo{}, &domain.ValidationError{Field: "base_tab_id", Message: "must reference an existing primary right-pane tab"}
 		}
 	}
+	if strings.TrimSpace(params.WorkdirID) == "" {
+		return domain.TerminalInfo{}, &domain.ValidationError{Field: "workdir_id", Message: "is required; choose a terminal working directory"}
+	}
+	workdirs, err := s.terminalWorkdirs(ctx, session)
+	if err != nil {
+		return domain.TerminalInfo{}, err
+	}
+	var selected *domain.TerminalWorkdir
+	for i := range workdirs {
+		if workdirs[i].ID == params.WorkdirID {
+			selected = &workdirs[i]
+			break
+		}
+	}
+	if selected == nil {
+		return domain.TerminalInfo{}, &domain.ValidationError{Field: "workdir_id", Message: "is not available for this session; refresh the choices and select another directory"}
+	}
+	if err := validateExistingDirectory(selected.Path, "workdir_id"); err != nil {
+		return domain.TerminalInfo{}, fmt.Errorf("selected terminal workdir %q (%s): %w", selected.Title, selected.Path, err)
+	}
 
 	command := s.defaultShell()
 
@@ -1604,7 +1621,7 @@ func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params d
 		SessionID:  sessionID,
 		TerminalID: terminalID,
 		Command:    command,
-		Workdir:    session.CurrentRun.Workdir,
+		Workdir:    selected.Path,
 		Size:       terminalSize{Cols: defaultPTYCols, Rows: defaultPTYRows},
 		OnExit:     s.handleAuxTerminalExit,
 	}); err != nil {
@@ -1619,6 +1636,7 @@ func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params d
 			Status:    "running",
 			Placement: params.Placement,
 			BaseTabID: params.BaseTabID,
+			WorkdirID: selected.ID, WorkdirTitle: selected.Title, WorkdirPath: selected.Path, WorkdirDisplayPath: selected.DisplayPath,
 		},
 		removeOnExit: true,
 	})
@@ -1628,7 +1646,95 @@ func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params d
 		SessionID:  sessionID,
 		Command:    command,
 		Status:     "running",
+		WorkdirID:  selected.ID, WorkdirTitle: selected.Title, WorkdirPath: selected.Path, WorkdirDisplayPath: selected.DisplayPath,
 	}, nil
+}
+
+func (s *Service) ListTerminalWorkdirs(ctx context.Context, sessionID string) ([]domain.TerminalWorkdir, error) {
+	session, err := s.repo.GetSession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
+		return nil, &domain.ValidationError{Field: "session_id", Message: "session is not running"}
+	}
+	return s.terminalWorkdirs(ctx, session)
+}
+
+func (s *Service) terminalWorkdirs(ctx context.Context, session domain.Session) ([]domain.TerminalWorkdir, error) {
+	architect, err := s.currentArchitect(session.ArchitectKey)
+	if err != nil {
+		return nil, fmt.Errorf("load architect %q terminal workdirs: %w", session.ArchitectKey, err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve daemon user home: %w", err)
+	}
+	display := func(p string) string {
+		p = filepath.Clean(p)
+		if p == home {
+			return "~"
+		}
+		if strings.HasPrefix(p, home+string(filepath.Separator)) {
+			return "~" + strings.TrimPrefix(p, home)
+		}
+		return p
+	}
+	seen := map[string]bool{}
+	result := []domain.TerminalWorkdir{}
+	add := func(id, title, path string, def bool) {
+		path = filepath.Clean(path)
+		if seen[path] {
+			return
+		}
+		seen[path] = true
+		result = append(result, domain.TerminalWorkdir{ID: id, Title: title, Path: path, DisplayPath: display(path), Default: def})
+	}
+	repoTitle := func(path string) string {
+		for key, repoPath := range architect.Repos {
+			if filepath.Clean(repoPath) == filepath.Clean(path) {
+				return key
+			}
+		}
+		return "Session repository"
+	}
+	run := session.CurrentRun
+	if session.SessionType == domain.SessionTypeTicket {
+		primaryTitle := repoTitle(run.Workdir)
+		if s.tickets != nil {
+			ticket, ticketErr := s.tickets.GetTicket(ctx, architect.Path, session.ContextID)
+			if ticketErr != nil {
+				return nil, fmt.Errorf("read ticket %q for terminal workdirs: %w", session.ContextID, ticketErr)
+			}
+			if strings.TrimSpace(ticket.Repo) == "" {
+				return nil, fmt.Errorf("ticket %q has no primary repository key", session.ContextID)
+			}
+			primaryTitle = ticket.Repo
+		}
+		add("session-primary", primaryTitle, run.Workdir, true)
+		for i, path := range run.AdditionalWorkdirs {
+			title := "Additional repository"
+			if i < len(run.AdditionalRepos) {
+				title = run.AdditionalRepos[i]
+			}
+			add(fmt.Sprintf("session-additional:%d", i), title, path, false)
+		}
+		add("architect-workspace", "Architect workspace", architect.Path, false)
+	} else {
+		add("architect-workspace", "Architect workspace", architect.Path, true)
+	}
+	keys := make([]string, 0, len(architect.Repos))
+	for key := range architect.Repos {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		add("repo:"+key, key, architect.Repos[key], false)
+	}
+	if session.SessionType == domain.SessionTypeFreeform && len(result) == 0 {
+		add("session-primary", "Session workspace", run.Workdir, true)
+	}
+	return result, nil
 }
 
 func (s *Service) ListTerminals(ctx context.Context, sessionID string) ([]domain.TerminalInfo, error) {

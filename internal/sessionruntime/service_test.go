@@ -1297,7 +1297,7 @@ func TestCreateTerminalUsesCurrentRunWorkdirAndConfiguredShell(t *testing.T) {
 	service := &Service{
 		intents:        newIntentStore(),
 		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg:            config.Config{Shell: "/bin/zsh"},
+		cfg:            config.Config{Shell: "/bin/zsh", Architects: map[string]config.ArchitectConfig{"hiveryn": {Path: t.TempDir(), Repos: map[string]string{"desktop": repoPath}}}},
 		repo:           repo,
 		terminal:       terminal,
 		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
@@ -1305,7 +1305,7 @@ func TestCreateTerminalUsesCurrentRunWorkdirAndConfiguredShell(t *testing.T) {
 		terminalStates: map[string]sessionTerminalState{},
 	}
 
-	info, err := service.CreateTerminal(context.Background(), "session-1", domain.CreateTerminalParams{Placement: domain.TerminalPlacementTab})
+	info, err := service.CreateTerminal(context.Background(), "session-1", domain.CreateTerminalParams{Placement: domain.TerminalPlacementTab, WorkdirID: "session-primary"})
 	if err != nil {
 		t.Fatalf("CreateTerminal failed: %v", err)
 	}
@@ -1379,6 +1379,7 @@ func TestCreateTerminalRejectsSecondSplit(t *testing.T) {
 	service := &Service{
 		intents:       newIntentStore(),
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:           config.Config{Architects: map[string]config.ArchitectConfig{"hiveryn": {Path: t.TempDir(), Repos: map[string]string{"desktop": repoPath}}}},
 		repo:          repo,
 		terminal:      &fakeTerminalManager{},
 		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
@@ -1425,6 +1426,7 @@ func TestCreateTerminalAllowsSplitOnDifferentBaseTab(t *testing.T) {
 	service := &Service{
 		intents:       newIntentStore(),
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:           config.Config{Architects: map[string]config.ArchitectConfig{"hiveryn": {Path: t.TempDir(), Repos: map[string]string{"desktop": repoPath}}}},
 		repo:          repo,
 		terminal:      terminal,
 		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
@@ -1440,7 +1442,7 @@ func TestCreateTerminalAllowsSplitOnDifferentBaseTab(t *testing.T) {
 		},
 	}
 
-	info, err := service.CreateTerminal(context.Background(), "session-1", domain.CreateTerminalParams{Placement: domain.TerminalPlacementSplit, BaseTabID: "event-log"})
+	info, err := service.CreateTerminal(context.Background(), "session-1", domain.CreateTerminalParams{Placement: domain.TerminalPlacementSplit, BaseTabID: "event-log", WorkdirID: "session-primary"})
 	if err != nil {
 		t.Fatalf("CreateTerminal failed: %v", err)
 	}

@@ -428,6 +428,15 @@ func (h *sessionsHandler) createTerminal(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, r, http.StatusCreated, terminal)
 }
 
+func (h *sessionsHandler) listTerminalWorkdirs(w http.ResponseWriter, r *http.Request) {
+	workdirs, err := h.sessions.ListTerminalWorkdirs(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, workdirs)
+}
+
 func (h *sessionsHandler) listTerminals(w http.ResponseWriter, r *http.Request) {
 	if h.sessions == nil {
 		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)

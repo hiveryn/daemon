@@ -266,6 +266,8 @@ Session responses expose a durable session plus its current run, if any. Each se
 
 The legitimate explicit session ends are `POST /api/sessions/{id}/conclude` and, for ticket sessions only, `POST /api/sessions/{id}/discard`. Concluding an architect intent fails fast with `CONFLICT` while ticket intents for the same `architect_key` still have a `running` run; the error message lists the blocking intent IDs.
 
+Auxiliary terminal creation is workdir-explicit: `GET /api/sessions/{id}/terminal-workdirs` returns ordered daemon-authoritative choices with stable identities and daemon-host-relative display paths. `POST /api/sessions/{id}/terminals` requires one returned `workdir_id`; the daemon resolves and revalidates it immediately before launching the PTY and records its identity and display metadata on the terminal tab.
+
 ### Discard ticket session
 
 `POST /api/sessions/{id}/discard` is for the desktop "discard worker session" action. It accepts no request body. The target session must be a ticket session with a current run; architect and freeform sessions return a `VALIDATION` envelope. The daemon moves the ticket back to `backlog`, emits a live session SSE event with `type=status`, `status=ended`, `message=session discarded`, and `raw.lifecycle=discarded`, kills all PTYs for the session, deletes the `session_runs` row, and deletes the `sessions` row. No `conclusion.md` is written and no commit/rejection invariant is checked. Git changes made by the agent are not reverted.
