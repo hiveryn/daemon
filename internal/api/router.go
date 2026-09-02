@@ -121,6 +121,7 @@ func NewHandler(deps Dependencies) http.Handler {
 		hub := deps.ArchitectEvents
 		th.publishArchitect = hub.Publish
 		sh.publishArchitect = hub.Publish
+		arh.publishArchitect = hub.Publish
 	}
 
 	mux.HandleFunc("GET /api/health", handleHealth)

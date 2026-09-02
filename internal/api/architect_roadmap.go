@@ -10,10 +10,11 @@ import (
 )
 
 type architectRoadmapHandler struct {
-	config       config.Config
-	configSource config.Source
-	logger       *slog.Logger
-	roadmaps     domain.RoadmapService
+	config           config.Config
+	configSource     config.Source
+	logger           *slog.Logger
+	roadmaps         domain.RoadmapService
+	publishArchitect func(key string, event domain.ArchitectEvent)
 }
 
 // resolveArchitectWorkspace resolves the workspace path for the {key} path
@@ -60,7 +61,7 @@ func (h *architectRoadmapHandler) read(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *architectRoadmapHandler) update(w http.ResponseWriter, r *http.Request) {
-	_, workspace, ok := resolveArchitectWorkspace(w, r, h.config, h.configSource)
+	key, workspace, ok := resolveArchitectWorkspace(w, r, h.config, h.configSource)
 	if !ok {
 		return
 	}
@@ -74,5 +75,6 @@ func (h *architectRoadmapHandler) update(w http.ResponseWriter, r *http.Request)
 		writeDomainError(w, r, err)
 		return
 	}
+	publishArchitectEvent(h.publishArchitect, key, domain.ArchitectEventRoadmapUpdated, "", "")
 	writeJSON(w, r, http.StatusOK, result)
 }

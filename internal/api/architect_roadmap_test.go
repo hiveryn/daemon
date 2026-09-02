@@ -4,10 +4,13 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/hiveryn/daemon/internal/archevents"
 	"github.com/hiveryn/daemon/internal/architectfs"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
+	"github.com/hiveryn/daemon/internal/roadmapfs"
 )
 
 // newRoadmapTestHandler wires a reloading handler over a single architect
@@ -136,6 +139,84 @@ func TestRoadmapQueryValidation(t *testing.T) {
 	view := readRoadmap(t, handler, "?view=archive")
 	if view.View != "archive" || len(view.ArchiveEntries) != 0 {
 		t.Fatalf("archive view = %#v", view)
+	}
+}
+
+// newRoadmapTestHandlerWithHub wires the same single-architect setup as
+// newRoadmapTestHandler, but with a real archevents.Hub so a successful
+// PUT's event emission can be observed directly via Hub.Subscribe.
+func newRoadmapTestHandlerWithHub(t *testing.T) (http.Handler, *archevents.Hub) {
+	t.Helper()
+	cfg := testConfig()
+	cfg.Architects = cloneArchitects(cfg.Architects)
+	architect := cfg.Architects["hiveryn"]
+	architect.Path = t.TempDir()
+	cfg.Architects["hiveryn"] = architect
+
+	tickets := architectfs.NewTicketService()
+	hub := archevents.New(nil)
+	handler := NewHandler(Dependencies{
+		Config:          cfg,
+		Tickets:         tickets,
+		Roadmaps:        roadmapfs.NewService(tickets),
+		ArchitectEvents: hub,
+	})
+	return handler, hub
+}
+
+func TestRoadmapUpdateEmitsArchitectEvent(t *testing.T) {
+	t.Parallel()
+	handler, hub := newRoadmapTestHandlerWithHub(t)
+	sub := hub.Subscribe("hiveryn")
+	defer sub.Close()
+
+	view := readRoadmap(t, handler, "")
+	status, body := requestJSON(t, handler, http.MethodPut, "/api/architects/hiveryn/roadmap", domain.UpdateRoadmapParams{
+		Version: view.Version,
+		Ops: []domain.RoadmapOp{{
+			Type: domain.RoadmapOpCreate, ID: "g", Kind: domain.RoadmapItemGoal,
+			Title: ptr("G"), Outcome: ptr("O"),
+		}},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("update status = %d, body: %s", status, body)
+	}
+
+	select {
+	case event := <-sub.C():
+		if event.Reason != domain.ArchitectEventRoadmapUpdated {
+			t.Fatalf("reason = %q, want %q", event.Reason, domain.ArchitectEventRoadmapUpdated)
+		}
+		if event.ArchitectKey != "hiveryn" {
+			t.Fatalf("architect_key = %q", event.ArchitectKey)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for roadmap_updated event")
+	}
+}
+
+func TestRoadmapFailedUpdateEmitsNoArchitectEvent(t *testing.T) {
+	t.Parallel()
+	handler, hub := newRoadmapTestHandlerWithHub(t)
+	sub := hub.Subscribe("hiveryn")
+	defer sub.Close()
+
+	status, _ := requestJSON(t, handler, http.MethodPut, "/api/architects/hiveryn/roadmap", domain.UpdateRoadmapParams{
+		Version: "stale",
+		Ops: []domain.RoadmapOp{{
+			Type: domain.RoadmapOpCreate, ID: "x", Kind: domain.RoadmapItemGoal,
+			Title: ptr("T"), Outcome: ptr("O"),
+		}},
+	})
+	if status != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", status)
+	}
+
+	select {
+	case event := <-sub.C():
+		t.Fatalf("unexpected event published on failed update: %#v", event)
+	case <-time.After(200 * time.Millisecond):
+		// Expected: no event.
 	}
 }
 

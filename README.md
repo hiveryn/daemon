@@ -138,6 +138,7 @@ Each architect workspace can hold a durable roadmap above the ticket level in `r
 ```yaml
 architect:
   - type: kanban
+  - type: roadmap
   - type: event-log
   - type: terminal
     command: lazygit
@@ -154,7 +155,7 @@ freeform:
 
 Terminal entries only support `type` and optional `command`. Entries without `command` default to the user's shell. When a session run starts, the daemon auto-creates PTY terminals for every `type: terminal` entry in the matching session type section and assigns each terminal a UUID.
 
-`tabs.yaml` also accepts arbitrary non-`terminal` tab types (e.g. `type: git-diff`, `type: kanban`). These are declarative (no `command`) and are emitted as plain layout entries with no daemon-side lookup — git diffs, for example, are served natively via `GET /api/architects/{key}/repos/{repoKey}/diff` and `GET /api/architects/{key}/repos/{repoKey}/commits/{sha}/diff`.
+`tabs.yaml` also accepts arbitrary non-`terminal` tab types (e.g. `type: git-diff`, `type: kanban`, `type: roadmap`). These are declarative (no `command`) and are emitted as plain layout entries with no daemon-side lookup — git diffs, for example, are served natively via `GET /api/architects/{key}/repos/{repoKey}/diff` and `GET /api/architects/{key}/repos/{repoKey}/commits/{sha}/diff`; the roadmap tab reads `GET /api/architects/{key}/roadmap` (see below).
 
 ### `shortcuts.yaml` — keybindings
 
@@ -217,7 +218,7 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `DELETE` | `/api/architects/{key}/tickets/{id}` | Delete a backlog ticket folder and its contents |
 | `POST` | `/api/architects/{key}/tickets/{id}/move?to=...` | Move a ticket between backlog, progress, and done |
 | `POST` | `/api/architects/{key}/tickets/{id}/move-to-done` | Architect-driven ticket completion without a worker session: backlog → done (architect resolved it directly) or progress → done (manually closing a dead/stuck worker session — fails with `CONFLICT` if a worker session is currently running). Writes a `conclusion.md`; requires `outcome` (`completed`/`exploratory`/`rejected`) — `completed` requires `commits`, `rejected` requires `rejection_reason`. Called by the MCP `moveTicketToDone` tool. |
-| `GET` | `/api/architects/{key}/events` | Stream architect-scoped `workspace_changed` SSE hints. `reason` is a ticket reason (`ticket_created`/`ticket_updated`/`ticket_moved`/`ticket_deleted`/`ticket_concluded`) or a session reason (`session_started`/`session_ended`). Session reasons carry `session_id` — the only place in any stream where a session is named before a client knows it exists, so it is how a client discovers sessions it did not create (architect MCP spawns included). No backlog: reconcile on every (re)connect. |
+| `GET` | `/api/architects/{key}/events` | Stream architect-scoped `workspace_changed` SSE hints. `reason` is a ticket reason (`ticket_created`/`ticket_updated`/`ticket_moved`/`ticket_deleted`/`ticket_concluded`), a session reason (`session_started`/`session_ended`), or `roadmap_updated` (any successful `PUT .../roadmap`, MCP or HTTP). Session reasons carry `session_id` — the only place in any stream where a session is named before a client knows it exists, so it is how a client discovers sessions it did not create (architect MCP spawns included). No backlog: reconcile on every (re)connect. |
 | `GET` | `/api/architects/{key}/conclusions` | List recent conclusions (IDs + timestamps); supports `?limit=N` |
 | `GET` | `/api/architects/{key}/conclusions/recent` | Read the most recent architect session conclusion |
 | `GET` | `/api/architects/{key}/conclusions/{id}` | Read a conclusion by ID |

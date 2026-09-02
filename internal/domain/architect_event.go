@@ -22,4 +22,5 @@ const (
 	ArchitectEventTicketConcluded = sd.ArchitectEventTicketConcluded
 	ArchitectEventSessionStarted  = sd.ArchitectEventSessionStarted
 	ArchitectEventSessionEnded    = sd.ArchitectEventSessionEnded
+	ArchitectEventRoadmapUpdated  = sd.ArchitectEventRoadmapUpdated
 )
