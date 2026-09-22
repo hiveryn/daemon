@@ -38,6 +38,26 @@ func (h *workspaceHandler) check(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, report)
 }
 
+// workerPreflight answers whether a ticket session could be launched into this
+// workspace right now. It is the launch's own project-context validation, not
+// the aggregate workspace verdict: a workspace the check calls invalid is still
+// launchable when only architect-only artifacts or unselected workflows are
+// broken. Selected-workflow validity comes from the workflow listing and is
+// revalidated authoritatively at launch.
+func (h *workspaceHandler) workerPreflight(w http.ResponseWriter, r *http.Request) {
+	key, workspace, ok := resolveArchitectWorkspace(w, r, h.config, h.configSource)
+	if !ok {
+		return
+	}
+
+	preflight, err := h.workspaces.PreflightWorker(r.Context(), key, workspace)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, preflight)
+}
+
 func (h *workspaceHandler) listWorkflows(w http.ResponseWriter, r *http.Request) {
 	key, workspace, ok := resolveArchitectWorkspace(w, r, h.config, h.configSource)
 	if !ok {

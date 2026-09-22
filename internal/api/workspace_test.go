@@ -231,6 +231,55 @@ func TestWorkspaceListWorkflowsReportsInvalid(t *testing.T) {
 	}
 }
 
+func TestWorkspaceWorkerPreflight(t *testing.T) {
+	handler, workspace := newWorkspaceTestHandler(t)
+	// Broken enough for the aggregate check, untouched in the worker column.
+	writeWorkspaceFile(t, workspace, workspacefs.WorkflowsDirName+"/BROKEN.md", "no frontmatter\n")
+
+	status, body := request(t, handler, http.MethodGet, "/api/architects/hiveryn/workspace/worker-preflight", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, body: %s", status, body)
+	}
+
+	var preflight domain.WorkerPreflight
+	decodeEnvelopeData(t, body, &preflight)
+	if !preflight.Launchable || len(preflight.Problems) != 0 {
+		t.Fatalf("an unselected invalid workflow blocked a worker: %+v", preflight)
+	}
+	if preflight.ArchitectKey != "hiveryn" {
+		t.Errorf("architect_key = %q", preflight.ArchitectKey)
+	}
+}
+
+func TestWorkspaceWorkerPreflightReportsBlockers(t *testing.T) {
+	handler, workspace := newWorkspaceTestHandler(t)
+	if err := os.Remove(filepath.Join(workspace, workspacefs.ProjectStateFileName)); err != nil {
+		t.Fatalf("remove PROJECT_STATE.md: %v", err)
+	}
+
+	status, body := request(t, handler, http.MethodGet, "/api/architects/hiveryn/workspace/worker-preflight", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, body: %s", status, body)
+	}
+
+	var preflight domain.WorkerPreflight
+	decodeEnvelopeData(t, body, &preflight)
+	if preflight.Launchable {
+		t.Fatalf("missing PROJECT_STATE.md reported as launchable: %+v", preflight)
+	}
+	if !strings.Contains(strings.Join(preflight.Problems, "\n"), workspacefs.ProjectStateFileName) {
+		t.Errorf("problems do not name the missing document: %v", preflight.Problems)
+	}
+}
+
+func TestWorkspaceWorkerPreflightUnknownArchitect(t *testing.T) {
+	handler, _ := newWorkspaceTestHandler(t)
+	status, _ := request(t, handler, http.MethodGet, "/api/architects/ghost/workspace/worker-preflight", nil)
+	if status != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", status)
+	}
+}
+
 func TestParseRepoScope(t *testing.T) {
 	tests := []struct {
 		raw  string

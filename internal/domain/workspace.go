@@ -23,6 +23,7 @@ type (
 	WorkspaceTicketTotals  = sd.WorkspaceTicketTotals
 	WorkspaceTicketWarning = sd.WorkspaceTicketWarning
 	WorkspaceTickets       = sd.WorkspaceTickets
+	WorkerPreflight        = sd.WorkerPreflight
 
 	Workflow       = sd.Workflow
 	WorkflowAttach = sd.WorkflowAttach
@@ -106,6 +107,10 @@ type WorkspaceService interface {
 	// ListWorkflows discovers workflows/*.md and marks which are suggested for
 	// the given writable repo scope. An empty scope suggests nothing.
 	ListWorkflows(ctx context.Context, architectKey, workspacePath string, scopeRepos []string) (WorkflowList, error)
+	// PreflightWorker reports whether the workspace's required project context
+	// is ready for a worker session right now, running the same validation the
+	// launch runs rather than a second opinion about it.
+	PreflightWorker(ctx context.Context, architectKey, workspacePath string) (WorkerPreflight, error)
 	// DescribeArtifact renders the schema for one artifact kind from the same
 	// definitions the checks execute.
 	DescribeArtifact(ctx context.Context, kind ArtifactKind) (ArtifactSchema, error)

@@ -1,6 +1,7 @@
 package workspacefs
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -235,4 +236,92 @@ func TestValidateWorkerContextMissingWorkflowsDirOnlyMattersWhenSelecting(t *tes
 	}
 	_, err := ValidateWorkerContext(f.Workspace, "example", []string{filepath.Join(f.Workspace, WorkflowsDirName, "x.md")})
 	mustValidationError(t, err, "workflows", "workflows/ does not exist")
+}
+
+func (f *fixture) preflight() domain.WorkerPreflight {
+	f.t.Helper()
+	preflight, err := NewService(nil).PreflightWorker(context.Background(), "example", f.Workspace)
+	if err != nil {
+		f.t.Fatalf("preflight: %v", err)
+	}
+	return preflight
+}
+
+func TestPreflightWorkerReadyWorkspaceIsLaunchable(t *testing.T) {
+	f := newFixture(t)
+	preflight := f.preflight()
+	if !preflight.Launchable || len(preflight.Problems) != 0 {
+		t.Fatalf("valid workspace not launchable: %+v", preflight)
+	}
+	if preflight.ArchitectKey != "example" || preflight.CheckedAt.IsZero() {
+		t.Fatalf("preflight identity/timestamp missing: %+v", preflight)
+	}
+}
+
+// The optional roadmap is absent in the same run that is launchable, so its
+// absence is proven not to block a worker.
+func TestPreflightWorkerAbsentRoadmapDoesNotBlock(t *testing.T) {
+	f := newFixture(t)
+	f.remove(RoadmapCurrentFileName)
+	if preflight := f.preflight(); !preflight.Launchable {
+		t.Fatalf("absent optional roadmap blocked a worker: %+v", preflight)
+	}
+}
+
+func TestPreflightWorkerInvalidRoadmapBlocks(t *testing.T) {
+	f := newFixture(t)
+	f.write(RoadmapCurrentFileName, "# Roadmap\n\nNo frontmatter.\n")
+	preflight := f.preflight()
+	if preflight.Launchable {
+		t.Fatalf("invalid roadmap did not block a worker: %+v", preflight)
+	}
+	if !strings.Contains(strings.Join(preflight.Problems, "\n"), RoadmapCurrentFileName) {
+		t.Fatalf("problems do not name the roadmap: %+v", preflight.Problems)
+	}
+}
+
+func TestPreflightWorkerMissingRequiredDocumentBlocks(t *testing.T) {
+	f := newFixture(t)
+	f.remove(ProjectStateFileName)
+	preflight := f.preflight()
+	if preflight.Launchable {
+		t.Fatalf("missing PROJECT_STATE.md did not block a worker: %+v", preflight)
+	}
+	if !strings.Contains(strings.Join(preflight.Problems, "\n"), ProjectStateFileName) {
+		t.Fatalf("problems do not name the missing document: %+v", preflight.Problems)
+	}
+}
+
+// Architect-only artifacts and unselected invalid workflows are exactly what
+// separates this answer from the workspace check's aggregate verdict.
+func TestPreflightWorkerIgnoresArchitectOnlyAndUnselectedWorkflows(t *testing.T) {
+	f := newFixture(t)
+	f.write(ArchitectSystemFileName, "")
+	f.write(WorkflowsDirName+"/broken.md", "no frontmatter at all\n")
+
+	if report := f.check(); report.Valid {
+		t.Fatal("fixture should be an invalid workspace for the aggregate check")
+	}
+	if preflight := f.preflight(); !preflight.Launchable {
+		t.Fatalf("architect-only/unselected problems blocked a worker: %+v", preflight.Problems)
+	}
+}
+
+// The preflight and the launch must agree; one is the other's dry run.
+func TestPreflightWorkerAgreesWithLaunchValidation(t *testing.T) {
+	f := newFixture(t)
+	f.remove(ProjectOverviewFileName)
+
+	preflight := f.preflight()
+	_, err := ValidateWorkerContext(f.Workspace, "example", nil)
+	if preflight.Launchable {
+		t.Fatalf("preflight said launchable: %+v", preflight)
+	}
+	mustValidationError(t, err, "workspace", ProjectOverviewFileName)
+	for _, problem := range preflight.Problems {
+		var verr *domain.ValidationError
+		if !errors.As(err, &verr) || !strings.Contains(verr.Message, problem) {
+			t.Fatalf("launch error does not carry preflight problem %q:\n%v", problem, err)
+		}
+	}
 }

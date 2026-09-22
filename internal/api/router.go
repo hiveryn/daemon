@@ -138,6 +138,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/architects/{key}/repos/{repoKey}/status", rh.status)
 	mux.HandleFunc("GET /api/architects/{key}/repos/{repoKey}/commits/{sha}/diff", rh.commitDiff)
 	mux.HandleFunc("GET /api/architects/{key}/workspace/check", wh.check)
+	mux.HandleFunc("GET /api/architects/{key}/workspace/worker-preflight", wh.workerPreflight)
 	mux.HandleFunc("GET /api/architects/{key}/workspace/artifacts/{kind}", wh.describeArtifact)
 	mux.HandleFunc("GET /api/architects/{key}/workflows", wh.listWorkflows)
 	mux.HandleFunc("GET /api/config/shortcuts", sch.get)

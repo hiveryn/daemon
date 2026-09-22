@@ -70,6 +70,26 @@ func (s *Service) ListWorkflows(_ context.Context, architectKey, workspacePath s
 	}, nil
 }
 
+// PreflightWorker reports whether the workspace's required project context is
+// ready for a ticket session right now.
+//
+// It runs the launch's own project-context validation rather than deriving a
+// verdict from CheckWorkspace: the check's aggregate `valid` covers
+// architect-only artifacts and every discovered workflow, none of which blocks
+// a worker, so reusing it would refuse launches the daemon would accept.
+func (s *Service) PreflightWorker(_ context.Context, architectKey, workspacePath string) (domain.WorkerPreflight, error) {
+	problems := PreflightWorkerContext(workspacePath, architectKey)
+	if problems == nil {
+		problems = []string{}
+	}
+	return domain.WorkerPreflight{
+		ArchitectKey: architectKey,
+		CheckedAt:    s.now(),
+		Launchable:   len(problems) == 0,
+		Problems:     problems,
+	}, nil
+}
+
 // CheckWorkspace validates the whole workspace and assembles the report.
 //
 // It resolves nothing from its caller beyond the architect's identity and

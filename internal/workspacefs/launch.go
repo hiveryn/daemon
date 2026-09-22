@@ -83,11 +83,55 @@ type WorkerContext struct {
 // missing, renamed, invalid, a symlink out of the workspace, or not in
 // canonical form is an error; it is never dropped or replaced by a guess.
 func ValidateWorkerContext(workspacePath, architectKey string, selected []string) (WorkerContext, error) {
+	ctx, scope, findings := validateWorkerProjectContext(workspacePath, architectKey)
+	if len(findings) > 0 {
+		return WorkerContext{}, &domain.ValidationError{
+			Field:   "workspace",
+			Message: workspaceNotReadyMessage + strings.Join(findings, "\n"),
+		}
+	}
+
+	workflows, findings := validateSelectedWorkflows(workspacePath, scope, selected)
+	if len(findings) > 0 {
+		return WorkerContext{}, &domain.ValidationError{
+			Field:   "workflows",
+			Message: "the selected workflows are not launchable; fix the files or adjust the selection explicitly:\n" + strings.Join(findings, "\n"),
+		}
+	}
+	ctx.Workflows = workflows
+	return ctx, nil
+}
+
+// workspaceNotReadyMessage heads the project-context failure so the launch
+// error and the preflight describe the same condition in the same words.
+const workspaceNotReadyMessage = "the architect workspace is not ready for a worker session; repair it and launch again:\n"
+
+// PreflightWorkerContext reports the project-context findings that would block
+// a ticket session launch right now, without a selection and without launching
+// anything. An empty result means the required documents are ready.
+//
+// It is the same function the launch runs, so the desktop can show real launch
+// blockers before creating a session without carrying a second opinion about
+// what blocks a worker.
+func PreflightWorkerContext(workspacePath, architectKey string) []string {
+	_, _, findings := validateWorkerProjectContext(workspacePath, architectKey)
+	return findings
+}
+
+// validateWorkerProjectContext enforces the project-context half of the
+// worker-launch column of VALIDATORS_RULES: hiveryn.yaml must load;
+// PROJECT_OVERVIEW.md and PROJECT_STATE.md must be valid; ROADMAP_CURRENT.md is
+// optional but must be valid when present. It resolves the canonical paths the
+// kickoff names and the repo scope selected workflows are checked against.
+//
+// Architect-only artifacts (ARCHITECT_SYSTEM.md, archived roadmaps) are never
+// consulted, so their problems never stop a worker.
+func validateWorkerProjectContext(workspacePath, architectKey string) (WorkerContext, repoScope, []string) {
 	if strings.TrimSpace(workspacePath) == "" {
-		return WorkerContext{}, &domain.ValidationError{Field: "workspace", Message: "architect workspace path is required"}
+		return WorkerContext{}, repoScope{}, []string{"architect workspace path is required"}
 	}
 	if info, err := os.Stat(workspacePath); err != nil || !info.IsDir() {
-		return WorkerContext{}, &domain.ValidationError{Field: "workspace", Message: fmt.Sprintf("architect workspace %s is not a readable directory", workspacePath)}
+		return WorkerContext{}, repoScope{}, []string{fmt.Sprintf("architect workspace %s is not a readable directory", workspacePath)}
 	}
 
 	var findings []string
@@ -128,22 +172,7 @@ func ValidateWorkerContext(workspacePath, architectKey string, selected []string
 		}
 		*document.target = canonical
 	}
-	if len(findings) > 0 {
-		return WorkerContext{}, &domain.ValidationError{
-			Field:   "workspace",
-			Message: "the architect workspace is not ready for a worker session; repair it and launch again:\n" + strings.Join(findings, "\n"),
-		}
-	}
-
-	workflows, findings := validateSelectedWorkflows(workspacePath, scope, selected)
-	if len(findings) > 0 {
-		return WorkerContext{}, &domain.ValidationError{
-			Field:   "workflows",
-			Message: "the selected workflows are not launchable; fix the files or adjust the selection explicitly:\n" + strings.Join(findings, "\n"),
-		}
-	}
-	ctx.Workflows = workflows
-	return ctx, nil
+	return ctx, scope, findings
 }
 
 // validateSelectedWorkflows checks each selected path and returns the
