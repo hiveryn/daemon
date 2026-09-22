@@ -245,6 +245,48 @@ func TestSessionStorePersistsRepositoryScopeSnapshots(t *testing.T) {
 	}
 }
 
+func TestSessionStorePersistsWorkflowSelection(t *testing.T) {
+	t.Parallel()
+
+	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	store := NewSessionStore(db)
+
+	selected := []string{"/ws/workflows/B.md", "/ws/workflows/A.md"}
+	session, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID: "wf-session", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeTicket, ContextID: "ticket-wf",
+		Prompt: "kickoff", Workdir: "/repos/daemon", Workflows: selected,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if !slices.Equal(session.Workflows, selected) {
+		t.Fatalf("workflows = %v, want %v (order preserved)", session.Workflows, selected)
+	}
+	loaded, err := store.GetSession(context.Background(), "wf-session")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if !slices.Equal(loaded.Workflows, selected) {
+		t.Fatalf("reloaded workflows = %v, want %v", loaded.Workflows, selected)
+	}
+
+	// No selection is stored and read back as an empty list, never nil.
+	none, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
+		ID: "wf-none", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeArchitect, ContextID: "2026-01-01-0000",
+		Prompt: "kickoff", Workdir: "/ws",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if none.Workflows == nil || len(none.Workflows) != 0 {
+		t.Fatalf("empty selection = %#v, want []", none.Workflows)
+	}
+}
+
 func TestSessionStoreAllowsTicketSessionAfterFailedRun(t *testing.T) {
 	t.Parallel()
 

@@ -8,7 +8,7 @@ import (
 
 // Intent endpoints come in two shapes:
 //
-//   - Agent-facing, per tool (conclude-session, create-work-ticket, spawn-ticket-session). These
+//   - Agent-facing, per tool (conclude-session, create-work-ticket). These
 //     BLOCK: the request is held open until the user answers or the tool's
 //     policy fires. Each has a typed body and tool-specific pre-validation, so
 //     they are separate routes rather than one generic /intents/{type}.
@@ -144,52 +144,6 @@ func (h *sessionsHandler) createWorkTicketIntent(w http.ResponseWriter, r *http.
 	}
 
 	writeIntentResolution(w, r, res, res.Result)
-}
-
-func (h *sessionsHandler) spawnTicketSessionIntent(w http.ResponseWriter, r *http.Request) {
-	if h.sessions == nil {
-		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
-		return
-	}
-	var input struct {
-		TicketID string `json:"ticket_id"`
-		Profile  string `json:"profile"`
-	}
-	if err := decodeJSON(r, &input); err != nil {
-		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
-		return
-	}
-	res, err := h.sessions.RequestSpawnTicketSession(r.Context(), r.PathValue("id"), input.TicketID, input.Profile)
-	if err != nil {
-		writeDomainError(w, r, err)
-		return
-	}
-	writeIntentResolution(w, r, res, res.Result)
-}
-
-// listAgentProfileChoices is session-scoped so the daemon can enforce that
-// only a live architect MCP session receives this launch decision surface. It
-// intentionally omits args, env, MCP configuration, and credentials.
-func (h *sessionsHandler) listAgentProfileChoices(w http.ResponseWriter, r *http.Request) {
-	if h.sessions == nil {
-		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
-		return
-	}
-	session, err := h.sessions.GetSession(r.Context(), r.PathValue("id"))
-	if err != nil {
-		writeDomainError(w, r, err)
-		return
-	}
-	if session.SessionType != domain.SessionTypeArchitect || session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
-		writeDomainError(w, r, &domain.ValidationError{Field: "session_id", Message: "listAgentProfiles is only available to running architect sessions"})
-		return
-	}
-	cfg, err := currentConfig(h.config, h.configSource)
-	if err != nil {
-		writeDomainError(w, r, err)
-		return
-	}
-	writeJSON(w, r, http.StatusOK, map[string][]agentProfileChoiceResponse{"agent_profiles": listAgentProfileChoices(cfg)})
 }
 
 // approveIntent resolves an intent as approved and runs its side effect.

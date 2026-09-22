@@ -1202,8 +1202,8 @@ func TestCreateRunReloadsTabsFileForSessionLayouts(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			configDir := t.TempDir()
-			architectPath := t.TempDir()
 			workdir := t.TempDir()
+			architectPath := testWorkspace(t, map[string]string{"daemon": workdir})
 			cfgPath := writeRuntimeConfigFiles(t, configDir, map[string]config.ArchitectConfig{
 				"hiveryn": {
 					Path:  architectPath,
@@ -2120,11 +2120,11 @@ func TestCreateRunOpenCodeFailsWhenProfileAlreadySetsAgentFlag(t *testing.T) {
 func TestCreateRunOpenCodeTicketDoesNotDefineNamedAgent(t *testing.T) {
 	t.Parallel()
 
-	architectPath := t.TempDir()
 	repoPath := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repoPath, ".git"), 0o755); err != nil {
 		t.Fatalf("mkdir .git: %v", err)
 	}
+	architectPath := testWorkspace(t, map[string]string{"daemon": repoPath})
 	created := time.Date(2026, 5, 13, 14, 30, 0, 0, time.UTC)
 	repo := newFakeSessionRepository()
 	repo.createdSession = domain.Session{ID: "session-1", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeTicket, ContextID: "ticket-1", Prompt: "kickoff", Workdir: repoPath}
@@ -2165,7 +2165,7 @@ func testRuntimeConfig(t *testing.T) config.Config {
 			"opencode": {Agent: "opencode"},
 		},
 		Architects: map[string]config.ArchitectConfig{
-			"hiveryn": {Path: t.TempDir(), Repos: map[string]string{}},
+			"hiveryn": {Path: testWorkspace(t, nil), Repos: map[string]string{}},
 		},
 	}
 }
@@ -2393,7 +2393,7 @@ type fakeSessionRepository struct {
 func newFakeSessionRepository() *fakeSessionRepository { return &fakeSessionRepository{} }
 
 func (f *fakeSessionRepository) CreateSession(_ context.Context, params domain.CreateSessionParams) (domain.Session, error) {
-	f.createdSession = domain.Session{ID: params.ID, ArchitectKey: params.ArchitectKey, SessionType: params.SessionType, ContextID: params.ContextID, Prompt: params.Prompt, Workdir: params.Workdir, AdditionalRepos: append([]string(nil), params.AdditionalRepos...), AdditionalWorkdirs: append([]string(nil), params.AdditionalWorkdirs...), Instructions: params.Instructions, CreatedBy: params.CreatedBy}
+	f.createdSession = domain.Session{ID: params.ID, ArchitectKey: params.ArchitectKey, SessionType: params.SessionType, ContextID: params.ContextID, Prompt: params.Prompt, Workdir: params.Workdir, AdditionalRepos: append([]string(nil), params.AdditionalRepos...), AdditionalWorkdirs: append([]string(nil), params.AdditionalWorkdirs...), Workflows: append([]string(nil), params.Workflows...), Instructions: params.Instructions, CreatedBy: params.CreatedBy}
 	if f.createdSession.ID == "" {
 		f.createdSession.ID = "session-created"
 	}

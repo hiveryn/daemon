@@ -3,273 +3,203 @@ package sessionruntime
 import (
 	"embed"
 	"fmt"
-	"os"
 	"strings"
 	"text/template"
 	"time"
 
 	"github.com/hiveryn/daemon/internal/config"
-	"github.com/hiveryn/daemon/internal/domain"
+	"github.com/hiveryn/daemon/internal/workspacefs"
 )
 
+// The built-in role instructions and kickoffs. They are Hiveryn's, not a
+// project's: there is no per-architect override, and nothing in hiveryn.yaml
+// points at a prompt file. They live as markdown so they can be read and
+// reviewed as text; the kickoffs are Go templates whose placeholders are
+// daemon-supplied values, not project-customizable fields. The one
+// project-level customization is the optional ARCHITECT_SYSTEM.md in the
+// architect workspace, which is appended to the architect instructions.
+//
 //go:embed prompts/architect/*.md prompts/work/*.md
 var promptFS embed.FS
 
-// PromptVariable describes a Go template variable available to a prompt kind.
-type PromptVariable struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-}
+const (
+	architectSystemPromptName  = "prompts/architect/SYSTEM.md"
+	architectKickoffPromptName = "prompts/architect/KICKOFF.md"
+	workerSystemPromptName     = "prompts/work/SYSTEM.md"
+	workerKickoffPromptName    = "prompts/work/KICKOFF.md"
+)
 
-// DefaultPromptTemplate returns the embedded default template for a prompt kind,
-// used to scaffold a new prompt file when a config tool wires a path that does
-// not exist yet. Kind is one of "architect-system", "architect-kickoff",
-// "ticket-kickoff".
-func DefaultPromptTemplate(kind string) ([]byte, error) {
-	var name string
-	switch kind {
-	case "architect-system":
-		name = "prompts/architect/SYSTEM.md"
-	case "architect-kickoff":
-		name = "prompts/architect/KICKOFF.md"
-	case "ticket-kickoff":
-		name = "prompts/work/KICKOFF.md"
-	default:
-		return nil, fmt.Errorf("unknown prompt kind %q (want architect-system, architect-kickoff, or ticket-kickoff)", kind)
-	}
+// builtinPrompt reads one embedded prompt. A missing embed is a build defect,
+// so it is returned as an error rather than tolerated.
+func builtinPrompt(name string) (string, error) {
 	data, err := promptFS.ReadFile(name)
 	if err != nil {
-		return nil, fmt.Errorf("read embedded prompt %s: %w", name, err)
+		return "", fmt.Errorf("read embedded prompt %s: %w", name, err)
 	}
-	return data, nil
+	return strings.TrimSpace(string(data)), nil
 }
 
-// DefaultPromptVariables returns the Go template variables valid for a prompt
-// kind, keyed by the same file-selection kinds as DefaultPromptTemplate
-// ("architect-system", "architect-kickoff", "ticket-kickoff"). The architect
-// system prompt is static, so it has no variables. This bridges the two kind
-// vocabularies: it maps "architect-kickoff" → the "architect" schema and
-// "ticket-kickoff" → the "ticket" schema.
-func DefaultPromptVariables(kind string) ([]PromptVariable, error) {
-	switch kind {
-	case "architect-system":
-		return nil, nil
-	case "architect-kickoff":
-		return PromptSchema("architect")
-	case "ticket-kickoff":
-		return PromptSchema("ticket")
-	default:
-		return nil, fmt.Errorf("unknown prompt kind %q (want architect-system, architect-kickoff, or ticket-kickoff)", kind)
-	}
-}
-
-// PromptSchema returns the Go template variables available to a prompt kind,
-// each with a one-line description. Co-located with the template-data structs
-// below so it cannot drift from what is actually rendered. Kind is "architect"
-// (the architect kickoff template — the architect system prompt is static and
-// takes no variables) or "ticket" (the ticket/work kickoff template).
-func PromptSchema(kind string) ([]PromptVariable, error) {
-	switch kind {
-	case "architect":
-		return []PromptVariable{
-			{Name: "ArchitectName", Description: "The architect key/identifier."},
-			{Name: "TicketList", Description: "Rendered summary of the current tickets."},
-			{Name: "Sessions", Description: "Rendered recent session history."},
-			{Name: "Repos", Description: "Configured repos as a newline-separated \"- key: path\" list."},
-			{Name: "Variants", Description: "Comma-separated list of configured agent variant keys."},
-			{Name: "CurrentDate", Description: "Session start time, RFC3339 UTC."},
-			{Name: "LastConclusionID", Description: "ID of the most recent architect conclusion, if any."},
-		}, nil
-	case "ticket":
-		return []PromptVariable{
-			{Name: "TicketTitle", Description: "The ticket title."},
-			{Name: "TicketBody", Description: "The ticket body/description."},
-			{Name: "TicketID", Description: "The ticket ID."},
-			{Name: "Repo", Description: "The repo key the ticket is scoped to."},
-			{Name: "RepoPath", Description: "Absolute filesystem path to the ticket's repo."},
-			{Name: "AdditionalRepos", Description: "Additional repo keys as a newline-separated list."},
-			{Name: "AdditionalRepoPaths", Description: "Additional repos as a newline-separated \"- key: path\" list."},
-			{Name: "References", Description: "References as a newline-separated list of same-board ticket IDs or absolute read-only filesystem paths (empty when none)."},
-			{Name: "Created", Description: "Ticket creation time, RFC3339 UTC (empty when unset)."},
-			{Name: "Updated", Description: "Ticket last-update time, RFC3339 UTC (empty when unset)."},
-			{Name: "ArchitectName", Description: "The architect key/identifier."},
-			{Name: "ProjectPath", Description: "Absolute path to the architect workspace."},
-			{Name: "Repos", Description: "Configured repos as a newline-separated \"- key: path\" list."},
-		}, nil
-	default:
-		return nil, fmt.Errorf("unknown prompt kind %q (want architect or ticket)", kind)
-	}
-}
-
-type kickoffTemplateData struct {
-	ArchitectName    string
-	TicketList       string
-	Sessions         string
-	Repos            string
-	Variants         string
-	CurrentDate      string
-	LastConclusionID string
-}
-
-type workerKickoffTemplateData struct {
-	TicketTitle         string
-	TicketBody          string
-	TicketID            string
-	Repo                string
-	RepoPath            string
-	AdditionalRepos     string
-	AdditionalRepoPaths string
-	References          string
-	Created             string
-	Updated             string
-	ArchitectName       string
-	ProjectPath         string
-	Repos               string
-}
-
-func loadArchitectPrompts(architectKey string, architect config.ArchitectConfig, cfg config.Config) (string, string, error) {
-	systemContent, err := loadPrompt(architect.SystemPromptPath, "prompts/architect/SYSTEM.md")
-	if err != nil {
-		return "", "", err
-	}
-
-	kickoffTemplateSource, err := loadPrompt(architect.KickoffPromptPath, "prompts/architect/KICKOFF.md")
-	if err != nil {
-		return "", "", err
-	}
-
-	renderedKickoff, err := renderKickoff(kickoffTemplateSource, kickoffTemplateData{
-		ArchitectName:    architectKey,
-		TicketList:       "(ticket system not yet implemented)",
-		Sessions:         "(session history not yet implemented)",
-		Repos:            renderRepos(architect.Repos),
-		Variants:         strings.Join(configKeys(cfg.Variants), ", "),
-		CurrentDate:      time.Now().UTC().Format(time.RFC3339),
-		LastConclusionID: "",
-	})
-	if err != nil {
-		return "", "", err
-	}
-
-	return systemContent, renderedKickoff, nil
-}
-
-func loadWorkerPrompt(architectKey string, architect config.ArchitectConfig, cfg config.Config, ticket domain.Ticket) (string, error) {
-	kickoffTemplateSource, err := loadPrompt(selectTicketKickoff(architect, ticket.Repo), "prompts/work/KICKOFF.md")
+// renderBuiltinPrompt renders an embedded Go-template prompt with data.
+func renderBuiltinPrompt(name string, data any) (string, error) {
+	source, err := builtinPrompt(name)
 	if err != nil {
 		return "", err
 	}
-
-	var created, updated string
-	if ticket.Created != nil {
-		created = ticket.Created.UTC().Format(time.RFC3339)
-	}
-	if ticket.Updated != nil {
-		updated = ticket.Updated.UTC().Format(time.RFC3339)
-	}
-
-	var references string
-	if len(ticket.References) > 0 {
-		lines := make([]string, 0, len(ticket.References))
-		for _, ref := range ticket.References {
-			lines = append(lines, "- "+ref)
-		}
-		references = strings.Join(lines, "\n")
-	}
-
-	additionalPaths := make(map[string]string, len(ticket.AdditionalRepos))
-	for _, key := range ticket.AdditionalRepos {
-		additionalPaths[key] = architect.Repos[key]
-	}
-	rendered, err := renderWorkerKickoff(kickoffTemplateSource, workerKickoffTemplateData{
-		TicketTitle:         ticket.Title,
-		TicketBody:          ticket.Body,
-		TicketID:            ticket.ID,
-		Repo:                ticket.Repo,
-		RepoPath:            architect.Repos[ticket.Repo],
-		AdditionalRepos:     strings.Join(ticket.AdditionalRepos, "\n"),
-		AdditionalRepoPaths: renderRepos(additionalPaths),
-		References:          references,
-		Created:             created,
-		Updated:             updated,
-		ArchitectName:       architectKey,
-		ProjectPath:         architect.Path,
-		Repos:               renderRepos(architect.Repos),
-	})
-	if err != nil {
-		return "", err
-	}
-
-	return rendered, nil
-}
-
-// loadPrompt reads the prompt at overridePath when set; otherwise it reads the
-// embedded default identified by embeddedName (a forward-slash path within
-// promptFS). A configured override that cannot be read is a hard error.
-func loadPrompt(overridePath, embeddedName string) (string, error) {
-	if strings.TrimSpace(overridePath) != "" {
-		data, err := os.ReadFile(overridePath)
-		if err != nil {
-			return "", fmt.Errorf("read prompt %s: %w", overridePath, err)
-		}
-		return string(data), nil
-	}
-
-	data, err := promptFS.ReadFile(embeddedName)
-	if err != nil {
-		return "", fmt.Errorf("read embedded prompt %s: %w", embeddedName, err)
-	}
-	return string(data), nil
-}
-
-// selectTicketKickoff returns the configured ticket-kickoff path for the given
-// repo. A repo-scoped entry wins over the default (no-repos) entry. Returns ""
-// when no entry applies, meaning the embedded default should be used.
-func selectTicketKickoff(architect config.ArchitectConfig, repo string) string {
-	defaultPath := ""
-	for _, kickoff := range architect.TicketKickoffs {
-		if len(kickoff.Repos) == 0 {
-			defaultPath = kickoff.Path
-			continue
-		}
-		for _, repoKey := range kickoff.Repos {
-			if repoKey == repo {
-				return kickoff.Path
-			}
-		}
-	}
-	return defaultPath
-}
-
-func renderKickoff(source string, data kickoffTemplateData) (string, error) {
-	return renderTemplate("kickoff", source, data)
-}
-
-func renderWorkerKickoff(source string, data workerKickoffTemplateData) (string, error) {
-	return renderTemplate("worker_kickoff", source, data)
-}
-
-func renderTemplate(name, source string, data any) (string, error) {
 	tmpl, err := template.New(name).Parse(source)
 	if err != nil {
-		return "", fmt.Errorf("parse %s template: %w", name, err)
+		return "", fmt.Errorf("parse embedded prompt %s: %w", name, err)
 	}
-
-	var builder strings.Builder
-	if err := tmpl.Execute(&builder, data); err != nil {
-		return "", fmt.Errorf("render %s template: %w", name, err)
+	var b strings.Builder
+	if err := tmpl.Execute(&b, data); err != nil {
+		return "", fmt.Errorf("render embedded prompt %s: %w", name, err)
 	}
-	return strings.TrimSpace(builder.String()), nil
+	return strings.TrimSpace(b.String()), nil
 }
 
+// architectKickoffData is the template data for prompts/architect/KICKOFF.md:
+// project identity, session start time and the configured repo map, all
+// resolved daemon-side.
+type architectKickoffData struct {
+	ArchitectName string
+	CurrentDate   string
+	Repos         string
+}
+
+// renderArchitectKickoff renders the fixed architect startup message. It opens
+// with checkWorkspace, then the board and the latest conclusion; the built-in
+// system prompt carries the rest of the reading order.
+func renderArchitectKickoff(architectKey string, architect config.ArchitectConfig, now time.Time) (string, error) {
+	return renderBuiltinPrompt(architectKickoffPromptName, architectKickoffData{
+		ArchitectName: architectKey,
+		CurrentDate:   now.UTC().Format(time.RFC3339),
+		Repos:         renderRepos(architect.Repos),
+	})
+}
+
+// renderRepos formats a repo map as a sorted "- key: path" list.
 func renderRepos(repos map[string]string) string {
 	if len(repos) == 0 {
 		return ""
 	}
-
 	lines := make([]string, 0, len(repos))
 	for _, key := range configKeys(repos) {
 		lines = append(lines, "- "+key+": "+repos[key])
 	}
 	return strings.Join(lines, "\n")
+}
+
+// architectInstructions is the assembled architect system prompt plus what
+// happened with the workspace's optional ARCHITECT_SYSTEM.md, so the caller can
+// log a file that exists but was not applied.
+type architectInstructions struct {
+	Text   string
+	Custom workspacefs.ArchitectSystemDocument
+}
+
+// buildArchitectInstructions assembles the built-in architect system prompt and
+// the architect workspace's optional ARCHITECT_SYSTEM.md.
+//
+// A present-but-unloadable file is surfaced inside the instructions themselves:
+// the architect is told exactly which file failed and why, and that no project
+// preferences are in effect, rather than being told nothing (which would read as
+// "loaded"). Startup is never blocked by it — the architect is the one who can
+// repair the file, so it has to be able to start.
+func buildArchitectInstructions(architect config.ArchitectConfig) (architectInstructions, error) {
+	system, err := builtinPrompt(architectSystemPromptName)
+	if err != nil {
+		return architectInstructions{}, err
+	}
+
+	custom := workspacefs.ReadArchitectSystem(architect.Path)
+	var b strings.Builder
+	b.WriteString(system)
+
+	switch {
+	case custom.Loaded:
+		b.WriteString("\n\n## Project collaboration preferences\n\n")
+		b.WriteString("The following comes from this workspace's ")
+		b.WriteString(workspacefs.ArchitectSystemFileName)
+		b.WriteString(". It sets how to collaborate on this project; Hiveryn's own rules above still apply.\n\n")
+		b.WriteString(strings.TrimSpace(custom.Content))
+	case custom.Present:
+		b.WriteString("\n\n## Project collaboration preferences\n\n")
+		b.WriteString(workspacefs.ArchitectSystemFileName)
+		b.WriteString(" exists at ")
+		b.WriteString(custom.Path)
+		b.WriteString(" but was NOT loaded, so no project-specific preferences are in effect for this session:\n")
+		for _, diag := range custom.Diagnostics {
+			b.WriteString("- ")
+			b.WriteString(diag.Code)
+			b.WriteString(": ")
+			b.WriteString(diag.Message)
+			b.WriteString("\n")
+		}
+		b.WriteString("Repair the file (checkWorkspace reports it too); it is read again at the next session start.")
+	}
+
+	return architectInstructions{Text: b.String(), Custom: custom}, nil
+}
+
+// workerInstructions returns the built-in WORKER_SYSTEM text. It is additive to
+// the provider's own instructions and explains only the two Hiveryn tools a
+// worker acts through, createWorkTicket and concludeTicketSession.
+func workerInstructions() (string, error) {
+	return builtinPrompt(workerSystemPromptName)
+}
+
+// workerRepo is one writable repository named in the worker kickoff.
+type workerRepo struct {
+	Key  string
+	Path string
+}
+
+// workerKickoffData is the template data for prompts/work/KICKOFF.md. Every
+// field is a daemon-supplied value: ticket identity, writable repositories, the
+// canonical project documents (RoadmapCurrentPath empty when the optional
+// roadmap is absent), and the workflows explicitly selected for the session
+// (or none).
+type workerKickoffData struct {
+	TicketID            string
+	Repos               []workerRepo
+	ProjectOverviewPath string
+	ProjectStatePath    string
+	RoadmapCurrentPath  string
+	Workflows           []string
+}
+
+// renderWorkerKickoff renders the fixed worker startup message. It carries only
+// the task and its context; role, scope rules and tool guidance live in the
+// built-in worker instructions, not here.
+//
+// Every path is a canonical path into the architect workspace that the worker
+// reads live; nothing is copied into the prompt.
+func renderWorkerKickoff(ticketID string, repos []workerRepo, ctx workspacefs.WorkerContext) (string, error) {
+	return renderBuiltinPrompt(workerKickoffPromptName, workerKickoffData{
+		TicketID:            ticketID,
+		Repos:               repos,
+		ProjectOverviewPath: ctx.ProjectOverviewPath,
+		ProjectStatePath:    ctx.ProjectStatePath,
+		RoadmapCurrentPath:  ctx.RoadmapCurrentPath,
+		Workflows:           ctx.Workflows,
+	})
+}
+
+// resumeInstructions appends the resume notice to a session's stored
+// instructions. Hiveryn does not track whether a selected workflow changed while
+// the agent was down (there are no content digests), so it never claims the
+// files are unchanged: it tells the agent to reread the canonical files before
+// continuing. Sessions with no selected workflows resume with their stored
+// instructions unchanged.
+func resumeInstructions(instructions string, workflows []string) string {
+	if len(workflows) == 0 {
+		return instructions
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(instructions))
+	b.WriteString("\n\n## Session resumed\n\n")
+	b.WriteString("Hiveryn resumed this session. The workflows selected for it may have been edited while the session was down; Hiveryn does not track that. Before continuing, reread the selected workflows at their canonical paths and follow the current text:\n")
+	for _, path := range workflows {
+		b.WriteString(path + "\n")
+	}
+	return strings.TrimSpace(b.String())
 }

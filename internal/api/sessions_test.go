@@ -47,6 +47,33 @@ func TestCreateSessionArchitectEndpoint(t *testing.T) {
 	}
 }
 
+// The desktop supplies the explicit workflow selection on the launch request;
+// it must reach the service verbatim and come back on the session.
+func TestCreateSessionTicketEndpointCarriesWorkflowSelection(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeSessionService{
+		createSessionResult: domain.Session{
+			ID: "session-2", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeTicket, ContextID: "ticket-1",
+			Prompt: "kickoff", Workdir: "/repos/daemon", Workflows: []string{"/ws/workflows/B.md", "/ws/workflows/A.md"},
+		},
+	}
+	handler := newSessionTestHandler(t, service)
+
+	status, body := request(t, handler, http.MethodPost, "/api/sessions", strings.NewReader(`{"session_type":"ticket","architect_key":"hiveryn","ticket_id":"ticket-1","workflows":["/ws/workflows/B.md","/ws/workflows/A.md"]}`))
+	if status != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, status, string(body))
+	}
+	if got := service.lastCreateSession.Workflows; len(got) != 2 || got[0] != "/ws/workflows/B.md" || got[1] != "/ws/workflows/A.md" {
+		t.Fatalf("selection did not reach the service as given: %v", got)
+	}
+	var payload domain.Session
+	decodeEnvelopeData(t, body, &payload)
+	if len(payload.Workflows) != 2 || payload.Workflows[0] != "/ws/workflows/B.md" {
+		t.Fatalf("session response lost the selection: %#v", payload)
+	}
+}
+
 func TestCreateSessionFreeformEndpoint(t *testing.T) {
 	t.Parallel()
 
@@ -454,42 +481,6 @@ func TestDiscardSessionSuccess(t *testing.T) {
 	}
 }
 
-func TestSpawnTicketSessionIntent(t *testing.T) {
-	service := &fakeSessionService{spawnTicketResult: domain.IntentResolution[domain.SpawnTicketSessionResult]{
-		IntentID: "intent-1", Outcome: domain.IntentOutcomeApproved,
-		Result: domain.SpawnTicketSessionResult{SessionID: "ticket-session-1"},
-	}}
-	handler := newSessionTestHandler(t, service)
-	status, body := request(t, handler, http.MethodPost, "/api/sessions/architect-session/intents/spawn-ticket-session", strings.NewReader(`{"ticket_id":"ticket-1","profile":"codex"}`))
-	if status != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", status, body)
-	}
-	if service.lastSpawnSessionID != "architect-session" || service.lastSpawnTicketID != "ticket-1" || service.lastSpawnProfile != "codex" {
-		t.Fatalf("unexpected spawn request: %#v", service)
-	}
-	var payload map[string]any
-	decodeEnvelopeData(t, body, &payload)
-	if payload["outcome"] != "approved" || payload["result"].(map[string]any)["session_id"] != "ticket-session-1" {
-		t.Fatalf("unexpected response %#v", payload)
-	}
-}
-
-func TestArchitectAgentProfileChoicesHideLaunchInternals(t *testing.T) {
-	service := &fakeSessionService{getSessionResult: domain.Session{
-		ID: "architect-session", SessionType: domain.SessionTypeArchitect,
-		CurrentRun: &domain.SessionRun{Status: domain.SessionRunStatusRunning},
-	}}
-	handler := newSessionTestHandler(t, service)
-	status, body := request(t, handler, http.MethodGet, "/api/sessions/architect-session/agent-profiles", nil)
-	if status != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", status, body)
-	}
-	bodyText := string(body)
-	if strings.Contains(bodyText, `"env"`) || strings.Contains(bodyText, `"args"`) || strings.Contains(bodyText, `"mcp"`) {
-		t.Fatalf("profile choice response exposed launch internals: %s", body)
-	}
-}
-
 func newSessionTestHandler(t *testing.T, sessions domain.SessionService) http.Handler {
 	t.Helper()
 
@@ -531,11 +522,6 @@ type fakeSessionService struct {
 	createWorkTicketErr      error
 	lastCreateWorkTicketID   string
 	lastCreateWorkTicket     domain.CreateTicketParams
-	spawnTicketResult        domain.IntentResolution[domain.SpawnTicketSessionResult]
-	spawnTicketErr           error
-	lastSpawnSessionID       string
-	lastSpawnTicketID        string
-	lastSpawnProfile         string
 	approveIntentResult      domain.Intent
 	approveIntentErr         error
 	denyIntentErr            error
@@ -584,13 +570,6 @@ func (f *fakeSessionService) RequestCreateWorkTicket(_ context.Context, id strin
 	f.lastCreateWorkTicketID = id
 	f.lastCreateWorkTicket = params
 	return f.createWorkTicketResult, f.createWorkTicketErr
-}
-
-func (f *fakeSessionService) RequestSpawnTicketSession(_ context.Context, sessionID, ticketID, profile string) (domain.IntentResolution[domain.SpawnTicketSessionResult], error) {
-	f.lastSpawnSessionID = sessionID
-	f.lastSpawnTicketID = ticketID
-	f.lastSpawnProfile = profile
-	return f.spawnTicketResult, f.spawnTicketErr
 }
 
 func (f *fakeSessionService) MoveTicketToDone(_ context.Context, architectKey, ticketID string, params domain.MoveTicketToDoneParams) (domain.MoveTicketToDoneResult, error) {

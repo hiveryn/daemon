@@ -31,9 +31,8 @@ func TestIntentPoliciesMilestoneOne(t *testing.T) {
 	t.Parallel()
 
 	want := map[domain.IntentType]domain.IntentPolicy{
-		domain.IntentTypeConcludeSession:    domain.IntentPolicyWaitThenAllow,
-		domain.IntentTypeCreateWorkTicket:   domain.IntentPolicyWaitThenAllow,
-		domain.IntentTypeSpawnTicketSession: domain.IntentPolicyWaitThenAllow,
+		domain.IntentTypeConcludeSession:  domain.IntentPolicyWaitThenAllow,
+		domain.IntentTypeCreateWorkTicket: domain.IntentPolicyWaitThenAllow,
 	}
 	for typ, wantPolicy := range want {
 		got, err := policyFor(typ)

@@ -23,6 +23,7 @@ func scanSessionWithCurrentRun(scanner interface{ Scan(...any) error }) (domain.
 	var updatedAt string
 	var additionalReposJSON string
 	var additionalWorkdirsJSON string
+	var workflowsJSON string
 
 	var runID sql.NullString
 	var runSessionID sql.NullString
@@ -49,6 +50,7 @@ func scanSessionWithCurrentRun(scanner interface{ Scan(...any) error }) (domain.
 		&session.Workdir,
 		&additionalReposJSON,
 		&additionalWorkdirsJSON,
+		&workflowsJSON,
 		&session.Instructions,
 		&createdBy,
 		&createdAt,
@@ -78,6 +80,12 @@ func scanSessionWithCurrentRun(scanner interface{ Scan(...any) error }) (domain.
 	}
 	if err := json.Unmarshal([]byte(additionalWorkdirsJSON), &session.AdditionalWorkdirs); err != nil {
 		return domain.Session{}, fmt.Errorf("decode session additional workdirs: %w", err)
+	}
+	if err := json.Unmarshal([]byte(workflowsJSON), &session.Workflows); err != nil {
+		return domain.Session{}, fmt.Errorf("decode session workflows: %w", err)
+	}
+	if session.Workflows == nil {
+		session.Workflows = []string{}
 	}
 	session.CreatedBy = domain.SessionCreatedBy(createdBy)
 	var err error

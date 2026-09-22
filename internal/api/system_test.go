@@ -21,6 +21,7 @@ func TestSystemRuntime(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler := NewHandler(Dependencies{
+		ConfigSource: config.StaticSource(config.Config{}),
 		Config: config.Config{
 			Port:                      4202,
 			BindAddress:               "127.0.0.1",
@@ -42,16 +43,21 @@ func TestSystemRuntime(t *testing.T) {
 	}
 
 	var data struct {
-		Environment string `json:"environment"`
-		Home        string `json:"home"`
-		ConfigPath  string `json:"config_path"`
-		DBPath      string `json:"db_path"`
-		LogDir      string `json:"log_dir"`
-		BindAddress string `json:"bind_address"`
-		Port        int    `json:"port"`
-		BaseURL     string `json:"base_url"`
+		Environment string            `json:"environment"`
+		Home        string            `json:"home"`
+		ConfigPath  string            `json:"config_path"`
+		DBPath      string            `json:"db_path"`
+		LogDir      string            `json:"log_dir"`
+		BindAddress string            `json:"bind_address"`
+		Port        int               `json:"port"`
+		BaseURL     string            `json:"base_url"`
+		Config      config.LoadStatus `json:"config"`
 	}
 	decodeEnvelopeData(t, body, &data)
+
+	if data.Config.Error != "" || data.Config.FailedAt != nil {
+		t.Fatalf("expected a clean config status without a source, got %+v", data.Config)
+	}
 
 	if data.Environment != "development" {
 		t.Fatalf("expected environment %q, got %q", "development", data.Environment)

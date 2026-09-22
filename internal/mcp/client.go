@@ -184,64 +184,6 @@ func (s *Server) createWorkTicket(ctx context.Context, input CreateWorkTicketInp
 	return output, nil
 }
 
-func (s *Server) listAgentProfiles(ctx context.Context) (ListAgentProfilesOutput, error) {
-	u := fmt.Sprintf("%s/api/sessions/%s/agent-profiles", s.daemonURL, url.PathEscape(s.sessionID))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return ListAgentProfilesOutput{}, fmt.Errorf("build listAgentProfiles request: %w", err)
-	}
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return ListAgentProfilesOutput{}, fmt.Errorf("request listAgentProfiles: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var env daemonEnvelope
-	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
-		return ListAgentProfilesOutput{}, newInternalError(fmt.Sprintf("decode daemon response: %v", err))
-	}
-	if env.Error != nil {
-		return ListAgentProfilesOutput{}, mapDaemonError(env.Error)
-	}
-	var output ListAgentProfilesOutput
-	if len(env.Data) == 0 {
-		return output, newInternalError("daemon response missing data")
-	}
-	if err := json.Unmarshal(env.Data, &output); err != nil {
-		return output, newInternalError(fmt.Sprintf("decode agent profiles payload: %v", err))
-	}
-	return output, nil
-}
-
-func (s *Server) spawnTicketSession(ctx context.Context, input SpawnTicketSessionInput) (SpawnTicketSessionOutput, error) {
-	res, err := s.requestIntent(ctx, "spawn-ticket-session", map[string]string{
-		"ticket_id": input.TicketID,
-		"profile":   input.Profile,
-	})
-	if err != nil {
-		return SpawnTicketSessionOutput{}, err
-	}
-	envelope, err := intentEnvelope(res)
-	if err != nil {
-		return SpawnTicketSessionOutput{}, err
-	}
-	output := SpawnTicketSessionOutput{IntentEnvelopeFields: envelope}
-	if !intentApproved(res.Outcome) {
-		return output, nil
-	}
-	if len(res.Result) == 0 {
-		return SpawnTicketSessionOutput{}, newInternalError("approved spawnTicketSession returned no session")
-	}
-	var result domain.SpawnTicketSessionResult
-	if err := json.Unmarshal(res.Result, &result); err != nil {
-		return SpawnTicketSessionOutput{}, newInternalError(fmt.Sprintf("decode spawned session payload: %v", err))
-	}
-	if result.SessionID == "" {
-		return SpawnTicketSessionOutput{}, newInternalError("approved spawnTicketSession returned an empty session_id")
-	}
-	output.SessionID = result.SessionID
-	return output, nil
-}
-
 func (s *Server) previewInBrowserTab(ctx context.Context, target, tabID string) (PreviewInBrowserTabOutput, error) {
 	var output domain.BrowserTabInfo
 

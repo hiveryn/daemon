@@ -4,15 +4,11 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/hiveryn/agentruntime"
 	"github.com/hiveryn/agentruntime/ingest"
-	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
@@ -44,22 +40,6 @@ func (r *architectEventRecorder) withReason(reason domain.ArchitectEventReason) 
 		}
 	}
 	return matched
-}
-
-// waitForReason polls until at least one event with the reason arrives. The
-// spawn intent resolves on a detached goroutine, so the publish can land just
-// after the blocking call returns.
-func (r *architectEventRecorder) waitForReason(t *testing.T, reason domain.ArchitectEventReason) []domain.ArchitectEvent {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if matched := r.withReason(reason); len(matched) > 0 {
-			return matched
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for a %q architect event; got %#v", reason, r.snapshot())
-	return nil
 }
 
 func assertSessionStarted(t *testing.T, event domain.ArchitectEvent, architectKey, sessionID, ticketID string) {
@@ -145,127 +125,6 @@ func TestCreateRunAnnouncesFreeformSessionWithoutTicket(t *testing.T) {
 	}
 }
 
-// The reported bug: an architect MCP spawn created a real running session that
-// never appeared in the desktop. The desktop can only learn about it from the
-// architect stream, so the spawn path must emit session_started — exactly once,
-// since emission used to be duplicated between the HTTP handler and this path.
-func TestApprovedSpawnIntentAnnouncesSessionExactlyOnce(t *testing.T) {
-	t.Parallel()
-
-	recorder := &architectEventRecorder{}
-	service := newSpawnableService(t, recorder, 20)
-
-	done := make(chan domain.IntentResolution[domain.SpawnTicketSessionResult], 1)
-	errCh := make(chan error, 1)
-	go func() {
-		res, err := service.RequestSpawnTicketSession(context.Background(), "architect-session", "ticket-1", "codex")
-		done <- res
-		errCh <- err
-	}()
-
-	intentID := awaitPendingIntent(t, service, "architect-session")
-	if _, err := service.ApproveIntent(context.Background(), "architect-session", intentID); err != nil {
-		t.Fatalf("approve intent: %v", err)
-	}
-
-	res := <-done
-	if err := <-errCh; err != nil {
-		t.Fatalf("spawn request returned error: %v", err)
-	}
-	if res.Outcome != domain.IntentOutcomeApproved {
-		t.Fatalf("spawn outcome = %q, want %q", res.Outcome, domain.IntentOutcomeApproved)
-	}
-	if res.Result.SessionID == "" {
-		t.Fatal("approved spawn returned no session id")
-	}
-
-	started := recorder.waitForReason(t, domain.ArchitectEventSessionStarted)
-	if len(started) != 1 {
-		t.Fatalf("expected exactly one session_started, got %d: %#v", len(started), recorder.snapshot())
-	}
-	assertSessionStarted(t, started[0], "hiveryn", res.Result.SessionID, "ticket-1")
-}
-
-// spawnTicketSession is wait-then-allow, so a spawn nobody answers still creates
-// a real session. That is precisely the case that went invisible, so the
-// timeout path must announce the session too.
-func TestAutoApprovedSpawnIntentAnnouncesSession(t *testing.T) {
-	t.Parallel()
-
-	recorder := &architectEventRecorder{}
-	service := newSpawnableService(t, recorder, 1)
-
-	res, err := service.RequestSpawnTicketSession(context.Background(), "architect-session", "ticket-1", "codex")
-	if err != nil {
-		t.Fatalf("spawn request returned error: %v", err)
-	}
-	if res.Outcome != domain.IntentOutcomeAutoApproved {
-		t.Fatalf("spawn outcome = %q, want %q", res.Outcome, domain.IntentOutcomeAutoApproved)
-	}
-
-	started := recorder.waitForReason(t, domain.ArchitectEventSessionStarted)
-	if len(started) != 1 {
-		t.Fatalf("expected exactly one session_started, got %d: %#v", len(started), recorder.snapshot())
-	}
-	assertSessionStarted(t, started[0], "hiveryn", res.Result.SessionID, "ticket-1")
-}
-
-// A denied spawn creates nothing, so it must announce nothing — otherwise a
-// desktop would open a tab for a session that does not exist.
-func TestDeniedSpawnIntentAnnouncesNoSession(t *testing.T) {
-	t.Parallel()
-
-	recorder := &architectEventRecorder{}
-	service := newSpawnableService(t, recorder, 20)
-
-	done := make(chan domain.IntentResolution[domain.SpawnTicketSessionResult], 1)
-	errCh := make(chan error, 1)
-	go func() {
-		res, err := service.RequestSpawnTicketSession(context.Background(), "architect-session", "ticket-1", "codex")
-		done <- res
-		errCh <- err
-	}()
-
-	intentID := awaitPendingIntent(t, service, "architect-session")
-	if err := service.DenyIntent(context.Background(), "architect-session", intentID, "not now"); err != nil {
-		t.Fatalf("deny intent: %v", err)
-	}
-	if res := <-done; res.Outcome != domain.IntentOutcomeDeniedByUser {
-		t.Fatalf("spawn outcome = %q, want %q", res.Outcome, domain.IntentOutcomeDeniedByUser)
-	}
-	if err := <-errCh; err != nil {
-		t.Fatalf("spawn request returned error: %v", err)
-	}
-
-	if started := recorder.withReason(domain.ArchitectEventSessionStarted); len(started) != 0 {
-		t.Fatalf("denied spawn announced a session: %#v", started)
-	}
-}
-
-// tempGitRepo is a temp dir that passes the daemon's repo-path check, which
-// requires a .git directory before a session may be scoped to it.
-func tempGitRepo(t *testing.T) string {
-	t.Helper()
-	path := t.TempDir()
-	if err := os.Mkdir(filepath.Join(path, ".git"), 0o755); err != nil {
-		t.Fatalf("mkdir .git: %v", err)
-	}
-	return path
-}
-
-func awaitPendingIntent(t *testing.T, service *Service, sessionID string) string {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if ids := service.intents.PendingForSession(sessionID); len(ids) == 1 {
-			return ids[0]
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatalf("intent for session %s was never created", sessionID)
-	return ""
-}
-
 // newRunnableService builds a Service wired with the launch dependencies
 // CreateRun needs, plus an architect publisher.
 func newRunnableService(t *testing.T, session domain.Session, recorder *architectEventRecorder) *Service {
@@ -279,43 +138,6 @@ func newRunnableService(t *testing.T, session domain.Session, recorder *architec
 		cfg:              testRuntimeConfig(t),
 		repo:             repo,
 		tickets:          &fakeTicketService{},
-		receiver:         ingest.NewReceiver(adapter),
-		adapters:         map[agentruntime.AgentKind]agentruntime.Adapter{agentruntime.AgentCodex: adapter},
-		terminal:         &fakeTerminalManager{},
-		eventStreams:     map[string]map[uint64]chan domain.SessionEvent{},
-		bridgeCancels:    map[string]func(){},
-		publishArchitect: recorder.publish,
-	}
-}
-
-// newSpawnableService builds a Service that can both run the spawn intent flow
-// and actually launch the resulting run, so the intent's Exec reaches CreateRun.
-func newSpawnableService(t *testing.T, recorder *architectEventRecorder, waitTimeout int) *Service {
-	t.Helper()
-	repo := newFakeSessionRepository()
-	repo.createdSession = domain.Session{
-		ID: "architect-session", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeArchitect,
-		CurrentRun: &domain.SessionRun{ID: "run-1", Status: domain.SessionRunStatusRunning},
-	}
-	adapter := &fakeAdapter{}
-	return &Service{
-		intents: newIntentStore(),
-		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
-		repo:    repo,
-		tickets: &fakeTicketService{ticket: domain.Ticket{
-			TicketSummary: domain.TicketSummary{
-				ID: "ticket-1", Title: "Implement spawn", Status: domain.TicketStatusBacklog,
-				Repo: "daemon", AdditionalRepos: []string{"shared"},
-			},
-		}},
-		cfg: config.Config{
-			IntentWaitTimeout: waitTimeout,
-			Variants:          map[string]config.VariantConfig{"codex": {Agent: "codex"}},
-			Architects: map[string]config.ArchitectConfig{"hiveryn": {
-				Path:  t.TempDir(),
-				Repos: map[string]string{"daemon": tempGitRepo(t), "shared": tempGitRepo(t)},
-			}},
-		},
 		receiver:         ingest.NewReceiver(adapter),
 		adapters:         map[agentruntime.AgentKind]agentruntime.Adapter{agentruntime.AgentCodex: adapter},
 		terminal:         &fakeTerminalManager{},

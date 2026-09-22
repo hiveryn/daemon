@@ -29,7 +29,7 @@ func TestCheckValidWorkspace(t *testing.T) {
 	}
 }
 
-// The three current documents report the document's own timestamp separately
+// The current documents report the document's own timestamp separately
 // from the filesystem mtime, because they answer different questions.
 func TestCheckReportsDocumentTimeAndMtimeSeparately(t *testing.T) {
 	f := newFixture(t)
@@ -71,7 +71,9 @@ func TestCheckMissingWorkspaceStaysInspectable(t *testing.T) {
 	requireCode(t, node(t, report, ConfigFileName).Diagnostics, domain.DiagMissingRequiredFile)
 	requireCode(t, node(t, report, ProjectOverviewFileName).Diagnostics, domain.DiagMissingRequiredFile)
 	requireCode(t, node(t, report, ProjectStateFileName).Diagnostics, domain.DiagMissingRequiredFile)
-	requireCode(t, node(t, report, RoadmapCurrentFileName).Diagnostics, domain.DiagMissingRequiredFile)
+	if diags := node(t, report, RoadmapCurrentFileName).Diagnostics; len(diags) != 0 {
+		t.Fatalf("optional %s reported as a problem when absent: %v", RoadmapCurrentFileName, codes(diags))
+	}
 	requireCode(t, node(t, report, WorkflowsDirName).Diagnostics, domain.DiagMissingRequiredDirectory)
 	requireCode(t, node(t, report, RoadmapArchiveDir).Diagnostics, domain.DiagMissingRequiredDirectory)
 }

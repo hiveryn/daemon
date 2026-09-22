@@ -62,6 +62,11 @@ type documentResult struct {
 	// FrontmatterLine is the offset to add to a frontmatter node's line to get
 	// a file line.
 	FrontmatterLine int
+	// Data is the file's full content once it has been read stably and passed
+	// the UTF-8 check; empty otherwise. Callers that load a document (the
+	// architect's ARCHITECT_SYSTEM.md) take it from here rather than reading
+	// the file a second time, so what was validated is what is used.
+	Data string
 }
 
 // validateMarkdownArtifact runs the shared markdown pipeline for one artifact:
@@ -108,6 +113,7 @@ func validateMarkdownArtifact(def definition, absPath string, required bool, dia
 		diags.errorf(domain.DiagInvalidUTF8, 0, "%s is not valid UTF-8 text", diags.path)
 		return result
 	}
+	result.Data = string(file.Data)
 
 	doc, err := parseMarkdown(string(file.Data))
 	if err != nil {

@@ -171,6 +171,13 @@ func TestWorkspaceToolsAreArchitectOnly(t *testing.T) {
 				t.Errorf("%s session: %s registered = %v, want %v", sessionType, name, got, wantRegistered)
 			}
 		}
+		// Prompts are built in and only the user launches workers: no session
+		// type gets a config-authoring, prompt or spawn tool.
+		for _, name := range []string{"readArchitectConfig", "updateArchitectConfig", "readDefaultPrompt", "listAgentProfiles", "spawnTicketSession"} {
+			if tools[name] {
+				t.Errorf("%s session: removed tool %s is still registered", sessionType, name)
+			}
+		}
 	}
 }
 

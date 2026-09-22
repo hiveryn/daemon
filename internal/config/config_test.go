@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -439,83 +440,6 @@ func TestValidateRejectsBlankArchitectName(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsKickoffUnknownRepo(t *testing.T) {
-	t.Parallel()
-
-	err := Config{
-		Port:        DefaultPort,
-		BindAddress: DefaultBindAddress,
-		LogLevel:    DefaultLogLevel,
-		Variants:    map[string]VariantConfig{},
-		Architects: map[string]ArchitectConfig{
-			"hiveryn": {
-				Name:  "Hiveryn",
-				Path:  "/Users/kareem/architects/hiveryn",
-				Repos: map[string]string{"daemon": "/tmp/daemon"},
-				TicketKickoffs: []TicketKickoff{
-					{Path: "/tmp/k.md", Repos: []string{"nonexistent"}},
-				},
-			},
-		},
-		Tabs: map[string][]TabEntry{},
-	}.Validate()
-	if err == nil {
-		t.Fatal("expected unknown-repo kickoff validation error")
-	}
-}
-
-func TestValidateRejectsMultipleDefaultKickoffs(t *testing.T) {
-	t.Parallel()
-
-	err := Config{
-		Port:        DefaultPort,
-		BindAddress: DefaultBindAddress,
-		LogLevel:    DefaultLogLevel,
-		Variants:    map[string]VariantConfig{},
-		Architects: map[string]ArchitectConfig{
-			"hiveryn": {
-				Name:  "Hiveryn",
-				Path:  "/Users/kareem/architects/hiveryn",
-				Repos: map[string]string{"daemon": "/tmp/daemon"},
-				TicketKickoffs: []TicketKickoff{
-					{Path: "/tmp/a.md"},
-					{Path: "/tmp/b.md"},
-				},
-			},
-		},
-		Tabs: map[string][]TabEntry{},
-	}.Validate()
-	if err == nil {
-		t.Fatal("expected multiple-default kickoff validation error")
-	}
-}
-
-func TestValidateRejectsDuplicateRepoKickoff(t *testing.T) {
-	t.Parallel()
-
-	err := Config{
-		Port:        DefaultPort,
-		BindAddress: DefaultBindAddress,
-		LogLevel:    DefaultLogLevel,
-		Variants:    map[string]VariantConfig{},
-		Architects: map[string]ArchitectConfig{
-			"hiveryn": {
-				Name:  "Hiveryn",
-				Path:  "/Users/kareem/architects/hiveryn",
-				Repos: map[string]string{"daemon": "/tmp/daemon"},
-				TicketKickoffs: []TicketKickoff{
-					{Path: "/tmp/a.md", Repos: []string{"daemon"}},
-					{Path: "/tmp/b.md", Repos: []string{"daemon"}},
-				},
-			},
-		},
-		Tabs: map[string][]TabEntry{},
-	}.Validate()
-	if err == nil {
-		t.Fatal("expected duplicate-repo kickoff validation error")
-	}
-}
-
 func TestValidateRejectsBlankTabType(t *testing.T) {
 	t.Parallel()
 
@@ -828,7 +752,7 @@ func TestLoadFailsOnDuplicateRepoKey(t *testing.T) {
 	}
 }
 
-func TestLoadResolvesPromptPathsRelativeToWorkspace(t *testing.T) {
+func TestLoadRejectsUnknownArchitectFileKeys(t *testing.T) {
 	t.Parallel()
 
 	configDir := t.TempDir()
@@ -841,40 +765,124 @@ func TestLoadResolvesPromptPathsRelativeToWorkspace(t *testing.T) {
 		"name":  "Hiveryn",
 		"repos": map[string]string{"daemon": "/tmp/daemon"},
 		"prompts": map[string]any{
-			"architect": map[string]string{
-				"system":  "prompts/SYSTEM.md",
-				"kickoff": "/abs/KICKOFF.md",
-			},
-			"ticket": map[string]any{
-				"kickoffs": []map[string]any{
-					{"path": "prompts/default.md"},
-					{"path": "prompts/daemon.md", "repos": []string{"daemon"}},
-				},
-			},
+			"architect": map[string]string{"system": "prompts/SYSTEM.md"},
 		},
 	})
 	writeYAML(t, filepath.Join(configDir, architectsFileName), map[string]string{
 		"hiveryn": architectDir,
 	})
 
-	cfg, err := Load(filepath.Join(configDir, configFileName))
+	_, err := Load(filepath.Join(configDir, configFileName))
+	if err == nil {
+		t.Fatal("expected a leftover prompts: block to be rejected")
+	}
+	if !strings.Contains(err.Error(), "prompts") || !strings.Contains(err.Error(), "prompt overrides were removed") {
+		t.Fatalf("expected an actionable unknown-key error naming prompts, got: %v", err)
+	}
+}
+
+func TestValidateArchitectConfigReadsDiskNotRuntime(t *testing.T) {
+	t.Parallel()
+
+	architectDir := writeArchitect(t, map[string]any{
+		"name":  "Hiveryn",
+		"repos": map[string]string{"daemon": "/tmp/daemon"},
+	})
+	resolved, err := ValidateArchitectConfig(architectDir, "hiveryn")
+	if err != nil {
+		t.Fatalf("ValidateArchitectConfig: %v", err)
+	}
+	if resolved.Repos["daemon"] != "/tmp/daemon" {
+		t.Fatalf("unexpected repos: %v", resolved.Repos)
+	}
+
+	if err := os.WriteFile(filepath.Join(architectDir, architectConfigFileName), []byte("repos:\n  daemon: \n"), 0o600); err != nil {
+		t.Fatalf("write hiveryn.yaml: %v", err)
+	}
+	if _, err := ValidateArchitectConfig(architectDir, "hiveryn"); err == nil {
+		t.Fatal("expected blank name and blank repo path to fail validation")
+	}
+}
+
+// A broken edit to hiveryn.yaml must not replace the runtime config: the
+// reloading source keeps serving the last valid config, reports the failure
+// through LoadStatus, and picks the file back up once it is repaired.
+func TestReloadingSourceKeepsLastValidConfigOnBrokenEdit(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, configFileName)
+	writeYAML(t, configPath, map[string]any{
+		"port":         4201,
+		"bind_address": "127.0.0.1",
+		"log_level":    "info",
+	})
+	architectDir := writeArchitect(t, map[string]any{
+		"name":  "Hiveryn",
+		"repos": map[string]string{"daemon": "/tmp/daemon"},
+	})
+	writeYAML(t, filepath.Join(configDir, architectsFileName), map[string]string{
+		"hiveryn": architectDir,
+	})
+
+	base, err := Load(configPath)
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	architect := cfg.Architects["hiveryn"]
-	if want := filepath.Join(architectDir, "prompts/SYSTEM.md"); architect.SystemPromptPath != want {
-		t.Fatalf("expected system prompt %q, got %q", want, architect.SystemPromptPath)
+	source, err := NewReloadingSource(configPath, base)
+	if err != nil {
+		t.Fatalf("NewReloadingSource: %v", err)
 	}
-	if architect.KickoffPromptPath != "/abs/KICKOFF.md" {
-		t.Fatalf("expected absolute kickoff path preserved, got %q", architect.KickoffPromptPath)
+
+	// A valid edit is picked up.
+	writeYAML(t, filepath.Join(architectDir, architectConfigFileName), map[string]any{
+		"name":  "Hiveryn",
+		"repos": map[string]string{"daemon": "/tmp/daemon", "shared": "/tmp/shared"},
+	})
+	cfg, err := source.Current()
+	if err != nil {
+		t.Fatalf("Current after valid edit: %v", err)
 	}
-	if len(architect.TicketKickoffs) != 2 {
-		t.Fatalf("expected 2 ticket kickoffs, got %d", len(architect.TicketKickoffs))
+	if _, ok := cfg.Architects["hiveryn"].Repos["shared"]; !ok {
+		t.Fatalf("expected the valid edit to be served, got repos %v", cfg.Architects["hiveryn"].Repos)
 	}
-	for _, kickoff := range architect.TicketKickoffs {
-		if !filepath.IsAbs(kickoff.Path) {
-			t.Fatalf("expected resolved absolute kickoff path, got %q", kickoff.Path)
-		}
+	if status := source.LoadStatus(); status.Error != "" {
+		t.Fatalf("expected clean load status, got %+v", status)
+	}
+
+	// A broken edit is not.
+	if err := os.WriteFile(filepath.Join(architectDir, architectConfigFileName), []byte("name: Hiveryn\nrepos: [not a map\n"), 0o600); err != nil {
+		t.Fatalf("write broken hiveryn.yaml: %v", err)
+	}
+	cfg, err = source.Current()
+	if err != nil {
+		t.Fatalf("Current after broken edit must serve the last valid config, got error: %v", err)
+	}
+	if _, ok := cfg.Architects["hiveryn"].Repos["shared"]; !ok {
+		t.Fatalf("expected the last valid config to be served, got repos %v", cfg.Architects["hiveryn"].Repos)
+	}
+	status := source.LoadStatus()
+	if status.Error == "" || status.FailedAt == nil {
+		t.Fatalf("expected the broken edit to be reported in LoadStatus, got %+v", status)
+	}
+	if !strings.Contains(status.Error, architectConfigFileName) {
+		t.Fatalf("expected LoadStatus.Error to name the broken file, got %q", status.Error)
+	}
+
+	// Repairing the file recovers.
+	writeYAML(t, filepath.Join(architectDir, architectConfigFileName), map[string]any{
+		"name":  "Hiveryn",
+		"repos": map[string]string{"daemon": "/tmp/daemon"},
+	})
+	cfg, err = source.Current()
+	if err != nil {
+		t.Fatalf("Current after repair: %v", err)
+	}
+	if _, ok := cfg.Architects["hiveryn"].Repos["shared"]; ok {
+		t.Fatalf("expected the repaired config to be served, got repos %v", cfg.Architects["hiveryn"].Repos)
+	}
+	if status := source.LoadStatus(); status.Error != "" || status.FailedAt != nil {
+		t.Fatalf("expected recovered load status, got %+v", status)
 	}
 }
 

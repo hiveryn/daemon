@@ -30,16 +30,6 @@ func (s *Server) registerArchitectTools() {
 	}, s.handleCreateWorkTicket)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
-		Name:        "listAgentProfiles",
-		Description: "List configured agent profile keys and only their decision-relevant runtime, model, and mode. Use this when profile choices are unclear; never infer or silently default a profile.",
-	}, s.handleListAgentProfiles)
-
-	mcp.AddTool(s.mcpServer, &mcp.Tool{
-		Name:        "spawnTicketSession",
-		Description: "Request approval to spawn a backlog ticket with an explicit configured profile agreed with the user. This call blocks for approval and auto-approves on timeout: approved/auto_approved creates session_id; denied_by_user creates nothing and must not be retried automatically. Never infer or default profile.",
-	}, s.handleSpawnTicketSession)
-
-	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "editTicketBody",
 		Description: "Perform exact string replacements in a ticket body.",
 	}, s.handleEditTicketBody)
@@ -79,31 +69,12 @@ func (s *Server) registerArchitectTools() {
 		Description: "Read the conclusion for a specific ticket by ID. Errors with NOT_FOUND if the ticket has no conclusion.",
 	}, s.handleReadTicketConclusion)
 
-	s.registerConfigTools()
+	// The architect edits hiveryn.yaml, the project documents and workflows
+	// with its own file tools, guided by describeArtifact and checked by
+	// checkWorkspace. There is no config-authoring tool, no prompt tool and no
+	// spawn tool: prompts are built in, and only the user launches workers.
 	s.registerWorkspaceTools()
 	s.registerBrowserTools()
-}
-
-// registerConfigTools registers the hiveryn.yaml config-management tools. They
-// own the yaml wiring, validation, and path resolution; the agent writes the
-// prompt/markdown file contents itself. Editing is a read → modify → write-back
-// cycle: readArchitectConfig returns the whole config plus a version token,
-// updateArchitectConfig writes the whole config back guarded by that token.
-func (s *Server) registerConfigTools() {
-	mcp.AddTool(s.mcpServer, &mcp.Tool{
-		Name:        "readArchitectConfig",
-		Description: "Read the architect's hiveryn.yaml: the whole config (repos, architect prompts, ticket kickoffs), a resolved view (absolute paths + which wired prompt files exist), warnings for missing ones, and an opaque version token to pass to updateArchitectConfig.",
-	}, s.handleReadArchitectConfig)
-
-	mcp.AddTool(s.mcpServer, &mcp.Tool{
-		Name:        "updateArchitectConfig",
-		Description: "Whole-document replace of the architect's hiveryn.yaml, guarded by the version token from readArchitectConfig. Send back the config you read with edits applied; missing wired prompt files are auto-created from defaults. You author prompt file contents yourself.",
-	}, s.handleUpdateArchitectConfig)
-
-	mcp.AddTool(s.mcpServer, &mcp.Tool{
-		Name:        "readDefaultPrompt",
-		Description: "Get the embedded default template for a prompt kind plus the template variables valid for it — a starting point for authoring a prompt file.",
-	}, s.handleReadDefaultPrompt)
 }
 
 func (s *Server) handleReadTicketConclusion(
@@ -182,26 +153,6 @@ func (s *Server) handleCreateWorkTicket(
 	}
 
 	return nil, output, nil
-}
-
-func (s *Server) handleListAgentProfiles(
-	ctx context.Context, _ *mcp.CallToolRequest, _ ListAgentProfilesInput,
-) (*mcp.CallToolResult, ListAgentProfilesOutput, error) {
-	output, err := s.listAgentProfiles(ctx)
-	return nil, output, err
-}
-
-func (s *Server) handleSpawnTicketSession(
-	ctx context.Context, _ *mcp.CallToolRequest, input SpawnTicketSessionInput,
-) (*mcp.CallToolResult, SpawnTicketSessionOutput, error) {
-	if strings.TrimSpace(input.TicketID) == "" {
-		return nil, SpawnTicketSessionOutput{}, newValidationError("ticket_id", "is required")
-	}
-	if strings.TrimSpace(input.Profile) == "" {
-		return nil, SpawnTicketSessionOutput{}, newValidationError("profile", "is required; no profile is inferred or defaulted")
-	}
-	output, err := s.spawnTicketSession(ctx, input)
-	return nil, output, err
 }
 
 func (s *Server) handleDeleteTicket(

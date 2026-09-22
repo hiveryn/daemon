@@ -82,14 +82,6 @@ type agentProfileResponse struct {
 	Env   map[string]string `json:"env"`
 }
 
-type agentProfileChoiceResponse struct {
-	Name  string `json:"name"`
-	Agent string `json:"agent"`
-	Model string `json:"model,omitempty"`
-	Yolo  bool   `json:"yolo,omitempty"`
-	Mode  string `json:"mode,omitempty"`
-}
-
 type architectResponse struct {
 	Key   string         `json:"key"`
 	Name  string         `json:"name"`
@@ -109,11 +101,10 @@ func NewHandler(deps Dependencies) http.Handler {
 	rh := &reposHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
 	sch := &shortcutsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
 	dch := &desktopConfigHandler{config: deps.Config}
-	srh := &systemRuntimeHandler{runtime: deps.Runtime, bindAddress: deps.Config.BindAddress, port: deps.Config.Port, baseURL: deps.BaseURL}
+	srh := &systemRuntimeHandler{runtime: deps.Runtime, bindAddress: deps.Config.BindAddress, port: deps.Config.Port, baseURL: deps.BaseURL, configSource: deps.ConfigSource}
 	sh := &sessionsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
 	th := &ticketsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
 	eh := &architectEventsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, hub: deps.ArchitectEvents}
-	ach := &architectConfigHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
 	fh := &fsHandler{logger: deps.Logger}
 	wh := &workspaceHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, workspaces: deps.Workspaces}
 
@@ -146,9 +137,6 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/architects/{key}/repos/{repoKey}/diff", rh.diff)
 	mux.HandleFunc("GET /api/architects/{key}/repos/{repoKey}/status", rh.status)
 	mux.HandleFunc("GET /api/architects/{key}/repos/{repoKey}/commits/{sha}/diff", rh.commitDiff)
-	mux.HandleFunc("GET /api/architects/{key}/config", ach.readArchitectConfig)
-	mux.HandleFunc("PUT /api/architects/{key}/config", ach.updateArchitectConfig)
-	mux.HandleFunc("GET /api/architects/{key}/config/default-prompt", ach.readDefaultPrompt)
 	mux.HandleFunc("GET /api/architects/{key}/workspace/check", wh.check)
 	mux.HandleFunc("GET /api/architects/{key}/workspace/artifacts/{kind}", wh.describeArtifact)
 	mux.HandleFunc("GET /api/architects/{key}/workflows", wh.listWorkflows)
@@ -170,8 +158,6 @@ func NewHandler(deps Dependencies) http.Handler {
 	// tool's policy fires.
 	mux.HandleFunc("POST /api/sessions/{id}/intents/conclude-session", sh.concludeSessionIntent)
 	mux.HandleFunc("POST /api/sessions/{id}/intents/create-work-ticket", sh.createWorkTicketIntent)
-	mux.HandleFunc("POST /api/sessions/{id}/intents/spawn-ticket-session", sh.spawnTicketSessionIntent)
-	mux.HandleFunc("GET /api/sessions/{id}/agent-profiles", sh.listAgentProfileChoices)
 	// Desktop-facing intent resolution, addressed by intent id.
 	mux.HandleFunc("POST /api/sessions/{id}/intents/{intentID}/approve", sh.approveIntent)
 	mux.HandleFunc("POST /api/sessions/{id}/intents/{intentID}/deny", sh.denyIntent)
@@ -190,18 +176,6 @@ func NewHandler(deps Dependencies) http.Handler {
 	}
 
 	return requestID(accessLog(deps.Logger, deps.RequestLogger, recovery(mux)))
-}
-
-func listAgentProfileChoices(cfg config.Config) []agentProfileChoiceResponse {
-	names := configKeys(cfg.Variants)
-	profiles := make([]agentProfileChoiceResponse, 0, len(names))
-	for _, name := range names {
-		profile := cfg.Variants[name]
-		profiles = append(profiles, agentProfileChoiceResponse{
-			Name: name, Agent: profile.Agent, Model: profile.Model, Yolo: profile.Yolo, Mode: profile.Mode,
-		})
-	}
-	return profiles
 }
 
 func listAgentProfiles(cfg config.Config) []agentProfileResponse {

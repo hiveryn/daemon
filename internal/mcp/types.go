@@ -27,30 +27,6 @@ type CreateWorkTicketInput struct {
 	References      []string `json:"references,omitempty" jsonschema:"Optional list of same-board ticket IDs or absolute filesystem paths. Paths are read-only context and never expand writable repository scope."`
 }
 
-type ListAgentProfilesInput struct{}
-
-type AgentProfileChoice struct {
-	Name  string `json:"name"`
-	Agent string `json:"agent"`
-	Model string `json:"model,omitempty"`
-	Yolo  bool   `json:"yolo,omitempty"`
-	Mode  string `json:"mode,omitempty"`
-}
-
-type ListAgentProfilesOutput struct {
-	AgentProfiles []AgentProfileChoice `json:"agent_profiles"`
-}
-
-type SpawnTicketSessionInput struct {
-	TicketID string `json:"ticket_id" jsonschema:"Backlog ticket ID to spawn (required)"`
-	Profile  string `json:"profile" jsonschema:"Explicit configured profile key agreed with the user (required; never inferred or defaulted)"`
-}
-
-type SpawnTicketSessionOutput struct {
-	IntentEnvelopeFields
-	SessionID string `json:"session_id,omitempty" jsonschema:"Created Hiveryn session ID. Present only when outcome is approved."`
-}
-
 type EditTicketBodyInput struct {
 	ID         string `json:"id" jsonschema:"The ticket ID to edit (required)"`
 	OldString  string `json:"oldString" jsonschema:"Text to find in the ticket body (required)"`
@@ -88,7 +64,7 @@ type ArchitectConcludeSessionInput struct {
 	Narrative      string `json:"narrative" jsonschema:"What happened this session, in markdown (required)."`
 	TicketsTouched string `json:"tickets_touched,omitempty" jsonschema:"Board delta — tickets created, updated, or deleted this session, as Markdown (optional)."`
 	Decisions      string `json:"decisions,omitempty" jsonschema:"Key decisions locked this session, as Markdown (optional)."`
-	ConfigChanges  string `json:"config_changes,omitempty" jsonschema:"Edits to hiveryn.yaml repos, kickoffs, or prompts, as Markdown (optional)."`
+	ConfigChanges  string `json:"config_changes,omitempty" jsonschema:"Edits to hiveryn.yaml, project documents or workflows, as Markdown (optional)."`
 	UserPriorities string `json:"user_priorities,omitempty" jsonschema:"User priorities expressed this session, as Markdown (optional)."`
 	OpenQuestions  string `json:"open_questions,omitempty" jsonschema:"Unresolved questions or risks, as Markdown (optional)."`
 	NextSteps      string `json:"next_steps" jsonschema:"Concrete next steps to resume from, as Markdown (required; write \"None\" if there are none)."`
@@ -204,101 +180,6 @@ type CreateWorkTicketOutput struct {
 type TicketConclusionOutput = domain.TicketConclusion
 
 type TicketSummary = domain.TicketSummary
-
-// --- hiveryn.yaml config tools ---
-
-// ArchitectConfigDoc is the declarative, whole-document architect config. The
-// same shape is returned by readArchitectConfig and accepted by
-// updateArchitectConfig, so you can read → edit → write it back without
-// reshaping. Paths are stored verbatim.
-type ArchitectConfigDoc struct {
-	Repos   map[string]string   `json:"repos" jsonschema:"Repo key → path. Paths may be absolute or ~-prefixed and are stored verbatim."`
-	Prompts ArchitectPromptsDoc `json:"prompts" jsonschema:"Prompt path wiring; all fields optional (omit to use the embedded defaults)."`
-}
-
-type ArchitectPromptsDoc struct {
-	Architect ArchitectPromptPathsDoc `json:"architect" jsonschema:"Architect system/kickoff prompt paths — single, not repo-scoped."`
-	Ticket    TicketKickoffsDoc       `json:"ticket" jsonschema:"Ticket kickoff prompt entries (repo-scoped)."`
-}
-
-type ArchitectPromptPathsDoc struct {
-	System  string `json:"system,omitempty" jsonschema:"Path to the architect system prompt; empty = embedded default."`
-	Kickoff string `json:"kickoff,omitempty" jsonschema:"Path to the architect kickoff prompt; empty = embedded default."`
-}
-
-type TicketKickoffsDoc struct {
-	Kickoffs []TicketKickoffDoc `json:"kickoffs" jsonschema:"Ticket kickoff entries. At most one default (empty-repos) entry; each repo may appear in at most one entry."`
-}
-
-type TicketKickoffDoc struct {
-	Path  string   `json:"path" jsonschema:"Path to the kickoff prompt file (required)."`
-	Repos []string `json:"repos" jsonschema:"Repo keys this entry applies to; empty = the default entry used by repos without their own."`
-}
-
-// ResolvedConfig mirrors ArchitectConfigDoc with absolute paths and, per wired
-// prompt, whether the file exists. Read-only — do not send it back.
-type ResolvedConfig struct {
-	Repos   map[string]string `json:"repos"`
-	Prompts ResolvedPrompts   `json:"prompts"`
-}
-
-type ResolvedPrompts struct {
-	Architect ResolvedArchitectPrompts `json:"architect"`
-	Ticket    ResolvedTicket           `json:"ticket"`
-}
-
-type ResolvedArchitectPrompts struct {
-	System  *ResolvedPath `json:"system"`
-	Kickoff *ResolvedPath `json:"kickoff"`
-}
-
-type ResolvedTicket struct {
-	Kickoffs []ResolvedKickoff `json:"kickoffs"`
-}
-
-type ResolvedPath struct {
-	Path   string `json:"path"`
-	Exists bool   `json:"exists"`
-}
-
-type ResolvedKickoff struct {
-	Path   string   `json:"path"`
-	Repos  []string `json:"repos"`
-	Exists bool     `json:"exists"`
-}
-
-type ReadArchitectConfigOutput struct {
-	Config   ArchitectConfigDoc `json:"config"`
-	Resolved ResolvedConfig     `json:"resolved"`
-	Warnings []string           `json:"warnings"`
-	Version  string             `json:"version"`
-}
-
-type UpdateArchitectConfigInput struct {
-	Config  ArchitectConfigDoc `json:"config" jsonschema:"Full config document to write (declarative replace — anything omitted is dropped). Send back the document from readArchitectConfig with your edits applied."`
-	Version string             `json:"version" jsonschema:"Opaque version token from your last readArchitectConfig (required). Rejected if it no longer matches the on-disk config; re-read and retry."`
-}
-
-type UpdateArchitectConfigOutput struct {
-	Config   ArchitectConfigDoc `json:"config"`
-	Resolved ResolvedConfig     `json:"resolved"`
-	Created  []string           `json:"created"`
-	Version  string             `json:"version"`
-}
-
-type ReadDefaultPromptInput struct {
-	Kind string `json:"kind" jsonschema:"Which default template to fetch. One of: architect-system, architect-kickoff, ticket-kickoff."`
-}
-
-type ReadDefaultPromptOutput struct {
-	Template  string                `json:"template"`
-	Variables []PromptVariableEntry `json:"variables"`
-}
-
-type PromptVariableEntry struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-}
 
 // --- workspace inspection tools (architect only) ---
 

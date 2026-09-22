@@ -251,3 +251,14 @@ func TestParseRepoScope(t *testing.T) {
 		}
 	}
 }
+
+// writeGitRepo is a temp dir with a .git directory, which is what the daemon's
+// repo-path check requires before a session may be scoped to it.
+func writeGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	return dir
+}

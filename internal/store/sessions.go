@@ -29,6 +29,9 @@ func (s *SessionStore) CreateSession(ctx context.Context, params domain.CreateSe
 	if params.AdditionalWorkdirs == nil {
 		params.AdditionalWorkdirs = []string{}
 	}
+	if params.Workflows == nil {
+		params.Workflows = []string{}
+	}
 	additionalRepos, err := json.Marshal(params.AdditionalRepos)
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("marshal session additional repos: %w", err)
@@ -36,6 +39,10 @@ func (s *SessionStore) CreateSession(ctx context.Context, params domain.CreateSe
 	additionalWorkdirs, err := json.Marshal(params.AdditionalWorkdirs)
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("marshal session additional workdirs: %w", err)
+	}
+	workflows, err := json.Marshal(params.Workflows)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("marshal session workflows: %w", err)
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -49,9 +56,9 @@ func (s *SessionStore) CreateSession(ctx context.Context, params domain.CreateSe
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO sessions (id, architect_key, session_type, context_id, prompt, workdir, additional_repos, additional_workdirs, instructions, created_by)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, params.ID, params.ArchitectKey, string(params.SessionType), params.ContextID, params.Prompt, params.Workdir, string(additionalRepos), string(additionalWorkdirs), nullIfEmpty(params.Instructions), nullIfEmpty(string(params.CreatedBy)))
+		INSERT INTO sessions (id, architect_key, session_type, context_id, prompt, workdir, additional_repos, additional_workdirs, workflows, instructions, created_by)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, params.ID, params.ArchitectKey, string(params.SessionType), params.ContextID, params.Prompt, params.Workdir, string(additionalRepos), string(additionalWorkdirs), string(workflows), nullIfEmpty(params.Instructions), nullIfEmpty(string(params.CreatedBy)))
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("insert session: %w", err)
 	}
@@ -106,7 +113,7 @@ func (s *SessionStore) DeleteSession(ctx context.Context, id string) error {
 
 func intentWithCurrentRunQuery(suffix string) string {
 	return `
-		SELECT i.id, i.architect_key, i.session_type, i.context_id, i.prompt, i.workdir, i.additional_repos, i.additional_workdirs, COALESCE(i.instructions, ''),
+		SELECT i.id, i.architect_key, i.session_type, i.context_id, i.prompt, i.workdir, i.additional_repos, i.additional_workdirs, i.workflows, COALESCE(i.instructions, ''),
 		       COALESCE(i.created_by, ''), i.created_at, i.updated_at,
 		       r.id, r.session_id, r.status, COALESCE(r.agent_status, ''), r.profile_name, COALESCE(r.profile_snapshot, ''), COALESCE(r.workdir, ''), COALESCE(r.additional_repos, '[]'), COALESCE(r.additional_workdirs, '[]'),
 		       COALESCE(r.native_id, ''), COALESCE(r.failure_reason, ''), COALESCE(r.started_at, ''), COALESCE(r.ended_at, ''),

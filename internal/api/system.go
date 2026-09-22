@@ -7,10 +7,11 @@ import (
 )
 
 type systemRuntimeHandler struct {
-	runtime     config.Runtime
-	bindAddress string
-	port        int
-	baseURL     string
+	runtime      config.Runtime
+	bindAddress  string
+	port         int
+	baseURL      string
+	configSource config.Source
 }
 
 type systemRuntimeResponse struct {
@@ -22,9 +23,17 @@ type systemRuntimeResponse struct {
 	BindAddress string `json:"bind_address"`
 	Port        int    `json:"port"`
 	BaseURL     string `json:"base_url"`
+	// Config reports the most recent reload of the YAML configuration. A
+	// non-empty error means an on-disk edit is broken and the daemon is serving
+	// the last valid config instead — visible here rather than silently masked.
+	Config config.LoadStatus `json:"config"`
 }
 
 func (h *systemRuntimeHandler) get(w http.ResponseWriter, r *http.Request) {
+	var status config.LoadStatus
+	if h.configSource != nil {
+		status = h.configSource.LoadStatus()
+	}
 	writeJSON(w, r, http.StatusOK, systemRuntimeResponse{
 		Environment: h.runtime.Environment,
 		Home:        h.runtime.Home,
@@ -34,5 +43,6 @@ func (h *systemRuntimeHandler) get(w http.ResponseWriter, r *http.Request) {
 		BindAddress: h.bindAddress,
 		Port:        h.port,
 		BaseURL:     h.baseURL,
+		Config:      status,
 	})
 }

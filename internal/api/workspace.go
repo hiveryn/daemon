@@ -102,3 +102,21 @@ func artifactKindNames() []string {
 	}
 	return names
 }
+
+// resolveArchitectWorkspace resolves the workspace path for the {key} path
+// param from fresh config, writing a 404 and returning ok=false when the
+// architect is unknown.
+func resolveArchitectWorkspace(w http.ResponseWriter, r *http.Request, cfg config.Config, source config.Source) (key, workspace string, ok bool) {
+	current, err := currentConfig(cfg, source)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return "", "", false
+	}
+	key = r.PathValue("key")
+	architect, exists := current.Architects[key]
+	if !exists {
+		writeArchitectNotFound(w, r, key)
+		return "", "", false
+	}
+	return key, architect.Path, true
+}

@@ -1,12 +1,17 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -40,17 +45,51 @@ type Config struct {
 	Shortcuts                 map[string]map[string]string `yaml:"-"`
 }
 
+// Source is the daemon's view of the current configuration. Current never
+// hands out a config that failed validation: a reloading source keeps serving
+// the last valid config while an on-disk edit is broken, and reports that
+// state through LoadStatus so it is visible rather than silently masked.
 type Source interface {
 	Current() (Config, error)
+	// LoadStatus reports whether the most recent attempt to read the on-disk
+	// configuration succeeded. A non-nil Error means Current is serving the
+	// last valid config instead of what is on disk.
+	LoadStatus() LoadStatus
+}
+
+// LoadStatus describes the most recent reload attempt of a Source.
+type LoadStatus struct {
+	// Error is the verbatim reload failure, empty when the on-disk config is
+	// the one being served.
+	Error string `json:"error,omitempty"`
+	// FailedAt is when the failing reload happened; nil when Error is empty.
+	FailedAt *time.Time `json:"failed_at,omitempty"`
+	// LoadedAt is when the served config was last successfully loaded.
+	LoadedAt time.Time `json:"loaded_at"`
 }
 
 type staticSource struct {
-	cfg Config
+	cfg      Config
+	loadedAt time.Time
 }
 
+// reloadingSource re-reads the optional YAML files on every Current call so
+// edits apply without a restart. When a reload fails — a half-written
+// hiveryn.yaml, an unknown key, a blank repo path — it keeps serving the last
+// config that validated, logs the failure at ERROR once per distinct error,
+// and exposes it through LoadStatus. An invalid edit therefore never replaces
+// the runtime config, and never hides either: the workspace check reports the
+// broken file and worker launch validates hiveryn.yaml on disk directly.
 type reloadingSource struct {
 	path string
 	base Config
+
+	mu        sync.Mutex
+	lastGood  Config
+	loadedAt  time.Time
+	lastErr   error
+	failedAt  time.Time
+	loggedErr string
 }
 
 type VariantConfig struct {
@@ -79,53 +118,25 @@ const ReservedMCPServerName = "hiveryn-daemon"
 
 // ArchitectConfig is the resolved configuration for a single architect,
 // assembled from the global architects.yaml registry (which supplies the key
-// and workspace path) and the architect's own hiveryn.yaml (name, repos,
-// prompts). Repos is keyed by repo key for lookups; prompt paths are resolved
-// to absolute paths and empty when not configured (the embedded default is
-// used in that case).
+// and workspace path) and the architect's own hiveryn.yaml (name and repos).
+// Repos is keyed by repo key for lookups, with paths expanded to absolute.
+//
+// There are no prompt fields: architect and worker instructions are built into
+// the daemon, and the only per-architect customization is the optional
+// ARCHITECT_SYSTEM.md file in the workspace, read at session start.
 type ArchitectConfig struct {
-	Name              string
-	Path              string
-	Repos             map[string]string
-	SystemPromptPath  string
-	KickoffPromptPath string
-	TicketKickoffs    []TicketKickoff
-}
-
-// TicketKickoff is a single ticket-kickoff prompt entry. Path is the resolved
-// absolute path to the prompt file. Repos optionally scopes the entry to
-// specific repo keys; an entry with no repos is the default.
-type TicketKickoff struct {
+	Name  string
 	Path  string
-	Repos []string
+	Repos map[string]string
 }
 
-// architectFile is the on-disk shape of <architectPath>/hiveryn.yaml. Nested
-// prompt sections are pointers with omitempty so that marshaling an architect
-// with no prompt overrides produces a clean file (no empty prompts: block).
+// architectFile is the on-disk shape of <architectPath>/hiveryn.yaml. It is
+// decoded strictly: an unknown key (such as a leftover prompts: block) is an
+// error, because a key the daemon silently ignores would look configured while
+// doing nothing.
 type architectFile struct {
-	Name    string            `yaml:"name,omitempty"`
-	Repos   map[string]string `yaml:"repos,omitempty"`
-	Prompts *architectPrompts `yaml:"prompts,omitempty"`
-}
-
-type architectPrompts struct {
-	Architect *architectPromptPaths `yaml:"architect,omitempty"`
-	Ticket    *ticketPrompts        `yaml:"ticket,omitempty"`
-}
-
-type architectPromptPaths struct {
-	System  string `yaml:"system,omitempty"`
-	Kickoff string `yaml:"kickoff,omitempty"`
-}
-
-type ticketPrompts struct {
-	Kickoffs []ticketKickoffEntry `yaml:"kickoffs,omitempty"`
-}
-
-type ticketKickoffEntry struct {
-	Path  string   `yaml:"path"`
-	Repos []string `yaml:"repos,omitempty"`
+	Name  string            `yaml:"name,omitempty"`
+	Repos map[string]string `yaml:"repos,omitempty"`
 }
 
 type TabEntry struct {
@@ -192,18 +203,23 @@ func DefaultPath() (string, error) {
 }
 
 func StaticSource(cfg Config) Source {
-	return staticSource{cfg: cfg.Clone()}
+	return staticSource{cfg: cfg.Clone(), loadedAt: time.Now().UTC()}
 }
 
+// NewReloadingSource returns a Source that re-reads the optional YAML files
+// under path's directory on every Current call. base is the config loaded at
+// startup and is the first "last valid" config.
 func NewReloadingSource(path string, base Config) (Source, error) {
 	resolvedPath, err := resolvePath(path)
 	if err != nil {
 		return nil, err
 	}
 
-	return reloadingSource{
-		path: resolvedPath,
-		base: base.Clone(),
+	return &reloadingSource{
+		path:     resolvedPath,
+		base:     base.Clone(),
+		lastGood: base.Clone(),
+		loadedAt: time.Now().UTC(),
 	}, nil
 }
 
@@ -258,7 +274,45 @@ func (s staticSource) Current() (Config, error) {
 	return s.cfg.Clone(), nil
 }
 
-func (s reloadingSource) Current() (Config, error) {
+func (s staticSource) LoadStatus() LoadStatus {
+	return LoadStatus{LoadedAt: s.loadedAt}
+}
+
+// Current reloads the optional YAML files. On failure it returns the last
+// valid config: the daemon keeps running on what it last validated instead of
+// failing every request until the file is repaired, and the failure is logged
+// and exposed through LoadStatus rather than swallowed.
+func (s *reloadingSource) Current() (Config, error) {
+	cfg, err := s.reload()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	if err != nil {
+		s.lastErr = err
+		s.failedAt = now
+		if msg := err.Error(); msg != s.loggedErr {
+			s.loggedErr = msg
+			slog.Error("config reload failed; serving the last valid config until the file is repaired",
+				"config_path", s.path,
+				"loaded_at", s.loadedAt,
+				"error", err,
+			)
+		}
+		return s.lastGood.Clone(), nil
+	}
+	if s.lastErr != nil {
+		slog.Info("config reload recovered", "config_path", s.path)
+	}
+	s.lastErr = nil
+	s.failedAt = time.Time{}
+	s.loggedErr = ""
+	s.lastGood = cfg.Clone()
+	s.loadedAt = now
+	return cfg, nil
+}
+
+func (s *reloadingSource) reload() (Config, error) {
 	cfg := s.base.Clone()
 	cfg.Variants = map[string]VariantConfig{}
 	cfg.Architects = map[string]ArchitectConfig{}
@@ -272,6 +326,27 @@ func (s reloadingSource) Current() (Config, error) {
 		return Config{}, fmt.Errorf("validate config after reload: %w", err)
 	}
 	return cfg, nil
+}
+
+// LoadStatus reloads first so the answer describes the file as it is now, not
+// as it was at the last request that happened to read config: a repaired file
+// must read as repaired immediately.
+func (s *reloadingSource) LoadStatus() LoadStatus {
+	if _, err := s.Current(); err != nil {
+		// Current never returns an error for a reload failure (it serves the
+		// last valid config instead), so this is unreachable in practice; keep
+		// the status honest if that ever changes.
+		return LoadStatus{Error: err.Error()}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	status := LoadStatus{LoadedAt: s.loadedAt}
+	if s.lastErr != nil {
+		status.Error = s.lastErr.Error()
+		failedAt := s.failedAt
+		status.FailedAt = &failedAt
+	}
+	return status
 }
 
 func loadOptionalConfigFiles(configDir string, cfg *Config) error {
@@ -335,30 +410,64 @@ func loadArchitectFile(key, workspacePath string) (ArchitectConfig, error) {
 		return ArchitectConfig{}, fmt.Errorf("architects.%s path is required", key)
 	}
 
-	filePath := filepath.Join(workspacePath, architectConfigFileName)
-	data, err := os.ReadFile(filePath)
+	_, file, err := readArchitectFile(workspacePath)
 	if err != nil {
-		return ArchitectConfig{}, fmt.Errorf("read %q: %w", filePath, err)
+		return ArchitectConfig{}, err
 	}
 
-	var file architectFile
-	if err := yaml.Unmarshal(data, &file); err != nil {
-		return ArchitectConfig{}, fmt.Errorf("decode YAML %q: %w", filePath, err)
-	}
-
-	// Duplicate repo keys are rejected by the YAML decoder above.
+	// Duplicate repo keys are rejected by the YAML decoder.
 	return architectConfigFromFile(key, workspacePath, file)
 }
 
-// architectConfigFromFile converts a parsed architectFile into a resolved
+// readArchitectFile reads and strictly decodes <workspacePath>/hiveryn.yaml,
+// returning the raw bytes and the decoded file. It is the single reader used
+// by the loader and by ValidateArchitectConfig so both see the same document
+// the same way.
+func readArchitectFile(workspacePath string) ([]byte, architectFile, error) {
+	filePath := filepath.Join(workspacePath, architectConfigFileName)
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, architectFile{}, fmt.Errorf("read %q: %w", filePath, err)
+	}
+
+	file, err := decodeArchitectFile(data)
+	if err != nil {
+		return nil, architectFile{}, fmt.Errorf("decode YAML %q: %w", filePath, err)
+	}
+	return data, file, nil
+}
+
+// decodeArchitectFile decodes hiveryn.yaml with unknown keys rejected. The
+// file holds exactly name and repos; anything else — most likely a prompts:
+// block left over from before prompts became built in — is reported so it can
+// be removed instead of sitting there looking configured.
+func decodeArchitectFile(data []byte) (architectFile, error) {
+	var file architectFile
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&file); err != nil {
+		if errors.Is(err, io.EOF) {
+			// An empty file decodes to nothing; validation reports the missing
+			// name, which is the actionable message.
+			return architectFile{}, nil
+		}
+		return architectFile{}, fmt.Errorf("%w (hiveryn.yaml holds only `name` and `repos`; prompt overrides were removed — architect and worker instructions are built into the daemon, and ARCHITECT_SYSTEM.md carries per-architect preferences)", err)
+	}
+	return file, nil
+}
+
+// architectConfigFromFile converts a decoded architectFile into a resolved
 // ArchitectConfig without touching the filesystem: repo paths are home-expanded
-// to absolute, and prompt paths are resolved against the workspace. It does not
-// mutate the input file (the mutation layer relies on this to validate a
-// pending write before persisting it). This is the single conversion used by
-// both the loader and the mutation layer, guaranteeing they agree.
+// to absolute. It is the single conversion used by the loader and by
+// ValidateArchitectConfig, guaranteeing they agree.
 func architectConfigFromFile(key, workspacePath string, file architectFile) (ArchitectConfig, error) {
 	repos := make(map[string]string, len(file.Repos))
 	for name, path := range file.Repos {
+		if strings.TrimSpace(path) == "" {
+			// filepath.Abs("") would silently resolve to the daemon's working
+			// directory, turning a blank entry into a real, wrong repo path.
+			return ArchitectConfig{}, fmt.Errorf("architect %q repo %q: path is required", key, name)
+		}
 		expanded, err := expandHomePath(path)
 		if err != nil {
 			return ArchitectConfig{}, fmt.Errorf("architect %q repo %q: %w", key, name, err)
@@ -366,33 +475,10 @@ func architectConfigFromFile(key, workspacePath string, file architectFile) (Arc
 		repos[name] = expanded
 	}
 
-	var system, kickoff string
-	var kickoffEntries []ticketKickoffEntry
-	if file.Prompts != nil {
-		if file.Prompts.Architect != nil {
-			system = file.Prompts.Architect.System
-			kickoff = file.Prompts.Architect.Kickoff
-		}
-		if file.Prompts.Ticket != nil {
-			kickoffEntries = file.Prompts.Ticket.Kickoffs
-		}
-	}
-
-	kickoffs := make([]TicketKickoff, 0, len(kickoffEntries))
-	for _, entry := range kickoffEntries {
-		kickoffs = append(kickoffs, TicketKickoff{
-			Path:  resolveArchitectPath(workspacePath, entry.Path),
-			Repos: append([]string(nil), entry.Repos...),
-		})
-	}
-
 	return ArchitectConfig{
-		Name:              file.Name,
-		Path:              workspacePath,
-		Repos:             repos,
-		SystemPromptPath:  resolveArchitectPath(workspacePath, system),
-		KickoffPromptPath: resolveArchitectPath(workspacePath, kickoff),
-		TicketKickoffs:    kickoffs,
+		Name:  file.Name,
+		Path:  workspacePath,
+		Repos: repos,
 	}, nil
 }
 
@@ -415,20 +501,6 @@ func expandHomePath(p string) (string, error) {
 		return "", fmt.Errorf("resolve repo path %q: %w", p, err)
 	}
 	return abs, nil
-}
-
-// resolveArchitectPath resolves a prompt path from hiveryn.yaml against the
-// architect workspace. Empty stays empty (meaning "use the embedded default");
-// absolute paths are used as-is.
-func resolveArchitectPath(workspacePath, p string) string {
-	p = strings.TrimSpace(p)
-	if p == "" {
-		return ""
-	}
-	if filepath.IsAbs(p) {
-		return p
-	}
-	return filepath.Join(workspacePath, p)
 }
 
 type coreConfig struct {
@@ -631,9 +703,6 @@ func (c *Config) normalize() {
 		if architect.Repos == nil {
 			architect.Repos = map[string]string{}
 		}
-		if architect.TicketKickoffs == nil {
-			architect.TicketKickoffs = []TicketKickoff{}
-		}
 		c.Architects[key] = architect
 	}
 	if c.Tabs == nil {
@@ -740,26 +809,9 @@ func cloneArchitectConfigs(src map[string]ArchitectConfig) map[string]ArchitectC
 	dst := make(map[string]ArchitectConfig, len(src))
 	for key, architect := range src {
 		dst[key] = ArchitectConfig{
-			Name:              architect.Name,
-			Path:              architect.Path,
-			Repos:             cloneStringMap(architect.Repos),
-			SystemPromptPath:  architect.SystemPromptPath,
-			KickoffPromptPath: architect.KickoffPromptPath,
-			TicketKickoffs:    cloneTicketKickoffs(architect.TicketKickoffs),
-		}
-	}
-	return dst
-}
-
-func cloneTicketKickoffs(src []TicketKickoff) []TicketKickoff {
-	if src == nil {
-		return nil
-	}
-	dst := make([]TicketKickoff, len(src))
-	for i, kickoff := range src {
-		dst[i] = TicketKickoff{
-			Path:  kickoff.Path,
-			Repos: append([]string(nil), kickoff.Repos...),
+			Name:  architect.Name,
+			Path:  architect.Path,
+			Repos: cloneStringMap(architect.Repos),
 		}
 	}
 	return dst

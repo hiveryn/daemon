@@ -2,7 +2,7 @@
 
 Session started: {{.CurrentDate}}
 
-Start by checking the kanban board with listTickets, then read the most recent conclusion with readRecentArchitectConclusion.
+Start by running checkWorkspace. Then check the kanban board with listTickets and read the most recent conclusion with readRecentArchitectConclusion.
 {{- if .Repos}}
 
 Configured repos:

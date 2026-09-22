@@ -82,19 +82,14 @@ var definitions = map[domain.ArtifactKind]definition{
 				Type:        domain.ArtifactFieldStringMap,
 				Description: "Repo key → repository path. Keys are unique and are the keys tickets and workflows refer to. Paths may be absolute or ~-prefixed and are stored verbatim.",
 			},
-			{
-				Name:        "prompts",
-				Required:    false,
-				Type:        domain.ArtifactFieldMapping,
-				Description: "Optional prompt path wiring (prompts.architect.system, prompts.architect.kickoff, prompts.ticket.kickoffs). Omit to use the embedded defaults.",
-			},
 		},
 		Rules: []string{
 			"Required: a workspace without a readable " + ConfigFileName + " has no repo map.",
+			"The file holds exactly name and repos. Any other key is rejected — there is no prompts block: architect and worker instructions are built into Hiveryn, and " + ArchitectSystemFileName + " carries per-project collaboration preferences.",
 			"Repo keys are unique. Duplicate keys are rejected by the YAML decoder.",
 			"Every repo path must resolve to an existing directory.",
 			"A repo key referenced by a workflow or a ticket must exist here.",
-			"Edit it with your filesystem tools; an invalid edit is reported by the workspace check and never replaces the last valid runtime config.",
+			"Edit it with your filesystem tools; an invalid edit is reported by the workspace check, blocks worker launch until repaired, and never replaces the last valid runtime config.",
 		},
 		Example: `name: Example Project
 repos:
@@ -157,7 +152,7 @@ is known to be broken.
 	domain.ArtifactRoadmapCurrent: {
 		Kind:        domain.ArtifactRoadmapCurrent,
 		Title:       "Current roadmap",
-		Required:    true,
+		Required:    false,
 		Format:      "markdown",
 		Location:    RoadmapCurrentFileName + " at the workspace root",
 		Naming:      "Exactly " + RoadmapCurrentFileName,
@@ -166,7 +161,12 @@ is known to be broken.
 			Required: true,
 			Fields:   []fieldSpec{lastUpdatedAtField},
 		},
-		Rules: append(currentDocumentRules,
+		Rules: append([]string{
+			"Optional. A workspace without it is valid, and a worker is launched without a roadmap to read.",
+			"When present it must be readable UTF-8 markdown with a nonempty body and lastUpdatedAt as an RFC3339 UTC datetime. Other frontmatter keys are allowed.",
+			"No headings, sections or body schema are required, and there is no line limit.",
+			"lastUpdatedAt is an edit time. It records when the document was changed and is not a claim that its contents were re-verified.",
+		},
 			"Holds intended outcomes and priorities as prose. There is no item schema, status enum or completion inference — a done ticket is evidence, not automatic acceptance of an outcome.",
 			"Archiving it copies the agreed document into "+RoadmapArchiveDir+"/ with an archivedAt stamp and starts a fresh current document. History is never deleted.",
 		),
@@ -286,7 +286,7 @@ The procedure to follow, written so it stands on its own.
 	},
 }
 
-// lastUpdatedAtField is shared by the three current project documents so their
+// lastUpdatedAtField is shared by the current project documents so their
 // timestamp rule is defined exactly once.
 var lastUpdatedAtField = fieldSpec{
 	Name:        "lastUpdatedAt",
@@ -295,7 +295,8 @@ var lastUpdatedAtField = fieldSpec{
 	Description: "When the document was last meaningfully edited, as an RFC3339 UTC datetime.",
 }
 
-// currentDocumentRules are the rules the three current project documents share.
+// currentDocumentRules are the rules the two required project documents share;
+// the optional roadmap states its own.
 var currentDocumentRules = []string{
 	"Required: readable UTF-8 markdown with a nonempty body.",
 	"The frontmatter contains lastUpdatedAt as an RFC3339 UTC datetime. Other keys are allowed.",

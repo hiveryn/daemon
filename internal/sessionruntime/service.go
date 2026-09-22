@@ -24,6 +24,7 @@ import (
 	"github.com/hiveryn/daemon/internal/archive"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
+	"github.com/hiveryn/daemon/internal/workspacefs"
 	"gopkg.in/yaml.v3"
 )
 
@@ -90,7 +91,14 @@ func New(ctx context.Context, cfg config.Config, configSource config.Source, rep
 		configSource = config.StaticSource(cfg)
 	}
 
-	claudeAdapter := claude.New(claude.DefaultOptions())
+	// Instructions are additive for every provider: the daemon's built-in role
+	// instructions (and the architect's ARCHITECT_SYSTEM.md) go alongside the
+	// agent's native system prompt, never in place of it. Codex and OpenCode
+	// only have an additive channel; Claude has to be told to use
+	// --append-system-prompt rather than --system-prompt.
+	claudeOptions := claude.DefaultOptions()
+	claudeOptions.AppendInstructions = true
+	claudeAdapter := claude.New(claudeOptions)
 	codexAdapter := artcodex.New(artcodex.DefaultOptions())
 	openCodeAdapter := opencode.New(opencode.DefaultOptions())
 
@@ -153,11 +161,11 @@ func (s *Service) currentArchitect(key string) (config.ArchitectConfig, error) {
 	return architect, nil
 }
 
+// CreateSession resolves the create-time contract for a session: the fixed
+// kickoff, the built-in role instructions, the workdir scope and — for ticket
+// sessions — the explicit workflow selection, validated against the workspace
+// as it is on disk right now.
 func (s *Service) CreateSession(ctx context.Context, req domain.CreateSessionRequest) (domain.Session, error) {
-	return s.createSession(ctx, req, domain.SessionCreatedByDesktop)
-}
-
-func (s *Service) createSession(ctx context.Context, req domain.CreateSessionRequest, createdBy domain.SessionCreatedBy) (domain.Session, error) {
 	cfg, err := s.currentConfig()
 	if err != nil {
 		return domain.Session{}, err
@@ -168,16 +176,33 @@ func (s *Service) createSession(ctx context.Context, req domain.CreateSessionReq
 		return domain.Session{}, &domain.NotFoundError{Resource: "architect", ID: req.ArchitectKey}
 	}
 
+	if req.SessionType != domain.SessionTypeTicket && len(req.Workflows) > 0 {
+		return domain.Session{}, &domain.ValidationError{Field: "workflows", Message: "workflow selection is only accepted for ticket sessions"}
+	}
+
 	switch req.SessionType {
 	case domain.SessionTypeArchitect:
 		if err := validateArchitectCreateRequest(req); err != nil {
 			return domain.Session{}, err
 		}
-		systemContent, kickoffContent, err := loadArchitectPrompts(req.ArchitectKey, architect, cfg)
+		instructions, err := buildArchitectInstructions(architect)
 		if err != nil {
 			return domain.Session{}, err
 		}
+		if instructions.Custom.Present && !instructions.Custom.Loaded {
+			// Startup continues — the architect is the one who can repair the
+			// file — but the failure is recorded, not just embedded in the prompt.
+			s.logger.Error("architect custom instructions present but not loaded; starting without them",
+				"architect_key", req.ArchitectKey,
+				"path", instructions.Custom.Path,
+				"diagnostics", instructions.Custom.Diagnostics,
+			)
+		}
 		now := time.Now().UTC()
+		kickoff, err := renderArchitectKickoff(req.ArchitectKey, architect, now)
+		if err != nil {
+			return domain.Session{}, err
+		}
 		repoKeys, repoPaths, err := resolveArchitectRepos(architect)
 		if err != nil {
 			return domain.Session{}, err
@@ -186,12 +211,12 @@ func (s *Service) createSession(ctx context.Context, req domain.CreateSessionReq
 			ArchitectKey:       req.ArchitectKey,
 			SessionType:        domain.SessionTypeArchitect,
 			ContextID:          now.Format("2006-01-02-1504"),
-			Prompt:             kickoffContent,
+			Prompt:             kickoff,
 			Workdir:            architect.Path,
 			AdditionalRepos:    repoKeys,
 			AdditionalWorkdirs: repoPaths,
-			Instructions:       systemContent,
-			CreatedBy:          createdBy,
+			Instructions:       instructions.Text,
+			CreatedBy:          domain.SessionCreatedByDesktop,
 		})
 	case domain.SessionTypeTicket:
 		if strings.TrimSpace(req.TicketID) == "" {
@@ -228,7 +253,24 @@ func (s *Service) createSession(ctx context.Context, req domain.CreateSessionReq
 		if err != nil {
 			return domain.Session{}, err
 		}
-		kickoffContent, err := loadWorkerPrompt(req.ArchitectKey, architect, cfg, ticket)
+
+		// The selection is the user's explicit choice from the desktop. It is
+		// validated as given — never widened from repo matches, never pruned of
+		// broken entries — and the same validation reruns at every launch and
+		// resume against the live workspace.
+		workerCtx, err := workspacefs.ValidateWorkerContext(architect.Path, req.ArchitectKey, req.Workflows)
+		if err != nil {
+			return domain.Session{}, err
+		}
+		instructions, err := workerInstructions()
+		if err != nil {
+			return domain.Session{}, err
+		}
+		repos := []workerRepo{{Key: repoKey, Path: filepath.Clean(repoPath)}}
+		for i, key := range additionalRepos {
+			repos = append(repos, workerRepo{Key: key, Path: additionalWorkdirs[i]})
+		}
+		kickoff, err := renderWorkerKickoff(ticket.ID, repos, workerCtx)
 		if err != nil {
 			return domain.Session{}, err
 		}
@@ -236,11 +278,13 @@ func (s *Service) createSession(ctx context.Context, req domain.CreateSessionReq
 			ArchitectKey:       req.ArchitectKey,
 			SessionType:        domain.SessionTypeTicket,
 			ContextID:          req.TicketID,
-			Prompt:             kickoffContent,
+			Prompt:             kickoff,
 			Workdir:            repoPath,
 			AdditionalRepos:    additionalRepos,
 			AdditionalWorkdirs: additionalWorkdirs,
-			CreatedBy:          createdBy,
+			Workflows:          workerCtx.Workflows,
+			Instructions:       instructions,
+			CreatedBy:          domain.SessionCreatedByDesktop,
 		})
 	case domain.SessionTypeFreeform:
 		prompt := req.Prompt
@@ -279,7 +323,7 @@ func (s *Service) createSession(ctx context.Context, req domain.CreateSessionReq
 			ContextID:    contextID,
 			Prompt:       prompt,
 			Workdir:      workdir,
-			CreatedBy:    createdBy,
+			CreatedBy:    domain.SessionCreatedByDesktop,
 		})
 		if err != nil {
 			dir := filepath.Join(architect.Path, "freeform", contextID)
@@ -330,6 +374,9 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 		if err := validateExistingDirectory(workdir, "additional_workdirs"); err != nil {
 			return domain.CreateSessionRunResult{}, fmt.Errorf("validate additional repo %q workdir: %w", session.AdditionalRepos[i], err)
 		}
+	}
+	if err := validateWorkerLaunchContext(architect, session); err != nil {
+		return domain.CreateSessionRunResult{}, err
 	}
 
 	run, err := s.repo.CreateRun(ctx, domain.CreateSessionRunParams{
@@ -511,11 +558,14 @@ func (s *Service) restoreSession(ctx context.Context, session domain.Session, ru
 	if err != nil {
 		return err
 	}
+	if err := validateWorkerLaunchContext(cfg.Architects[session.ArchitectKey], session); err != nil {
+		return err
+	}
 	if _, err := s.launchSession(ctx, cfg, session, run, profile, agentKind, agentruntime.StartRequest{
 		Model:              profile.Model,
 		Yolo:               profile.Yolo,
 		Mode:               agentruntime.Mode(profile.Mode),
-		Instructions:       session.Instructions,
+		Instructions:       resumeInstructions(session.Instructions, session.Workflows),
 		Workdir:            run.Workdir,
 		AdditionalWorkdirs: writableAdditionalWorkdirs(session.SessionType, run.AdditionalWorkdirs),
 		Args:               append([]string(nil), profile.Args...),
@@ -706,11 +756,18 @@ func (s *Service) resumeSessionMainTerminal(ctx context.Context, session domain.
 	if err != nil {
 		return "", err
 	}
+	architect, err := s.currentArchitect(session.ArchitectKey)
+	if err != nil {
+		return "", err
+	}
+	if err := validateWorkerLaunchContext(architect, session); err != nil {
+		return "", err
+	}
 	mainTerminalID, _, err := s.startSessionMainTerminal(ctx, session, run, profile, agentKind, agentruntime.StartRequest{
 		Model:              profile.Model,
 		Yolo:               profile.Yolo,
 		Mode:               agentruntime.Mode(profile.Mode),
-		Instructions:       session.Instructions,
+		Instructions:       resumeInstructions(session.Instructions, session.Workflows),
 		Workdir:            run.Workdir,
 		AdditionalWorkdirs: writableAdditionalWorkdirs(session.SessionType, run.AdditionalWorkdirs),
 		Args:               append([]string(nil), profile.Args...),
@@ -2322,6 +2379,23 @@ func validateArchitectCreateRequest(req domain.CreateSessionRequest) error {
 	}
 	if strings.TrimSpace(req.Slug) != "" {
 		return &domain.ValidationError{Field: "slug", Message: "architect sessions do not accept a slug"}
+	}
+	return nil
+}
+
+// validateWorkerLaunchContext reruns the worker-context check for a ticket
+// session against the workspace as it is right now — on first launch, on
+// daemon-restart restore and on main-terminal resume alike. A stale successful
+// check is no authority to proceed: the required documents and the session's
+// stored workflow selection must be valid at this moment, and a selected file
+// that has since been renamed, deleted or broken fails the launch actionably
+// instead of being dropped. Non-ticket sessions have no worker context.
+func validateWorkerLaunchContext(architect config.ArchitectConfig, session domain.Session) error {
+	if session.SessionType != domain.SessionTypeTicket {
+		return nil
+	}
+	if _, err := workspacefs.ValidateWorkerContext(architect.Path, session.ArchitectKey, session.Workflows); err != nil {
+		return fmt.Errorf("validate worker context for session %s: %w", session.ID, err)
 	}
 	return nil
 }
