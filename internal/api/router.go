@@ -23,6 +23,7 @@ type Dependencies struct {
 	RequestLogger   *logging.RequestLogger
 	Sessions        domain.SessionService
 	Tickets         domain.TicketService
+	Workspaces      domain.WorkspaceService
 	IngestHandler   http.Handler
 	ArchitectEvents *archevents.Hub
 }
@@ -114,6 +115,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	eh := &architectEventsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, hub: deps.ArchitectEvents}
 	ach := &architectConfigHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
 	fh := &fsHandler{logger: deps.Logger}
+	wh := &workspaceHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, workspaces: deps.Workspaces}
 
 	if deps.ArchitectEvents != nil {
 		hub := deps.ArchitectEvents
@@ -147,6 +149,9 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/architects/{key}/config", ach.readArchitectConfig)
 	mux.HandleFunc("PUT /api/architects/{key}/config", ach.updateArchitectConfig)
 	mux.HandleFunc("GET /api/architects/{key}/config/default-prompt", ach.readDefaultPrompt)
+	mux.HandleFunc("GET /api/architects/{key}/workspace/check", wh.check)
+	mux.HandleFunc("GET /api/architects/{key}/workspace/artifacts/{kind}", wh.describeArtifact)
+	mux.HandleFunc("GET /api/architects/{key}/workflows", wh.listWorkflows)
 	mux.HandleFunc("GET /api/config/shortcuts", sch.get)
 	mux.HandleFunc("GET /api/config/desktop", dch.get)
 	mux.HandleFunc("GET /api/fs/tree", fh.tree)

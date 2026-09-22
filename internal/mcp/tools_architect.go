@@ -80,6 +80,7 @@ func (s *Server) registerArchitectTools() {
 	}, s.handleReadTicketConclusion)
 
 	s.registerConfigTools()
+	s.registerWorkspaceTools()
 	s.registerBrowserTools()
 }
 

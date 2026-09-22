@@ -299,3 +299,18 @@ type PromptVariableEntry struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 }
+
+// --- workspace inspection tools (architect only) ---
+
+// CheckWorkspaceInput is empty on purpose. The workspace is resolved from the
+// session's own architect identity, so there is nothing for the agent to pass
+// and no way for it to inspect a workspace that is not its own.
+type CheckWorkspaceInput struct{}
+
+type CheckWorkspaceOutput = domain.WorkspaceReport
+
+type DescribeArtifactInput struct {
+	Kind string `json:"kind" jsonschema:"Which artifact to describe. One of: HIVERYN_YAML, PROJECT_OVERVIEW, PROJECT_STATE, ROADMAP_CURRENT, ROADMAP_ARCHIVE, ARCHITECT_SYSTEM, WORKFLOW. Tickets and conclusions are not artifact kinds — use their own tools."`
+}
+
+type DescribeArtifactOutput = domain.ArtifactSchema

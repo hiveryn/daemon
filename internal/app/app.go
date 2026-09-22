@@ -22,6 +22,7 @@ import (
 	"github.com/hiveryn/daemon/internal/server"
 	"github.com/hiveryn/daemon/internal/sessionruntime"
 	"github.com/hiveryn/daemon/internal/store"
+	"github.com/hiveryn/daemon/internal/workspacefs"
 )
 
 func Run(configPath, databasePath string, portOverride int) error {
@@ -76,6 +77,7 @@ func Run(configPath, databasePath string, portOverride int) error {
 
 	sessionStore := store.NewSessionStore(db)
 	ticketService := architectfs.NewTicketService()
+	workspaceService := workspacefs.NewService(ticketService)
 	service, err := sessionruntime.New(ctx, cfg, configSource, sessionStore, ticketService, logger, resolvedBaseURL)
 	if err != nil {
 		return err
@@ -109,6 +111,7 @@ func Run(configPath, databasePath string, portOverride int) error {
 		RequestLogger:   logManager.RequestLogger(),
 		Sessions:        service,
 		Tickets:         ticketService,
+		Workspaces:      workspaceService,
 		IngestHandler:   service.IngestHandler(),
 		ArchitectEvents: architectHub,
 	})

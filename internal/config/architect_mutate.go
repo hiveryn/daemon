@@ -360,3 +360,29 @@ func trimRepoScope(repos []string) []string {
 	}
 	return scope
 }
+
+// ValidateArchitectConfig reads the architect's hiveryn.yaml and validates it
+// against validateArchitect — the same ruleset the loader applies at startup
+// and the mutation layer applies before persisting a write.
+//
+// Reusing that ruleset is the point: a read-only inspection of the config must
+// reach the same verdict the daemon does, or the architect would be told its
+// config is fine while spawning is broken (or the reverse).
+//
+// Repo paths are deliberately not stat'ed here. That check lives with the
+// caller, because a repo directory that moved after being configured must not
+// make the whole config invalid — the daemon still has to load it.
+func ValidateArchitectConfig(workspacePath, architectKey string) (ArchitectConfig, error) {
+	_, _, file, err := readArchitectFile(workspacePath)
+	if err != nil {
+		return ArchitectConfig{}, err
+	}
+	resolved, err := architectConfigFromFile(architectKey, workspacePath, file)
+	if err != nil {
+		return ArchitectConfig{}, err
+	}
+	if err := validateArchitect(architectKey, resolved); err != nil {
+		return ArchitectConfig{}, err
+	}
+	return resolved, nil
+}
