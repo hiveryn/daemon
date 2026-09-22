@@ -13,7 +13,6 @@ import (
 
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
-	"github.com/hiveryn/daemon/internal/roadmapfs"
 	"gopkg.in/yaml.v3"
 )
 
@@ -155,7 +154,6 @@ func newReloadingTestHandler(t *testing.T, cfgPath string, tickets domain.Ticket
 		ConfigSource: source,
 		Logger:       logger,
 		Tickets:      tickets,
-		Roadmaps:     roadmapfs.NewService(tickets),
 	})
 }
 

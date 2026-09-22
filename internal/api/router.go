@@ -23,7 +23,6 @@ type Dependencies struct {
 	RequestLogger   *logging.RequestLogger
 	Sessions        domain.SessionService
 	Tickets         domain.TicketService
-	Roadmaps        domain.RoadmapService
 	IngestHandler   http.Handler
 	ArchitectEvents *archevents.Hub
 }
@@ -114,14 +113,12 @@ func NewHandler(deps Dependencies) http.Handler {
 	th := &ticketsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
 	eh := &architectEventsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, hub: deps.ArchitectEvents}
 	ach := &architectConfigHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
-	arh := &architectRoadmapHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, roadmaps: deps.Roadmaps}
 	fh := &fsHandler{logger: deps.Logger}
 
 	if deps.ArchitectEvents != nil {
 		hub := deps.ArchitectEvents
 		th.publishArchitect = hub.Publish
 		sh.publishArchitect = hub.Publish
-		arh.publishArchitect = hub.Publish
 	}
 
 	mux.HandleFunc("GET /api/health", handleHealth)
@@ -150,8 +147,6 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/architects/{key}/config", ach.readArchitectConfig)
 	mux.HandleFunc("PUT /api/architects/{key}/config", ach.updateArchitectConfig)
 	mux.HandleFunc("GET /api/architects/{key}/config/default-prompt", ach.readDefaultPrompt)
-	mux.HandleFunc("GET /api/architects/{key}/roadmap", arh.read)
-	mux.HandleFunc("PUT /api/architects/{key}/roadmap", arh.update)
 	mux.HandleFunc("GET /api/config/shortcuts", sch.get)
 	mux.HandleFunc("GET /api/config/desktop", dch.get)
 	mux.HandleFunc("GET /api/fs/tree", fh.tree)

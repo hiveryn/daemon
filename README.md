@@ -129,16 +129,11 @@ Ticket-kickoff selection: the entry whose `repos` contains the ticket's repo win
 
 The architect manages this file through MCP tools instead of editing it by hand: `readArchitectConfig` returns the whole config plus an opaque version token, `updateArchitectConfig` does a version-guarded whole-document replace, and `readDefaultPrompt` returns an embedded template + its variables. Writes enforce the rules above (a write that would fail to load is refused) and auto-scaffold the embedded default template when wiring a prompt path whose file does not exist yet.
 
-### `roadmap/` — the architect's structured roadmap
-
-Each architect workspace can hold a durable roadmap above the ticket level in `roadmap/current.yaml` (live goals/initiatives/milestones as a flat item graph with `parent_id`/`order`) and `roadmap/archive.yaml` (archived subtrees, restorable). The pair is one logical document: one opaque content-hash version token covers both files, every update is an atomic version-guarded batch (`create`, `update`, `move`, `link_ticket`, `unlink_ticket`, `archive`, `restore` — no delete), and both files are written with deterministic ordering/formatting so they stay readable and git-shareable. Missing files read as a valid empty roadmap; the first successful update creates them. The architect reads with `readRoadmap` and mutates through flat single-op MCP tools (`createRoadmapItem`, `updateRoadmapItem`, `moveRoadmapItem`, `linkRoadmapTicket`, `unlinkRoadmapTicket`, `archiveRoadmapItem`, `restoreRoadmapItem`, `setRoadmapTitle`), each wrapping a one-op batch against the HTTP endpoint — the HTTP contract itself stays an atomic ordered batch for future desktop use. Linked ticket IDs resolve against the same board (missing tickets warn, never block). Validation is strict and errors say how to recover: unknown YAML keys are rejected on load; item IDs are kebab-case ≤64 chars and globally unique (archived IDs stay reserved); ticket links must match the board ID shape `^\d{4}-\d{2}-\d{2}-\d{4}-[a-z0-9-]+$`; kind nesting follows goal > initiative > milestone (same kind may nest); `depends_on` may not target ancestors/descendants and must be acyclic; titles cap at 200 chars, outcomes at 2000, archive summaries at 500; success criteria are non-empty and deduplicated.
-
 ### `tabs.yaml` — tab layout per session type
 
 ```yaml
 architect:
   - type: kanban
-  - type: roadmap
   - type: event-log
   - type: terminal
     command: lazygit
@@ -155,7 +150,7 @@ freeform:
 
 Terminal entries only support `type` and optional `command`. Entries without `command` default to the user's shell. When a session run starts, the daemon auto-creates PTY terminals for every `type: terminal` entry in the matching session type section and assigns each terminal a UUID.
 
-`tabs.yaml` also accepts arbitrary non-`terminal` tab types (e.g. `type: git-diff`, `type: kanban`, `type: roadmap`). These are declarative (no `command`) and are emitted as plain layout entries with no daemon-side lookup — git diffs, for example, are served natively via `GET /api/architects/{key}/repos/{repoKey}/diff` and `GET /api/architects/{key}/repos/{repoKey}/commits/{sha}/diff`; the roadmap tab reads `GET /api/architects/{key}/roadmap` (see below).
+`tabs.yaml` also accepts arbitrary non-`terminal` tab types (e.g. `type: git-diff`, `type: kanban`). These are declarative (no `command`) and are emitted as plain layout entries with no daemon-side lookup — git diffs, for example, are served natively via `GET /api/architects/{key}/repos/{repoKey}/diff` and `GET /api/architects/{key}/repos/{repoKey}/commits/{sha}/diff`.
 
 ### `shortcuts.yaml` — keybindings
 
@@ -218,7 +213,7 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `DELETE` | `/api/architects/{key}/tickets/{id}` | Delete a backlog ticket folder and its contents |
 | `POST` | `/api/architects/{key}/tickets/{id}/move?to=...` | Move a ticket between backlog, progress, and done |
 | `POST` | `/api/architects/{key}/tickets/{id}/move-to-done` | Architect-driven ticket completion without a worker session: backlog → done (architect resolved it directly) or progress → done (manually closing a dead/stuck worker session — fails with `CONFLICT` if a worker session is currently running). Writes a `conclusion.md`; requires `outcome` (`completed`/`exploratory`/`rejected`) — `completed` requires `commits`, `rejected` requires `rejection_reason`. Called by the MCP `moveTicketToDone` tool. |
-| `GET` | `/api/architects/{key}/events` | Stream architect-scoped `workspace_changed` SSE hints. `reason` is a ticket reason (`ticket_created`/`ticket_updated`/`ticket_moved`/`ticket_deleted`/`ticket_concluded`), a session reason (`session_started`/`session_ended`), or `roadmap_updated` (any successful `PUT .../roadmap`, MCP or HTTP). Session reasons carry `session_id` — the only place in any stream where a session is named before a client knows it exists, so it is how a client discovers sessions it did not create (architect MCP spawns included). No backlog: reconcile on every (re)connect. |
+| `GET` | `/api/architects/{key}/events` | Stream architect-scoped `workspace_changed` SSE hints. `reason` is a ticket reason (`ticket_created`/`ticket_updated`/`ticket_moved`/`ticket_deleted`/`ticket_concluded`), or a session reason (`session_started`/`session_ended`). Session reasons carry `session_id` — the only place in any stream where a session is named before a client knows it exists, so it is how a client discovers sessions it did not create (architect MCP spawns included). No backlog: reconcile on every (re)connect. |
 | `GET` | `/api/architects/{key}/conclusions` | List recent conclusions (IDs + timestamps); supports `?limit=N` |
 | `GET` | `/api/architects/{key}/conclusions/recent` | Read the most recent architect session conclusion |
 | `GET` | `/api/architects/{key}/conclusions/{id}` | Read a conclusion by ID |
@@ -230,8 +225,6 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `GET` | `/api/architects/{key}/config` | Read the whole `hiveryn.yaml` config (repos, prompts, kickoffs — verbatim paths), a resolved view (absolute paths + per-prompt `exists`), warnings for missing wired prompt files, and an opaque `version` token |
 | `PUT` | `/api/architects/{key}/config` | Replace the whole config (declarative), guarded by `version` (`VALIDATION` if missing/invalid, `CONFLICT` if stale); auto-scaffolds missing wired prompt files and returns them in `created` |
 | `GET` | `/api/architects/{key}/config/default-prompt?kind=architect-system\|architect-kickoff\|ticket-kickoff` | Return the embedded default template for a prompt kind plus its valid Go template variables |
-| `GET` | `/api/architects/{key}/roadmap` | Read the roadmap: `?view=current` (default) or `?view=archive` (compact entry summaries; `?id=root_id` for one full stored subtree), `?id=` + optional `?depth=` for a focused current subtree. Returns items, resolved linked-ticket metadata, warnings, and an opaque `version` token |
-| `PUT` | `/api/architects/{key}/roadmap` | Apply an ordered op batch atomically (`create`/`update`/`move`/`link_ticket`/`unlink_ticket`/`archive`/`restore`, plus optional top-level `title`), guarded by `version` (`CONFLICT` if stale); a failing op writes nothing, and one batch may not mix `archive` with `restore` (opposite crash-safety rename orders). Surfaced to the architect as flat single-op MCP tools (`createRoadmapItem` … `setRoadmapTitle`), each sending a one-op batch |
 | `GET` | `/api/config/shortcuts` | Get resolved shortcuts config (global + per-pane keybindings) |
 | `GET` | `/api/fs/tree?path=<absolute path>` | List one directory level (name, kind, size, mtime, best-effort gitignore `ignored` flag); not architect-scoped — takes any absolute path. Capped at 2000 entries with a `truncated` flag; symlink entries are reported, not followed |
 | `GET` | `/api/fs/file?path=<absolute path>` | Read a file's raw bytes with a sniffed `Content-Type`, `X-File-Size`, and `X-File-Truncated` headers (2 MiB read cap); not architect-scoped |
