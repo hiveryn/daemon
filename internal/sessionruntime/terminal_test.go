@@ -41,11 +41,147 @@ func TestPTYTerminalManagerLogsExecutionSpec(t *testing.T) {
 		`"command":"hiveryn-command-that-does-not-exist"`,
 		`"args":["--flag","value"]`,
 		`"argv":["hiveryn-command-that-does-not-exist","--flag","value"]`,
-		`HIVERYN_TEST_EXEC_LOG=visible`,
+		`"env_count":`,
+		`"term":"xterm-256color"`,
 		`"workdir":`,
 	} {
 		if !strings.Contains(logOutput, want) {
 			t.Fatalf("expected log output to contain %s, got:\n%s", want, logOutput)
+		}
+	}
+
+	// The exec log must never carry environment values: the pty environment is
+	// the daemon's own, secrets included.
+	if strings.Contains(logOutput, "HIVERYN_TEST_EXEC_LOG") {
+		t.Fatalf("expected environment values to stay out of logs, got:\n%s", logOutput)
+	}
+}
+
+func TestMergeProcessEnvReplacesInheritedTerminalIdentity(t *testing.T) {
+	// Not parallel: mutates the daemon's own environment to stand in for a
+	// daemon launched from inside tmux.
+	t.Setenv("TERM", "tmux-256color")
+	t.Setenv("TMUX", "/private/tmp/tmux-501/default,1234,0")
+	t.Setenv("TMUX_PANE", "%7")
+	t.Setenv("TERM_PROGRAM", "tmux")
+	t.Setenv("TERM_PROGRAM_VERSION", "3.5a")
+	t.Setenv("HIVERYN_TEST_UNRELATED", "kept")
+
+	got := envMap(mergeProcessEnv(nil, t.TempDir()))
+
+	if got["TERM"] != ptyTermType {
+		t.Fatalf("expected TERM %q, got %q", ptyTermType, got["TERM"])
+	}
+	if got["COLORTERM"] != ptyColorTerm {
+		t.Fatalf("expected COLORTERM %q, got %q", ptyColorTerm, got["COLORTERM"])
+	}
+	for _, key := range []string{"TMUX", "TMUX_PANE", "TERM_PROGRAM", "TERM_PROGRAM_VERSION"} {
+		if value, ok := got[key]; ok {
+			t.Fatalf("expected %s to be unset, got %q", key, value)
+		}
+	}
+	// Terminal identity is the only thing rewritten; everything a tool needs
+	// (PATH, HOME, tokens, caller exports) still comes through.
+	if got["HIVERYN_TEST_UNRELATED"] != "kept" {
+		t.Fatalf("expected unrelated environment to survive, got %q", got["HIVERYN_TEST_UNRELATED"])
+	}
+	for _, key := range []string{"PATH", "HOME"} {
+		if got[key] == "" {
+			t.Fatalf("expected %s to be inherited", key)
+		}
+	}
+}
+
+func TestMergeProcessEnvDropsScreenWindowOnlyWithSTY(t *testing.T) {
+	t.Setenv("STY", "4242.pts-0.host")
+	t.Setenv("WINDOW", "3")
+
+	if _, ok := envMap(mergeProcessEnv(nil, ""))["WINDOW"]; ok {
+		t.Fatal("expected screen's WINDOW to be dropped alongside STY")
+	}
+
+	// WINDOW is a generic enough name to belong to something else, so without
+	// the STY that proves screen set it, it is left alone.
+	if err := os.Unsetenv("STY"); err != nil {
+		t.Fatalf("unset STY: %v", err)
+	}
+	if got := envMap(mergeProcessEnv(nil, ""))["WINDOW"]; got != "3" {
+		t.Fatalf("expected WINDOW to survive without STY, got %q", got)
+	}
+}
+
+func TestMergeProcessEnvLetsCallerOverrideTerminalIdentity(t *testing.T) {
+	t.Setenv("TERM", "tmux-256color")
+	t.Setenv("TMUX", "/private/tmp/tmux-501/default,1234,0")
+
+	// A variant profile's env is a deliberate operator choice and outranks the
+	// daemon's default identity.
+	got := envMap(mergeProcessEnv(map[string]string{
+		"TERM": "screen-256color",
+		"TMUX": "/deliberate/socket,1,0",
+	}, ""))
+
+	if got["TERM"] != "screen-256color" {
+		t.Fatalf("expected caller TERM override to win, got %q", got["TERM"])
+	}
+	if got["TMUX"] != "/deliberate/socket,1,0" {
+		t.Fatalf("expected caller TMUX override to win, got %q", got["TMUX"])
+	}
+}
+
+// TestPTYTerminalManagerChildSeesXtermIdentity is the end-to-end check: what
+// matters is the environment the child process actually reads, not the slice
+// mergeProcessEnv returns.
+func TestPTYTerminalManagerChildSeesXtermIdentity(t *testing.T) {
+	t.Setenv("TERM", "tmux-256color")
+	t.Setenv("TMUX", "/private/tmp/tmux-501/default,1234,0")
+	t.Setenv("TMUX_PANE", "%7")
+	t.Setenv("TERM_PROGRAM", "tmux")
+
+	manager := newPTYTerminalManager(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })
+
+	if err := manager.Start(context.Background(), terminalStartSpec{
+		SessionID:  "session-env",
+		TerminalID: "term-env",
+		Command:    "/bin/sh",
+		Args:       []string{"-c", `printf "TERM=[%s] TMUX=[%s] PANE=[%s] PROG=[%s]\n" "$TERM" "$TMUX" "$TMUX_PANE" "$TERM_PROGRAM"`},
+		Workdir:    t.TempDir(),
+		Size:       terminalSize{Cols: 80, Rows: 24},
+	}); err != nil {
+		t.Fatalf("start terminal: %v", err)
+	}
+
+	attachment, err := manager.Attach(context.Background(), "session-env", "term-env")
+	if err != nil {
+		t.Fatalf("attach terminal: %v", err)
+	}
+	defer func() { _ = attachment.Close() }()
+
+	got := readUntil(t, attachment.Output(), "]\r\n")
+	want := "TERM=[xterm-256color] TMUX=[] PANE=[] PROG=[]"
+	if !strings.Contains(got, want) {
+		t.Fatalf("expected child environment %q, got %q", want, got)
+	}
+}
+
+func readUntil(t *testing.T, output <-chan []byte, suffix string) string {
+	t.Helper()
+
+	var buf strings.Builder
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case chunk, ok := <-output:
+			if !ok {
+				return buf.String()
+			}
+			buf.Write(chunk)
+			if strings.Contains(buf.String(), suffix) {
+				return buf.String()
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for %q, got %q", suffix, buf.String())
 		}
 	}
 }

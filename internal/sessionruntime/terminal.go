@@ -21,7 +21,27 @@ const (
 	replayBufferSize = 64 * 1024
 	outputQueueSize  = 512
 	mainTerminalName = "main"
+
+	// ptyTermType / ptyColorTerm describe the terminal the desktop actually
+	// renders PTY output with (@xterm/xterm).
+	ptyTermType  = "xterm-256color"
+	ptyColorTerm = "truecolor"
 )
+
+// inheritedTerminalIdentityKeys are the parent-terminal identity variables that
+// must not survive into a Hiveryn PTY. TMUX/TMUX_PANE and STY advertise "you
+// are inside a multiplexer" (tmux and GNU screen respectively);
+// TERM_PROGRAM/TERM_PROGRAM_VERSION name the emulator that launched the daemon.
+// None of them describe the pty Hiveryn hands the child. GNU screen's WINDOW is
+// handled separately: the name is generic enough to belong to something else,
+// so it is only dropped alongside the STY that proves screen set it.
+var inheritedTerminalIdentityKeys = []string{
+	"TMUX",
+	"TMUX_PANE",
+	"STY",
+	"TERM_PROGRAM",
+	"TERM_PROGRAM_VERSION",
+}
 
 // decModeState tracks DEC private modes a TUI sets once at startup and never
 // re-sends. The replay buffer is a 64 KB ring; once a long-running TUI's
@@ -206,13 +226,17 @@ func (m *ptyTerminalManager) Start(ctx context.Context, spec terminalStartSpec) 
 
 	argv := append([]string{spec.Command}, spec.Args...)
 	env := mergeProcessEnv(spec.Env, spec.Workdir)
+	// Never log env: it carries the daemon's inherited secrets verbatim. The
+	// key count is enough to tell "the child got an environment" from "it got
+	// nothing"; individual values are not diagnosable from logs by design.
 	m.logger.Info("[pty] exec",
 		"terminal_key", key,
 		"terminal_id", spec.TerminalID,
 		"command", spec.Command,
 		"args", spec.Args,
 		"argv", argv,
-		"env", env,
+		"env_count", len(env),
+		"term", ptyTermType,
 		"workdir", spec.Workdir,
 	)
 
@@ -674,6 +698,14 @@ func waitForChannel(ctx context.Context, ch <-chan struct{}) error {
 	}
 }
 
+// mergeProcessEnv builds the environment for a Hiveryn PTY: the daemon's own
+// environment, with the launcher's terminal identity replaced by the terminal
+// Hiveryn actually provides, then the caller's deliberate overrides, then PWD.
+//
+// Override order is deliberate. Terminal identity is applied to the inherited
+// copy BEFORE extra, so a variant profile that sets TERM (or deliberately
+// re-exports TMUX) still wins; PWD is applied last because the pty's working
+// directory is a fact, not a preference.
 func mergeProcessEnv(extra map[string]string, workdir string) []string {
 	env := map[string]string{}
 	for _, item := range os.Environ() {
@@ -683,6 +715,7 @@ func mergeProcessEnv(extra map[string]string, workdir string) []string {
 		}
 		env[key] = value
 	}
+	applyTerminalIdentity(env)
 	for key, value := range extra {
 		env[key] = value
 	}
@@ -695,6 +728,36 @@ func mergeProcessEnv(extra map[string]string, workdir string) []string {
 		out = append(out, key+"="+env[key])
 	}
 	return out
+}
+
+// applyTerminalIdentity makes the child process describe the terminal it is
+// actually attached to — the desktop's @xterm/xterm client — instead of
+// whatever terminal launched the daemon.
+//
+// Inheriting the launcher's identity is not merely inaccurate, it corrupts
+// output. Started from inside tmux, a shell sees TERM=tmux-256color, and
+// oh-my-zsh's termsupport.zsh then emits window titles as tmux's
+// ESC k <title> ESC \ form instead of the OSC form. xterm.js does not
+// implement ESC k, so it prints the title text into the buffer: typing `ls`
+// renders a second literal "ls" immediately before the listing. The same
+// branch fires under GNU screen (TERM=screen-*).
+//
+// The multiplexer/emulator markers are removed rather than rewritten. There is
+// no tmux server or host emulator behind a Hiveryn pty, so any tool that
+// branches on them would branch wrongly; an absent variable is the honest
+// answer, while an invented TERM_PROGRAM value would just move the guesswork.
+func applyTerminalIdentity(env map[string]string) {
+	// xterm.js is xterm-compatible with a 256-color palette and 24-bit SGR
+	// support, so this is a description of the client, not a lowest common
+	// denominator.
+	env["TERM"] = ptyTermType
+	env["COLORTERM"] = ptyColorTerm
+	if _, inScreen := env["STY"]; inScreen {
+		delete(env, "WINDOW")
+	}
+	for _, key := range inheritedTerminalIdentityKeys {
+		delete(env, key)
+	}
 }
 
 func cleanupPaths(paths []string, logger *slog.Logger) {
