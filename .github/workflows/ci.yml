@@ -22,16 +22,16 @@ jobs:
       run:
         working-directory: daemon
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: daemon
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: hiveryn/shared
           path: shared
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go }}
           cache: false
@@ -51,7 +51,7 @@ jobs:
         run: go build ./...
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.8.0
           working-directory: daemon
