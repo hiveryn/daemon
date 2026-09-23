@@ -41,7 +41,7 @@ type frontmatterSpec struct {
 	// Required demands a frontmatter block be present at all.
 	Required bool
 	// Exclusive rejects any key not listed in Fields. It encodes the "contains
-	// only" rules — for an archived roadmap and for a workflow — and is what
+	// only" rule for a workflow — and is what
 	// makes "no workflow dependencies" a structural check rather than prose.
 	Exclusive bool
 	Fields    []fieldSpec
@@ -168,7 +168,7 @@ is known to be broken.
 			"lastUpdatedAt is an edit time. It records when the document was changed and is not a claim that its contents were re-verified.",
 		},
 			"Holds intended outcomes and priorities as prose. There is no item schema, status enum or completion inference — a done ticket is evidence, not automatic acceptance of an outcome.",
-			"Archiving it copies the agreed document into "+RoadmapArchiveDir+"/ with an archivedAt stamp and starts a fresh current document. History is never deleted.",
+			"It is the only roadmap document. Edit it in place; earlier versions live in the workspace's Git history, not in archive files.",
 		),
 		Example: `---
 lastUpdatedAt: "2026-01-15T09:30:00Z"
@@ -180,40 +180,6 @@ lastUpdatedAt: "2026-01-15T09:30:00Z"
 
 The outcome we are aiming at, what would count as reaching it, and what is
 still open.
-`,
-	},
-
-	domain.ArtifactRoadmapArchive: {
-		Kind:        domain.ArtifactRoadmapArchive,
-		Title:       "Archived roadmap",
-		Required:    false,
-		Format:      "markdown",
-		Location:    RoadmapArchiveDir + "/ — a required directory that may be empty",
-		Naming:      "ROADMAP-YYYY-MM-DD.md. A second archive on the same day is ROADMAP-YYYY-MM-DD-02.md, then -03, and so on. An existing archive is never overwritten.",
-		RequireBody: true,
-		Frontmatter: frontmatterSpec{
-			Required:  true,
-			Exclusive: true,
-			Fields: []fieldSpec{{
-				Name:        "archivedAt",
-				Required:    true,
-				Type:        domain.ArtifactFieldTimestampUTC,
-				Description: "When the roadmap was archived, as an RFC3339 UTC datetime. Its date must match the date in the filename.",
-			}},
-		},
-		Rules: []string{
-			"Readable UTF-8 markdown with a nonempty body.",
-			"The frontmatter contains archivedAt and nothing else — not lastUpdatedAt.",
-			"archivedAt is an RFC3339 UTC datetime whose date equals the filename's date.",
-			"The body is preserved history. It is validated structurally only: its recorded statuses, prose and repo references are historical, and are not reconciled against the current roadmap or the current repo map.",
-		},
-		Example: `---
-archivedAt: "2026-01-15T09:30:00Z"
----
-
-# Roadmap through January 2026
-
-The roadmap as it stood when it was archived, preserved unchanged.
 `,
 	},
 

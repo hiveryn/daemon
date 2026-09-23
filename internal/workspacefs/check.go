@@ -143,12 +143,6 @@ func (s *Service) CheckWorkspace(ctx context.Context, architectKey, workspacePat
 	}
 	report.Nodes = append(report.Nodes, workflowsNode)
 
-	archivesNode, err := checkArchives(workspacePath)
-	if err != nil {
-		return domain.WorkspaceReport{}, err
-	}
-	report.Nodes = append(report.Nodes, archivesNode)
-
 	report.Tickets, report.Diagnostics = s.checkTickets(ctx, workspacePath, report.Diagnostics)
 	report.Valid = reportIsValid(report)
 	return report, nil
@@ -273,48 +267,6 @@ func checkWorkflows(workspacePath string, scope repoScope) (domain.WorkspaceNode
 			ModifiedAt:  workflow.ModifiedAt,
 			Diagnostics: workflow.Diagnostics,
 		})
-	}
-
-	node.Diagnostics = diags.items
-	node.Valid = !diags.hasErrors()
-	return node, nil
-}
-
-// checkArchives validates archives/roadmaps/ and every archived roadmap in it.
-func checkArchives(workspacePath string) (domain.WorkspaceNode, error) {
-	diags := newDiagnostics(RoadmapArchiveDir)
-	dir := joinWorkspace(workspacePath, RoadmapArchiveDir)
-	exists, modTime := validateDirectory(dir, diags)
-
-	node := domain.WorkspaceNode{
-		Kind:       domain.ArtifactRoadmapArchive,
-		Type:       domain.WorkspaceNodeDirectory,
-		Path:       RoadmapArchiveDir,
-		Required:   true,
-		Exists:     exists,
-		ModifiedAt: modTime,
-		Children:   []domain.WorkspaceEntry{},
-	}
-
-	if exists {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			return domain.WorkspaceNode{}, fmt.Errorf("read roadmap archive directory %q: %w", dir, err)
-		}
-		byName := make(map[string]os.DirEntry, len(entries))
-		for _, entry := range entries {
-			byName[entry.Name()] = entry
-		}
-		for _, name := range sortedNames(entries) {
-			if byName[name].IsDir() {
-				diags.errorf(domain.DiagNotAFile, 0, "%s/%s is a directory; %s holds archive files directly", RoadmapArchiveDir, name, RoadmapArchiveDir)
-				continue
-			}
-			if !isMarkdown(name) {
-				continue
-			}
-			node.Children = append(node.Children, validateArchiveFile(dir, name, RoadmapArchiveDir))
-		}
 	}
 
 	node.Diagnostics = diags.items

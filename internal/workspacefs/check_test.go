@@ -20,7 +20,7 @@ func TestCheckValidWorkspace(t *testing.T) {
 	}
 	for _, path := range []string{
 		ConfigFileName, ProjectOverviewFileName, ProjectStateFileName,
-		RoadmapCurrentFileName, ArchitectSystemFileName, WorkflowsDirName, RoadmapArchiveDir,
+		RoadmapCurrentFileName, ArchitectSystemFileName, WorkflowsDirName,
 	} {
 		n := node(t, report, path)
 		if len(n.Diagnostics) != 0 {
@@ -55,7 +55,7 @@ func TestCheckMissingWorkspaceStaysInspectable(t *testing.T) {
 	f := newFixture(t)
 	for _, rel := range []string{
 		ConfigFileName, ProjectOverviewFileName, ProjectStateFileName,
-		RoadmapCurrentFileName, WorkflowsDirName, RoadmapArchiveDir,
+		RoadmapCurrentFileName, WorkflowsDirName,
 	} {
 		f.remove(rel)
 	}
@@ -64,8 +64,8 @@ func TestCheckMissingWorkspaceStaysInspectable(t *testing.T) {
 	if report.Valid {
 		t.Fatal("expected an empty workspace to be invalid")
 	}
-	if len(report.Nodes) != 7 {
-		t.Fatalf("expected all 7 expected nodes to be reported, got %d: %s", len(report.Nodes), nodePaths(report))
+	if len(report.Nodes) != 6 {
+		t.Fatalf("expected all 6 expected nodes to be reported, got %d: %s", len(report.Nodes), nodePaths(report))
 	}
 
 	requireCode(t, node(t, report, ConfigFileName).Diagnostics, domain.DiagMissingRequiredFile)
@@ -75,7 +75,28 @@ func TestCheckMissingWorkspaceStaysInspectable(t *testing.T) {
 		t.Fatalf("optional %s reported as a problem when absent: %v", RoadmapCurrentFileName, codes(diags))
 	}
 	requireCode(t, node(t, report, WorkflowsDirName).Diagnostics, domain.DiagMissingRequiredDirectory)
-	requireCode(t, node(t, report, RoadmapArchiveDir).Diagnostics, domain.DiagMissingRequiredDirectory)
+}
+
+// Roadmap history lives in the workspace's Git history, not in archive files.
+// A workspace without archives/roadmaps/ is valid, and one left over from the
+// old layout is neither reported nor validated — it is not deleted either.
+func TestCheckIgnoresLegacyRoadmapArchives(t *testing.T) {
+	f := newFixture(t)
+	if report := f.check(); !report.Valid {
+		t.Fatalf("workspace without archives/roadmaps/ is invalid: %v", allDiagnostics(report))
+	}
+
+	f.write("archives/roadmaps/ROADMAP-2026-01-14.md", "no frontmatter")
+	f.write("archives/roadmaps/not-an-archive.txt", "")
+	report := f.check()
+	if !report.Valid {
+		t.Fatalf("legacy archive files made the workspace invalid: %v", allDiagnostics(report))
+	}
+	for _, n := range report.Nodes {
+		if strings.HasPrefix(n.Path, "archives") {
+			t.Fatalf("legacy archive directory reported as node %q", n.Path)
+		}
+	}
 }
 
 // ARCHITECT_SYSTEM.md is the only optional root document, and its absence must
@@ -349,8 +370,6 @@ func TestCheckIsDeterministic(t *testing.T) {
 	f := newFixture(t)
 	f.write(WorkflowsDirName+"/ZED.md", "---\nattach: manual\n---\n\n# Zed\n")
 	f.write(WorkflowsDirName+"/ALPHA.md", "---\nattach: suggested\nrepos:\n- api\n---\n\n# Alpha\n")
-	f.write(RoadmapArchiveDir+"/ROADMAP-2026-01-02.md", "---\narchivedAt: \"2026-01-02T00:00:00Z\"\n---\n\n# Old\n")
-	f.write(RoadmapArchiveDir+"/ROADMAP-2026-01-01.md", "---\narchivedAt: \"2026-01-01T00:00:00Z\"\n---\n\n# Older\n")
 
 	first, second := f.check(), f.check()
 	// checked_at is the one field that legitimately differs between runs.

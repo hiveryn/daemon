@@ -231,8 +231,8 @@ func validateField(field fieldSpec, entry mappingEntry, diags *diagnostics) *tim
 
 // parseRFC3339UTC parses an RFC3339 datetime and requires it to be expressed in
 // UTC. A local-offset timestamp is rejected rather than silently converted:
-// these timestamps are compared against each other and against archive
-// filenames, so the offset has to be unambiguous.
+// these timestamps are compared against each other, so the offset has to be
+// unambiguous.
 func parseRFC3339UTC(raw string) (time.Time, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {

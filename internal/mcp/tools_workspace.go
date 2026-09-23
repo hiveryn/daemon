@@ -20,7 +20,7 @@ func (s *Server) registerWorkspaceTools() {
 		Name: "checkWorkspace",
 		Description: "Inspect this architect workspace. Takes no parameters — the workspace is resolved for you. " +
 			"Returns the expected/discovered file tree with, per entry: whether it exists, whether it is structurally valid, " +
-			"the document's own lastUpdatedAt/archivedAt, the filesystem mtime, and diagnostics carrying code/path/line/message. " +
+			"the document's own lastUpdatedAt, the filesystem mtime, and diagnostics carrying code/path/line/message. " +
 			"Also returns ticket totals by status and warnings for individual backlog tickets. " +
 			"It is read-only and changes nothing. `valid` is a structural verdict only: it does not mean a document's contents are current or correct, " +
 			"and ticket warnings never make the workspace invalid. Run it at startup and after each coherent edit to the managed documents, workflows or config.",
@@ -30,7 +30,7 @@ func (s *Server) registerWorkspaceTools() {
 		Name: "describeArtifact",
 		Description: "Get the schema for one workspace artifact kind: its location and naming, its frontmatter/config fields, the rules enforced on it, and a minimal example. " +
 			"These are the same definitions checkWorkspace validates against, so anything described here is actually enforced. " +
-			"Use it before authoring or editing a project document, a workflow, an archived roadmap or hiveryn.yaml. " +
+			"Use it before authoring or editing a project document, a workflow or hiveryn.yaml. " +
 			"Tickets and conclusions are not artifact kinds — they keep their own tools and schemas.",
 	}, s.handleDescribeArtifact)
 }

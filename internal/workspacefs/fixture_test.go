@@ -62,7 +62,6 @@ func newFixture(t *testing.T) *fixture {
 	f.write(ProjectStateFileName, validState)
 	f.write(RoadmapCurrentFileName, validRoadmap)
 	f.mkdir(WorkflowsDirName)
-	f.mkdir(RoadmapArchiveDir)
 	return f
 }
 

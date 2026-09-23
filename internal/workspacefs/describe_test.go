@@ -85,14 +85,6 @@ func TestDescribeTimestampFieldsAreEnforced(t *testing.T) {
 	if got := overview.Fields[0]; got.Name != "lastUpdatedAt" || got.Type != domain.ArtifactFieldTimestampUTC || !got.Required {
 		t.Fatalf("overview field = %+v", got)
 	}
-
-	archive, err := Describe(domain.ArtifactRoadmapArchive)
-	if err != nil {
-		t.Fatalf("Describe: %v", err)
-	}
-	if len(archive.Fields) != 1 || archive.Fields[0].Name != "archivedAt" {
-		t.Fatalf("archive fields = %+v; the archive frontmatter holds archivedAt and nothing else", archive.Fields)
-	}
 }
 
 func TestDescribeWorkflowAttachEnum(t *testing.T) {
@@ -140,12 +132,8 @@ func TestDescribeExamplesPassTheirOwnValidator(t *testing.T) {
 			var diags []domain.WorkspaceDiagnostic
 			report := f.check()
 			switch kind {
-			case domain.ArtifactWorkflow, domain.ArtifactRoadmapArchive:
-				parentPath := WorkflowsDirName
-				if kind == domain.ArtifactRoadmapArchive {
-					parentPath = RoadmapArchiveDir
-				}
-				diags = child(t, node(t, report, parentPath), rel).Diagnostics
+			case domain.ArtifactWorkflow:
+				diags = child(t, node(t, report, WorkflowsDirName), rel).Diagnostics
 			default:
 				diags = node(t, report, rel).Diagnostics
 			}
@@ -174,8 +162,6 @@ func exampleFixturePath(t *testing.T, kind domain.ArtifactKind) string {
 		return ArchitectSystemFileName
 	case domain.ArtifactWorkflow:
 		return WorkflowsDirName + "/EXAMPLE.md"
-	case domain.ArtifactRoadmapArchive:
-		return RoadmapArchiveDir + "/ROADMAP-2026-01-15.md"
 	default:
 		t.Fatalf("no fixture path for %s", kind)
 		return ""

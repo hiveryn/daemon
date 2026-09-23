@@ -11,7 +11,7 @@ import (
 
 // testWorkspace creates a complete, valid architect workspace on disk: a
 // hiveryn.yaml naming the given repos, the project documents (roadmap included),
-// and empty workflows/ and archives/roadmaps/ directories. Ticket sessions are
+// and an empty workflows/ directory. Ticket sessions are
 // validated against the workspace at every launch, so any test that launches
 // one needs this rather than a bare temp dir.
 func testWorkspace(t *testing.T, repos map[string]string) string {
@@ -36,10 +36,8 @@ func testWorkspace(t *testing.T, repos map[string]string) string {
 	for _, name := range []string{workspacefs.ProjectOverviewFileName, workspacefs.ProjectStateFileName, workspacefs.RoadmapCurrentFileName} {
 		writeWorkspaceFile(t, workspace, name, "---\nlastUpdatedAt: \"2026-01-15T09:30:00Z\"\n---\n\n# "+name+"\n\nBody.\n")
 	}
-	for _, dir := range []string{workspacefs.WorkflowsDirName, workspacefs.RoadmapArchiveDir} {
-		if err := os.MkdirAll(filepath.Join(workspace, filepath.FromSlash(dir)), 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", dir, err)
-		}
+	if err := os.MkdirAll(filepath.Join(workspace, workspacefs.WorkflowsDirName), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", workspacefs.WorkflowsDirName, err)
 	}
 	return workspace
 }

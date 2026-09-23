@@ -132,7 +132,6 @@ func TestValidateWorkerContextKeepsSelectionOrderAndAddsNothing(t *testing.T) {
 func TestValidateWorkerContextIgnoresArchitectOnlyArtifactsAndUnselectedWorkflows(t *testing.T) {
 	f := newFixture(t)
 	f.write(ArchitectSystemFileName, "")                                 // invalid, architect-only
-	f.write(RoadmapArchiveDir+"/not-an-archive.md", "no frontmatter")    // malformed archive
 	f.write(WorkflowsDirName+"/broken.md", "---\nattach: nope\n---\n\n") // invalid, not selected
 	f.mkdir(WorkflowsDirName + "/nested")                                // structural error, not selected
 	f.write(WorkflowsDirName+"/ok.md", validManualWorkflow)

@@ -31,7 +31,6 @@ func newWorkspaceTestHandler(t *testing.T) (http.Handler, string) {
 	writeWorkspaceFile(t, workspace, workspacefs.ProjectStateFileName, "---\nlastUpdatedAt: \"2026-01-15T09:30:00Z\"\n---\n\n# State\n")
 	writeWorkspaceFile(t, workspace, workspacefs.RoadmapCurrentFileName, "---\nlastUpdatedAt: \"2026-01-15T09:30:00Z\"\n---\n\n# Roadmap\n")
 	mkdirWorkspace(t, workspace, workspacefs.WorkflowsDirName)
-	mkdirWorkspace(t, workspace, workspacefs.RoadmapArchiveDir)
 
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
@@ -85,8 +84,8 @@ func TestWorkspaceCheckReturnsReport(t *testing.T) {
 	if report.ArchitectKey != "hiveryn" || report.WorkspacePath != workspace {
 		t.Errorf("identity = %q %q", report.ArchitectKey, report.WorkspacePath)
 	}
-	if len(report.Nodes) != 7 {
-		t.Errorf("nodes = %d, want the 7 expected entries", len(report.Nodes))
+	if len(report.Nodes) != 6 {
+		t.Errorf("nodes = %d, want the 6 expected entries", len(report.Nodes))
 	}
 	if report.CheckedAt.IsZero() {
 		t.Error("checked_at is unset")

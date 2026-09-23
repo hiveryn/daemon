@@ -163,7 +163,7 @@ type CheckWorkspaceInput struct{}
 type CheckWorkspaceOutput = domain.WorkspaceReport
 
 type DescribeArtifactInput struct {
-	Kind string `json:"kind" jsonschema:"Which artifact to describe. One of: HIVERYN_YAML, PROJECT_OVERVIEW, PROJECT_STATE, ROADMAP_CURRENT, ROADMAP_ARCHIVE, ARCHITECT_SYSTEM, WORKFLOW. Tickets and conclusions are not artifact kinds — use their own tools."`
+	Kind string `json:"kind" jsonschema:"Which artifact to describe. One of: HIVERYN_YAML, PROJECT_OVERVIEW, PROJECT_STATE, ROADMAP_CURRENT, ARCHITECT_SYSTEM, WORKFLOW. Tickets and conclusions are not artifact kinds — use their own tools."`
 }
 
 type DescribeArtifactOutput = domain.ArtifactSchema

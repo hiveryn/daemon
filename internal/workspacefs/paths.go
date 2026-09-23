@@ -26,10 +26,6 @@ const (
 
 	WorkflowsDirName = "workflows"
 
-	// RoadmapArchiveDir is the archive location, written with forward slashes
-	// because it is also the workspace-relative path reported to clients.
-	RoadmapArchiveDir = "archives/roadmaps"
-
 	markdownExt = ".md"
 )
 

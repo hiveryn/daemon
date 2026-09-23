@@ -34,7 +34,6 @@ const (
 	ArtifactProjectOverview = sd.ArtifactProjectOverview
 	ArtifactProjectState    = sd.ArtifactProjectState
 	ArtifactRoadmapCurrent  = sd.ArtifactRoadmapCurrent
-	ArtifactRoadmapArchive  = sd.ArtifactRoadmapArchive
 	ArtifactArchitectSystem = sd.ArtifactArchitectSystem
 	ArtifactWorkflow        = sd.ArtifactWorkflow
 	ArtifactHiverynYAML     = sd.ArtifactHiverynYAML
@@ -80,8 +79,6 @@ const (
 	DiagMissingField             = sd.DiagMissingField
 	DiagInvalidTimestamp         = sd.DiagInvalidTimestamp
 	DiagUnexpectedField          = sd.DiagUnexpectedField
-	DiagArchiveNameInvalid       = sd.DiagArchiveNameInvalid
-	DiagArchiveDateMismatch      = sd.DiagArchiveDateMismatch
 	DiagWorkflowSubdirectory     = sd.DiagWorkflowSubdirectory
 	DiagWorkflowInvalidAttach    = sd.DiagWorkflowInvalidAttach
 	DiagWorkflowMissingRepos     = sd.DiagWorkflowMissingRepos

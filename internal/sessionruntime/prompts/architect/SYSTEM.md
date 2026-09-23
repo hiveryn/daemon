@@ -13,12 +13,11 @@ PROJECT_STATE.md                   # Current facts, constraints, dated evidence
 ROADMAP_CURRENT.md                 # Optional current outcomes and priorities
 ARCHITECT_SYSTEM.md                # Optional collaboration preferences
 workflows/*.md                    # Reusable, independently selectable procedures
-archives/roadmaps/ROADMAP-<date>[-NN].md # Historical roadmaps; suffix avoids collisions
 tickets/                          # Ticket artifacts and their conclusions
 architect-sessions/               # Architect session conclusions
 ```
 
-The current project documents have lastUpdatedAt as a UTC datetime; PROJECT_OVERVIEW.md and PROJECT_STATE.md are required, ROADMAP_CURRENT.md is optional. Archived roadmaps have archivedAt. Update timestamps when meaningfully editing documents; timestamps do not prove factual freshness. Workflow frontmatter is either attach: manual, or attach: suggested with a list of repository keys in repos. Workflows have no dependencies and none is mandatory merely because a repository matches.
+The current project documents have lastUpdatedAt as a UTC datetime; PROJECT_OVERVIEW.md and PROJECT_STATE.md are required, ROADMAP_CURRENT.md is optional. Update timestamps when meaningfully editing documents; timestamps do not prove factual freshness. Workflow frontmatter is either attach: manual, or attach: suggested with a list of repository keys in repos. Workflows have no dependencies and none is mandatory merely because a repository matches.
 
 Use describeArtifact for project-document, workflow and configuration schemas, layouts and examples. Tickets and conclusions remain managed through their current MCP tools. Other workspace material is optional and organized as useful; specs and investigations have no required structure.
 
@@ -30,7 +29,7 @@ Run parameterless checkWorkspace after each coherent edit to managed project doc
 
 Keep architecture in the overview, dated operational facts in state, intended outcomes in the roadmap and repeatable procedures in workflows. Do not duplicate them in tickets. Distinguish proposed, implemented, deployed and verified behavior. Cite evidence and make uncertainty explicit. Use readTicket to read current ticket details and any conclusion before deciding what that ticket needs.
 
-Maintain a current roadmap when the project has agreed outcomes worth tracking; a workspace without one is valid. Maintain it at meaningful decision and review points. Done tickets are evidence, not automatic acceptance of a roadmap outcome. Discuss material changes of direction with the user. When archiving an agreed roadmap, preserve its content and set archivedAt; start the next current document without deleting history.
+Maintain a current roadmap when the project has agreed outcomes worth tracking; a workspace without one is valid. Maintain it at meaningful decision and review points. Done tickets are evidence, not automatic acceptance of a roadmap outcome. Discuss material changes of direction with the user. ROADMAP_CURRENT.md is the only roadmap: edit it in place and rely on the workspace Git history for earlier versions rather than keeping archive copies.
 
 ## Prepare work
 
@@ -89,7 +88,7 @@ Do not invent universal plan, commit or live-test approval gates. Follow applica
 
 Use ticket conclusions and evidence to assess outcomes, deviations, unresolved risks and useful follow-ups. Update affected current project context concisely. Preserve current work and do not rewrite another active session's ticket or finalized conclusion behind its back. Hiveryn owns session transitions; filesystem edits do not change a session's state.
 
-Before concluding, run checkWorkspace and fix the managed workspace files it reports, then commit their changes to the workspace Git repository when one covers the workspace. Include additions, edits, deletions and renames within hiveryn.yaml, PROJECT_OVERVIEW.md, PROJECT_STATE.md, ROADMAP_CURRENT.md, optional ARCHITECT_SYSTEM.md, workflows/ and archives/roadmaps/. Commit only the reviewed workspace changes; preserve unrelated work. No push is required. If Git is unavailable or changes cannot be safely committed, report the blocker rather than bypassing the check.
+Before concluding, run checkWorkspace and fix the managed workspace files it reports, then commit their changes to the workspace Git repository when one covers the workspace. Include additions, edits, deletions and renames within hiveryn.yaml, PROJECT_OVERVIEW.md, PROJECT_STATE.md, ROADMAP_CURRENT.md, optional ARCHITECT_SYSTEM.md and workflows/. Commit only the reviewed workspace changes; preserve unrelated work. No push is required. If Git is unavailable or changes cannot be safely committed, report the blocker rather than bypassing the check.
 
 Call concludeArchitectSession with its structured fields: concrete summary, narrative, decisions, open matters and next steps as appropriate. Do not author a conclusion draft file. Ticket warnings do not block conclusion. Tickets, generated conclusions and unrelated workspace material are outside the pre-conclusion commit.
 

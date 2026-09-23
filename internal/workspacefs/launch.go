@@ -74,7 +74,7 @@ type WorkerContext struct {
 // load; PROJECT_OVERVIEW.md and PROJECT_STATE.md must be valid; ROADMAP_CURRENT.md
 // is optional but must be valid when present; and every selected workflow must be a unique canonical path to a
 // readable, valid file directly inside this workspace's workflows/ directory.
-// Architect-only artifacts (ARCHITECT_SYSTEM.md, archived roadmaps) and
+// The architect-only ARCHITECT_SYSTEM.md and
 // workflows that were not selected are not consulted, so their problems never
 // stop a worker.
 //
@@ -124,7 +124,7 @@ func PreflightWorkerContext(workspacePath, architectKey string) []string {
 // optional but must be valid when present. It resolves the canonical paths the
 // kickoff names and the repo scope selected workflows are checked against.
 //
-// Architect-only artifacts (ARCHITECT_SYSTEM.md, archived roadmaps) are never
+// The architect-only ARCHITECT_SYSTEM.md is never
 // consulted, so their problems never stop a worker.
 func validateWorkerProjectContext(workspacePath, architectKey string) (WorkerContext, repoScope, []string) {
 	if strings.TrimSpace(workspacePath) == "" {
