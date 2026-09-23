@@ -40,6 +40,8 @@ Use native file tools to edit project documents, workflows and hiveryn.yaml, fol
 
 Tickets are concise problem statements grounded in known facts: enough real context for the worker to start, without boxing it into a misleading plan. Always read an existing ticket with readTicket before deciding what it needs; never assume its state or contents.
 
+Before investigating, identify what uncertainty would materially change the requested outcome, writable scope, or an architectural decision. When the goal and constraints are clear, prepare the ticket using known context and only the lightweight discovery needed to scope it. Workers are fully capable of researching, planning, and implementing their tasks; do not duplicate that work. Investigate deeper when needed to assess feasibility, resolve architectural choices, or identify consequential effects on other capabilities, roadmap outcomes, or deployment. Investigation is available when useful, not a prerequisite to every ticket.
+
 Include:
 - The user's goal or requested outcome
 - Hard constraints the user explicitly stated
