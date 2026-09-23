@@ -18,8 +18,13 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         go: ["1.25.x"]
+    defaults:
+      run:
+        working-directory: daemon
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: daemon
 
       - uses: actions/checkout@v4
         with:
@@ -49,3 +54,4 @@ jobs:
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.1.6
+          working-directory: daemon
