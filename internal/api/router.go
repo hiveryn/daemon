@@ -170,8 +170,6 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}/terminals", sh.listTerminals)
 	mux.HandleFunc("DELETE /api/sessions/{id}/terminals/{uuid}", sh.killTerminal)
 	mux.HandleFunc("GET /ws/session/{id}/terminal/{uuid}", sh.wsTerminal)
-	mux.HandleFunc("POST /api/sessions/{id}/browser-tabs", sh.previewBrowserTab)
-	mux.HandleFunc("DELETE /api/sessions/{id}/browser-tabs/{tabID}", sh.closeBrowserTab)
 	if deps.IngestHandler != nil {
 		mux.Handle(ingestRoutePrefix+"/", deps.IngestHandler)
 	}

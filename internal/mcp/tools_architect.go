@@ -74,7 +74,6 @@ func (s *Server) registerArchitectTools() {
 	// checkWorkspace. There is no config-authoring tool, no prompt tool and no
 	// spawn tool: prompts are built in, and only the user launches workers.
 	s.registerWorkspaceTools()
-	s.registerBrowserTools()
 }
 
 func (s *Server) handleReadTicketConclusion(

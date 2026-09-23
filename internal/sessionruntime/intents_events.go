@@ -9,7 +9,7 @@ import (
 
 // Intent lifecycle events. These get their own top-level Type rather than
 // another value on the already-overloaded "status" type (which carries
-// ended/tab_changed/raw agentruntime statuses all at once).
+// ended/raw agentruntime statuses all at once).
 const (
 	sessionEventTypeIntent    = "intent"
 	sessionEventStatusReqd    = "required"

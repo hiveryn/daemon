@@ -315,47 +315,6 @@ func TestCreateTerminalEndpointRejectsCommandField(t *testing.T) {
 	}
 }
 
-func TestPreviewBrowserTabEndpoint(t *testing.T) {
-	t.Parallel()
-
-	service := &fakeSessionService{
-		previewBrowserTabResult: domain.BrowserTabInfo{TabID: "tab-1", SessionID: "session-1", Target: "https://example.com"},
-	}
-	handler := newSessionTestHandler(t, service)
-
-	status, body := request(t, handler, http.MethodPost, "/api/sessions/session-1/browser-tabs", strings.NewReader(`{"target":"https://example.com"}`))
-	if status != http.StatusOK {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, status, string(body))
-	}
-	if service.lastPreviewBrowserTabID != "session-1" {
-		t.Fatalf("unexpected session id %q", service.lastPreviewBrowserTabID)
-	}
-	if service.lastPreviewBrowserParams.Target != "https://example.com" {
-		t.Fatalf("unexpected params %#v", service.lastPreviewBrowserParams)
-	}
-
-	var tab domain.BrowserTabInfo
-	decodeEnvelopeData(t, body, &tab)
-	if tab.TabID != "tab-1" || tab.Target != "https://example.com" {
-		t.Fatalf("unexpected tab payload %#v", tab)
-	}
-}
-
-func TestCloseBrowserTabEndpoint(t *testing.T) {
-	t.Parallel()
-
-	service := &fakeSessionService{}
-	handler := newSessionTestHandler(t, service)
-
-	status, body := request(t, handler, http.MethodDelete, "/api/sessions/session-1/browser-tabs/tab-1", nil)
-	if status != http.StatusNoContent {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusNoContent, status, string(body))
-	}
-	if service.lastCloseBrowserTabID != "session-1" || service.lastCloseBrowserTabTabID != "tab-1" {
-		t.Fatalf("unexpected close call: id=%q tabID=%q", service.lastCloseBrowserTabID, service.lastCloseBrowserTabTabID)
-	}
-}
-
 func TestSessionEventsSSEBacklog(t *testing.T) {
 	t.Parallel()
 
@@ -529,13 +488,6 @@ type fakeSessionService struct {
 	lastDenyReason           string
 	readConclusionResult     domain.ArchitectConclusion
 	readConclusionErr        error
-	previewBrowserTabResult  domain.BrowserTabInfo
-	previewBrowserTabErr     error
-	lastPreviewBrowserTabID  string
-	lastPreviewBrowserParams domain.PreviewBrowserTabParams
-	closeBrowserTabErr       error
-	lastCloseBrowserTabID    string
-	lastCloseBrowserTabTabID string
 }
 
 func (f *fakeSessionService) CreateSession(_ context.Context, req domain.CreateSessionRequest) (domain.Session, error) {
@@ -650,18 +602,6 @@ func (f *fakeSessionService) ListSessionTabs(context.Context, string) ([]domain.
 
 func (f *fakeSessionService) KillTerminal(context.Context, string, string) error {
 	return nil
-}
-
-func (f *fakeSessionService) PreviewBrowserTab(_ context.Context, id string, params domain.PreviewBrowserTabParams) (domain.BrowserTabInfo, error) {
-	f.lastPreviewBrowserTabID = id
-	f.lastPreviewBrowserParams = params
-	return f.previewBrowserTabResult, f.previewBrowserTabErr
-}
-
-func (f *fakeSessionService) CloseBrowserTab(_ context.Context, id, tabID string) error {
-	f.lastCloseBrowserTabID = id
-	f.lastCloseBrowserTabTabID = tabID
-	return f.closeBrowserTabErr
 }
 
 type fakeEventSubscription struct {

@@ -1847,83 +1847,6 @@ func (s *Service) KillTerminal(ctx context.Context, sessionID, terminalID string
 	return nil
 }
 
-func (s *Service) PreviewBrowserTab(ctx context.Context, sessionID string, params domain.PreviewBrowserTabParams) (domain.BrowserTabInfo, error) {
-	target := strings.TrimSpace(params.Target)
-	if target == "" {
-		return domain.BrowserTabInfo{}, &domain.ValidationError{Field: "target", Message: "is required"}
-	}
-	if !isValidBrowserTarget(target) {
-		return domain.BrowserTabInfo{}, &domain.ValidationError{Field: "target", Message: "must be a file://, absolute path, http://localhost, or https:// URL"}
-	}
-
-	session, err := s.repo.GetSession(ctx, sessionID)
-	if err != nil {
-		return domain.BrowserTabInfo{}, err
-	}
-	if session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
-		return domain.BrowserTabInfo{}, &domain.ValidationError{Field: "session_id", Message: "session is not running"}
-	}
-
-	tabID := strings.TrimSpace(params.TabID)
-	if tabID == "" {
-		tabID = uuid.NewString()
-		s.appendSessionTab(sessionID, sessionTabState{
-			tab: domain.SessionTab{
-				Type:   "browser",
-				ID:     tabID,
-				Target: target,
-			},
-		})
-	} else if !s.setSessionTabTarget(sessionID, tabID, target) {
-		return domain.BrowserTabInfo{}, &domain.NotFoundError{Resource: "browser_tab", ID: tabID}
-	}
-
-	if err := s.publishTabChanged(ctx, sessionID); err != nil {
-		return domain.BrowserTabInfo{}, err
-	}
-
-	return domain.BrowserTabInfo{
-		TabID:     tabID,
-		SessionID: sessionID,
-		Target:    target,
-	}, nil
-}
-
-func (s *Service) CloseBrowserTab(ctx context.Context, sessionID, tabID string) error {
-	if _, err := s.repo.GetSession(ctx, sessionID); err != nil {
-		return err
-	}
-	if !s.removeSessionTabByID(sessionID, tabID) {
-		return &domain.NotFoundError{Resource: "browser_tab", ID: tabID}
-	}
-	return s.publishTabChanged(ctx, sessionID)
-}
-
-func isValidBrowserTarget(target string) bool {
-	switch {
-	case strings.HasPrefix(target, "file://"):
-		return true
-	case strings.HasPrefix(target, "https://"):
-		return true
-	case strings.HasPrefix(target, "http://localhost:"), target == "http://localhost":
-		return true
-	case strings.HasPrefix(target, "/"):
-		return true
-	default:
-		return false
-	}
-}
-
-func (s *Service) publishTabChanged(ctx context.Context, sessionID string) error {
-	return s.appendAndPublishSessionEvent(ctx, domain.AppendSessionEventParams{
-		SessionID: sessionID,
-		Type:      "status",
-		Status:    "tab_changed",
-		Message:   "session tabs changed",
-		At:        time.Now().UTC(),
-	})
-}
-
 func (s *Service) Shutdown(ctx context.Context) error {
 	terminalErr := s.terminal.Shutdown(ctx)
 	s.cancelReceiverBridges()
@@ -2730,41 +2653,6 @@ func (s *Service) removeSessionTabOnTerminalClose(sessionID, terminalID string) 
 		s.terminalStates[sessionID] = state
 		return
 	}
-}
-
-func (s *Service) setSessionTabTarget(sessionID, tabID, target string) bool {
-	s.terminalStateMu.Lock()
-	defer s.terminalStateMu.Unlock()
-	state, ok := s.terminalStates[sessionID]
-	if !ok {
-		return false
-	}
-	for i, tab := range state.tabs {
-		if tab.tab.Type != "browser" || tab.tab.ID != tabID {
-			continue
-		}
-		state.tabs[i].tab.Target = target
-		return true
-	}
-	return false
-}
-
-func (s *Service) removeSessionTabByID(sessionID, tabID string) bool {
-	s.terminalStateMu.Lock()
-	defer s.terminalStateMu.Unlock()
-	state, ok := s.terminalStates[sessionID]
-	if !ok {
-		return false
-	}
-	for i, tab := range state.tabs {
-		if tab.tab.Type != "browser" || tab.tab.ID != tabID {
-			continue
-		}
-		state.tabs = append(state.tabs[:i], state.tabs[i+1:]...)
-		s.terminalStates[sessionID] = state
-		return true
-	}
-	return false
 }
 
 func cloneSessionTabs(tabs []sessionTabState) []domain.SessionTab {
