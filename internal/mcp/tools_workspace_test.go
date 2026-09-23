@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
@@ -178,6 +179,90 @@ func TestWorkspaceToolsAreArchitectOnly(t *testing.T) {
 				t.Errorf("%s session: removed tool %s is still registered", sessionType, name)
 			}
 		}
+	}
+}
+
+// TestCheckWorkspaceOutputValidatesWithNullDocumentTimestamp exercises the real
+// MCP output-validation boundary (not just the handler): a node reports no
+// document-declared timestamp — as ARCHITECT_SYSTEM.md and a freshly
+// discovered workflow legitimately do — while ModifiedAt still carries the
+// filesystem mtime. The generated output schema must accept the resulting
+// JSON null rather than rejecting the whole response.
+func TestCheckWorkspaceOutputValidatesWithNullDocumentTimestamp(t *testing.T) {
+	t.Parallel()
+
+	modifiedAt := time.Date(2026, 1, 15, 9, 0, 0, 0, time.UTC)
+	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(t, w, http.StatusOK, domain.WorkspaceReport{
+			ArchitectKey:  "hiveryn",
+			WorkspacePath: "/workspace",
+			CheckedAt:     time.Date(2026, 1, 15, 9, 30, 0, 0, time.UTC),
+			Valid:         true,
+			Nodes: []domain.WorkspaceNode{{
+				Kind:              domain.ArtifactArchitectSystem,
+				Type:              domain.WorkspaceNodeFile,
+				Path:              "ARCHITECT_SYSTEM.md",
+				Required:          false,
+				Exists:            true,
+				Valid:             true,
+				DocumentUpdatedAt: nil,
+				ModifiedAt:        &modifiedAt,
+				Children: []domain.WorkspaceEntry{{
+					Kind:              domain.ArtifactWorkflow,
+					Path:              "workflows/example.md",
+					Valid:             true,
+					DocumentUpdatedAt: nil,
+					ModifiedAt:        &modifiedAt,
+				}},
+			}},
+		})
+	})
+
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	serverSession, err := server.mcpServer.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("connect server: %v", err)
+	}
+	defer func() { _ = serverSession.Close() }()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "dev"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("connect client: %v", err)
+	}
+	defer func() { _ = clientSession.Close() }()
+
+	result, err := clientSession.CallTool(ctx, &mcp.CallToolParams{Name: "checkWorkspace"})
+	if err != nil {
+		t.Fatalf("CallTool(checkWorkspace): %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("checkWorkspace returned a tool error: %+v", result.Content)
+	}
+
+	structuredJSON, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structured content: %v", err)
+	}
+	var report domain.WorkspaceReport
+	if err := json.Unmarshal(structuredJSON, &report); err != nil {
+		t.Fatalf("unmarshal structured content: %v", err)
+	}
+	if got := len(report.Nodes); got != 1 {
+		t.Fatalf("nodes = %d, want 1", got)
+	}
+	node := report.Nodes[0]
+	if node.DocumentUpdatedAt != nil {
+		t.Errorf("node.DocumentUpdatedAt = %v, want nil", node.DocumentUpdatedAt)
+	}
+	if node.ModifiedAt == nil || !node.ModifiedAt.Equal(modifiedAt) {
+		t.Errorf("node.ModifiedAt = %v, want %v", node.ModifiedAt, modifiedAt)
+	}
+	if len(node.Children) != 1 || node.Children[0].DocumentUpdatedAt != nil {
+		t.Errorf("children = %+v", node.Children)
 	}
 }
 
