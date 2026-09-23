@@ -376,7 +376,7 @@ func (s *Server) updateTicket(ctx context.Context, input UpdateTicketInput) (Tic
 }
 
 // concludeRequest is the JSON body POSTed to /request-conclusion. It carries
-// the structured conclusion fields for all three session types; the daemon
+// the structured conclusion fields for both session types; the daemon
 // renders them into the canonical conclusion.md body. Each handler populates
 // only the subset relevant to its session type (omitempty drops the rest).
 type concludeRequest struct {
@@ -386,7 +386,6 @@ type concludeRequest struct {
 	Summary         string             `json:"summary,omitempty"`
 	Narrative       string             `json:"narrative,omitempty"`
 	Implementation  string             `json:"implementation,omitempty"`
-	Findings        string             `json:"findings,omitempty"`
 	Verification    string             `json:"verification,omitempty"`
 	TicketsTouched  string             `json:"tickets_touched,omitempty"`
 	Decisions       string             `json:"decisions,omitempty"`
@@ -394,7 +393,6 @@ type concludeRequest struct {
 	UserPriorities  string             `json:"user_priorities,omitempty"`
 	Deviations      string             `json:"deviations,omitempty"`
 	FollowUps       string             `json:"follow_ups,omitempty"`
-	Recommendations string             `json:"recommendations,omitempty"`
 	OpenQuestions   string             `json:"open_questions,omitempty"`
 	NextSteps       string             `json:"next_steps,omitempty"`
 }

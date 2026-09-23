@@ -43,7 +43,7 @@ func NewServer(cfg Config) (*Server, error) {
 	if sessionType == "" {
 		sessionType = SessionTypeArchitect
 	}
-	if sessionType != SessionTypeArchitect && sessionType != SessionTypeTicket && sessionType != SessionTypeFreeform {
+	if sessionType != SessionTypeArchitect && sessionType != SessionTypeTicket {
 		return nil, fmt.Errorf("unsupported HIVERYN_SESSION_TYPE %q", sessionType)
 	}
 
@@ -76,8 +76,6 @@ func NewServer(cfg Config) (*Server, error) {
 		server.registerArchitectTools()
 	case SessionTypeTicket:
 		server.registerTicketTools()
-	case SessionTypeFreeform:
-		server.registerFreeformTools()
 	}
 
 	return server, nil

@@ -154,7 +154,7 @@ func TestDescribeArtifactAcceptsEveryKind(t *testing.T) {
 func TestWorkspaceToolsAreArchitectOnly(t *testing.T) {
 	t.Parallel()
 
-	for _, sessionType := range []SessionType{SessionTypeArchitect, SessionTypeTicket, SessionTypeFreeform} {
+	for _, sessionType := range []SessionType{SessionTypeArchitect, SessionTypeTicket} {
 		server, err := NewServer(Config{
 			DaemonURL:    "http://127.0.0.1:4200",
 			ArchitectKey: "hiveryn",

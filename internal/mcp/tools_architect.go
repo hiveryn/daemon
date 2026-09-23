@@ -302,32 +302,6 @@ func (s *Server) handleTicketConcludeSession(
 	return nil, output, nil
 }
 
-func (s *Server) handleFreeformConcludeSession(
-	ctx context.Context,
-	_ *mcp.CallToolRequest,
-	input FreeformConcludeSessionInput,
-) (*mcp.CallToolResult, ConcludeSessionOutput, error) {
-	if err := validateCommitShapes(input.Commits); err != nil {
-		return nil, ConcludeSessionOutput{}, err
-	}
-	if s.sessionID == "" {
-		return nil, ConcludeSessionOutput{}, newInternalError("HIVERYN_SESSION_ID not set")
-	}
-
-	output, err := s.concludeSession(ctx, concludeRequest{
-		Summary:         input.Summary,
-		Findings:        input.Findings,
-		Recommendations: input.Recommendations,
-		OpenQuestions:   input.OpenQuestions,
-		Commits:         input.Commits,
-	})
-	if err != nil {
-		return nil, ConcludeSessionOutput{}, err
-	}
-
-	return nil, output, nil
-}
-
 func validateCommitShapes(commits []domain.CommitRef) error {
 	for _, commit := range commits {
 		if strings.TrimSpace(commit.SHA) == "" {

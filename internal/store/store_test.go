@@ -31,6 +31,58 @@ func TestOpenRunsSessionMigrations(t *testing.T) {
 	}
 }
 
+func TestMigrationRemovesLegacyFreeformSessions(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+	db, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	// Recreate the pre-removal state: a freeform session with a run and an
+	// event, next to a ticket session that must survive, and migration 3 not
+	// yet applied.
+	for _, stmt := range []string{
+		`INSERT INTO sessions (id, architect_key, session_type, context_id, prompt, workdir) VALUES ('ff', 'hiveryn', 'freeform', '2026-05-21-1445-explore', 'explore', '/tmp/ff')`,
+		`INSERT INTO session_runs (id, session_id, status, profile_name, workdir) VALUES ('ff-run', 'ff', 'running', 'claude', '/tmp/ff')`,
+		`INSERT INTO session_events (id, session_id, run_id, seq, type, at) VALUES ('ff-event', 'ff', 'ff-run', 1, 'status', '2026-05-21T14:45:00Z')`,
+		`INSERT INTO sessions (id, architect_key, session_type, context_id, prompt, workdir) VALUES ('tk', 'hiveryn', 'ticket', 'ticket-1', 'kickoff', '/tmp/tk')`,
+		`INSERT INTO session_runs (id, session_id, status, profile_name, workdir) VALUES ('tk-run', 'tk', 'running', 'claude', '/tmp/tk')`,
+		`DELETE FROM schema_migrations WHERE version = 3`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("seed %q: %v", stmt, err)
+		}
+	}
+	_ = db.Close()
+
+	db, err = Open(ctx, path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	for _, check := range []struct {
+		query string
+		want  int
+	}{
+		{`SELECT COUNT(*) FROM sessions WHERE session_type = 'freeform'`, 0},
+		{`SELECT COUNT(*) FROM session_runs WHERE session_id = 'ff'`, 0},
+		{`SELECT COUNT(*) FROM session_events WHERE session_id = 'ff'`, 0},
+		{`SELECT COUNT(*) FROM sessions WHERE id = 'tk'`, 1},
+		{`SELECT COUNT(*) FROM session_runs WHERE session_id = 'tk'`, 1},
+	} {
+		var got int
+		if err := db.QueryRowContext(ctx, check.query).Scan(&got); err != nil {
+			t.Fatalf("query %q: %v", check.query, err)
+		}
+		if got != check.want {
+			t.Fatalf("%s = %d, want %d", check.query, got, check.want)
+		}
+	}
+}
+
 func TestSessionEventRingKeepsIntentEventsOutsideCap(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -409,40 +461,6 @@ func TestSessionStoreAllowsOneRunningRunPerSession(t *testing.T) {
 		StartedAt:       startedAt.Add(2 * time.Minute),
 	}); err != nil {
 		t.Fatalf("create run after failed run: %v", err)
-	}
-}
-
-func TestSessionStorePersistsFreeformSessionFields(t *testing.T) {
-	t.Parallel()
-
-	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	store := NewSessionStore(db)
-	if _, err := store.CreateSession(context.Background(), domain.CreateSessionParams{
-		ID:           "session-1",
-		ArchitectKey: "hiveryn",
-		SessionType:  domain.SessionTypeFreeform,
-		ContextID:    "2026-05-19-1200-investigate-login-failure",
-		Prompt:       "Investigate login failure and report root cause",
-		Workdir:      "/tmp/service-a",
-		CreatedBy:    domain.SessionCreatedByDesktop,
-	}); err != nil {
-		t.Fatalf("create freeform session: %v", err)
-	}
-
-	session, err := store.GetSession(context.Background(), "session-1")
-	if err != nil {
-		t.Fatalf("get freeform session: %v", err)
-	}
-	if session.SessionType != domain.SessionTypeFreeform || session.ContextID != "2026-05-19-1200-investigate-login-failure" {
-		t.Fatalf("unexpected session identity %#v", session)
-	}
-	if session.Prompt != "Investigate login failure and report root cause" || session.Workdir != "/tmp/service-a" {
-		t.Fatalf("unexpected persisted freeform fields %#v", session)
 	}
 }
 

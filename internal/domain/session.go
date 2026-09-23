@@ -54,7 +54,6 @@ const (
 const (
 	SessionTypeArchitect = sd.SessionTypeArchitect
 	SessionTypeTicket    = sd.SessionTypeTicket
-	SessionTypeFreeform  = sd.SessionTypeFreeform
 
 	SessionCreatedByDesktop = sd.SessionCreatedByDesktop
 

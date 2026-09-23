@@ -6,7 +6,7 @@ import (
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
-// This file renders the structured conclusion input from the three conclude
+// This file renders the structured conclusion input from the two conclude
 // MCP tools into the canonical conclusion.md markdown body. The daemon is the
 // single render point: the structured fields are an input contract, never
 // persisted as structured data. Frontmatter metadata is built separately by the
@@ -27,8 +27,6 @@ func (s *Service) renderConclusionBody(sessionType domain.SessionType, params do
 		return renderArchitectConclusionBody(params)
 	case domain.SessionTypeTicket:
 		return renderTicketConclusionBody(params)
-	case domain.SessionTypeFreeform:
-		return renderFreeformConclusionBody(params)
 	default:
 		return "", &domain.ValidationError{Field: "session_type", Message: "unknown session type: " + string(sessionType)}
 	}
@@ -111,38 +109,6 @@ func renderTicketConclusionBody(p domain.ConcludeSessionParams) (string, error) 
 	}
 	sections = appendIfPresent(sections, renderOptionalSection("Follow-ups", p.FollowUps))
 	sections = appendIfPresent(sections, renderOptionalSection("Open questions", p.OpenQuestions))
-
-	return strings.Join(sections, "\n\n"), nil
-}
-
-// renderFreeformConclusionBody renders the freeform conclusion body in
-// canonical order: Summary, Findings, Recommendations, Open questions.
-func renderFreeformConclusionBody(p domain.ConcludeSessionParams) (string, error) {
-	summary, err := requiredString("summary", p.Summary)
-	if err != nil {
-		return "", err
-	}
-	findings, err := requiredString("findings", p.Findings)
-	if err != nil {
-		return "", err
-	}
-
-	sections := []string{
-		section("Summary", summary),
-		section("Findings", findings),
-	}
-
-	recommendations, err := renderRequiredSection("recommendations", "Recommendations", p.Recommendations)
-	if err != nil {
-		return "", err
-	}
-	sections = append(sections, recommendations)
-
-	openQuestions, err := renderRequiredSection("open_questions", "Open questions", p.OpenQuestions)
-	if err != nil {
-		return "", err
-	}
-	sections = append(sections, openQuestions)
 
 	return strings.Join(sections, "\n\n"), nil
 }

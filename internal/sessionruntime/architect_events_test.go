@@ -95,36 +95,6 @@ func TestCreateRunAnnouncesTicketSessionOnArchitectStream(t *testing.T) {
 	}
 }
 
-// Architect and freeform sessions have no ticket, so they must be announced
-// without claiming one — ContextID is not a ticket id for them.
-func TestCreateRunAnnouncesFreeformSessionWithoutTicket(t *testing.T) {
-	t.Parallel()
-
-	recorder := &architectEventRecorder{}
-	service := newRunnableService(t, domain.Session{
-		ID:           "session-1",
-		ArchitectKey: "hiveryn",
-		SessionType:  domain.SessionTypeFreeform,
-		ContextID:    "2026-05-13-1600-investigate-login-failure",
-		Prompt:       "Investigate login failure",
-		Workdir:      t.TempDir(),
-	}, recorder)
-
-	if _, err := service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{ProfileName: "codex"}); err != nil {
-		t.Fatalf("CreateRun failed: %v", err)
-	}
-
-	started := recorder.withReason(domain.ArchitectEventSessionStarted)
-	if len(started) != 1 {
-		t.Fatalf("expected exactly one session_started, got %d: %#v", len(started), recorder.snapshot())
-	}
-	assertSessionStarted(t, started[0], "hiveryn", "session-1", "")
-
-	if moved := recorder.withReason(domain.ArchitectEventTicketMoved); len(moved) != 0 {
-		t.Fatalf("freeform session must not move a ticket, got %#v", moved)
-	}
-}
-
 // newRunnableService builds a Service wired with the launch dependencies
 // CreateRun needs, plus an architect publisher.
 func newRunnableService(t *testing.T, session domain.Session, recorder *architectEventRecorder) *Service {

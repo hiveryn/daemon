@@ -74,37 +74,6 @@ func TestCreateSessionTicketEndpointCarriesWorkflowSelection(t *testing.T) {
 	}
 }
 
-func TestCreateSessionFreeformEndpoint(t *testing.T) {
-	t.Parallel()
-
-	service := &fakeSessionService{
-		createSessionResult: domain.Session{
-			ID:           "session-2",
-			ArchitectKey: "hiveryn",
-			SessionType:  domain.SessionTypeFreeform,
-			ContextID:    "2026-05-13-1500-investigate-login-failure",
-			Prompt:       "Investigate login failure and report root cause",
-			Workdir:      "/tmp/service-a",
-			CreatedBy:    domain.SessionCreatedByDesktop,
-		},
-	}
-	handler := newSessionTestHandler(t, service)
-
-	status, body := request(t, handler, http.MethodPost, "/api/sessions", strings.NewReader(`{"session_type":"freeform","architect_key":"hiveryn","prompt":"Investigate login failure and report root cause","workdir":"/tmp/service-a","slug":"investigate-login-failure"}`))
-	if status != http.StatusCreated {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, status, string(body))
-	}
-
-	var payload domain.Session
-	decodeEnvelopeData(t, body, &payload)
-	if payload.SessionType != domain.SessionTypeFreeform || payload.ContextID != "2026-05-13-1500-investigate-login-failure" {
-		t.Fatalf("unexpected payload %#v", payload)
-	}
-	if service.lastCreateSession.Workdir != "/tmp/service-a" || service.lastCreateSession.Slug != "investigate-login-failure" {
-		t.Fatalf("unexpected create session request %#v", service.lastCreateSession)
-	}
-}
-
 func TestCreateRunEndpoint(t *testing.T) {
 	t.Parallel()
 

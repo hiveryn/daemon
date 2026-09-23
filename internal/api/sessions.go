@@ -174,8 +174,8 @@ func (h *sessionsHandler) conclude(w http.ResponseWriter, r *http.Request) {
 	if result.TicketID != "" {
 		publishArchitectEvent(h.publishArchitect, result.ArchitectKey, domain.ArchitectEventTicketConcluded, result.TicketID, result.SessionID)
 	}
-	// Session end is announced regardless of ticket scope (architect and freeform
-	// sessions have no ticket) so a window that missed the session-scoped ended
+	// Session end is announced regardless of ticket scope (architect sessions
+	// have no ticket) so a window that missed the session-scoped ended
 	// event still drops the tab on its next reconcile.
 	publishArchitectEvent(h.publishArchitect, result.ArchitectKey, domain.ArchitectEventSessionEnded, result.TicketID, result.SessionID)
 

@@ -37,7 +37,7 @@ The daemon binary also exposes an MCP stdio subcommand for agent-launched tool a
 hiverynd mcp --daemon-url http://127.0.0.1:4201 --architect-key hiveryn
 ```
 
-`hiverynd mcp` is intended to be spawned by `agentruntime`; session scoping comes from `HIVERYN_SESSION_TYPE` (`architect`, `ticket`, or `freeform`).
+`hiverynd mcp` is intended to be spawned by `agentruntime`; session scoping comes from `HIVERYN_SESSION_TYPE` (`architect` or `ticket`; any other value, including the removed `freeform`, is a startup error).
 
 ## Configuration
 
@@ -91,7 +91,7 @@ claude-sonnet-plan:
       args: [--mcp]
 ```
 
-For architect sessions using `agent: opencode`, the daemon defines a named OpenCode agent automatically from the built-in architect instructions (plus the workspace's optional `ARCHITECT_SYSTEM.md`), using the architect key as the agent name and passing `--agent <architect_key>` at launch. Do not put `--agent` in OpenCode architect variant args; the daemon treats that as a launch error. Ticket and freeform OpenCode sessions do not define a named agent.
+For architect sessions using `agent: opencode`, the daemon defines a named OpenCode agent automatically from the built-in architect instructions (plus the workspace's optional `ARCHITECT_SYSTEM.md`), using the architect key as the agent name and passing `--agent <architect_key>` at launch. Do not put `--agent` in OpenCode architect variant args; the daemon treats that as a launch error. Ticket OpenCode sessions do not define a named agent.
 
 Instructions are always additive to the agent's own system prompt: Claude receives them through `--append-system-prompt`, Codex through `developer_instructions`, OpenCode through an instruction file. The kickoff (the first user message) is separate from the instructions on every provider. Repository `AGENTS.md`/`CLAUDE.md` files are picked up natively by each agent and are not touched by the daemon.
 
@@ -166,10 +166,6 @@ architect:
 ticket:
   - type: event-log
   - type: terminal
-
-freeform:
-  - type: event-log
-  - type: terminal
 ```
 
 Terminal entries only support `type` and optional `command`. Entries without `command` default to the user's shell. When a session run starts, the daemon auto-creates PTY terminals for every `type: terminal` entry in the matching session type section and assigns each terminal a UUID.
@@ -227,7 +223,7 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `GET` | `/api/agent-profiles` | List all agent profiles |
 | `GET` | `/api/agent-profiles/{name}` | Get one agent profile by name |
 | `GET` | `/api/architects` | List configured architects |
-| `GET` | `/api/architects/status` | List all configured architects plus their running architect status and nested running ticket/freeform worker sessions for desktop command-palette/session pickers |
+| `GET` | `/api/architects/status` | List all configured architects plus their running architect status and nested running ticket worker sessions for desktop command-palette/session pickers |
 | `GET` | `/api/architects/{key}` | Get one configured architect by key |
 | `GET` | `/api/architects/{key}/tickets` | List ticket board columns; supports `?status=backlog\|progress\|done` and `?limit=N` |
 | `POST` | `/api/architects/{key}/tickets` | Create a backlog ticket with required primary `repo` and optional `additional_repos` keys |
@@ -256,13 +252,13 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `PUT` | `/api/fs/file?path=<absolute path>[&create=true]` | Write a file from a JSON `{ "content": "<string>" }` body (atomic temp-file+rename); returns `{ path, size, mtime }`. Default mode is overwrite-only and preserves the file's mode (`NOT_FOUND` if missing); `create=true` inverts it — the target must NOT exist (`CONFLICT` if it does), parent dirs are created, mode is `0644`. Either way `VALIDATION` for a directory or over the 2 MiB cap; not architect-scoped |
 | `GET` | `/api/fs/search?path=<absolute path>&q=<query>&limit=<1..100>` | Ranked filename search under a root (case-insensitive substring/subsequence, basename matches first). Git-aware: roots inside a work tree list via `git ls-files` (tracked + untracked-unignored); plain roots are walked, with nested repos listed the same way, so gitignored files never appear. 100-result cap, 200k-candidate walk budget with a `truncated` flag |
 | `GET` | `/api/fs/search-content?path=<absolute path>&q=<query>&limit=<1..200>` | Case-insensitive fixed-string **content** search under a root, returning `{ path, line, text }` per matched line (lines capped at 500 bytes). Git-aware: a root inside a work tree greps via one `git grep -I --untracked` subprocess, streamed and killed at the cap; other roots scan the same git-aware candidate set in-process, skipping binaries and files over 1 MiB. 200-match cap with a `truncated` flag |
-| `POST` | `/api/sessions` | Create a durable session for architect planning, ticket work, or freeform exploration. Ticket sessions accept `workflows` — the explicit canonical workflow selection, validated against the workspace (see "Workflow selection") |
+| `POST` | `/api/sessions` | Create a durable session for architect planning or ticket work (`session_type` is `architect` or `ticket`). Ticket sessions accept `workflows` — the explicit canonical workflow selection, validated against the workspace (see "Workflow selection") |
 | `GET` | `/api/sessions` | List sessions with their current run, if any |
 | `GET` | `/api/sessions/{id}` | Get one session |
 | `POST` | `/api/sessions/{id}/runs` | Start a run for a session using an agent profile; ticket runs revalidate the worker context (project documents + selected workflows) and move the ticket backlog → progress on successful launch |
 | `POST` | `/api/sessions/{id}/conclude` | Conclude a session's running run, publish `ended`, kill its PTYs, and delete the session row; architect conclude returns `CONFLICT` if same-architect ticket sessions are still running |
 | `POST` | `/api/sessions/{id}/discard` | Discard a ticket session without writing a conclusion: move the ticket progress → backlog, publish `ended` with `raw.lifecycle=discarded`, kill PTYs, delete the run, and delete the session row |
-| `POST` | `/api/sessions/{id}/intents/conclude-session` | **Blocking.** Raise a conclude intent: render the structured input into the canonical `conclusion.md` body, publish `intent`/`required`, and block until the user answers or the policy fires. Returns an intent resolution. Called by the MCP conclude tools (`concludeArchitectSession`, `concludeTicketSession`, `concludeFreeformSession`). |
+| `POST` | `/api/sessions/{id}/intents/conclude-session` | **Blocking.** Raise a conclude intent: render the structured input into the canonical `conclusion.md` body, publish `intent`/`required`, and block until the user answers or the policy fires. Returns an intent resolution. Called by the MCP conclude tools (`concludeArchitectSession`, `concludeTicketSession`). |
 | `POST` | `/api/sessions/{id}/intents/create-work-ticket` | **Blocking.** Raise a createWorkTicket intent; the ticket is written only on approval. Session-scoped so the architect key comes from the stored session, never the request. Called by the MCP `createWorkTicket` tool. |
 | `POST` | `/api/sessions/{id}/intents/{intentID}/approve` | Approve a pending intent and run its side effect. Called by the desktop app. |
 | `POST` | `/api/sessions/{id}/intents/{intentID}/deny` | Deny a pending intent with a reason. The side effect never runs; the blocked agent call returns `outcome: denied_by_user`. Called by the desktop app. |
@@ -288,7 +284,7 @@ Auxiliary terminal creation is workdir-explicit: `GET /api/sessions/{id}/termina
 
 ### Discard ticket session
 
-`POST /api/sessions/{id}/discard` is for the desktop "discard worker session" action. It accepts no request body. The target session must be a ticket session with a current run; architect and freeform sessions return a `VALIDATION` envelope. The daemon moves the ticket back to `backlog`, emits a live session SSE event with `type=status`, `status=ended`, `message=session discarded`, and `raw.lifecycle=discarded`, kills all PTYs for the session, deletes the `session_runs` row, and deletes the `sessions` row. No `conclusion.md` is written and no commit/rejection invariant is checked. Git changes made by the agent are not reverted.
+`POST /api/sessions/{id}/discard` is for the desktop "discard worker session" action. It accepts no request body. The target session must be a ticket session with a current run; architect sessions return a `VALIDATION` envelope. The daemon moves the ticket back to `backlog`, emits a live session SSE event with `type=status`, `status=ended`, `message=session discarded`, and `raw.lifecycle=discarded`, kills all PTYs for the session, deletes the `session_runs` row, and deletes the `sessions` row. No `conclusion.md` is written and no commit/rejection invariant is checked. Git changes made by the agent are not reverted.
 
 Successful response:
 
@@ -312,7 +308,7 @@ Desktop consumers should remove the session tab either when the POST succeeds or
 
 ### Intent approval flow
 
-Agent tool calls that mutate user-visible state route through the **intent system** so the desktop user can approve them before they take effect. Two tools are routed today: the conclude tools (`concludeArchitectSession`, `concludeTicketSession`, `concludeFreeformSession`, role-scoped so a session only sees its own) and `createWorkTicket` (registered for all three session types). Each takes **discrete structured fields** rather than a freeform body; the daemon renders/validates them and, for conclusions, produces the canonical `conclusion.md`. See "Structured conclusions" below.
+Agent tool calls that mutate user-visible state route through the **intent system** so the desktop user can approve them before they take effect. Two tools are routed today: the conclude tools (`concludeArchitectSession`, `concludeTicketSession`, role-scoped so a session only sees its own) and `createWorkTicket` (registered for both session types). Each takes **discrete structured fields** rather than a free-text body; the daemon renders/validates them and, for conclusions, produces the canonical `conclusion.md`. See "Structured conclusions" below.
 
 An intent is a pending tool call awaiting the user's answer. The write lives daemon-side and runs only on approval, so the agent cannot bypass it.
 
@@ -347,11 +343,10 @@ Direct `/conclude` request:
 
 #### Structured conclusions
 
-The MCP conclude tools (and therefore `intents/conclude-session`) take **discrete structured fields** instead of a freeform `body`; the daemon renders them into the canonical `conclusion.md`. The frontmatter metadata and the read-path shape (frontmatter + rendered `body`) are unchanged — this is an input contract, not a persisted structured copy. Every presentational section is a **Markdown string** the agent authors itself (bullets/prose as text) — no conclude section is an array, so none can be dropped by the MCP client's required-array serialization bug. Only `commits` stays a structured array, because it is persisted and read back as data. Required fields are rejected if blank; a required section with nothing to report takes the literal Markdown `"None"`. Each type has its own canonical section order:
+The MCP conclude tools (and therefore `intents/conclude-session`) take **discrete structured fields** instead of a free-text `body`; the daemon renders them into the canonical `conclusion.md`. The frontmatter metadata and the read-path shape (frontmatter + rendered `body`) are unchanged — this is an input contract, not a persisted structured copy. Every presentational section is a **Markdown string** the agent authors itself (bullets/prose as text) — no conclude section is an array, so none can be dropped by the MCP client's required-array serialization bug. Only `commits` stays a structured array, because it is persisted and read back as data. Required fields are rejected if blank; a required section with nothing to report takes the literal Markdown `"None"`. Each type has its own canonical section order:
 
 - **`concludeArchitectSession`** — `summary`*, `narrative`*, `tickets_touched`, `decisions`, `config_changes`, `user_priorities`, `open_questions`, `next_steps`†
 - **`concludeTicketSession`** — `summary`*, `outcome`* (`completed`/`exploratory`/`rejected`), `implementation`* (the writeup — required for `completed`/`exploratory`, renders as "Implementation" or "Findings" respectively; omitted for `rejected`), `deviations`, `verification`, `follow_ups` (Markdown referencing candidate follow-up ticket IDs), `open_questions` — plus the `commits`/`rejection_reason` frontmatter metadata (`commits` required for `completed`, `rejection_reason` required for `rejected`)
-- **`concludeFreeformSession`** — `summary`*, `findings`*, `recommendations`†, `open_questions`† — plus optional `commits`; `outcome` is disallowed (ticket-only concept)
 
 (`*` = required; `†` = required, `"None"` accepted. All section fields are Markdown strings; `commits` is the only array.) Example `intents/conclude-session` request for a ticket session:
 

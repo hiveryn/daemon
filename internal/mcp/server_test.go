@@ -49,24 +49,6 @@ func TestNewServerTicketSession(t *testing.T) {
 	}
 }
 
-func TestNewServerFreeformSession(t *testing.T) {
-	t.Parallel()
-
-	server, err := NewServer(Config{
-		DaemonURL:    "http://127.0.0.1:4200",
-		ArchitectKey: "hiveryn",
-		SessionID:    "sess-test",
-		SessionType:  SessionTypeFreeform,
-	})
-	if err != nil {
-		t.Fatalf("NewServer failed: %v", err)
-	}
-
-	if server.SessionType() != SessionTypeFreeform {
-		t.Fatalf("session type = %q, want %q", server.SessionType(), SessionTypeFreeform)
-	}
-}
-
 func TestNewServerRequiresConfig(t *testing.T) {
 	t.Parallel()
 
@@ -78,6 +60,10 @@ func TestNewServerRequiresConfig(t *testing.T) {
 	}
 	if _, err := NewServer(Config{DaemonURL: "http://127.0.0.1:4200", ArchitectKey: "hiveryn", SessionType: SessionType("bad")}); err == nil {
 		t.Fatal("expected session type error")
+	}
+	// Freeform sessions were removed; the role must not come back as a tool set.
+	if _, err := NewServer(Config{DaemonURL: "http://127.0.0.1:4200", ArchitectKey: "hiveryn", SessionID: "sess-test", SessionType: SessionType("freeform")}); err == nil {
+		t.Fatal("expected freeform session type to be rejected")
 	}
 }
 

@@ -200,49 +200,6 @@ func TestRenderTicketConclusionBodyInvalidOutcome(t *testing.T) {
 	assertValidationField(t, err, "outcome")
 }
 
-func TestRenderFreeformConclusionBody(t *testing.T) {
-	t.Parallel()
-
-	body, err := renderFreeformConclusionBody(domain.ConcludeSessionParams{
-		Summary:         "Investigated the flake.",
-		Findings:        "It's a race in the scheduler.",
-		Recommendations: "- Add a mutex",
-		OpenQuestions:   "None",
-	})
-	if err != nil {
-		t.Fatalf("render failed: %v", err)
-	}
-
-	want := strings.Join([]string{
-		"## Summary\nInvestigated the flake.",
-		"## Findings\nIt's a race in the scheduler.",
-		"## Recommendations\n- Add a mutex",
-		"## Open questions\nNone",
-	}, "\n\n")
-	if body != want {
-		t.Fatalf("body mismatch:\n--- got ---\n%s\n--- want ---\n%s", body, want)
-	}
-}
-
-func TestRenderFreeformConclusionBodyRequiredFields(t *testing.T) {
-	t.Parallel()
-
-	cases := map[string]domain.ConcludeSessionParams{
-		"summary":         {Findings: "x", Recommendations: "None", OpenQuestions: "None"},
-		"findings":        {Summary: "x", Recommendations: "None", OpenQuestions: "None"},
-		"recommendations": {Summary: "x", Findings: "x", OpenQuestions: "None"},
-		"open_questions":  {Summary: "x", Findings: "x", Recommendations: "None"},
-	}
-	for field, params := range cases {
-		field, params := field, params
-		t.Run(field, func(t *testing.T) {
-			t.Parallel()
-			_, err := renderFreeformConclusionBody(params)
-			assertValidationField(t, err, field)
-		})
-	}
-}
-
 func assertValidationField(t *testing.T, err error, field string) {
 	t.Helper()
 	if err == nil {

@@ -222,15 +222,6 @@ func (s *Service) CreateSession(ctx context.Context, req domain.CreateSessionReq
 		if strings.TrimSpace(req.TicketID) == "" {
 			return domain.Session{}, &domain.ValidationError{Field: "ticket_id", Message: "is required"}
 		}
-		if strings.TrimSpace(req.Prompt) != "" {
-			return domain.Session{}, &domain.ValidationError{Field: "prompt", Message: "ticket sessions do not accept a prompt"}
-		}
-		if strings.TrimSpace(req.Workdir) != "" {
-			return domain.Session{}, &domain.ValidationError{Field: "workdir", Message: "ticket sessions do not accept a workdir"}
-		}
-		if strings.TrimSpace(req.Slug) != "" {
-			return domain.Session{}, &domain.ValidationError{Field: "slug", Message: "ticket sessions do not accept a slug"}
-		}
 		ticket, err := s.tickets.GetTicket(ctx, architect.Path, req.TicketID)
 		if err != nil {
 			return domain.Session{}, err
@@ -286,55 +277,8 @@ func (s *Service) CreateSession(ctx context.Context, req domain.CreateSessionReq
 			Instructions:       instructions,
 			CreatedBy:          domain.SessionCreatedByDesktop,
 		})
-	case domain.SessionTypeFreeform:
-		prompt := req.Prompt
-		if strings.TrimSpace(prompt) == "" {
-			return domain.Session{}, &domain.ValidationError{Field: "prompt", Message: "is required"}
-		}
-		workdir := strings.TrimSpace(req.Workdir)
-		if workdir == "" {
-			return domain.Session{}, &domain.ValidationError{Field: "workdir", Message: "is required"}
-		}
-		slug := normalizeSlug(req.Slug)
-		if strings.TrimSpace(req.Slug) == "" {
-			return domain.Session{}, &domain.ValidationError{Field: "slug", Message: "is required"}
-		}
-		if slug == "" {
-			return domain.Session{}, &domain.ValidationError{Field: "slug", Message: "must contain at least one letter or digit"}
-		}
-		if strings.TrimSpace(req.TicketID) != "" {
-			return domain.Session{}, &domain.ValidationError{Field: "ticket_id", Message: "freeform sessions do not accept a ticket ID"}
-		}
-		if err := validateExistingDirectory(workdir, "workdir"); err != nil {
-			return domain.Session{}, err
-		}
-
-		now := time.Now().UTC()
-		contextID, err := nextFreeformContextID(architect.Path, now, slug)
-		if err != nil {
-			return domain.Session{}, err
-		}
-		if err := writeFreeformPrompt(architect.Path, contextID, prompt); err != nil {
-			return domain.Session{}, err
-		}
-		session, err := s.repo.CreateSession(ctx, domain.CreateSessionParams{
-			ArchitectKey: req.ArchitectKey,
-			SessionType:  domain.SessionTypeFreeform,
-			ContextID:    contextID,
-			Prompt:       prompt,
-			Workdir:      workdir,
-			CreatedBy:    domain.SessionCreatedByDesktop,
-		})
-		if err != nil {
-			dir := filepath.Join(architect.Path, "freeform", contextID)
-			if removeErr := os.RemoveAll(dir); removeErr != nil {
-				return domain.Session{}, fmt.Errorf("create freeform session: %w (also failed to clean up %s: %v)", err, dir, removeErr)
-			}
-			return domain.Session{}, err
-		}
-		return session, nil
 	default:
-		return domain.Session{}, &domain.ValidationError{Field: "session_type", Message: "must be 'architect', 'ticket', or 'freeform'"}
+		return domain.Session{}, &domain.ValidationError{Field: "session_type", Message: "must be 'architect' or 'ticket'"}
 	}
 }
 
@@ -415,8 +359,8 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 		return domain.CreateSessionRunResult{}, fmt.Errorf("launch session run: %w", err)
 	}
 
-	// ContextID is a ticket id only for ticket sessions; architect and freeform
-	// sessions carry something else there and must not claim a ticket.
+	// ContextID is a ticket id only for ticket sessions; architect sessions
+	// carry a timestamp there and must not claim a ticket.
 	ticketID := ""
 	if session.SessionType == domain.SessionTypeTicket {
 		ticketID = session.ContextID
@@ -801,8 +745,6 @@ func (s *Service) ConcludeSession(ctx context.Context, id string, params domain.
 		return s.concludeArchitectSession(ctx, session, run, params)
 	case domain.SessionTypeTicket:
 		return s.concludeTicketSession(ctx, session, run, params)
-	case domain.SessionTypeFreeform:
-		return s.concludeFreeformSession(ctx, session, run, params)
 	default:
 		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_type", Message: "cannot conclude session of type " + string(session.SessionType)}
 	}
@@ -900,8 +842,8 @@ func (s *Service) RequestConclusion(
 
 	// Validate commit/rejection invariants before raising the intent, so the
 	// agent gets the error immediately and the desktop dialog is never shown.
-	// Only ticket sessions carry commits; architect and freeform conclusions
-	// have no such requirement.
+	// Only ticket sessions carry commits; architect conclusions have no such
+	// requirement.
 	if session.SessionType == domain.SessionTypeTicket {
 		if err := validateConclusionCommits(params.Outcome, params.RejectionReason, params.Commits); err != nil {
 			return zero, err
@@ -1340,68 +1282,6 @@ func (s *Service) runningTicketSessionID(ctx context.Context, architectKey, tick
 	return "", false, nil
 }
 
-func (s *Service) concludeFreeformSession(ctx context.Context, session domain.Session, run domain.SessionRun, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
-	if params.Outcome != "" {
-		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "outcome", Message: "freeform sessions do not support an outcome"}
-	}
-	if strings.TrimSpace(params.RejectionReason) != "" {
-		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "rejection_reason", Message: "freeform sessions do not accept a rejection reason"}
-	}
-	if strings.TrimSpace(session.ContextID) == "" {
-		return domain.ConcludeSessionResult{}, &domain.ValidationError{Field: "session_id", Message: "freeform session has no context ID"}
-	}
-
-	architect, err := s.currentArchitect(session.ArchitectKey)
-	if err != nil {
-		return domain.ConcludeSessionResult{}, err
-	}
-
-	resolvedCommits, err := resolveConclusionCommitRefs(ctx, architect.Repos, params.Commits)
-	if err != nil {
-		return domain.ConcludeSessionResult{}, err
-	}
-
-	if strings.TrimSpace(params.Body) != "" {
-		now := time.Now().UTC()
-		startedAt := session.CreatedAt
-		if run.StartedAt != nil {
-			startedAt = run.StartedAt.UTC()
-		}
-		dir := filepath.Join(architect.Path, "freeform", session.ContextID)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return domain.ConcludeSessionResult{}, fmt.Errorf("create freeform session directory: %w", err)
-		}
-		conclusionPath := filepath.Join(dir, conclusionFileName)
-		doc := newSessionConclusionDocument(startedAt, now, run.ProfileName, params.Body, resolvedCommits)
-		if err := writeConclusionFile(conclusionPath, doc); err != nil {
-			return domain.ConcludeSessionResult{}, err
-		}
-	}
-
-	if err := s.repo.MarkRunCompleted(ctx, run.ID); err != nil {
-		return domain.ConcludeSessionResult{}, err
-	}
-
-	raw := map[string]any{"body": params.Body}
-	if len(resolvedCommits) > 0 {
-		raw["commits"] = resolvedCommits
-	}
-	if err := s.appendAndPublishSessionEnded(ctx, session.ID, run.ID, "session concluded", "concluded", raw); err != nil {
-		return domain.ConcludeSessionResult{}, err
-	}
-
-	if err := s.terminal.KillBySession(ctx, session.ID); err != nil && !errors.Is(err, errTerminalNotFound) {
-		return domain.ConcludeSessionResult{}, fmt.Errorf("kill session terminal: %w", err)
-	}
-
-	if err := s.repo.DeleteSession(ctx, session.ID); err != nil {
-		return domain.ConcludeSessionResult{}, err
-	}
-	s.cleanupDeletedSession(session.ID)
-
-	return domain.ConcludeSessionResult{SessionID: session.ID, ArchitectKey: session.ArchitectKey}, nil
-}
-
 func (s *Service) appendAndPublishSessionEnded(ctx context.Context, sessionID, runID, message, lifecycle string, raw map[string]any) error {
 	// Every session-ending path funnels through here, and it is the last point
 	// at which the session row still exists — so this is where intents left
@@ -1480,31 +1360,9 @@ func resolveConclusionCommitRefs(ctx context.Context, repos map[string]string, c
 }
 
 const conclusionFileName = "conclusion.md"
-const promptFileName = "prompt.md"
 
 func newArchitectConclusionDocument(startedAt, concludedAt time.Time, agent, body string) architectfs.MarkdownDocument {
 	return architectfs.NewArchitectConclusion(startedAt, concludedAt, agent, body)
-}
-
-func newSessionConclusionDocument(startedAt, concludedAt time.Time, agent, body string, commits []domain.CommitRef) architectfs.MarkdownDocument {
-	if len(commits) == 0 {
-		return newArchitectConclusionDocument(startedAt, concludedAt, agent, body)
-	}
-	meta := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-	setYAMLString(meta, "started_at", startedAt.UTC().Format(time.RFC3339Nano))
-	setYAMLString(meta, "concluded_at", concludedAt.UTC().Format(time.RFC3339Nano))
-	if agent != "" {
-		setYAMLString(meta, "agent", agent)
-	}
-	sequence := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
-	for _, commit := range commits {
-		entry := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-		setYAMLString(entry, "sha", commit.SHA)
-		setYAMLString(entry, "repo", commit.Repo)
-		sequence.Content = append(sequence.Content, entry)
-	}
-	setYAMLNode(meta, "commits", sequence)
-	return architectfs.MarkdownDocument{Metadata: meta, Body: body}
 }
 
 func writeConclusionFile(path string, doc architectfs.MarkdownDocument) error {
@@ -1514,17 +1372,6 @@ func writeConclusionFile(path string, doc architectfs.MarkdownDocument) error {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("write conclusion: %w", err)
-	}
-	return nil
-}
-
-func writePromptFile(path, body string) error {
-	content, err := architectfs.RenderMarkdownDocument(architectfs.MarkdownDocument{Body: body})
-	if err != nil {
-		return fmt.Errorf("render prompt: %w", err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("write prompt: %w", err)
 	}
 	return nil
 }
@@ -1787,9 +1634,6 @@ func (s *Service) terminalWorkdirs(ctx context.Context, session domain.Session) 
 	sort.Strings(keys)
 	for _, key := range keys {
 		add("repo:"+key, key, architect.Repos[key], false)
-	}
-	if session.SessionType == domain.SessionTypeFreeform && len(result) == 0 {
-		add("session-primary", "Session workspace", run.Workdir, true)
 	}
 	return result, nil
 }
@@ -2294,15 +2138,6 @@ func validateArchitectCreateRequest(req domain.CreateSessionRequest) error {
 	if strings.TrimSpace(req.TicketID) != "" {
 		return &domain.ValidationError{Field: "ticket_id", Message: "architect sessions do not accept a ticket ID"}
 	}
-	if strings.TrimSpace(req.Prompt) != "" {
-		return &domain.ValidationError{Field: "prompt", Message: "architect sessions do not accept a prompt"}
-	}
-	if strings.TrimSpace(req.Workdir) != "" {
-		return &domain.ValidationError{Field: "workdir", Message: "architect sessions do not accept a workdir"}
-	}
-	if strings.TrimSpace(req.Slug) != "" {
-		return &domain.ValidationError{Field: "slug", Message: "architect sessions do not accept a slug"}
-	}
 	return nil
 }
 
@@ -2342,50 +2177,6 @@ func validateStoredSession(session domain.Session) error {
 	return nil
 }
 
-func nextFreeformContextID(architectPath string, now time.Time, slug string) (string, error) {
-	prefix := now.Local().Format("2006-01-02-1504") + "-" + slug
-	contextID := prefix
-	for suffix := 2; ; suffix++ {
-		dir := filepath.Join(architectPath, "freeform", contextID)
-		_, err := os.Stat(dir)
-		if err == nil {
-			contextID = fmt.Sprintf("%s-%d", prefix, suffix)
-			continue
-		}
-		if os.IsNotExist(err) {
-			return contextID, nil
-		}
-		return "", fmt.Errorf("stat freeform directory %s: %w", dir, err)
-	}
-}
-
-func writeFreeformPrompt(architectPath, contextID, prompt string) error {
-	dir := filepath.Join(architectPath, "freeform", contextID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create freeform session directory: %w", err)
-	}
-	return writePromptFile(filepath.Join(dir, promptFileName), prompt)
-}
-
-func normalizeSlug(input string) string {
-	input = strings.ToLower(strings.TrimSpace(input))
-	var b strings.Builder
-	lastDash := false
-	for _, r := range input {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-			lastDash = false
-			continue
-		}
-		if lastDash {
-			continue
-		}
-		b.WriteByte('-')
-		lastDash = true
-	}
-	return strings.Trim(b.String(), "-")
-}
-
 func validateExistingDirectory(path, field string) error {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -2398,26 +2189,6 @@ func validateExistingDirectory(path, field string) error {
 		return &domain.ValidationError{Field: field, Message: "path is not a directory: " + path}
 	}
 	return nil
-}
-
-func setYAMLString(node *yaml.Node, key, value string) {
-	setYAMLNode(node, key, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value})
-}
-
-func setYAMLNode(node *yaml.Node, key string, value *yaml.Node) {
-	if node == nil {
-		return
-	}
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value == key {
-			node.Content[i+1] = value
-			return
-		}
-	}
-	node.Content = append(node.Content,
-		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
-		value,
-	)
 }
 
 func validateRepoPath(path string) error {

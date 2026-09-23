@@ -7,7 +7,6 @@ type SessionType string
 const (
 	SessionTypeArchitect SessionType = "architect"
 	SessionTypeTicket    SessionType = "ticket"
-	SessionTypeFreeform  SessionType = "freeform"
 )
 
 type ReadTicketInput struct {
@@ -80,14 +79,6 @@ type TicketConcludeSessionInput struct {
 	OpenQuestions   string             `json:"open_questions,omitempty" jsonschema:"Unresolved questions or risks, as Markdown (optional)."`
 	Commits         []domain.CommitRef `json:"commits,omitempty" jsonschema:"Commits produced, as {sha, repo} objects. Required (at least one) when outcome=completed; not required for exploratory or rejected."`
 	RejectionReason string             `json:"rejection_reason,omitempty" jsonschema:"Required when outcome=rejected. Explain why no work was produced."`
-}
-
-type FreeformConcludeSessionInput struct {
-	Summary         string             `json:"summary" jsonschema:"One or two line TL;DR of the session (required)."`
-	Findings        string             `json:"findings" jsonschema:"The substance of the session, in markdown (required)."`
-	Recommendations string             `json:"recommendations" jsonschema:"Recommended next steps, as Markdown (required; write \"None\" if there are none)."`
-	OpenQuestions   string             `json:"open_questions" jsonschema:"Unresolved questions, as Markdown (required; write \"None\" if there are none)."`
-	Commits         []domain.CommitRef `json:"commits,omitempty" jsonschema:"Commits produced, as {sha, repo} objects (optional)."`
 }
 
 type MoveTicketToDoneInput struct {

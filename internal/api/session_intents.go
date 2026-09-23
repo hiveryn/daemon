@@ -59,7 +59,6 @@ func (h *sessionsHandler) concludeSessionIntent(w http.ResponseWriter, r *http.R
 		Summary         string             `json:"summary,omitempty"`
 		Narrative       string             `json:"narrative,omitempty"`
 		Implementation  string             `json:"implementation,omitempty"`
-		Findings        string             `json:"findings,omitempty"`
 		Verification    string             `json:"verification,omitempty"`
 		TicketsTouched  string             `json:"tickets_touched,omitempty"`
 		Decisions       string             `json:"decisions,omitempty"`
@@ -67,7 +66,6 @@ func (h *sessionsHandler) concludeSessionIntent(w http.ResponseWriter, r *http.R
 		UserPriorities  string             `json:"user_priorities,omitempty"`
 		Deviations      string             `json:"deviations,omitempty"`
 		FollowUps       string             `json:"follow_ups,omitempty"`
-		Recommendations string             `json:"recommendations,omitempty"`
 		OpenQuestions   string             `json:"open_questions,omitempty"`
 		NextSteps       string             `json:"next_steps,omitempty"`
 	}
@@ -83,7 +81,6 @@ func (h *sessionsHandler) concludeSessionIntent(w http.ResponseWriter, r *http.R
 		Summary:         input.Summary,
 		Narrative:       input.Narrative,
 		Implementation:  input.Implementation,
-		Findings:        input.Findings,
 		Verification:    input.Verification,
 		TicketsTouched:  input.TicketsTouched,
 		Decisions:       input.Decisions,
@@ -91,7 +88,6 @@ func (h *sessionsHandler) concludeSessionIntent(w http.ResponseWriter, r *http.R
 		UserPriorities:  input.UserPriorities,
 		Deviations:      input.Deviations,
 		FollowUps:       input.FollowUps,
-		Recommendations: input.Recommendations,
 		OpenQuestions:   input.OpenQuestions,
 		NextSteps:       input.NextSteps,
 	})

@@ -258,6 +258,27 @@ func TestCreateSessionTicketRejectsInvalidSelectionInsteadOfDroppingIt(t *testin
 	}
 }
 
+func TestCreateSessionRejectsRemovedFreeformType(t *testing.T) {
+	t.Parallel()
+	repoPath := gitRepoDir(t)
+	workspace := testWorkspace(t, map[string]string{"daemon": repoPath})
+
+	service, repo := newTicketCreateService(t, workspace, repoPath, nil)
+	_, err := service.CreateSession(context.Background(), domain.CreateSessionRequest{
+		SessionType: domain.SessionType("freeform"), ArchitectKey: "hiveryn",
+	})
+	var verr *domain.ValidationError
+	if !errors.As(err, &verr) || verr.Field != "session_type" {
+		t.Fatalf("expected a session_type validation error, got %v", err)
+	}
+	if repo.createdSession.ID != "" {
+		t.Fatalf("session was created for a removed session type: %#v", repo.createdSession)
+	}
+	if _, statErr := os.Stat(filepath.Join(workspace, "freeform")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no freeform directory to be written, got %v", statErr)
+	}
+}
+
 func TestCreateSessionTicketFailsWhenProjectDocumentsAreMissing(t *testing.T) {
 	t.Parallel()
 	repoPath := gitRepoDir(t)

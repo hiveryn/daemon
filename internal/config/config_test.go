@@ -270,7 +270,7 @@ func TestReloadingSourcePicksUpOptionalFileChanges(t *testing.T) {
 	})
 	writeYAML(t, filepath.Join(configDir, tabsFileName), map[string][]TabEntry{
 		"architect": {{Type: "kanban"}},
-		"freeform":  {{Type: "terminal", Command: "oldfree"}},
+		"retired":   {{Type: "terminal", Command: "oldretired"}},
 	})
 	writeYAML(t, filepath.Join(configDir, shortcutsFileName), map[string]map[string]string{
 		"global": {"quit": "q"},
@@ -301,8 +301,8 @@ func TestReloadingSourcePicksUpOptionalFileChanges(t *testing.T) {
 	if got := reloaded.Tabs["architect"][0].Type; got != "kanban" {
 		t.Fatalf("expected initial architect tab type kanban, got %q", got)
 	}
-	if got := reloaded.Tabs["freeform"][0].Command; got != "oldfree" {
-		t.Fatalf("expected initial freeform terminal command oldfree, got %q", got)
+	if got := reloaded.Tabs["retired"][0].Command; got != "oldretired" {
+		t.Fatalf("expected initial retired terminal command oldretired, got %q", got)
 	}
 	if got := reloaded.Shortcuts["global"]["quit"]; got != "q" {
 		t.Fatalf("expected initial quit shortcut q, got %q", got)
@@ -360,8 +360,8 @@ func TestReloadingSourcePicksUpOptionalFileChanges(t *testing.T) {
 	if got := reloaded.Tabs["ticket"][0].Command; got != "yazi" {
 		t.Fatalf("expected reloaded ticket terminal command yazi, got %q", got)
 	}
-	if _, ok := reloaded.Tabs["freeform"]; ok {
-		t.Fatalf("expected removed freeform tabs to disappear after reload, got %#v", reloaded.Tabs)
+	if _, ok := reloaded.Tabs["retired"]; ok {
+		t.Fatalf("expected removed retired tabs to disappear after reload, got %#v", reloaded.Tabs)
 	}
 	if got := reloaded.Shortcuts["global"]["quit"]; got != "Cmd+q" {
 		t.Fatalf("expected reloaded quit shortcut Cmd+q, got %q", got)

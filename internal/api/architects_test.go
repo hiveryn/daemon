@@ -223,7 +223,6 @@ func TestArchitectsStatusAPI(t *testing.T) {
 
 	architectStartedAt := time.Date(2026, 6, 7, 18, 20, 0, 0, time.UTC)
 	ticketStartedAt := time.Date(2026, 6, 7, 18, 21, 42, 123456000, time.UTC)
-	freeformStartedAt := time.Date(2026, 6, 7, 18, 25, 10, 0, time.UTC)
 	service := &fakeSessionService{
 		sessions: []domain.Session{
 			{
@@ -248,18 +247,6 @@ func TestArchitectsStatusAPI(t *testing.T) {
 					Status:      domain.SessionRunStatusRunning,
 					AgentStatus: domain.AgentStatusActive,
 					StartedAt:   &ticketStartedAt,
-				},
-			},
-			{
-				ID:           "freeform-session",
-				ArchitectKey: "hiveryn",
-				SessionType:  domain.SessionTypeFreeform,
-				ContextID:    "2026-06-07-1825-investigate-login-failure",
-				CurrentRun: &domain.SessionRun{
-					ID:          "run-freeform",
-					Status:      domain.SessionRunStatusRunning,
-					AgentStatus: domain.AgentStatusIdle,
-					StartedAt:   &freeformStartedAt,
 				},
 			},
 			{
@@ -304,8 +291,8 @@ func TestArchitectsStatusAPI(t *testing.T) {
 	if hiveryn.Status == nil || *hiveryn.Status != domain.AgentStatusActive {
 		t.Fatalf("expected running architect status, got %#v", hiveryn.Status)
 	}
-	if len(hiveryn.Sessions) != 2 {
-		t.Fatalf("expected 2 running worker sessions, got %#v", hiveryn.Sessions)
+	if len(hiveryn.Sessions) != 1 {
+		t.Fatalf("expected 1 running worker session, got %#v", hiveryn.Sessions)
 	}
 	if hiveryn.Sessions[0].ID != "ticket-session" || hiveryn.Sessions[0].Title != "Add status endpoint" {
 		t.Fatalf("unexpected first worker session %#v", hiveryn.Sessions[0])
@@ -315,15 +302,6 @@ func TestArchitectsStatusAPI(t *testing.T) {
 	}
 	if !hiveryn.Sessions[0].StartedAt.Equal(ticketStartedAt) {
 		t.Fatalf("unexpected ticket started_at %#v", hiveryn.Sessions[0].StartedAt)
-	}
-	if hiveryn.Sessions[1].ID != "freeform-session" || hiveryn.Sessions[1].Title != "Investigate login failure" {
-		t.Fatalf("unexpected freeform worker session %#v", hiveryn.Sessions[1])
-	}
-	if hiveryn.Sessions[1].AgentStatus != domain.AgentStatusIdle {
-		t.Fatalf("unexpected freeform agent status %#v", hiveryn.Sessions[1])
-	}
-	if !hiveryn.Sessions[1].StartedAt.Equal(freeformStartedAt) {
-		t.Fatalf("unexpected freeform started_at %#v", hiveryn.Sessions[1].StartedAt)
 	}
 
 	litho := payload.Architects[1]

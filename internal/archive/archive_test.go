@@ -356,7 +356,7 @@ func TestAppendAcrossRestarts(t *testing.T) {
 	a2.Write(ArchivedEvent{
 		IngestedAt:  time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC),
 		SessionID:   "sess-2",
-		SessionType: "freeform",
+		SessionType: "ticket",
 		Workdir:     "/tmp/work2",
 		AgentID:     "sess-2",
 		AgentKind:   "codex",

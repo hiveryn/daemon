@@ -100,7 +100,7 @@ func (h *architectsHandler) listStatus(w http.ResponseWriter, r *http.Request) {
 			}
 			status := session.CurrentRun.AgentStatus
 			architectStatus.Status = &status
-		case domain.SessionTypeTicket, domain.SessionTypeFreeform:
+		case domain.SessionTypeTicket:
 			session, err := h.buildArchitectWorkerSession(r.Context(), architectStatus.Path, session)
 			if err != nil {
 				writeDomainError(w, r, err)
@@ -175,47 +175,9 @@ func (h *architectsHandler) architectWorkerSessionTitle(ctx context.Context, arc
 			return "", fmt.Errorf("read ticket title for session %s: %w", session.ID, err)
 		}
 		return ticket.Title, nil
-	case domain.SessionTypeFreeform:
-		return readableFreeformTitle(session.ContextID)
 	default:
 		return "", fmt.Errorf("session %s has unsupported session type %q", session.ID, session.SessionType)
 	}
-}
-
-func readableFreeformTitle(contextID string) (string, error) {
-	slug, err := freeformContextSlug(contextID)
-	if err != nil {
-		return "", err
-	}
-	title := strings.ReplaceAll(slug, "-", " ")
-	title = strings.TrimSpace(title)
-	if title == "" {
-		return "", fmt.Errorf("freeform context_id %q resolved to an empty title", contextID)
-	}
-	if title[0] >= 'a' && title[0] <= 'z' {
-		title = strings.ToUpper(title[:1]) + title[1:]
-	}
-	return title, nil
-}
-
-func freeformContextSlug(contextID string) (string, error) {
-	const prefixLength = len("2006-01-02-1504-")
-	if len(contextID) <= prefixLength {
-		return "", fmt.Errorf("freeform context_id %q is missing slug content", contextID)
-	}
-	if contextID[4] != '-' || contextID[7] != '-' || contextID[10] != '-' || contextID[15] != '-' {
-		return "", fmt.Errorf("freeform context_id %q does not match expected timestamp-slug format", contextID)
-	}
-	for _, idx := range []int{0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 13, 14} {
-		if contextID[idx] < '0' || contextID[idx] > '9' {
-			return "", fmt.Errorf("freeform context_id %q does not match expected timestamp-slug format", contextID)
-		}
-	}
-	slug := strings.TrimSpace(contextID[prefixLength:])
-	if slug == "" {
-		return "", fmt.Errorf("freeform context_id %q is missing slug content", contextID)
-	}
-	return slug, nil
 }
 
 func (h *architectsHandler) listConclusions(w http.ResponseWriter, r *http.Request) {

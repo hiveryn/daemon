@@ -101,55 +101,13 @@ func TestHandleTicketConcludeSessionSuccess(t *testing.T) {
 	}
 }
 
-func TestHandleFreeformConcludeSessionSuccessWithoutCommits(t *testing.T) {
-	t.Parallel()
-
-	server := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Fatalf("method = %s", r.Method)
-		}
-		if r.URL.Path != "/api/sessions/sess-3/intents/conclude-session" {
-			t.Fatalf("path = %s", r.URL.Path)
-		}
-		var body struct {
-			Commits []domain.CommitRef `json:"commits"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode request body: %v", err)
-		}
-		if len(body.Commits) != 0 {
-			t.Fatalf("expected no commits payload, got %#v", body.Commits)
-		}
-		writeEnvelope(t, w, http.StatusOK, map[string]any{
-			"intent_id": "intent-3",
-			"outcome":   "approved",
-			"result":    map[string]any{"session_id": "sess-3"},
-		})
-	})
-	server.sessionID = "sess-3"
-	server.sessionType = SessionTypeFreeform
-
-	_, output, err := server.handleFreeformConcludeSession(context.Background(), nil, FreeformConcludeSessionInput{
-		Summary:         "Exploration concluded.",
-		Findings:        "Found some things.",
-		Recommendations: "None",
-		OpenQuestions:   "None",
-	})
-	if err != nil {
-		t.Fatalf("handleFreeformConcludeSession failed: %v", err)
-	}
-	if output.Outcome != intentOutcomeApproved || output.Session == nil || output.Session.SessionID != "sess-3" {
-		t.Fatalf("unexpected output: %#v", output)
-	}
-}
-
 // Intents are addressed by session id, and every session type registers at
 // least one intent-routed tool, so a missing session id is rejected at
 // construction rather than lazily per handler.
 func TestNewServerRequiresSessionID(t *testing.T) {
 	t.Parallel()
 
-	for _, sessionType := range []SessionType{SessionTypeArchitect, SessionTypeTicket, SessionTypeFreeform} {
+	for _, sessionType := range []SessionType{SessionTypeArchitect, SessionTypeTicket} {
 		_, err := NewServer(Config{
 			DaemonURL:    "http://127.0.0.1:4200",
 			ArchitectKey: "hiveryn",
