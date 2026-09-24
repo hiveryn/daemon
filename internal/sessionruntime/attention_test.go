@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hiveryn/agentruntime"
+	artclaude "github.com/hiveryn/agentruntime/adapter/claude"
 	artcodex "github.com/hiveryn/agentruntime/adapter/codex"
 
 	"github.com/hiveryn/daemon/internal/domain"
@@ -85,6 +86,26 @@ func TestAttentionMonitorFollowsRealCodexScreens(t *testing.T) {
 	}
 
 	p.feed(readRaw(t, "codex_resume_phase3.raw"))
+	p.settle(t, domain.ActionAttentionNoneDetected, "")
+	time.Sleep(50 * time.Millisecond)
+	if n := p.changes.Load(); n != 2 {
+		t.Fatalf("changes = %d, want 2 (raised, cleared)", n)
+	}
+}
+
+// The phases are the terminal output of one real Claude Code 2.1.281
+// --resume after the process was killed during a foreground tool call: the
+// resumed conversation with its interrupted notice and a message typed but not
+// sent; then that message sent and answered.
+func TestAttentionMonitorFollowsRealClaudeScreens(t *testing.T) {
+	p := newMonitorProbe(artclaude.New(artclaude.DefaultOptions()))
+	p.feed(readRaw(t, "claude_resume_phase1.raw"))
+	got := p.settle(t, domain.ActionAttentionInputRequired, artclaude.AttentionConversationInterrupted)
+	if got.Source != domain.ActionAttentionSourceTerminal || got.Message == "" || got.Since == nil {
+		t.Fatalf("interrupted attention = %+v", got)
+	}
+
+	p.feed(readRaw(t, "claude_resume_phase2.raw"))
 	p.settle(t, domain.ActionAttentionNoneDetected, "")
 	time.Sleep(50 * time.Millisecond)
 	if n := p.changes.Load(); n != 2 {
