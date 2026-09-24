@@ -22,7 +22,8 @@ func NewActionRunStore(db *sql.DB) *ActionRunStore {
 
 const actionRunColumns = `id, action, trigger, status, prompt, profile_name, repo_path, output_dir,
 	COALESCE(session_id, ''), COALESCE(summary, ''), COALESCE(error, ''),
-	created_at, COALESCE(started_at, ''), COALESCE(ended_at, '')`
+	created_at, COALESCE(started_at, ''), COALESCE(ended_at, ''),
+	COALESCE(architect_key, ''), COALESCE(requester_session_id, ''), COALESCE(reason, '')`
 
 func (s *ActionRunStore) CreateActionRun(ctx context.Context, run domain.ActionRun) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -44,11 +45,13 @@ func (s *ActionRunStore) CreateActionRun(ctx context.Context, run domain.ActionR
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO action_runs (id, action, trigger, status, prompt, profile_name, repo_path, output_dir, session_id, summary, error, created_at, started_at, ended_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO action_runs (id, action, trigger, status, prompt, profile_name, repo_path, output_dir, session_id, summary, error, created_at, started_at, ended_at,
+		                         architect_key, requester_session_id, reason)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, run.ID, run.Action, string(run.Trigger), string(run.Status), run.Prompt, run.ProfileName, run.RepoPath, run.OutputDir,
 		nullIfEmpty(run.SessionID), nullIfEmpty(run.Summary), nullIfEmpty(run.Error),
-		formatPreciseTime(run.CreatedAt), nullableTime(run.StartedAt), nullableTime(run.EndedAt))
+		formatPreciseTime(run.CreatedAt), nullableTime(run.StartedAt), nullableTime(run.EndedAt),
+		nullIfEmpty(run.ArchitectKey), nullIfEmpty(run.RequesterSessionID), nullIfEmpty(run.Reason))
 	if err != nil {
 		// The partial unique index is the backstop for the check above.
 		if strings.Contains(err.Error(), "UNIQUE constraint failed: action_runs.action") {
@@ -153,6 +156,99 @@ func (s *ActionRunStore) FinishActionRun(ctx context.Context, id string, status 
 	}
 }
 
+func (s *ActionRunStore) StartActionRun(ctx context.Context, id, profileName string, at time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin start action run tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var action, status string
+	if err := tx.QueryRowContext(ctx, `SELECT action, status FROM action_runs WHERE id = ?`, id).Scan(&action, &status); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return &domain.NotFoundError{Resource: "action_run", ID: id}
+		}
+		return fmt.Errorf("read action run %s: %w", id, err)
+	}
+	if status != string(domain.ActionRunPendingApproval) {
+		return notPendingError(id, status)
+	}
+	var existing string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM action_runs WHERE action = ? AND status = ? LIMIT 1`,
+		action, string(domain.ActionRunRunning)).Scan(&existing)
+	if err == nil {
+		return busyActionError(action, existing)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("check running execution of action %s: %w", action, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE action_runs SET status = ?, profile_name = ?, started_at = ?
+		WHERE id = ? AND status = ?
+	`, string(domain.ActionRunRunning), profileName, formatPreciseTime(at), id, string(domain.ActionRunPendingApproval)); err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed: action_runs.action") {
+			return busyActionError(action, "")
+		}
+		return fmt.Errorf("start action run %s: %w", id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit start action run tx: %w", err)
+	}
+	return nil
+}
+
+func (s *ActionRunStore) EndPendingActionRun(ctx context.Context, id string, status domain.ActionRunStatus, reason, errText string, at time.Time) error {
+	if status != domain.ActionRunDenied && status != domain.ActionRunFailed {
+		return fmt.Errorf("end pending action run %s: %s is not an ending status for a request", id, status)
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE action_runs SET status = ?, reason = ?, error = ?, ended_at = ?
+		WHERE id = ? AND status = ?
+	`, string(status), nullIfEmpty(reason), nullIfEmpty(errText), formatPreciseTime(at), id, string(domain.ActionRunPendingApproval))
+	if err != nil {
+		return fmt.Errorf("end pending action run %s as %s: %w", id, status, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("end pending action run %s: rows affected: %w", id, err)
+	}
+	if n == 1 {
+		return nil
+	}
+	current, err := s.GetActionRun(ctx, id)
+	if err != nil {
+		return err
+	}
+	return notPendingError(id, string(current.Status))
+}
+
+func (s *ActionRunStore) FailPendingActionRuns(ctx context.Context, reason string, at time.Time) ([]domain.ActionRun, error) {
+	pending, err := s.queryActionRuns(ctx, `SELECT `+actionRunColumns+` FROM action_runs WHERE status = ?`, string(domain.ActionRunPendingApproval))
+	if err != nil {
+		return nil, err
+	}
+	failed := make([]domain.ActionRun, 0, len(pending))
+	for _, run := range pending {
+		err := s.EndPendingActionRun(ctx, run.ID, domain.ActionRunFailed, "", reason, at)
+		if err != nil {
+			if errors.As(err, new(*domain.ConflictError)) {
+				continue
+			}
+			return failed, err
+		}
+		failed = append(failed, run)
+	}
+	return failed, nil
+}
+
+func notPendingError(id, status string) error {
+	return &domain.ConflictError{
+		Resource: "action_run",
+		Field:    "status",
+		Message:  fmt.Sprintf("action execution %s is %s, not pending_approval", id, status),
+	}
+}
+
 func (s *ActionRunStore) RecentActionConclusions(ctx context.Context, action string, limit int) ([]domain.ActionConclusion, error) {
 	if limit <= 0 {
 		limit = 5
@@ -222,7 +318,8 @@ func scanActionRun(row rowScanner) (domain.ActionRun, error) {
 		createdAt, startedAt, endedAt string
 	)
 	if err := row.Scan(&run.ID, &run.Action, &trigger, &status, &run.Prompt, &run.ProfileName, &run.RepoPath, &run.OutputDir,
-		&run.SessionID, &run.Summary, &run.Error, &createdAt, &startedAt, &endedAt); err != nil {
+		&run.SessionID, &run.Summary, &run.Error, &createdAt, &startedAt, &endedAt,
+		&run.ArchitectKey, &run.RequesterSessionID, &run.Reason); err != nil {
 		return domain.ActionRun{}, err
 	}
 	run.Trigger = domain.ActionRunTrigger(trigger)

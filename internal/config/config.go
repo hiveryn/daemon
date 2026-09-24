@@ -118,16 +118,20 @@ const ReservedMCPServerName = "hiveryn-daemon"
 
 // ArchitectConfig is the resolved configuration for a single architect,
 // assembled from the global architects.yaml registry (which supplies the key
-// and workspace path) and the architect's own hiveryn.yaml (name and repos).
-// Repos is keyed by repo key for lookups, with paths expanded to absolute.
+// and workspace path) and the architect's own hiveryn.yaml (name, repos and
+// the optional availableActions). Repos is keyed by repo key for lookups, with
+// paths expanded to absolute. AvailableActions names the global Actions this
+// architect may discover and request, in file order; omitted means none. It
+// never restricts the user's own manual launches.
 //
 // There are no prompt fields: architect and worker instructions are built into
 // the daemon, and the only per-architect customization is the optional
 // ARCHITECT_SYSTEM.md file in the workspace, read at session start.
 type ArchitectConfig struct {
-	Name  string
-	Path  string
-	Repos map[string]string
+	Name             string
+	Path             string
+	Repos            map[string]string
+	AvailableActions []string
 }
 
 // architectFile is the on-disk shape of <architectPath>/hiveryn.yaml. It is
@@ -135,8 +139,9 @@ type ArchitectConfig struct {
 // error, because a key the daemon silently ignores would look configured while
 // doing nothing.
 type architectFile struct {
-	Name  string            `yaml:"name,omitempty"`
-	Repos map[string]string `yaml:"repos,omitempty"`
+	Name             string            `yaml:"name,omitempty"`
+	Repos            map[string]string `yaml:"repos,omitempty"`
+	AvailableActions []string          `yaml:"availableActions,omitempty"`
 }
 
 type TabEntry struct {
@@ -438,7 +443,7 @@ func readArchitectFile(workspacePath string) ([]byte, architectFile, error) {
 }
 
 // decodeArchitectFile decodes hiveryn.yaml with unknown keys rejected. The
-// file holds exactly name and repos; anything else — most likely a prompts:
+// file holds name, repos and the optional availableActions; anything else — most likely a prompts:
 // block left over from before prompts became built in — is reported so it can
 // be removed instead of sitting there looking configured.
 func decodeArchitectFile(data []byte) (architectFile, error) {
@@ -451,7 +456,7 @@ func decodeArchitectFile(data []byte) (architectFile, error) {
 			// name, which is the actionable message.
 			return architectFile{}, nil
 		}
-		return architectFile{}, fmt.Errorf("%w (hiveryn.yaml holds only `name` and `repos`; prompt overrides were removed — architect and worker instructions are built into the daemon, and ARCHITECT_SYSTEM.md carries per-architect preferences)", err)
+		return architectFile{}, fmt.Errorf("%w (hiveryn.yaml holds only `name`, `repos` and the optional `availableActions`; prompt overrides were removed — architect and worker instructions are built into the daemon, and ARCHITECT_SYSTEM.md carries per-architect preferences)", err)
 	}
 	return file, nil
 }
@@ -476,9 +481,10 @@ func architectConfigFromFile(key, workspacePath string, file architectFile) (Arc
 	}
 
 	return ArchitectConfig{
-		Name:  file.Name,
-		Path:  workspacePath,
-		Repos: repos,
+		Name:             file.Name,
+		Path:             workspacePath,
+		Repos:            repos,
+		AvailableActions: append([]string(nil), file.AvailableActions...),
 	}, nil
 }
 
@@ -809,9 +815,10 @@ func cloneArchitectConfigs(src map[string]ArchitectConfig) map[string]ArchitectC
 	dst := make(map[string]ArchitectConfig, len(src))
 	for key, architect := range src {
 		dst[key] = ArchitectConfig{
-			Name:  architect.Name,
-			Path:  architect.Path,
-			Repos: cloneStringMap(architect.Repos),
+			Name:             architect.Name,
+			Path:             architect.Path,
+			Repos:            cloneStringMap(architect.Repos),
+			AvailableActions: append([]string(nil), architect.AvailableActions...),
 		}
 	}
 	return dst

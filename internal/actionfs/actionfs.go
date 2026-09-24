@@ -39,10 +39,6 @@ const (
 	maxDefinitionBytes = 256 * 1024
 )
 
-// namePattern keeps an action name usable as a directory name, a path segment
-// in API routes and an output-folder segment.
-var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
-
 var placeholderPattern = regexp.MustCompile(`\{\{[^{}]*\}\}`)
 
 // Definition is an inspected action plus its kickoff template, which is not
@@ -87,7 +83,7 @@ func List(root string) ([]Definition, error) {
 // Get inspects one action by name. An unknown name is a NotFoundError; an
 // invalid definition is returned with its problems.
 func Get(root, name string) (Definition, error) {
-	if !namePattern.MatchString(name) {
+	if !domain.ValidActionName(name) {
 		return Definition{}, &domain.NotFoundError{Resource: "action", ID: name}
 	}
 	path := filepath.Join(root, name)
@@ -104,7 +100,7 @@ func inspect(dir, dirName string) Definition {
 		def.Problems = append(def.Problems, domain.ActionProblem{Path: path, Message: fmt.Sprintf(format, args...)})
 	}
 
-	if !namePattern.MatchString(dirName) {
+	if !domain.ValidActionName(dirName) {
 		problem(dir, "directory name %q is not a valid action name: use lowercase letters, digits, '.', '_' or '-', starting with a letter or digit (at most 64 characters)", dirName)
 	}
 	if info, err := os.Stat(filepath.Join(dir, ".git")); err != nil || !info.IsDir() {

@@ -17,6 +17,7 @@ var migrationFiles = []string{
 	"migrations/0003_remove_freeform_sessions.sql",
 	"migrations/0004_deferred_intents.sql",
 	"migrations/0005_action_runs.sql",
+	"migrations/0006_architect_action_requests.sql",
 }
 
 func runMigrations(ctx context.Context, db *sql.DB) error {

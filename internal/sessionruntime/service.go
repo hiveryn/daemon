@@ -523,6 +523,9 @@ func (s *Service) restoreSession(ctx context.Context, session domain.Session, ru
 	if err := validateWorkerLaunchContext(cfg.Architects[session.ArchitectKey], session); err != nil {
 		return err
 	}
+	if err := s.forgetAgentStatus(ctx, run); err != nil {
+		return err
+	}
 	if _, err := s.launchSession(ctx, cfg, session, run, profile, agentKind, agentruntime.StartRequest{
 		Model:              profile.Model,
 		Yolo:               profile.Yolo,
@@ -538,6 +541,20 @@ func (s *Service) restoreSession(ctx context.Context, session domain.Session, ru
 		return fmt.Errorf("launch session run: %w", err)
 	}
 
+	return nil
+}
+
+// forgetAgentStatus clears the agent status a dead agent process last
+// reported, before its replacement is launched: the resumed agent has reported
+// nothing yet, and a stale "active" would claim work that is not happening.
+// Empty is a new run's state too, read everywhere as "not yet reported".
+func (s *Service) forgetAgentStatus(ctx context.Context, run domain.SessionRun) error {
+	if run.AgentStatus == "" {
+		return nil
+	}
+	if err := s.repo.UpdateRunAgentStatus(ctx, run.ID, ""); err != nil {
+		return fmt.Errorf("clear agent status of run %s before relaunch: %w", run.ID, err)
+	}
 	return nil
 }
 
@@ -728,6 +745,9 @@ func (s *Service) resumeSessionMainTerminal(ctx context.Context, session domain.
 		if err := validateWorkerLaunchContext(architect, session); err != nil {
 			return "", err
 		}
+	}
+	if err := s.forgetAgentStatus(ctx, run); err != nil {
+		return "", err
 	}
 	mainTerminalID, _, err := s.startSessionMainTerminal(ctx, session, run, profile, agentKind, agentruntime.StartRequest{
 		Model:              profile.Model,

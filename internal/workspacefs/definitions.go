@@ -82,19 +82,28 @@ var definitions = map[domain.ArtifactKind]definition{
 				Type:        domain.ArtifactFieldStringMap,
 				Description: "Repo key → repository path. Keys are unique and are the keys tickets and workflows refer to. Paths may be absolute or ~-prefixed and are stored verbatim.",
 			},
+			{
+				Name:        "availableActions",
+				Required:    false,
+				Type:        domain.ArtifactFieldStringList,
+				Description: "Names of global Actions (directories under HIVERYN_HOME/actions) this architect may discover with getAvailableActions and request with executeAction. Omitted or empty exposes no Actions.",
+			},
 		},
 		Rules: []string{
 			"Required: a workspace without a readable " + ConfigFileName + " has no repo map.",
-			"The file holds exactly name and repos. Any other key is rejected — there is no prompts block: architect and worker instructions are built into Hiveryn, and " + ArchitectSystemFileName + " carries per-project collaboration preferences.",
+			"The file holds name, repos and the optional availableActions. Any other key is rejected — there is no prompts block: architect and worker instructions are built into Hiveryn, and " + ArchitectSystemFileName + " carries per-project collaboration preferences.",
 			"Repo keys are unique. Duplicate keys are rejected by the YAML decoder.",
 			"Every repo path must resolve to an existing directory.",
 			"A repo key referenced by a workflow or a ticket must exist here.",
+			"availableActions entries are unique, well-formed action names (lowercase letters, digits, '.', '_' or '-'). Whether each Action exists in the library is not a config error: getAvailableActions reports a missing or invalid definition, and it cannot be requested until repaired. The list limits only what this architect may request; the user can still launch any Action manually. There is no default variant — the user picks one when approving each request.",
 			"Edit it with your filesystem tools; an invalid edit is reported by the workspace check, blocks worker launch until repaired, and never replaces the last valid runtime config.",
 		},
 		Example: `name: Example Project
 repos:
   example-api: /Users/you/repos/example-api
   example-web: /Users/you/repos/example-web
+availableActions:
+  - demo-evidence
 `,
 	},
 

@@ -21,7 +21,10 @@ import (
 // that outlives the session:
 //
 //	launch        record inserted running (the single-run rule), output
-//	              directory created, session created and its run launched
+//	              directory created, session created and its run launched;
+//	              an architect's approved request (actions_architect.go)
+//	              moves its pending_approval record to running and launches
+//	              the same way
 //	conclude      the agent's concludeSession finishes the record (completed or
 //	              failed) and ends the session like any other conclusion
 //	cancel        the user stops a running execution: failed, session ended
@@ -142,15 +145,7 @@ func (s *Service) LaunchAction(ctx context.Context, name string, req domain.Laun
 	if strings.TrimSpace(req.ProfileName) == "" {
 		return domain.LaunchActionResult{}, &domain.ValidationError{Field: "profile_name", Message: "is required"}
 	}
-	cfg, err := s.currentConfig()
-	if err != nil {
-		return domain.LaunchActionResult{}, err
-	}
-	profile, ok := cfg.Variants[req.ProfileName]
-	if !ok {
-		return domain.LaunchActionResult{}, &domain.NotFoundError{Resource: "agent_profile", ID: req.ProfileName}
-	}
-	if _, err := parseAgentKind(profile.Agent); err != nil {
+	if err := s.checkActionVariant(req.ProfileName); err != nil {
 		return domain.LaunchActionResult{}, err
 	}
 
@@ -177,10 +172,40 @@ func (s *Service) LaunchAction(ctx context.Context, name string, req domain.Laun
 		CreatedAt:   now,
 		StartedAt:   &now,
 	}
-	run.OutputDir = filepath.Join(rt.outputRoot, def.Name, run.ID)
+	run.OutputDir = rt.outputDir(def.Name, run.ID)
 	if err := rt.runs.CreateActionRun(ctx, run); err != nil {
 		return domain.LaunchActionResult{}, err
 	}
+	return s.launchActionSession(ctx, def, run, req.Cols, req.Rows)
+}
+
+// checkActionVariant reports whether profileName names a launchable variant in
+// the current config.
+func (s *Service) checkActionVariant(profileName string) error {
+	cfg, err := s.currentConfig()
+	if err != nil {
+		return err
+	}
+	profile, ok := cfg.Variants[profileName]
+	if !ok {
+		return &domain.NotFoundError{Resource: "agent_profile", ID: profileName}
+	}
+	if _, err := parseAgentKind(profile.Agent); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (rt *actionRuntime) outputDir(action, executionID string) string {
+	return filepath.Join(rt.outputRoot, action, executionID)
+}
+
+// launchActionSession starts the agent session of an execution already
+// recorded running: the output directory, the session and its run. It is
+// shared by manual launches and approved architect requests, and must be
+// called with launchMu held.
+func (s *Service) launchActionSession(ctx context.Context, def actionfs.Definition, run domain.ActionRun, cols, rows uint16) (domain.LaunchActionResult, error) {
+	rt := s.actions
 
 	// From here on every failure finishes the record as failed, so a broken
 	// launch never leaves the action falsely busy.
@@ -219,7 +244,7 @@ func (s *Service) LaunchAction(ctx context.Context, name string, req domain.Laun
 	}
 	run.SessionID = session.ID
 
-	result, err := s.CreateRun(ctx, session.ID, domain.CreateSessionRunRequest{ProfileName: req.ProfileName, Cols: req.Cols, Rows: req.Rows})
+	result, err := s.CreateRun(ctx, session.ID, domain.CreateSessionRunRequest{ProfileName: run.ProfileName, Cols: cols, Rows: rows})
 	if err != nil {
 		s.removeActionSession(session.ID)
 		return fail("launch agent", err)
@@ -235,6 +260,8 @@ func (s *Service) LaunchAction(ctx context.Context, name string, req domain.Laun
 		"session_id", session.ID,
 		"profile", run.ProfileName,
 		"output_dir", run.OutputDir,
+		"trigger", run.Trigger,
+		"architect", run.ArchitectKey,
 	)
 	return domain.LaunchActionResult{Run: run, Session: session, MainTerminalID: result.MainTerminalID}, nil
 }
@@ -401,6 +428,16 @@ func (s *Service) CancelActionRun(ctx context.Context, id string) (domain.Action
 func (s *Service) ReconcileActionRuns(ctx context.Context) error {
 	if s.actions == nil {
 		return nil
+	}
+	// A pending request's approval lived in memory with its intent; it cannot
+	// be approved after a restart, so it must not read as pending.
+	failed, err := s.actions.runs.FailPendingActionRuns(ctx, actionRequestFailedOnRestart, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("fail pending action requests: %w", err)
+	}
+	for _, run := range failed {
+		s.logger.Warn("action request failed: daemon restarted before it was approved",
+			"action", run.Action, "execution_id", run.ID, "architect", run.ArchitectKey)
 	}
 	running, err := s.actions.runs.RunningActionRuns(ctx)
 	if err != nil {

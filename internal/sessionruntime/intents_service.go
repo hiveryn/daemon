@@ -28,6 +28,24 @@ type intentSpec[R any] struct {
 	Inputs    []domain.IntentInputField
 	Origin    domain.IntentOrigin
 	Exec      func(context.Context, domain.IntentInputValues) (R, error)
+	// Hooks is for deferred tools only; see deferredHooks.
+	Hooks deferredHooks
+}
+
+// deferredHooks keep a tool's own durable record in step with a deferred
+// intent whose outcome that record — not the generic DeferredIntent — is
+// authoritative for (executeAction: the Action execution). Every hook is
+// optional, and each runs at most once per intent.
+type deferredHooks struct {
+	// Created runs once the generic record exists, before the request is
+	// shown. An error withdraws the request: nothing is shown, and a retry
+	// is free to try again.
+	Created func(ctx context.Context, in domain.Intent) error
+	// Denied runs after the user's denial is recorded.
+	Denied func(ctx context.Context, in domain.Intent, reason string)
+	// Abandoned runs when the request ends without the user resolving it: its
+	// session ended first, or it could not be shown. It never ran.
+	Abandoned func(ctx context.Context, in domain.Intent, reason string)
 }
 
 // eraseExec type-erases a spec's Exec once: the store holds heterogeneous
@@ -312,6 +330,7 @@ func (s *Service) failPendingIntents(ctx context.Context, sessionID, reason stri
 				s.logger.Error("fail deferred intent on session teardown",
 					"session_id", sessionID, "intent_id", id, "error", err)
 			}
+			pending.hooks.abandoned(ctx, pending.intent, deferredFailedOnSessionEnd)
 		}
 		s.intents.Finish(id, res)
 		if err := s.publishIntentResolved(ctx, pending.intent, res); err != nil {

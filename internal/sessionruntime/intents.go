@@ -39,6 +39,7 @@ type pendingIntent struct {
 	intent   domain.Intent
 	dedupKey string
 	exec     func(context.Context, domain.IntentInputValues) (any, error)
+	hooks    deferredHooks       // deferred only
 	claimed  bool                // CAS'd under mu: exactly one resolver wins
 	waiters  []chan intentResult // each buffered 1, so a broadcast never blocks
 	ready    chan struct{}       // deferred only; closed by MarkReady
@@ -137,6 +138,7 @@ func (s *intentStore) BeginDeferred(
 	dedupKey string,
 	in domain.Intent,
 	exec func(context.Context, domain.IntentInputValues) (any, error),
+	hooks deferredHooks,
 ) (id string, ready <-chan struct{}, d intentDisposition) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -147,7 +149,7 @@ func (s *intentStore) BeginDeferred(
 	if p := s.lookupPendingLocked(dedupKey); p != nil {
 		return p.intent.ID, p.ready, intentAttached
 	}
-	p := &pendingIntent{intent: in, dedupKey: dedupKey, exec: exec, ready: make(chan struct{})}
+	p := &pendingIntent{intent: in, dedupKey: dedupKey, exec: exec, hooks: hooks, ready: make(chan struct{})}
 	s.registerLocked(p)
 	return in.ID, p.ready, intentCreated
 }

@@ -17,6 +17,9 @@ var intentPolicies = map[domain.IntentType]domain.IntentPolicy{
 	// Preserves today's exact behavior: a conclusion nobody answers is applied.
 	domain.IntentTypeConcludeSession:  domain.IntentPolicyWaitThenAllow,
 	domain.IntentTypeCreateWorkTicket: domain.IntentPolicyWaitThenAllow,
+	// Deferred: returns at once with the execution id; only the user approves,
+	// choosing the variant.
+	domain.IntentTypeExecuteAction: domain.IntentPolicyManual,
 }
 
 // policyFor fails fast on an unregistered tool. A typo must never silently

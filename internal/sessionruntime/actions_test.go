@@ -67,6 +67,7 @@ func (f *actionFixture) open(t *testing.T) {
 		executablePath: func() (string, error) { return "/tmp/hiverynd", nil },
 	}
 	f.service.SetActions(f.runs, f.root, f.outRoot)
+	f.service.SetDeferredIntentRepository(store.NewDeferredIntentStore(db))
 }
 
 func (f *actionFixture) writeAction(t *testing.T, name, manifest, kickoff string) string {

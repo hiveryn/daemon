@@ -90,7 +90,7 @@ func submitDeferredIntent[R any](ctx context.Context, s *Service, spec intentSpe
 		// WaitSeconds stays 0: there is no countdown.
 	}
 
-	id, ready, disposition := s.intents.BeginDeferred(key, in, eraseExec(spec.Exec))
+	id, ready, disposition := s.intents.BeginDeferred(key, in, eraseExec(spec.Exec), spec.Hooks)
 	switch disposition {
 	case intentReplayed:
 		return repo.GetDeferredIntent(ctx, id)
@@ -123,18 +123,33 @@ func submitDeferredIntent[R any](ctx context.Context, s *Service, spec intentSpe
 		s.intents.Discard(id)
 		return zero, fmt.Errorf("persist deferred intent: %w", err)
 	}
+	if spec.Hooks.Created != nil {
+		if err := spec.Hooks.Created(ctx, in); err != nil {
+			// Withdrawn before anyone saw it. Discard rather than Finish, so a
+			// retry mints a fresh request instead of replaying this failure.
+			if failErr := s.failDeferredRecord(ctx, in, domain.DeferredIntentPendingApproval, "request could not be recorded: "+err.Error()); failErr != nil {
+				s.logger.Error("fail withdrawn deferred intent", "intent_id", id, "error", failErr)
+			}
+			s.intents.Discard(id)
+			return zero, err
+		}
+	}
 	if err := s.publishIntentRequired(ctx, in); err != nil {
 		// The user can never see it, so it must not read as pending.
-		if failErr := s.failDeferredRecord(ctx, in, domain.DeferredIntentPendingApproval, "approval request could not be shown: "+err.Error()); failErr != nil {
+		reason := "approval request could not be shown: " + err.Error()
+		if failErr := s.failDeferredRecord(ctx, in, domain.DeferredIntentPendingApproval, reason); failErr != nil {
 			s.logger.Error("fail unpublished deferred intent", "intent_id", id, "error", failErr)
 		}
+		spec.Hooks.abandoned(ctx, in, reason)
 		s.intents.Finish(id, intentResult{Outcome: domain.IntentOutcomeError, Err: err, Reason: err.Error(), Status: domain.DeferredIntentFailed})
 		return zero, fmt.Errorf("publish intent required: %w", err)
 	}
 	if !s.intents.MarkReady(id) {
-		// Resolved before its record existed: the session ended in between,
+		// Resolved before its records existed: the session ended in between,
 		// and its teardown could not fail a record that was not written yet.
-		if err := s.failDeferredRecord(ctx, in, domain.DeferredIntentPendingApproval, deferredFailedOnSessionEnd); err != nil {
+		// Either record may already have been failed by that teardown.
+		spec.Hooks.abandoned(ctx, in, deferredFailedOnSessionEnd)
+		if err := s.failDeferredRecord(ctx, in, domain.DeferredIntentPendingApproval, deferredFailedOnSessionEnd); err != nil && !errors.As(err, new(*domain.ConflictError)) {
 			return zero, fmt.Errorf("fail deferred intent resolved during submission: %w", err)
 		}
 		return repo.GetDeferredIntent(ctx, id)
@@ -213,9 +228,18 @@ func (s *Service) denyDeferred(ctx context.Context, pending *pendingIntent, reas
 		s.intents.Release(pending.intent.ID)
 		return fmt.Errorf("record denial of intent %s: %w", pending.intent.ID, err)
 	}
+	if pending.hooks.Denied != nil {
+		pending.hooks.Denied(ctx, pending.intent, reason)
+	}
 	res := intentResult{Outcome: domain.IntentOutcomeDeniedByUser, Reason: reason, Status: domain.DeferredIntentDenied}
 	s.intents.Finish(pending.intent.ID, res)
 	return s.publishIntentResolved(ctx, pending.intent, res)
+}
+
+func (h deferredHooks) abandoned(ctx context.Context, in domain.Intent, reason string) {
+	if h.Abandoned != nil {
+		h.Abandoned(ctx, in, reason)
+	}
 }
 
 // failDeferredRecord moves a record from `from` to failed with reason.

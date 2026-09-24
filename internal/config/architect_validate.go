@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"strings"
+
+	sd "github.com/hiveryn/shared/domain"
 )
 
 // validateArchitect enforces the per-architect rules. It is the single ruleset
@@ -23,6 +25,20 @@ func validateArchitect(key string, architect ArchitectConfig) error {
 		if strings.TrimSpace(repoPath) == "" {
 			return fmt.Errorf("architects.%s.repos.%s is required", key, repoKey)
 		}
+	}
+	// Whether each named Action exists is not checked here: the library lives
+	// outside the workspace and changes independently, so a missing definition
+	// is reported where the architect discovers its Actions, not as a config
+	// that fails to load.
+	seen := make(map[string]struct{}, len(architect.AvailableActions))
+	for i, name := range architect.AvailableActions {
+		if !sd.ValidActionName(name) {
+			return fmt.Errorf("architects.%s.availableActions[%d] %q is not a valid action name: use lowercase letters, digits, '.', '_' or '-', starting with a letter or digit (at most 64 characters)", key, i, name)
+		}
+		if _, dup := seen[name]; dup {
+			return fmt.Errorf("architects.%s.availableActions lists %q more than once", key, name)
+		}
+		seen[name] = struct{}{}
 	}
 	return nil
 }

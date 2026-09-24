@@ -113,9 +113,13 @@ name: Hiveryn
 repos:
   daemon:  /Users/kareem/hiveryn/daemon
   desktop: /Users/kareem/hiveryn/desktop
+availableActions:   # optional
+  - demo-evidence
 ```
 
-The file holds exactly `name` and `repos`; it is decoded strictly, so any other key — in particular a leftover `prompts:` block — fails to load with an error naming the key. There are no prompt overrides: the architect and worker instructions are built into the daemon (`internal/sessionruntime/prompts/`), the kickoffs are fixed markdown templates in the same directory whose placeholders are daemon-supplied values, and the one per-project customization is the optional `ARCHITECT_SYSTEM.md` at the workspace root, appended to the architect instructions at session start.
+The file holds `name`, `repos` and the optional `availableActions`; it is decoded strictly, so any other key — in particular a leftover `prompts:` block — fails to load with an error naming the key. There are no prompt overrides: the architect and worker instructions are built into the daemon (`internal/sessionruntime/prompts/`), the kickoffs are fixed markdown templates in the same directory whose placeholders are daemon-supplied values, and the one per-project customization is the optional `ARCHITECT_SYSTEM.md` at the workspace root, appended to the architect instructions at session start.
+
+`availableActions` names the global Actions (`HIVERYN_HOME/actions/<name>`) this architect may discover and request; omitted means none. Entries must be unique, well-formed action names. A listed name that has no valid definition is not a load error — `getAvailableActions` reports it invalid with its problems, and it cannot be requested until repaired. The list never restricts the user's own manual launches, and there is no default variant: the user picks one when approving each request.
 
 Repo paths may start with `~` or `~/` to reference the user's home directory; they are expanded to absolute paths at config load. A blank repo path is rejected.
 
@@ -259,6 +263,10 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `POST` | `/api/sessions/{id}/discard` | Discard a ticket session without writing a conclusion: move the ticket progress → backlog, publish `ended` with `raw.lifecycle=discarded`, kill PTYs, delete the run, and delete the session row |
 | `POST` | `/api/sessions/{id}/intents/conclude-session` | **Blocking.** Raise a conclude intent: render the structured input into the canonical `conclusion.md` body, publish `intent`/`required`, and block until the user answers or the policy fires. Returns an intent resolution. Called by the MCP conclude tools (`concludeArchitectSession`, `concludeTicketSession`). |
 | `POST` | `/api/sessions/{id}/intents/create-work-ticket` | **Blocking.** Raise a createWorkTicket intent; the ticket is written only on approval. Session-scoped so the architect key comes from the stored session, never the request. Called by the MCP `createWorkTicket` tool. |
+| `GET` | `/api/sessions/{id}/available-actions` | The calling architect session's `availableActions`, in config order, each enriched with description, artifact contract, validity/problems and any running execution id. A configured name missing from the library is listed invalid, not dropped. Called by the MCP `getAvailableActions` tool. |
+| `POST` | `/api/sessions/{id}/intents/execute-action` | **Deferred, returns at once (`202`).** Request one execution of an available Action (`{name, prompt}`): records it `pending_approval` and raises a manual approval with a required variant choice. Returns the `ActionResult` under the execution id, which is also the intent id. `VALIDATION` if the Action is not available to this architect or invalid; `CONFLICT` if it is running. Called by the MCP `executeAction` tool. |
+| `GET` | `/api/sessions/{id}/action-results/{executionID}` | The architect-scoped result of a requested execution (status, requested/started/ended times, elapsed seconds once started, denial reason, error, agent summary, output directory once started, agent activity when reported). Another architect's or a manual execution is `NOT_FOUND`. Called by the MCP `getActionResult` tool. |
+| `GET` | `/api/sessions/{id}/action-results/{executionID}/wait?timeout_seconds=N` | Bounded long poll (1–30 s, default 30): returns on a status change or at once when final, otherwise the unchanged result with `timed_out: true`. The caller going away never affects the execution. Called by the MCP `waitForActionResult` tool. |
 | `POST` | `/api/sessions/{id}/intents/{intentID}/approve` | Approve a pending intent and run its side effect. Called by the desktop app. |
 | `POST` | `/api/sessions/{id}/intents/{intentID}/deny` | Deny a pending intent with a reason. The side effect never runs; the blocked agent call returns `outcome: denied_by_user`. Called by the desktop app. |
 | `GET` | `/api/sessions/{id}/tabs` | Get the resolved right-pane tab layout for a session's current run |
@@ -307,7 +315,7 @@ Desktop consumers should remove the session tab either when the POST succeeds or
 
 ### Intent approval flow
 
-Agent tool calls that mutate user-visible state route through the **intent system** so the desktop user can approve them before they take effect. Two tools are routed today: the conclude tools (`concludeArchitectSession`, `concludeTicketSession`, role-scoped so a session only sees its own) and `createWorkTicket` (registered for both session types). Each takes **discrete structured fields** rather than a free-text body; the daemon renders/validates them and, for conclusions, produces the canonical `conclusion.md`. See "Structured conclusions" below.
+Agent tool calls that mutate user-visible state route through the **intent system** so the desktop user can approve them before they take effect. Two blocking tools are routed today: the conclude tools (`concludeArchitectSession`, `concludeTicketSession`, role-scoped so a session only sees its own) and `createWorkTicket` (registered for both session types). The architect's `executeAction` is a deferred intent instead — see "Architect-requested Actions". Each takes **discrete structured fields** rather than a free-text body; the daemon renders/validates them and, for conclusions, produces the canonical `conclusion.md`. See "Structured conclusions" below.
 
 An intent is a pending tool call awaiting the user's answer. The write lives daemon-side and runs only on approval, so the agent cannot bypass it.
 
@@ -339,6 +347,17 @@ Direct `/conclude` request:
   "rejection_reason": ""
 }
 ```
+
+### Architect-requested Actions
+
+An architect's `executeAction(name, prompt)` is a **deferred** intent (`intent_type: executeAction`, policy `manual`): the call returns immediately with the execution id in `pending_approval`, the desktop shows the request with a required "Agent variant" choice (no default, no timer), and only the user resolves it. The intent id *is* the execution id, so the architect uses one id from request to result.
+
+- **Deny** — the execution becomes `denied` with the user's reason; it never ran.
+- **Approve** — the variant is validated before the claim (an invalid choice is a correctable `400` and the request stays pending); then the architect's `availableActions`, the variant, the definition and the single-run rule are rechecked. If another execution won meanwhile, or anything else prevents the start, the execution is `failed` ("could not start: …") without having started. Otherwise it moves `pending_approval → running` and launches like a manual run; from then on the Action lifecycle owns the record, independent of the requesting architect session, and it stays `running` until the agent concludes, the user cancels or it fails. The generic deferred record completing when the launch returns says nothing about the execution.
+- **Requesting session ends first** — the pending request is `failed` as never run. **Daemon restart** — pending requests are `failed` as never run; a running execution follows the Action restart rules (restored and kept running, or failed as interrupted).
+- Results are read from the durable execution record (never pruned), scoped to the architect: a later session of the same architect can read them, another architect cannot. An identical request from the same session within the 1h idempotency window returns the original execution.
+
+Action agents get no Actions tools; they cannot request Actions.
 
 #### Structured conclusions
 

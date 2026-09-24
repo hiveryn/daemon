@@ -50,7 +50,7 @@ func (s *Server) handleReadRecentActionConclusions(
 	_ ReadRecentActionConclusionsInput,
 ) (*mcp.CallToolResult, ReadRecentActionConclusionsOutput, error) {
 	var out ReadRecentActionConclusionsOutput
-	if err := s.actionRequest(ctx, http.MethodGet, "conclusions", nil, &out); err != nil {
+	if err := s.sessionRequest(ctx, http.MethodGet, "action/conclusions", nil, &out); err != nil {
 		return nil, ReadRecentActionConclusionsOutput{}, err
 	}
 	if out.Conclusions == nil {
@@ -72,7 +72,7 @@ func (s *Server) handleConcludeAction(
 		return nil, ConcludeActionOutput{}, newValidationError("summary", "is required")
 	}
 	var run domain.ActionRun
-	if err := s.actionRequest(ctx, http.MethodPost, "conclude", domain.ConcludeActionRequest{
+	if err := s.sessionRequest(ctx, http.MethodPost, "action/conclude", domain.ConcludeActionRequest{
 		Outcome: domain.ActionConclusionOutcome(outcome),
 		Summary: input.Summary,
 	}, &run); err != nil {
@@ -81,9 +81,9 @@ func (s *Server) handleConcludeAction(
 	return nil, ConcludeActionOutput{ExecutionID: run.ID, Status: string(run.Status), OutputDir: run.OutputDir}, nil
 }
 
-// actionRequest calls /api/sessions/{session}/action/{subPath} and decodes the
-// envelope data into out.
-func (s *Server) actionRequest(ctx context.Context, method, subPath string, body any, out any) error {
+// sessionRequest calls /api/sessions/{session}/{subPath} — subPath may carry a
+// query — and decodes the envelope data into out.
+func (s *Server) sessionRequest(ctx context.Context, method, subPath string, body any, out any) error {
 	var reader *bytes.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -92,7 +92,7 @@ func (s *Server) actionRequest(ctx context.Context, method, subPath string, body
 		}
 		reader = bytes.NewReader(raw)
 	}
-	u := fmt.Sprintf("%s/api/sessions/%s/action/%s", s.daemonURL, url.PathEscape(s.sessionID), subPath)
+	u := fmt.Sprintf("%s/api/sessions/%s/%s", s.daemonURL, url.PathEscape(s.sessionID), subPath)
 	var req *http.Request
 	var err error
 	if reader != nil {

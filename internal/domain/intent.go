@@ -30,6 +30,7 @@ type (
 const (
 	IntentTypeConcludeSession  = sd.IntentTypeConcludeSession
 	IntentTypeCreateWorkTicket = sd.IntentTypeCreateWorkTicket
+	IntentTypeExecuteAction    = sd.IntentTypeExecuteAction
 
 	IntentOutcomeApproved     = sd.IntentOutcomeApproved
 	IntentOutcomeAutoApproved = sd.IntentOutcomeAutoApproved

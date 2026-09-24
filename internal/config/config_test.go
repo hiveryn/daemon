@@ -781,6 +781,45 @@ func TestLoadRejectsUnknownArchitectFileKeys(t *testing.T) {
 	}
 }
 
+func TestArchitectAvailableActions(t *testing.T) {
+	t.Parallel()
+
+	architectDir := writeArchitect(t, map[string]any{
+		"name":             "Hiveryn",
+		"repos":            map[string]string{"daemon": "/tmp/daemon"},
+		"availableActions": []string{"demo-evidence", "other"},
+	})
+	resolved, err := ValidateArchitectConfig(architectDir, "hiveryn")
+	if err != nil {
+		t.Fatalf("ValidateArchitectConfig: %v", err)
+	}
+	if strings.Join(resolved.AvailableActions, ",") != "demo-evidence,other" {
+		t.Fatalf("availableActions = %v, want file order", resolved.AvailableActions)
+	}
+	cloned := (Config{Architects: map[string]ArchitectConfig{"hiveryn": resolved}}).Clone()
+	cloned.Architects["hiveryn"].AvailableActions[0] = "mutated"
+	if resolved.AvailableActions[0] != "demo-evidence" {
+		t.Fatal("Clone shares the availableActions slice")
+	}
+
+	omitted := writeArchitect(t, map[string]any{"name": "Hiveryn", "repos": map[string]string{}})
+	if resolved, err := ValidateArchitectConfig(omitted, "hiveryn"); err != nil || len(resolved.AvailableActions) != 0 {
+		t.Fatalf("omitted availableActions = %v, %v; want none", resolved.AvailableActions, err)
+	}
+
+	for name, list := range map[string][]string{
+		"duplicate": {"demo", "demo"},
+		"malformed": {"Demo Evidence"},
+		"blank":     {""},
+		"path":      {"../escape"},
+	} {
+		dir := writeArchitect(t, map[string]any{"name": "Hiveryn", "repos": map[string]string{}, "availableActions": list})
+		if _, err := ValidateArchitectConfig(dir, "hiveryn"); err == nil || !strings.Contains(err.Error(), "availableActions") {
+			t.Errorf("%s availableActions %v: err = %v, want a rejection naming availableActions", name, list, err)
+		}
+	}
+}
+
 func TestValidateArchitectConfigReadsDiskNotRuntime(t *testing.T) {
 	t.Parallel()
 

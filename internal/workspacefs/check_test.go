@@ -246,6 +246,32 @@ func TestCheckInvalidConfigIsReportedNotFatal(t *testing.T) {
 	}
 }
 
+// availableActions is part of the config ruleset: listed names need not exist
+// in the Actions library (that is reported by getAvailableActions), but they
+// must be well-formed and unique.
+func TestCheckConfigAvailableActions(t *testing.T) {
+	f := newFixture(t)
+	f.write(ConfigFileName, "name: Example\nrepos:\n  api: "+f.Repos["api"]+"\navailableActions:\n  - demo-evidence\n")
+	if n := node(t, f.check(), ConfigFileName); !n.Valid {
+		t.Fatalf("config with availableActions invalid: %+v", n.Diagnostics)
+	}
+
+	f.write(ConfigFileName, "name: Example\nrepos:\n  api: "+f.Repos["api"]+"\navailableActions:\n  - demo\n  - demo\n")
+	requireCode(t, node(t, f.check(), ConfigFileName).Diagnostics, domain.DiagConfigInvalid)
+}
+
+func TestDescribeConfigExampleLoads(t *testing.T) {
+	schema, err := Describe(domain.ArtifactHiverynYAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newFixture(t)
+	f.write(ConfigFileName, strings.ReplaceAll(strings.ReplaceAll(schema.Example, "/Users/you/repos/example-api", f.Repos["api"]), "/Users/you/repos/example-web", f.Repos["api"]))
+	if n := node(t, f.check(), ConfigFileName); !n.Valid {
+		t.Fatalf("documented hiveryn.yaml example is invalid: %+v", n.Diagnostics)
+	}
+}
+
 func TestCheckMissingConfigIsReported(t *testing.T) {
 	f := newFixture(t)
 	f.remove(ConfigFileName)

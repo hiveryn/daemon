@@ -193,3 +193,78 @@ func (h *actionsHandler) events(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
+// available lists the Actions the calling architect session may request.
+func (h *actionsHandler) available(w http.ResponseWriter, r *http.Request) {
+	if !h.ready(w, r) {
+		return
+	}
+	list, err := h.actions.AvailableActions(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, list)
+}
+
+// executeIntent is the architect's executeAction. It does NOT block: the
+// approval is deferred, so it returns the pending_approval result at once,
+// under the execution id that stays the same through approval and execution.
+func (h *actionsHandler) executeIntent(w http.ResponseWriter, r *http.Request) {
+	if !h.ready(w, r) {
+		return
+	}
+	var input domain.ExecuteActionRequest
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
+		return
+	}
+	result, err := h.actions.RequestExecuteAction(r.Context(), r.PathValue("id"), input)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusAccepted, result)
+}
+
+// result returns one execution requested by the calling session's architect.
+func (h *actionsHandler) result(w http.ResponseWriter, r *http.Request) {
+	if !h.ready(w, r) {
+		return
+	}
+	result, err := h.actions.GetActionResult(r.Context(), r.PathValue("id"), r.PathValue("executionID"))
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, result)
+}
+
+// wait long-polls one execution for a status change, for at most
+// timeout_seconds (default and cap: domain.MaxActionWaitSeconds).
+func (h *actionsHandler) wait(w http.ResponseWriter, r *http.Request) {
+	if !h.ready(w, r) {
+		return
+	}
+	timeout := domain.MaxActionWaitSeconds
+	if raw := r.URL.Query().Get("timeout_seconds"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > domain.MaxActionWaitSeconds {
+			writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation),
+				fmt.Sprintf("timeout_seconds must be an integer between 1 and %d", domain.MaxActionWaitSeconds),
+				map[string]string{"field": "timeout_seconds"})
+			return
+		}
+		timeout = n
+	}
+	result, err := h.actions.WaitForActionResult(r.Context(), r.PathValue("id"), r.PathValue("executionID"), time.Duration(timeout)*time.Second)
+	if err != nil {
+		if r.Context().Err() != nil {
+			// The caller went away; there is nobody to answer.
+			return
+		}
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, result)
+}
