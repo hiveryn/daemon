@@ -403,24 +403,27 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 	return domain.CreateSessionRunResult{Run: run, MainTerminalID: mainTerminalID}, nil
 }
 
-func setupRequestForAgent(adapter agentruntime.Adapter, endpoint string, env map[string]string) agentruntime.SetupRequest {
+// setupRequestForAgent builds the endpoint-independent hook setup. Every daemon
+// installs byte-identical entries under setupMarker; each session's receiver is
+// carried by StartRequest.HookEndpoint instead, so concurrent daemons sharing a
+// provider config never redirect each other's sessions.
+func setupRequestForAgent(adapter agentruntime.Adapter, env map[string]string) agentruntime.SetupRequest {
 	return agentruntime.SetupRequest{
 		Marker:     setupMarker,
 		ConfigRoot: adapter.ConfigRoot(env),
-		Hook:       hookCommandForAgent(adapter.Agent(), endpoint),
+		Hook:       hookCommandForAgent(adapter.Agent()),
 	}
 }
 
-func hookCommandForAgent(agentKind agentruntime.AgentKind, endpoint string) agentruntime.HookCommand {
+func hookCommandForAgent(agentKind agentruntime.AgentKind) agentruntime.HookCommand {
 	switch agentKind {
 	case agentruntime.AgentClaude:
-		return claude.HookCommand(endpoint)
+		return claude.HookCommand()
 	case agentruntime.AgentCodex:
-		return artcodex.HookCommand(endpoint)
-	case agentruntime.AgentOpenCode:
-		return agentruntime.HookCommand{Endpoint: endpoint}
+		return artcodex.HookCommand()
 	default:
-		return agentruntime.HookCommand{Endpoint: endpoint}
+		// OpenCode installs a plugin and ignores the hook command.
+		return agentruntime.HookCommand{}
 	}
 }
 
@@ -601,8 +604,10 @@ func (s *Service) prepareLaunchSpec(ctx context.Context, session domain.Session,
 		return agentruntime.LaunchSpec{}, err
 	}
 
+	startReq.HookEndpoint = s.baseURL + ingestPathPrefix
+
 	adapter := s.adapters[agentKind]
-	if _, err := adapter.EnsureSetup(ctx, setupRequestForAgent(adapter, s.baseURL+ingestPathPrefix, profile.Env)); err != nil {
+	if _, err := adapter.EnsureSetup(ctx, setupRequestForAgent(adapter, profile.Env)); err != nil {
 		return agentruntime.LaunchSpec{}, fmt.Errorf("ensure %s setup: %w", agentKind, err)
 	}
 

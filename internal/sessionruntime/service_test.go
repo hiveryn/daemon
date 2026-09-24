@@ -53,6 +53,7 @@ func TestCreateRunMarksRunFailedWhenTerminalStartFails(t *testing.T) {
 		terminal:      terminal,
 		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
 		bridgeCancels: map[string]func(){},
+		baseURL:       "http://127.0.0.1:4999",
 	}
 
 	_, err := service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{
@@ -78,6 +79,14 @@ func TestCreateRunMarksRunFailedWhenTerminalStartFails(t *testing.T) {
 	}
 	if adapter.ensureRequest.Marker != setupMarker {
 		t.Fatalf("expected setup marker %q, got %q", setupMarker, adapter.ensureRequest.Marker)
+	}
+	// Hook routing is per session: the shared setup entry must not name this
+	// daemon, or a second daemon would redirect the first one's sessions.
+	if strings.Contains(adapter.ensureRequest.Hook.Command, service.baseURL) {
+		t.Fatalf("setup hook command must be endpoint-independent, got %q", adapter.ensureRequest.Hook.Command)
+	}
+	if want := service.baseURL + ingestPathPrefix; adapter.launchRequest.HookEndpoint != want {
+		t.Fatalf("expected session hook endpoint %q, got %q", want, adapter.launchRequest.HookEndpoint)
 	}
 }
 
