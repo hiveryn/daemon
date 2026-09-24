@@ -98,7 +98,7 @@ func TestRequestCreateWorkTicketConcurrentRetriesCreateOneTicket(t *testing.T) {
 	if ids := service.intents.PendingForSession("session-1"); len(ids) != 1 {
 		t.Fatalf("pending intents = %v, want exactly 1 (retries must attach, not duplicate)", ids)
 	}
-	if _, err := service.ApproveIntent(context.Background(), "session-1", intentID); err != nil {
+	if _, err := service.ApproveIntent(context.Background(), "session-1", intentID, nil); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 	wg.Wait()

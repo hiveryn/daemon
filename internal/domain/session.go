@@ -111,8 +111,10 @@ type SessionService interface {
 	RequestConclusion(context.Context, string, ConcludeSessionParams) (IntentResolution[ConcludeSessionResult], error)
 	RequestCreateWorkTicket(context.Context, string, CreateTicketParams) (IntentResolution[Ticket], error)
 
-	// Desktop-facing intent resolution, addressed by intent id.
-	ApproveIntent(context.Context, string, string) (Intent, error)
+	// Desktop-facing intent resolution, addressed by intent id. Approval
+	// carries the user's input values; invalid input is a ValidationError that
+	// leaves the intent pending and correctable.
+	ApproveIntent(context.Context, string, string, IntentInputValues) (Intent, error)
 	DenyIntent(context.Context, string, string, string) error
 	ReadConclusion(context.Context, string, string) (ArchitectConclusion, error)
 	ReadRecentConclusion(context.Context, string) (ArchitectConclusion, error)

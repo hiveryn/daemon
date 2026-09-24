@@ -10,6 +10,13 @@ type (
 	IntentPolicy  = sd.IntentPolicy
 	IntentOrigin  = sd.IntentOrigin
 	Intent        = sd.Intent
+
+	IntentInputType      = sd.IntentInputType
+	IntentInputOption    = sd.IntentInputOption
+	IntentInputField     = sd.IntentInputField
+	IntentInputValues    = sd.IntentInputValues
+	IntentInputIssue     = sd.IntentInputIssue
+	ApproveIntentRequest = sd.ApproveIntentRequest
 )
 
 const (
@@ -25,6 +32,14 @@ const (
 	IntentPolicyAutoAllow     = sd.IntentPolicyAutoAllow
 	IntentPolicyWaitThenAllow = sd.IntentPolicyWaitThenAllow
 	IntentPolicyWaitThenDeny  = sd.IntentPolicyWaitThenDeny
+
+	IntentInputText     = sd.IntentInputText
+	IntentInputTextarea = sd.IntentInputTextarea
+	IntentInputChoice   = sd.IntentInputChoice
+	IntentInputBoolean  = sd.IntentInputBoolean
+
+	MaxIntentInputFields  = sd.MaxIntentInputFields
+	MaxIntentInputOptions = sd.MaxIntentInputOptions
 )
 
 // IntentResolution is what a blocked agent call returns once its intent
@@ -38,6 +53,7 @@ const (
 type IntentResolution[R any] struct {
 	IntentID string
 	Outcome  IntentOutcome
-	Result   R      // zero unless Outcome.Approved()
-	Reason   string // denial reason, or error detail
+	Result   R                 // zero unless Outcome.Approved()
+	Inputs   IntentInputValues // the validated values the operation ran with; nil unless approved
+	Reason   string            // denial reason, or error detail
 }

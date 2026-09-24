@@ -863,7 +863,7 @@ func (s *Service) RequestConclusion(
 		Summary:   conclusionIntentSummary(params),
 		Payload:   conclusionIntentPayload(params),
 		Origin:    intentOrigin(session),
-		Exec: func(ctx context.Context) (domain.ConcludeSessionResult, error) {
+		Exec: func(ctx context.Context, _ domain.IntentInputValues) (domain.ConcludeSessionResult, error) {
 			result, err := s.ConcludeSession(ctx, id, params)
 			if err != nil {
 				return domain.ConcludeSessionResult{}, err

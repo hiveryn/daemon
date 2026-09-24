@@ -1,6 +1,8 @@
 package api
 
 import (
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/hiveryn/daemon/internal/domain"
@@ -142,14 +144,23 @@ func (h *sessionsHandler) createWorkTicketIntent(w http.ResponseWriter, r *http.
 	writeIntentResolution(w, r, res, res.Result)
 }
 
-// approveIntent resolves an intent as approved and runs its side effect.
+// approveIntent resolves an intent as approved and runs its side effect. The
+// body is optional ({"inputs": {...}}); an intent without inputs is approved
+// with none. Invalid inputs are a 400 that leaves the intent pending, so the
+// user can correct them and approve again.
 func (h *sessionsHandler) approveIntent(w http.ResponseWriter, r *http.Request) {
 	if h.sessions == nil {
 		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
 		return
 	}
 
-	intent, err := h.sessions.ApproveIntent(r.Context(), r.PathValue("id"), r.PathValue("intentID"))
+	var input domain.ApproveIntentRequest
+	if err := decodeJSON(r, &input); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
+		return
+	}
+
+	intent, err := h.sessions.ApproveIntent(r.Context(), r.PathValue("id"), r.PathValue("intentID"), input.Inputs)
 	if err != nil {
 		writeDomainError(w, r, err)
 		return

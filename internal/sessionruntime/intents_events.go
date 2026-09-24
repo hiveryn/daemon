@@ -47,6 +47,12 @@ func (s *Service) publishIntentRequired(ctx context.Context, in domain.Intent) e
 	if len(in.Payload) > 0 {
 		raw["payload"] = in.Payload
 	}
+	if len(in.Inputs) > 0 {
+		raw["inputs"] = in.Inputs
+	}
+	if len(in.UnresolvedInputs) > 0 {
+		raw["unresolved_inputs"] = in.UnresolvedInputs
+	}
 	return s.appendAndPublishSessionEvent(ctx, domain.AppendSessionEventParams{
 		SessionID: in.Origin.SessionID,
 		Type:      sessionEventTypeIntent,
@@ -74,6 +80,9 @@ func (s *Service) publishIntentResolved(ctx context.Context, in domain.Intent, r
 	}
 	if res.Result != nil {
 		raw["result"] = res.Result
+	}
+	if len(res.Inputs) > 0 {
+		raw["inputs"] = res.Inputs
 	}
 	return s.appendAndPublishSessionEvent(ctx, domain.AppendSessionEventParams{
 		SessionID: in.Origin.SessionID,

@@ -20,18 +20,23 @@ const intentReplayTTL = time.Hour
 type intentResult struct {
 	IntentID string
 	Outcome  domain.IntentOutcome
-	Result   any    // the tool's typed result; nil unless Outcome.Approved()
-	Reason   string // denial reason, or error detail
-	Err      error  // non-nil only when Outcome == error
+	Result   any                      // the tool's typed result; nil unless Outcome.Approved()
+	Inputs   domain.IntentInputValues // validated values the exec ran with; nil unless approved
+	Reason   string                   // denial reason, or error detail
+	Err      error                    // non-nil only when Outcome == error
 }
 
 // pendingIntent is one in-flight intent. exec is the tool's actual side effect,
 // captured with its typed params at creation time — which is why the store
-// itself never needs to know the payload type.
+// itself never needs to know the payload type. It receives the validated
+// approval inputs. defaults are those inputs resolved from the schema's
+// defaults, used by automatic approval; they are meaningful only while
+// intent.UnresolvedInputs is empty.
 type pendingIntent struct {
 	intent   domain.Intent
 	dedupKey string
-	exec     func(context.Context) (any, error)
+	exec     func(context.Context, domain.IntentInputValues) (any, error)
+	defaults domain.IntentInputValues
 	claimed  bool                // CAS'd under mu: exactly one resolver wins
 	waiters  []chan intentResult // each buffered 1, so a broadcast never blocks
 }
@@ -91,7 +96,8 @@ const (
 func (s *intentStore) Begin(
 	dedupKey string,
 	in domain.Intent,
-	exec func(context.Context) (any, error),
+	exec func(context.Context, domain.IntentInputValues) (any, error),
+	defaults domain.IntentInputValues,
 ) (id string, ch <-chan intentResult, replayed intentResult, d intentDisposition) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -124,6 +130,7 @@ func (s *intentStore) Begin(
 		intent:   in,
 		dedupKey: dedupKey,
 		exec:     exec,
+		defaults: defaults,
 		waiters:  []chan intentResult{w},
 	}
 	s.byDedup[dedupKey] = in.ID
@@ -223,6 +230,18 @@ func (s *intentStore) Get(intentID string) (domain.Intent, bool) {
 	defer s.mu.Unlock()
 	p, ok := s.pending[intentID]
 	if !ok {
+		return domain.Intent{}, false
+	}
+	return p.intent, true
+}
+
+// GetForSession is Get, scoped like ClaimForSession. A claimed intent is
+// reported as not found: it is already resolving and no longer answerable.
+func (s *intentStore) GetForSession(sessionID, intentID string) (domain.Intent, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.pending[intentID]
+	if !ok || p.claimed || p.intent.Origin.SessionID != sessionID {
 		return domain.Intent{}, false
 	}
 	return p.intent, true
