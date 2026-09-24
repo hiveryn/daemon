@@ -119,7 +119,14 @@ func (s *Service) ListActionRuns(ctx context.Context, action string, limit int) 
 	if err != nil {
 		return nil, err
 	}
-	return rt.runs.ListActionRuns(ctx, action, limit)
+	runs, err := rt.runs.ListActionRuns(ctx, action, limit)
+	if err != nil {
+		return nil, err
+	}
+	for i := range runs {
+		runs[i] = s.withAttention(runs[i])
+	}
+	return runs, nil
 }
 
 func (s *Service) GetActionRun(ctx context.Context, id string) (domain.ActionRun, error) {
@@ -127,7 +134,11 @@ func (s *Service) GetActionRun(ctx context.Context, id string) (domain.ActionRun
 	if err != nil {
 		return domain.ActionRun{}, err
 	}
-	return rt.runs.GetActionRun(ctx, id)
+	run, err := rt.runs.GetActionRun(ctx, id)
+	if err != nil {
+		return domain.ActionRun{}, err
+	}
+	return s.withAttention(run), nil
 }
 
 // LaunchAction manually starts one execution. The user's launch is the

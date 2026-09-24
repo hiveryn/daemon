@@ -134,6 +134,17 @@ type terminalStartSpec struct {
 	Size         terminalSize
 	CleanupPaths []string
 	OnExit       func(terminalExit)
+	// Observer, when set, sees the terminal's output and size changes in
+	// order. Its calls run on the terminal's output and resize paths, so it
+	// must not block.
+	Observer terminalObserver
+}
+
+// terminalObserver follows what a terminal displays without being an
+// attached client: it never writes to the terminal.
+type terminalObserver interface {
+	Output([]byte)
+	Resize(cols, rows uint16)
 }
 
 type terminalSize struct {
@@ -166,6 +177,7 @@ type terminalProcess struct {
 	cleanupPaths []string
 	logger       *slog.Logger
 	onExit       func(terminalExit)
+	observer     terminalObserver
 
 	mu          sync.Mutex
 	closing     bool
@@ -269,6 +281,7 @@ func (m *ptyTerminalManager) Start(ctx context.Context, spec terminalStartSpec) 
 		cleanupPaths: append([]string(nil), spec.CleanupPaths...),
 		logger:       m.logger.With("terminal_key", key),
 		onExit:       spec.OnExit,
+		observer:     spec.Observer,
 		outputSubs:   map[uint64]chan []byte{},
 		done:         make(chan struct{}),
 	}
@@ -429,6 +442,9 @@ func (m *ptyTerminalManager) streamOutput(process *terminalProcess) {
 			chunk := make([]byte, n)
 			copy(chunk, buffer[:n])
 			process.broadcast(chunk)
+			if process.observer != nil {
+				process.observer.Output(chunk)
+			}
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) {
@@ -537,6 +553,9 @@ func (p *terminalProcess) resize(cols, rows uint16) error {
 	if err := pty.Setsize(ptyFile, &pty.Winsize{Cols: cols, Rows: rows}); err != nil {
 		p.logger.Warn("[pty] resize failed", "cols", cols, "rows", rows, "error", err)
 		return err
+	}
+	if p.observer != nil {
+		p.observer.Resize(cols, rows)
 	}
 	return nil
 }

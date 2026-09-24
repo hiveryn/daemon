@@ -27,12 +27,12 @@ func (s *Server) registerArchitectActionTools() {
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "getActionResult",
-		Description: "Read the current state of an execution this project requested, by execution_id: pending_approval (not started), denied (with the user's reason), running (with started time, elapsed seconds and the agent's last reported activity when known), completed (artifact package delivered to output_dir, with the agent's summary) or failed (with the error or the agent's summary). Returns immediately.",
+		Description: "Read the current state of an execution this project requested, by execution_id: pending_approval (not started), denied (with the user's reason), running (with started time, elapsed seconds, the agent's last reported activity when known, and its attention), completed (artifact package delivered to output_dir, with the agent's summary) or failed (with the error or the agent's summary). attention.state is input_required when an explicit provider signal shows the Action agent waiting for the user at its terminal (for example a folder-trust dialog or an interrupted conversation after a restart; message says what it asks), none_detected when no such signal is present — which does not prove it is not waiting, see attention.coverage — or unavailable when it is not running. The execution stays running either way; only the user can answer, by opening the execution's terminal in the Actions window, so tell them what the agent is asking instead of waiting repeatedly. Returns immediately.",
 	}, s.handleGetActionResult)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "waitForActionResult",
-		Description: fmt.Sprintf("Wait for an execution this project requested to change state, for at most timeout_seconds (1-%d, default %d). Returns as soon as the status changes (for example pending_approval → running, running → completed) or immediately if it is already final; otherwise returns the unchanged state with timed_out=true, and you may call it again. Waiting never affects the execution.", domain.MaxActionWaitSeconds, domain.MaxActionWaitSeconds),
+		Description: fmt.Sprintf("Wait for an execution this project requested to change state, for at most timeout_seconds (1-%d, default %d). Returns as soon as the status changes (for example pending_approval → running, running → completed) or the agent's attention changes (input_required appearing, clearing or changing reason — see getActionResult), or immediately if it is already final; otherwise returns the unchanged state with timed_out=true, and you may call it again. Waiting never affects the execution.", domain.MaxActionWaitSeconds, domain.MaxActionWaitSeconds),
 	}, s.handleWaitForActionResult)
 }
 
@@ -53,7 +53,7 @@ type ActionResultInput struct {
 
 type WaitForActionResultInput struct {
 	ExecutionID    string `json:"execution_id" jsonschema:"The execution_id executeAction returned (required)."`
-	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"How long to wait for a status change, 1-30 seconds; omitted means 30."`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"How long to wait for a status or attention change, 1-30 seconds; omitted means 30."`
 }
 
 type ActionResultOutput struct {

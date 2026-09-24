@@ -66,6 +66,10 @@ type Service struct {
 
 	bridgeMu      sync.Mutex
 	bridgeCancels map[string]func()
+	// attention holds the attention monitor of each live Action main
+	// terminal. It shares bridgeMu: a monitor lives exactly as long as the
+	// receiver bridge of the same main terminal.
+	attention map[string]*attentionMonitor
 
 	terminalStateMu sync.RWMutex
 	terminalStates  map[string]sessionTerminalState
@@ -136,6 +140,7 @@ func New(ctx context.Context, cfg config.Config, configSource config.Source, rep
 		intents:        newIntentStore(),
 		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
 		bridgeCancels:  map[string]func(){},
+		attention:      map[string]*attentionMonitor{},
 		terminalStates: map[string]sessionTerminalState{},
 	}, nil
 }
@@ -586,10 +591,9 @@ func (s *Service) startSessionMainTerminal(ctx context.Context, session domain.S
 	cancelBridge := s.startReceiverBridge(session.ID)
 	s.storeBridgeCancel(session.ID, cancelBridge)
 
-	mainTerminalID := uuid.NewString()
-	if err := s.terminal.Start(ctx, terminalStartSpec{
+	startSpec := terminalStartSpec{
 		SessionID:    session.ID,
-		TerminalID:   mainTerminalID,
+		TerminalID:   uuid.NewString(),
 		Name:         mainTerminalName,
 		Command:      spec.Command,
 		Args:         append([]string(nil), spec.Args...),
@@ -598,7 +602,12 @@ func (s *Service) startSessionMainTerminal(ctx context.Context, session domain.S
 		Size:         size,
 		CleanupPaths: append([]string(nil), spec.CleanupPaths...),
 		OnExit:       s.handleTerminalExit,
-	}); err != nil {
+	}
+	if monitor := s.startAttention(session, agentKind, size); monitor != nil {
+		startSpec.Observer = monitor
+	}
+	mainTerminalID := startSpec.TerminalID
+	if err := s.terminal.Start(ctx, startSpec); err != nil {
 		s.cancelReceiverBridge(session.ID)
 		return "", agentruntime.LaunchSpec{}, err
 	}
@@ -1870,6 +1879,9 @@ func (s *Service) handleReceiverEvent(event agentruntime.Event) {
 	}
 
 	s.archiveEvent(event, run)
+	if monitor := s.attentionMonitor(event.ID); monitor != nil {
+		monitor.ObserveEvent(event)
+	}
 
 	primaryNativeID := event.PrimaryNativeID
 	if primaryNativeID == "" {
@@ -2009,14 +2021,19 @@ func (s *Service) storeBridgeCancel(sessionID string, cancel func()) {
 	s.bridgeCancels[sessionID] = cancel
 }
 
+// cancelReceiverBridge stops observing the session's current main terminal:
+// its hook-event bridge and, for an Action session, its attention monitor.
 func (s *Service) cancelReceiverBridge(sessionID string) {
 	s.bridgeMu.Lock()
 	cancel := s.bridgeCancels[sessionID]
 	delete(s.bridgeCancels, sessionID)
+	monitor := s.attention[sessionID]
+	delete(s.attention, sessionID)
 	s.bridgeMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
+	s.closeAttention(monitor)
 }
 
 func (s *Service) cancelReceiverBridges() {
@@ -2025,6 +2042,12 @@ func (s *Service) cancelReceiverBridges() {
 	for id, cancel := range s.bridgeCancels {
 		delete(s.bridgeCancels, id)
 		cancels = append(cancels, cancel)
+	}
+	// Shutdown: the monitors stop without announcing a change, since the
+	// agents keep whatever they show and restore starts fresh monitors.
+	for id, monitor := range s.attention {
+		delete(s.attention, id)
+		monitor.Close()
 	}
 	s.bridgeMu.Unlock()
 	for _, cancel := range cancels {
@@ -2046,7 +2069,12 @@ func (s *eventSubscription) Close() {
 
 func mapAgentStatusToRunStatus(native agentruntime.Status) string {
 	switch native {
-	case agentruntime.StatusStarting, agentruntime.StatusWorking:
+	case agentruntime.StatusStarting:
+		// A session start is not work: a resumed agent reports it and then
+		// sits at its prompt, so it must not read as active. The prompt that
+		// follows a fresh launch reports working.
+		return ""
+	case agentruntime.StatusWorking:
 		return domain.AgentStatusActive
 	case agentruntime.StatusIdle:
 		return domain.AgentStatusIdle

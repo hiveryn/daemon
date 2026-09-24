@@ -391,9 +391,12 @@ func (s *Service) actionResultOf(ctx context.Context, run domain.ActionRun, now 
 		out.ElapsedSeconds = &elapsed
 		out.OutputDir = run.OutputDir
 	}
-	// Activity is the agent's last reported status while it runs; anything
-	// else is reported unavailable rather than guessed.
+	// Activity is the agent's last reported status while it runs, attention
+	// whether it is known to wait for the user; anything else is reported
+	// unavailable rather than guessed.
+	out.Attention = domain.ActionAgentAttention{State: domain.ActionAttentionUnavailable}
 	if run.Status == domain.ActionRunRunning && run.SessionID != "" {
+		out.Attention = s.actionAttention(run.SessionID)
 		session, err := s.repo.GetSession(ctx, run.SessionID)
 		switch {
 		case err == nil:
@@ -409,10 +412,14 @@ func (s *Service) actionResultOf(ctx context.Context, run domain.ActionRun, now 
 }
 
 // WaitForActionResult waits up to timeout for the execution to change status
-// and returns the result then. A final execution returns at once. The
-// subscription is taken before the first read, so a transition between the
-// read and the wait is never missed. The wait observes the execution only:
-// its end — timeout or the caller going away — never touches the Action.
+// or its agent's attention to change (attentionKey), and returns the result
+// then. A final execution returns at once. Both are measured against the
+// result when the wait began, so a wait on an unchanged condition — an agent
+// already reported waiting for input — blocks until its timeout instead of
+// returning at once. The subscription is taken before the first read, so a
+// transition between the read and the wait is never missed. The wait
+// observes the execution only: its end — timeout or the caller going away —
+// never touches the Action.
 func (s *Service) WaitForActionResult(ctx context.Context, sessionID, executionID string, timeout time.Duration) (domain.ActionWaitResult, error) {
 	if timeout <= 0 || timeout > domain.MaxActionWaitSeconds*time.Second {
 		return domain.ActionWaitResult{}, &domain.ValidationError{Field: "timeout_seconds", Message: fmt.Sprintf("must be between 1 and %d", domain.MaxActionWaitSeconds)}
@@ -439,7 +446,8 @@ func (s *Service) WaitForActionResult(ctx context.Context, sessionID, executionI
 			if err != nil {
 				return domain.ActionWaitResult{}, err
 			}
-			return domain.ActionWaitResult{Result: current, Changed: current.Status != initial.Status, TimedOut: current.Status == initial.Status}, nil
+			changed := waitChanged(initial, current)
+			return domain.ActionWaitResult{Result: current, Changed: changed, TimedOut: !changed}, nil
 		case event, ok := <-sub.C():
 			if !ok {
 				// Closed for falling behind: resubscribe, then reread, so
@@ -452,9 +460,13 @@ func (s *Service) WaitForActionResult(ctx context.Context, sessionID, executionI
 			if err != nil {
 				return domain.ActionWaitResult{}, err
 			}
-			if current.Status != initial.Status {
+			if waitChanged(initial, current) {
 				return domain.ActionWaitResult{Result: current, Changed: true}, nil
 			}
 		}
 	}
+}
+
+func waitChanged(initial, current domain.ActionResult) bool {
+	return current.Status != initial.Status || attentionKey(current.Attention) != attentionKey(initial.Attention)
 }

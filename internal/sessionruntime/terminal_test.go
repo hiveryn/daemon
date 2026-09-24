@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -415,5 +416,70 @@ func assertOutputChunk(t *testing.T, output <-chan []byte, want string) {
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for output %q", want)
+	}
+}
+
+type recordingObserver struct {
+	mu      sync.Mutex
+	output  strings.Builder
+	resizes []terminalSize
+}
+
+func (o *recordingObserver) Output(chunk []byte) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.output.Write(chunk)
+}
+
+func (o *recordingObserver) Resize(cols, rows uint16) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.resizes = append(o.resizes, terminalSize{Cols: cols, Rows: rows})
+}
+
+func (o *recordingObserver) snapshot() (string, []terminalSize) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.output.String(), append([]terminalSize(nil), o.resizes...)
+}
+
+// The observer sees output with no client attached, and the sizes a client
+// sets.
+func TestPTYTerminalManagerFeedsObserver(t *testing.T) {
+	observer := &recordingObserver{}
+	manager := newPTYTerminalManager(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })
+	if err := manager.Start(context.Background(), terminalStartSpec{
+		SessionID:  "session-observed",
+		TerminalID: "term-observed",
+		Command:    "/bin/sh",
+		Args:       []string{"-c", "printf 'Trust this folder?'; sleep 2"},
+		Workdir:    t.TempDir(),
+		Size:       terminalSize{Cols: 80, Rows: 24},
+		Observer:   observer,
+	}); err != nil {
+		t.Fatalf("start terminal: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if output, _ := observer.snapshot(); strings.Contains(output, "Trust this folder?") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("observer did not see the output")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	attachment, err := manager.Attach(context.Background(), "session-observed", "term-observed")
+	if err != nil {
+		t.Fatalf("attach terminal: %v", err)
+	}
+	defer func() { _ = attachment.Close() }()
+	if err := attachment.Resize(100, 30); err != nil {
+		t.Fatalf("resize: %v", err)
+	}
+	if _, resizes := observer.snapshot(); len(resizes) != 1 || resizes[0] != (terminalSize{Cols: 100, Rows: 30}) {
+		t.Fatalf("observer resizes = %+v", resizes)
 	}
 }

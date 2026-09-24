@@ -24,6 +24,9 @@ type (
 	ExecuteActionRequest    = sd.ExecuteActionRequest
 	AvailableActionList     = sd.AvailableActionList
 	ActionAgentActivity     = sd.ActionAgentActivity
+	ActionAgentAttention    = sd.ActionAgentAttention
+	ActionAttentionState    = sd.ActionAttentionState
+	ActionAttentionSource   = sd.ActionAttentionSource
 	ActionResult            = sd.ActionResult
 	ActionWaitResult        = sd.ActionWaitResult
 )
@@ -44,6 +47,12 @@ const (
 
 	ActionConclusionCompleted = sd.ActionConclusionCompleted
 	ActionConclusionFailed    = sd.ActionConclusionFailed
+
+	ActionAttentionInputRequired  = sd.ActionAttentionInputRequired
+	ActionAttentionNoneDetected   = sd.ActionAttentionNoneDetected
+	ActionAttentionUnavailable    = sd.ActionAttentionUnavailable
+	ActionAttentionSourceHook     = sd.ActionAttentionSourceHook
+	ActionAttentionSourceTerminal = sd.ActionAttentionSourceTerminal
 
 	MaxActionSummaryLength = sd.MaxActionSummaryLength
 	MaxActionWaitSeconds   = sd.MaxActionWaitSeconds
