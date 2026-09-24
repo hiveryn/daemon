@@ -222,6 +222,40 @@ func TestIntentStoreReplaySweepsAfterTTL(t *testing.T) {
 	}
 }
 
+func TestIntentStoreReplayWindowIsPerTool(t *testing.T) {
+	s := newIntentStore()
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+
+	action := testIntent("a-1", "sess-1")
+	action.Type = domain.IntentTypeExecuteAction
+	_, _, _ = s.BeginDeferred("action", action, noopExec, deferredHooks{})
+	s.Finish("a-1", intentResult{Outcome: domain.IntentOutcomeDeniedByUser})
+	_, _, _, _ = s.Begin("ticket", testIntent("t-1", "sess-1"), noopExec)
+	s.Finish("t-1", intentResult{Outcome: domain.IntentOutcomeApproved})
+
+	// The window is anchored at resolution: exactly ten minutes later still replays.
+	now = now.Add(10 * time.Minute)
+	if _, _, d := s.BeginDeferred("action", action, noopExec, deferredHooks{}); d != intentReplayed {
+		t.Fatalf("executeAction at 10m: disposition = %v, want intentReplayed", d)
+	}
+
+	now = now.Add(time.Second)
+	again := action
+	again.ID = "a-2"
+	if id, _, d := s.BeginDeferred("action", again, noopExec, deferredHooks{}); d != intentCreated || id != "a-2" {
+		t.Fatalf("executeAction past 10m: id=%s disposition=%v, want a fresh a-2", id, d)
+	}
+	// Other tools keep the default hour.
+	if _, _, _, d := s.Begin("ticket", testIntent("t-2", "sess-1"), noopExec); d != intentReplayed {
+		t.Fatalf("createWorkTicket at 10m1s: disposition = %v, want intentReplayed", d)
+	}
+	now = now.Add(intentReplayTTL)
+	if _, _, _, d := s.Begin("ticket", testIntent("t-3", "sess-1"), noopExec); d != intentCreated {
+		t.Fatalf("createWorkTicket past 1h: disposition = %v, want intentCreated", d)
+	}
+}
+
 func TestIntentStorePendingForSession(t *testing.T) {
 	s := newIntentStore()
 	_, _, _, _ = s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec)

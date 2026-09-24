@@ -9,10 +9,26 @@ import (
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
-// intentReplayTTL is the idempotency window. A retry of the same tool call with
-// the same normalized args, from the same session, inside this window resolves
-// to the original intent instead of minting a second one.
+// intentReplayTTL is the default idempotency window. A retry of the same tool
+// call with the same normalized args, from the same session, inside this window
+// resolves to the original intent instead of minting a second one. The window
+// is anchored at resolution (Finish), not at the request.
 const intentReplayTTL = time.Hour
+
+// intentReplayTTLs overrides the window per tool. executeAction replays for ten
+// minutes: long enough to absorb a retried call, short enough that asking for
+// the same Action again later starts a new request. Expiry only forgets the
+// replay; the execution record and the single-run rule are untouched.
+var intentReplayTTLs = map[domain.IntentType]time.Duration{
+	domain.IntentTypeExecuteAction: 10 * time.Minute,
+}
+
+func replayTTLFor(t domain.IntentType) time.Duration {
+	if ttl, ok := intentReplayTTLs[t]; ok {
+		return ttl
+	}
+	return intentReplayTTL
+}
 
 // intentResult is the resolved verdict, broadcast to every waiter and cached
 // for replay. IntentID is stamped by Finish so a replayed retry can still name
@@ -46,8 +62,8 @@ type pendingIntent struct {
 }
 
 type replayEntry struct {
-	result intentResult
-	at     time.Time
+	result  intentResult
+	expires time.Time // resolution time + the tool's replay window
 }
 
 // intentStore holds pending intents and recently-resolved outcomes.
@@ -300,7 +316,7 @@ func (s *intentStore) Finish(intentID string, res intentResult) {
 	}
 	p.waiters = nil
 
-	s.replay[p.dedupKey] = replayEntry{result: res, at: s.now()}
+	s.replay[p.dedupKey] = replayEntry{result: res, expires: s.now().Add(replayTTLFor(p.intent.Type))}
 	s.unregisterLocked(p)
 }
 
@@ -360,9 +376,9 @@ func (s *intentStore) PendingForSession(sessionID string) []string {
 }
 
 func (s *intentStore) sweepLocked() {
-	cutoff := s.now().Add(-intentReplayTTL)
+	now := s.now()
 	for k, e := range s.replay {
-		if e.at.Before(cutoff) {
+		if e.expires.Before(now) {
 			delete(s.replay, k)
 		}
 	}

@@ -291,6 +291,56 @@ func TestExecuteActionDenialKeepsReasonAndRetryReplays(t *testing.T) {
 	}
 }
 
+func TestExecuteActionReplayWindowIsTenMinutes(t *testing.T) {
+	f := newActionFixture(t)
+	f.writeValidAction(t, "demo")
+	arch := f.architect(t, "alpha", "demo")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	f.service.intents.now = func() time.Time { return now }
+
+	first := f.request(t, arch.ID, "demo", "go")
+	// A pending request never expires: it is deduplicated, not replayed.
+	now = now.Add(time.Hour)
+	if again := f.request(t, arch.ID, "demo", "go"); again.ExecutionID != first.ExecutionID {
+		t.Fatalf("pending retry after 1h minted %s, want %s", again.ExecutionID, first.ExecutionID)
+	}
+	if err := f.service.DenyIntent(ctx, arch.ID, first.ExecutionID, "not now"); err != nil {
+		t.Fatal(err)
+	}
+
+	now = now.Add(10 * time.Minute)
+	if replay := f.request(t, arch.ID, "demo", "go"); replay.ExecutionID != first.ExecutionID || replay.Status != domain.ActionRunDenied {
+		t.Fatalf("inside window = %+v, want the denied original", replay)
+	}
+
+	now = now.Add(time.Second)
+	second := f.request(t, arch.ID, "demo", "go")
+	if second.ExecutionID == first.ExecutionID || second.Status != domain.ActionRunPendingApproval {
+		t.Fatalf("past window = %+v, want a new pending request", second)
+	}
+	if err := f.approve(arch.ID, second.ExecutionID, "codex"); err != nil {
+		t.Fatalf("approve new request: %v", err)
+	}
+	if got := f.result(t, arch.ID, second.ExecutionID); got.Status != domain.ActionRunRunning {
+		t.Fatalf("new request = %+v, want running", got)
+	}
+
+	// Once the running execution's replay expires, the single-run rule still holds.
+	now = now.Add(11 * time.Minute)
+	if _, err := f.service.RequestExecuteAction(ctx, arch.ID, domain.ExecuteActionRequest{Name: "demo", Prompt: "go"}); !errors.As(err, new(*domain.ConflictError)) {
+		t.Fatalf("request while running err = %v, want conflict", err)
+	}
+	// Expiry forgets the replay, never the history.
+	runs, _ := f.service.ListActionRuns(ctx, "demo", 0)
+	if len(runs) != 2 {
+		t.Fatalf("history = %+v, want both executions", runs)
+	}
+	if denied := f.result(t, arch.ID, first.ExecutionID); denied.Status != domain.ActionRunDenied {
+		t.Fatalf("original = %+v, want still denied", denied)
+	}
+}
+
 func TestExecuteActionApprovalRechecksBusyAndAvailability(t *testing.T) {
 	f := newActionFixture(t)
 	f.writeValidAction(t, "demo")

@@ -22,7 +22,7 @@ func (s *Server) registerArchitectActionTools() {
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "executeAction",
-		Description: "Request one execution of an available Action with a prompt. Returns immediately with the execution_id and status pending_approval: the user reviews the request, picks the agent variant and approves or denies it — nothing runs until then, and there is no timeout that approves it. Keep the execution_id; it is the same through approval, execution and result. Follow up with waitForActionResult or getActionResult. Errors if the Action is not available to this project, is invalid, or is already running (only one execution of an Action runs at a time). An identical request (same name and prompt) from this session within an hour returns the original execution instead of creating another.",
+		Description: "Request one execution of an available Action with a prompt. Returns immediately with the execution_id and status pending_approval: the user reviews the request, picks the agent variant and approves or denies it — nothing runs until then, and there is no timeout that approves it. Keep the execution_id; it is the same through approval, execution and result. Follow up with waitForActionResult or getActionResult. Errors if the Action is not available to this project, is invalid, or is already running (only one execution of an Action runs at a time). An identical request (same name and prompt) from this session while it is pending, or within ten minutes of its approval or denial, returns the original execution instead of creating another.",
 	}, s.handleExecuteAction)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
