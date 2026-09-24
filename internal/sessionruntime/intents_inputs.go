@@ -17,8 +17,9 @@ import (
 // checkIntentInputSchema rejects a structurally broken schema. The schema is
 // authored by a daemon tool, so a failure here is a programmer error returned
 // to the caller before any popup, not something a user can correct. Defaults
-// are deliberately NOT checked here: they may come from mutable configuration,
-// and a stale one must be reported as unresolved rather than fail the call.
+// are deliberately NOT checked here: they only prefill the form and may come
+// from mutable configuration, so a stale one costs the user a correction, not
+// the request.
 func checkIntentInputSchema(fields []domain.IntentInputField) error {
 	if len(fields) > domain.MaxIntentInputFields {
 		return fmt.Errorf("intent input schema has %d fields, limit is %d", len(fields), domain.MaxIntentInputFields)
@@ -71,10 +72,9 @@ func checkIntentInputSchema(fields []domain.IntentInputField) error {
 }
 
 // resolveIntentInputs validates submitted values against the schema and
-// returns the values the operation runs with. A value that is absent (or null)
-// falls back to the field's default, which is validated exactly like a
-// submitted value; with submitted == nil this resolves the defaults alone,
-// which is what automatic approval runs with. Optional fields left empty are
+// returns the values the operation runs with. Values are taken as submitted:
+// a default never stands in for an absent one, so an intent is only ever run
+// with what the user explicitly approved. Optional fields left empty are
 // omitted from the result. Issues are sorted by field for stable messages.
 func resolveIntentInputs(fields []domain.IntentInputField, submitted domain.IntentInputValues) (domain.IntentInputValues, []domain.IntentInputIssue) {
 	var issues []domain.IntentInputIssue
@@ -90,26 +90,14 @@ func resolveIntentInputs(fields []domain.IntentInputField, submitted domain.Inte
 
 	var out domain.IntentInputValues
 	for _, f := range fields {
-		raw, fromDefault := submitted[f.Name], false
-		if raw == nil {
-			raw, fromDefault = f.Default, true
-		}
-		value, present, msg := checkIntentInputValue(f, raw)
+		value, present, msg := checkIntentInputValue(f, submitted[f.Name])
 		if msg != "" {
-			if fromDefault {
-				msg = "default " + msg
-			}
 			issues = append(issues, domain.IntentInputIssue{Field: f.Name, Message: msg})
 			continue
 		}
 		if !present {
 			if f.Required {
-				if fromDefault {
-					msg = "is required and has no default"
-				} else {
-					msg = "is required"
-				}
-				issues = append(issues, domain.IntentInputIssue{Field: f.Name, Message: msg})
+				issues = append(issues, domain.IntentInputIssue{Field: f.Name, Message: "is required"})
 			}
 			continue
 		}

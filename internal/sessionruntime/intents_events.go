@@ -2,6 +2,7 @@ package sessionruntime
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/hiveryn/daemon/internal/domain"
@@ -50,9 +51,6 @@ func (s *Service) publishIntentRequired(ctx context.Context, in domain.Intent) e
 	if len(in.Inputs) > 0 {
 		raw["inputs"] = in.Inputs
 	}
-	if len(in.UnresolvedInputs) > 0 {
-		raw["unresolved_inputs"] = in.UnresolvedInputs
-	}
 	return s.appendAndPublishSessionEvent(ctx, domain.AppendSessionEventParams{
 		SessionID: in.Origin.SessionID,
 		Type:      sessionEventTypeIntent,
@@ -83,6 +81,11 @@ func (s *Service) publishIntentResolved(ctx context.Context, in domain.Intent, r
 	}
 	if len(res.Inputs) > 0 {
 		raw["inputs"] = res.Inputs
+	}
+	if res.Status != "" {
+		// Deferred only: the durable record's status, so a reader of the log
+		// sees the same outcome a lookup by id returns.
+		raw["status"] = string(res.Status)
 	}
 	return s.appendAndPublishSessionEvent(ctx, domain.AppendSessionEventParams{
 		SessionID: in.Origin.SessionID,
@@ -160,6 +163,9 @@ func intentFromEventRaw(sessionID, id string, event domain.SessionEvent) domain.
 	if t, ok := event.Raw["intent_type"].(string); ok {
 		in.Type = domain.IntentType(t)
 	}
+	if p, ok := event.Raw["policy"].(string); ok {
+		in.Policy = domain.IntentPolicy(p)
+	}
 	if origin, ok := event.Raw["origin"].(map[string]any); ok {
 		if v, ok := origin["architect_key"].(string); ok {
 			in.Origin.ArchitectKey = v
@@ -184,7 +190,14 @@ func intentFromEventRaw(sessionID, id string, event domain.SessionEvent) domain.
 // waiting on it (the agent's process died with the daemon), so widening the
 // agent-facing outcome catalog with a value no agent can ever observe would be
 // worse than reusing error with a reason.
+//
+// Deferred records are failed first (reconcileDeferredIntents), so the durable
+// outcome and the log agree: a deferred orphan's resolved event carries
+// status failed.
 func (s *Service) ReconcileIntents(ctx context.Context) error {
+	if err := s.reconcileDeferredIntents(ctx); err != nil {
+		return fmt.Errorf("reconcile deferred intents: %w", err)
+	}
 	sessions, err := s.repo.ListSessions(ctx)
 	if err != nil {
 		return err
@@ -195,10 +208,15 @@ func (s *Service) ReconcileIntents(ctx context.Context) error {
 			return err
 		}
 		for _, orphan := range unresolvedIntents(session.ID, events) {
-			if err := s.publishIntentResolved(ctx, orphan, intentResult{
+			res := intentResult{
 				Outcome: domain.IntentOutcomeError,
 				Reason:  "daemon restarted before this intent resolved",
-			}); err != nil {
+			}
+			if orphan.Policy == domain.IntentPolicyManual {
+				res.Reason = deferredFailedOnRestartPending
+				res.Status = domain.DeferredIntentFailed
+			}
+			if err := s.publishIntentResolved(ctx, orphan, res); err != nil {
 				return err
 			}
 		}

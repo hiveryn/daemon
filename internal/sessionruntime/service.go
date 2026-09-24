@@ -54,6 +54,7 @@ type Service struct {
 	terminal terminalManager
 
 	intents          *intentStore
+	deferred         domain.DeferredIntentRepository
 	publishArchitect func(string, domain.ArchitectEvent)
 
 	eventMu      sync.RWMutex

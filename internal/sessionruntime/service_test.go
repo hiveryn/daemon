@@ -650,7 +650,7 @@ func TestDenyIntentResolvesWithoutRunningExec(t *testing.T) {
 	_, ch, _, _ := service.intents.Begin("key-1", in, func(context.Context, domain.IntentInputValues) (any, error) {
 		executed = true
 		return nil, nil
-	}, nil)
+	})
 
 	if err := service.DenyIntent(context.Background(), "session-work", "intent-1", "needs work"); err != nil {
 		t.Fatalf("deny: %v", err)
@@ -704,7 +704,7 @@ func TestRequestConclusionCancelledCtxLeavesIntentAlive(t *testing.T) {
 	}
 	id, ch, _, _ := service.intents.Begin("key-1", in, func(context.Context, domain.IntentInputValues) (any, error) {
 		return domain.Ticket{}, nil
-	}, nil)
+	})
 
 	// The requester walks away.
 	service.intents.Detach(id, ch)
@@ -715,7 +715,7 @@ func TestRequestConclusionCancelledCtxLeavesIntentAlive(t *testing.T) {
 
 	// It still resolves, and the resolution is replayable by the retry.
 	service.intents.Finish(id, intentResult{Outcome: domain.IntentOutcomeAutoApproved, Result: domain.Ticket{}})
-	_, _, replayed, disposition := service.intents.Begin("key-1", in, nil, nil)
+	_, _, replayed, disposition := service.intents.Begin("key-1", in, nil)
 	if disposition != intentReplayed || replayed.Outcome != domain.IntentOutcomeAutoApproved {
 		t.Fatalf("retry did not replay the resolved outcome: disposition=%v outcome=%q", disposition, replayed.Outcome)
 	}

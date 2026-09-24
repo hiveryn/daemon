@@ -116,6 +116,9 @@ type SessionService interface {
 	// leaves the intent pending and correctable.
 	ApproveIntent(context.Context, string, string, IntentInputValues) (Intent, error)
 	DenyIntent(context.Context, string, string, string) error
+	// GetDeferredIntent returns a deferred intent's pending or resolved outcome
+	// by its stable id, scoped to the session that raised it.
+	GetDeferredIntent(context.Context, string, string) (DeferredIntent, error)
 	ReadConclusion(context.Context, string, string) (ArchitectConclusion, error)
 	ReadRecentConclusion(context.Context, string) (ArchitectConclusion, error)
 	ListConclusions(context.Context, string, int) ([]ConclusionSummary, error)

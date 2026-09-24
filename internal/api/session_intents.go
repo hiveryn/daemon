@@ -16,6 +16,8 @@ import (
 //     they are separate routes rather than one generic /intents/{type}.
 //   - Desktop-facing, generic (approve, deny), addressed by intent id — the
 //     desktop must not learn a new route per tool.
+//   - Lookup of a deferred intent's outcome by its stable id (GET), for the
+//     domain-specific result/wait tools built on deferred approval.
 //
 // The desktop's own direct routes (POST /api/sessions/{id}/conclude and
 // POST /api/architects/{key}/tickets) stay unapproved; approval gates the
@@ -190,4 +192,22 @@ func (h *sessionsHandler) denyIntent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// getDeferredIntent returns a deferred intent's pending or resolved outcome by
+// id. Only deferred intents have a durable record; any other id, or one raised
+// by another session, is a 404.
+func (h *sessionsHandler) getDeferredIntent(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
+		return
+	}
+
+	record, err := h.sessions.GetDeferredIntent(r.Context(), r.PathValue("id"), r.PathValue("intentID"))
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, record)
 }

@@ -510,6 +510,11 @@ func (f *fakeSessionService) DenyIntent(_ context.Context, sessionID, intentID, 
 	return f.denyIntentErr
 }
 
+func (f *fakeSessionService) GetDeferredIntent(_ context.Context, sessionID, intentID string) (domain.DeferredIntent, error) {
+	f.lastIntentID = intentID
+	return domain.DeferredIntent{}, &domain.NotFoundError{Resource: "intent", ID: intentID}
+}
+
 func (f *fakeSessionService) ReadConclusion(_ context.Context, architectKey, id string) (domain.ArchitectConclusion, error) {
 	return f.readConclusionResult, f.readConclusionErr
 }

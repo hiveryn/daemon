@@ -90,6 +90,7 @@ func Run(configPath, databasePath string, portOverride int) error {
 		service.SetEventArchiver(archiver)
 		logger.Info("agent event archival enabled", "dir", runtime.Home)
 	}
+	service.SetDeferredIntentRepository(store.NewDeferredIntentStore(db))
 	if err := service.RestoreRunningSessions(ctx); err != nil {
 		return err
 	}

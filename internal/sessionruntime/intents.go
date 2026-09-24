@@ -20,25 +20,28 @@ const intentReplayTTL = time.Hour
 type intentResult struct {
 	IntentID string
 	Outcome  domain.IntentOutcome
-	Result   any                      // the tool's typed result; nil unless Outcome.Approved()
-	Inputs   domain.IntentInputValues // validated values the exec ran with; nil unless approved
-	Reason   string                   // denial reason, or error detail
-	Err      error                    // non-nil only when Outcome == error
+	Result   any                         // the tool's typed result; nil unless Outcome.Approved()
+	Inputs   domain.IntentInputValues    // validated values the exec ran with; nil unless approved
+	Reason   string                      // denial reason, or error detail
+	Err      error                       // non-nil only when Outcome == error
+	Status   domain.DeferredIntentStatus // deferred only: the record's terminal status
 }
 
 // pendingIntent is one in-flight intent. exec is the tool's actual side effect,
 // captured with its typed params at creation time — which is why the store
 // itself never needs to know the payload type. It receives the validated
-// approval inputs. defaults are those inputs resolved from the schema's
-// defaults, used by automatic approval; they are meaningful only while
-// intent.UnresolvedInputs is empty.
+// approval inputs (nil for an intent without inputs).
+//
+// A deferred intent has no waiters: its request already returned. ready is
+// closed once its creator has persisted and announced it, so a retry that
+// attaches meanwhile never reads a record that is not written yet.
 type pendingIntent struct {
 	intent   domain.Intent
 	dedupKey string
 	exec     func(context.Context, domain.IntentInputValues) (any, error)
-	defaults domain.IntentInputValues
 	claimed  bool                // CAS'd under mu: exactly one resolver wins
 	waiters  []chan intentResult // each buffered 1, so a broadcast never blocks
+	ready    chan struct{}       // deferred only; closed by MarkReady
 }
 
 type replayEntry struct {
@@ -54,7 +57,8 @@ type replayEntry struct {
 //
 // Lifetime is in-memory only, matching the approval store it replaces. A daemon
 // restart empties it; ReconcileIntents converges the durable event log so no
-// stale popup replays.
+// stale popup replays, and fails the durable record of every deferred intent
+// that was still open — its captured exec cannot survive the restart.
 type intentStore struct {
 	mu        sync.Mutex
 	pending   map[string]*pendingIntent      // intentID → pending
@@ -97,48 +101,147 @@ func (s *intentStore) Begin(
 	dedupKey string,
 	in domain.Intent,
 	exec func(context.Context, domain.IntentInputValues) (any, error),
-	defaults domain.IntentInputValues,
 ) (id string, ch <-chan intentResult, replayed intentResult, d intentDisposition) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Lazy sweep on access is the replay cache's entire lifecycle — no
-	// goroutine, no timer. Safe given the daemon's load profile (1 desktop,
-	// 0-2 MCP sessions): an hour of intents is a handful of entries.
-	s.sweepLocked()
-
-	if e, ok := s.replay[dedupKey]; ok {
-		return "", nil, e.result, intentReplayed
+	if res, ok := s.lookupReplayLocked(dedupKey); ok {
+		return "", nil, res, intentReplayed
 	}
 
 	// Attaching is legal even when the entry is already claimed: the entry
 	// stays registered until Finish, so a retry landing mid-exec joins the
 	// broadcast instead of minting a duplicate.
-	if existingID, ok := s.byDedup[dedupKey]; ok {
-		if p := s.pending[existingID]; p != nil {
-			w := make(chan intentResult, 1)
-			p.waiters = append(p.waiters, w)
-			return existingID, w, intentResult{}, intentAttached
-		}
-		// byDedup and pending are always mutated together; a dangling key is an
-		// invariant violation. Drop it rather than attach to nothing.
-		delete(s.byDedup, dedupKey)
+	if p := s.lookupPendingLocked(dedupKey); p != nil {
+		w := make(chan intentResult, 1)
+		p.waiters = append(p.waiters, w)
+		return p.intent.ID, w, intentResult{}, intentAttached
 	}
 
 	w := make(chan intentResult, 1)
-	s.pending[in.ID] = &pendingIntent{
+	s.registerLocked(&pendingIntent{
 		intent:   in,
 		dedupKey: dedupKey,
 		exec:     exec,
-		defaults: defaults,
 		waiters:  []chan intentResult{w},
-	}
-	s.byDedup[dedupKey] = in.ID
-	if s.bySession[in.Origin.SessionID] == nil {
-		s.bySession[in.Origin.SessionID] = map[string]struct{}{}
-	}
-	s.bySession[in.Origin.SessionID][in.ID] = struct{}{}
+	})
 	return in.ID, w, intentResult{}, intentCreated
+}
+
+// BeginDeferred is Begin for a deferred intent, in the same single critical
+// section and with the same dedup semantics, but without waiters: nobody
+// blocks on a deferred intent. On intentAttached the caller must wait on ready
+// before reading the persisted record; on intentCreated it must call
+// MarkReady (or Discard) once the record is written and announced.
+func (s *intentStore) BeginDeferred(
+	dedupKey string,
+	in domain.Intent,
+	exec func(context.Context, domain.IntentInputValues) (any, error),
+) (id string, ready <-chan struct{}, d intentDisposition) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if res, ok := s.lookupReplayLocked(dedupKey); ok {
+		return res.IntentID, nil, intentReplayed
+	}
+	if p := s.lookupPendingLocked(dedupKey); p != nil {
+		return p.intent.ID, p.ready, intentAttached
+	}
+	p := &pendingIntent{intent: in, dedupKey: dedupKey, exec: exec, ready: make(chan struct{})}
+	s.registerLocked(p)
+	return in.ID, p.ready, intentCreated
+}
+
+func (s *intentStore) lookupReplayLocked(dedupKey string) (intentResult, bool) {
+	// Lazy sweep on access is the replay cache's entire lifecycle — no
+	// goroutine, no timer. Safe given the daemon's load profile (1 desktop,
+	// 0-2 MCP sessions): an hour of intents is a handful of entries.
+	s.sweepLocked()
+	e, ok := s.replay[dedupKey]
+	return e.result, ok
+}
+
+func (s *intentStore) lookupPendingLocked(dedupKey string) *pendingIntent {
+	existingID, ok := s.byDedup[dedupKey]
+	if !ok {
+		return nil
+	}
+	if p := s.pending[existingID]; p != nil {
+		return p
+	}
+	// byDedup and pending are always mutated together; a dangling key is an
+	// invariant violation. Drop it rather than attach to nothing.
+	delete(s.byDedup, dedupKey)
+	return nil
+}
+
+func (s *intentStore) registerLocked(p *pendingIntent) {
+	s.pending[p.intent.ID] = p
+	s.byDedup[p.dedupKey] = p.intent.ID
+	if s.bySession[p.intent.Origin.SessionID] == nil {
+		s.bySession[p.intent.Origin.SessionID] = map[string]struct{}{}
+	}
+	s.bySession[p.intent.Origin.SessionID][p.intent.ID] = struct{}{}
+}
+
+func (s *intentStore) unregisterLocked(p *pendingIntent) {
+	delete(s.byDedup, p.dedupKey)
+	delete(s.pending, p.intent.ID)
+	if set, ok := s.bySession[p.intent.Origin.SessionID]; ok {
+		delete(set, p.intent.ID)
+		if len(set) == 0 {
+			delete(s.bySession, p.intent.Origin.SessionID)
+		}
+	}
+	if p.ready != nil {
+		select {
+		case <-p.ready:
+		default:
+			close(p.ready)
+		}
+	}
+}
+
+// MarkReady releases retries that attached to a deferred intent while its
+// creator was persisting and announcing it. It reports false when the intent
+// was resolved meanwhile (a session teardown claimed it before its record
+// existed), so the creator can bring the record in line.
+func (s *intentStore) MarkReady(intentID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.pending[intentID]
+	if !ok {
+		return false
+	}
+	if p.ready != nil {
+		select {
+		case <-p.ready:
+		default:
+			close(p.ready)
+		}
+	}
+	return true
+}
+
+// Discard unregisters a deferred intent whose record could not be written,
+// without caching a replay: there is no record for a retry to replay, so the
+// retry must be free to try again.
+func (s *intentStore) Discard(intentID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p, ok := s.pending[intentID]; ok {
+		s.unregisterLocked(p)
+	}
+}
+
+// Release gives up a claim whose resolution could not be recorded, so the
+// intent is answerable again. Nothing ran: callers release only before exec.
+func (s *intentStore) Release(intentID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p, ok := s.pending[intentID]; ok {
+		p.claimed = false
+	}
 }
 
 // Claim takes exclusive ownership of resolving an intent. It does NOT remove
@@ -196,14 +299,7 @@ func (s *intentStore) Finish(intentID string, res intentResult) {
 	p.waiters = nil
 
 	s.replay[p.dedupKey] = replayEntry{result: res, at: s.now()}
-	delete(s.byDedup, p.dedupKey)
-	delete(s.pending, intentID)
-	if set, ok := s.bySession[p.intent.Origin.SessionID]; ok {
-		delete(set, intentID)
-		if len(set) == 0 {
-			delete(s.bySession, p.intent.Origin.SessionID)
-		}
-	}
+	s.unregisterLocked(p)
 }
 
 // Detach drops one waiter whose caller walked away (its ctx died). The intent

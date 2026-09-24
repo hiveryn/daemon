@@ -20,7 +20,7 @@ func TestOpenRunsSessionMigrations(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	for _, table := range []string{"schema_migrations", "sessions", "session_runs", "session_events"} {
+	for _, table := range []string{"schema_migrations", "sessions", "session_runs", "session_events", "deferred_intents"} {
 		var name string
 		if err := db.QueryRowContext(context.Background(), `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&name); err != nil {
 			t.Fatalf("expected table %q to exist: %v", table, err)

@@ -15,6 +15,7 @@ var migrationFiles = []string{
 	"migrations/0001_sessions.sql",
 	"migrations/0002_session_workflows.sql",
 	"migrations/0003_remove_freeform_sessions.sql",
+	"migrations/0004_deferred_intents.sql",
 }
 
 func runMigrations(ctx context.Context, db *sql.DB) error {

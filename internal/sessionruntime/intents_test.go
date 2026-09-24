@@ -24,7 +24,7 @@ func noopExec(context.Context, domain.IntentInputValues) (any, error) { return "
 func TestIntentStoreBeginCreatesThenAttaches(t *testing.T) {
 	s := newIntentStore()
 
-	id, ch, _, d := s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec, nil)
+	id, ch, _, d := s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec)
 	if d != intentCreated {
 		t.Fatalf("first Begin disposition = %v, want intentCreated", d)
 	}
@@ -33,7 +33,7 @@ func TestIntentStoreBeginCreatesThenAttaches(t *testing.T) {
 	}
 
 	// Same dedup key while still pending → attach to the SAME intent, not a new one.
-	id2, ch2, _, d2 := s.Begin("key-1", testIntent("i-2", "sess-1"), noopExec, nil)
+	id2, ch2, _, d2 := s.Begin("key-1", testIntent("i-2", "sess-1"), noopExec)
 	if d2 != intentAttached {
 		t.Fatalf("second Begin disposition = %v, want intentAttached", d2)
 	}
@@ -65,11 +65,11 @@ func TestIntentStoreBeginCreatesThenAttaches(t *testing.T) {
 func TestIntentStoreReplaysResolvedOutcome(t *testing.T) {
 	s := newIntentStore()
 
-	_, _, _, _ = s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec, nil)
+	_, _, _, _ = s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec)
 	s.Finish("i-1", intentResult{Outcome: domain.IntentOutcomeApproved, Result: "ticket-1"})
 
 	// A retry after resolution must replay, not block and not mint a new intent.
-	_, ch, replayed, d := s.Begin("key-1", testIntent("i-2", "sess-1"), noopExec, nil)
+	_, ch, replayed, d := s.Begin("key-1", testIntent("i-2", "sess-1"), noopExec)
 	if d != intentReplayed {
 		t.Fatalf("disposition = %v, want intentReplayed", d)
 	}
@@ -87,10 +87,10 @@ func TestIntentStoreReplaysResolvedOutcome(t *testing.T) {
 func TestIntentStoreReplaysDenial(t *testing.T) {
 	s := newIntentStore()
 
-	_, _, _, _ = s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec, nil)
+	_, _, _, _ = s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec)
 	s.Finish("i-1", intentResult{Outcome: domain.IntentOutcomeDeniedByUser, Reason: "nope"})
 
-	_, _, replayed, d := s.Begin("key-1", testIntent("i-2", "sess-1"), noopExec, nil)
+	_, _, replayed, d := s.Begin("key-1", testIntent("i-2", "sess-1"), noopExec)
 	if d != intentReplayed {
 		t.Fatalf("disposition = %v, want intentReplayed", d)
 	}
@@ -102,8 +102,8 @@ func TestIntentStoreReplaysDenial(t *testing.T) {
 func TestIntentStoreDedupKeyIsolatesSessionsAndTools(t *testing.T) {
 	s := newIntentStore()
 
-	_, _, _, d1 := s.Begin("key-a", testIntent("i-1", "sess-1"), noopExec, nil)
-	_, _, _, d2 := s.Begin("key-b", testIntent("i-2", "sess-2"), noopExec, nil)
+	_, _, _, d1 := s.Begin("key-a", testIntent("i-1", "sess-1"), noopExec)
+	_, _, _, d2 := s.Begin("key-b", testIntent("i-2", "sess-2"), noopExec)
 	if d1 != intentCreated || d2 != intentCreated {
 		t.Fatalf("dispositions = %v/%v, want both intentCreated", d1, d2)
 	}
@@ -114,7 +114,7 @@ func TestIntentStoreDedupKeyIsolatesSessionsAndTools(t *testing.T) {
 
 func TestIntentStoreClaimIsSingleWinner(t *testing.T) {
 	s := newIntentStore()
-	_, _, _, _ = s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec, nil)
+	_, _, _, _ = s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec)
 
 	var wins int64
 	var mu sync.Mutex
@@ -139,7 +139,7 @@ func TestIntentStoreClaimIsSingleWinner(t *testing.T) {
 
 func TestIntentStoreClaimDoesNotUnregister(t *testing.T) {
 	s := newIntentStore()
-	_, _, _, _ = s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec, nil)
+	_, _, _, _ = s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec)
 
 	if _, ok := s.Claim("i-1"); !ok {
 		t.Fatal("Claim failed")
@@ -147,7 +147,7 @@ func TestIntentStoreClaimDoesNotUnregister(t *testing.T) {
 
 	// This is the duplicate-ticket guard: a retry landing between Claim and
 	// Finish must attach, not create.
-	id, ch, _, d := s.Begin("key-1", testIntent("i-2", "sess-1"), noopExec, nil)
+	id, ch, _, d := s.Begin("key-1", testIntent("i-2", "sess-1"), noopExec)
 	if d != intentAttached {
 		t.Fatalf("disposition during exec = %v, want intentAttached", d)
 	}
@@ -169,7 +169,7 @@ func TestIntentStoreClaimDoesNotUnregister(t *testing.T) {
 
 func TestIntentStoreClaimForSessionRejectsForeignSession(t *testing.T) {
 	s := newIntentStore()
-	_, _, _, _ = s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec, nil)
+	_, _, _, _ = s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec)
 
 	if _, ok := s.ClaimForSession("sess-2", "i-1"); ok {
 		t.Fatal("ClaimForSession allowed a different session to resolve this intent")
@@ -181,7 +181,7 @@ func TestIntentStoreClaimForSessionRejectsForeignSession(t *testing.T) {
 
 func TestIntentStoreDetachLeavesIntentAlive(t *testing.T) {
 	s := newIntentStore()
-	id, ch, _, _ := s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec, nil)
+	id, ch, _, _ := s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec)
 
 	s.Detach(id, ch)
 
@@ -192,7 +192,7 @@ func TestIntentStoreDetachLeavesIntentAlive(t *testing.T) {
 	}
 	s.Finish("i-1", intentResult{Outcome: domain.IntentOutcomeAutoApproved, Result: "ticket-1"})
 
-	_, _, replayed, d := s.Begin("key-1", testIntent("i-2", "sess-1"), noopExec, nil)
+	_, _, replayed, d := s.Begin("key-1", testIntent("i-2", "sess-1"), noopExec)
 	if d != intentReplayed || replayed.Result != "ticket-1" {
 		t.Fatalf("after detach+resolve: disposition=%v result=%v, want replay of ticket-1", d, replayed.Result)
 	}
@@ -203,18 +203,18 @@ func TestIntentStoreReplaySweepsAfterTTL(t *testing.T) {
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	s.now = func() time.Time { return now }
 
-	_, _, _, _ = s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec, nil)
+	_, _, _, _ = s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec)
 	s.Finish("i-1", intentResult{Outcome: domain.IntentOutcomeApproved, Result: "ticket-1"})
 
 	// Just inside the window → still replays.
 	now = now.Add(intentReplayTTL - time.Minute)
-	if _, _, _, d := s.Begin("key-1", testIntent("i-2", "sess-1"), noopExec, nil); d != intentReplayed {
+	if _, _, _, d := s.Begin("key-1", testIntent("i-2", "sess-1"), noopExec); d != intentReplayed {
 		t.Fatalf("inside TTL: disposition = %v, want intentReplayed", d)
 	}
 
 	// Past the window → the cache entry is swept and a fresh intent is created.
 	now = now.Add(2 * intentReplayTTL)
-	if _, _, _, d := s.Begin("key-1", testIntent("i-3", "sess-1"), noopExec, nil); d != intentCreated {
+	if _, _, _, d := s.Begin("key-1", testIntent("i-3", "sess-1"), noopExec); d != intentCreated {
 		t.Fatalf("past TTL: disposition = %v, want intentCreated", d)
 	}
 	if _, ok := s.replay["key-1"]; ok {
@@ -224,9 +224,9 @@ func TestIntentStoreReplaySweepsAfterTTL(t *testing.T) {
 
 func TestIntentStorePendingForSession(t *testing.T) {
 	s := newIntentStore()
-	_, _, _, _ = s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec, nil)
-	_, _, _, _ = s.Begin("key-2", testIntent("i-2", "sess-1"), noopExec, nil)
-	_, _, _, _ = s.Begin("key-3", testIntent("i-3", "sess-2"), noopExec, nil)
+	_, _, _, _ = s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec)
+	_, _, _, _ = s.Begin("key-2", testIntent("i-2", "sess-1"), noopExec)
+	_, _, _, _ = s.Begin("key-3", testIntent("i-3", "sess-2"), noopExec)
 
 	got := s.PendingForSession("sess-1")
 	if len(got) != 2 || got[0] != "i-1" || got[1] != "i-2" {
@@ -257,7 +257,7 @@ func TestIntentStoreConcurrentIdenticalBeginsCollapseToOne(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, ch, _, d := s.Begin("key-1", testIntent(fmt.Sprintf("i-%d", i), "sess-1"), noopExec, nil)
+			_, ch, _, d := s.Begin("key-1", testIntent(fmt.Sprintf("i-%d", i), "sess-1"), noopExec)
 			if d == intentCreated {
 				created[i] = 1
 			}
