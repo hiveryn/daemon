@@ -85,6 +85,10 @@ func (h *architectsHandler) listStatus(w http.ResponseWriter, r *http.Request) {
 		if session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
 			continue
 		}
+		// Action sessions belong to no architect; the Actions window shows them.
+		if session.SessionType == domain.SessionTypeAction {
+			continue
+		}
 
 		architectStatus, ok := byKey[session.ArchitectKey]
 		if !ok {

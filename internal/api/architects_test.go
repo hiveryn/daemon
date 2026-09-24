@@ -250,6 +250,17 @@ func TestArchitectsStatusAPI(t *testing.T) {
 				},
 			},
 			{
+				// Action sessions belong to no architect and are not listed.
+				ID:          "action-session",
+				SessionType: domain.SessionTypeAction,
+				ContextID:   "execution-1",
+				CurrentRun: &domain.SessionRun{
+					ID:        "run-action",
+					Status:    domain.SessionRunStatusRunning,
+					StartedAt: &ticketStartedAt,
+				},
+			},
+			{
 				ID:           "completed-session",
 				ArchitectKey: "hiveryn",
 				SessionType:  domain.SessionTypeTicket,

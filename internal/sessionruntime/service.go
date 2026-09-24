@@ -37,6 +37,9 @@ const (
 
 var defaultTabsBySessionType = map[string][]config.TabEntry{
 	"ticket": {{Type: "ticket"}},
+	// The action tab shows the execution (prompt, status, output directory,
+	// conclusion); files browses the output directory and the repository.
+	"action": {{Type: "action"}, {Type: "files"}, {Type: "event-log"}},
 }
 
 type Service struct {
@@ -68,6 +71,9 @@ type Service struct {
 	terminalStates  map[string]sessionTerminalState
 
 	archive *archive.Archiver
+
+	actions      *actionRuntime
+	actionEvents actionEventHub
 }
 
 type eventSubscription struct {
@@ -294,9 +300,14 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 		return domain.CreateSessionRunResult{}, err
 	}
 
-	architect, ok := cfg.Architects[session.ArchitectKey]
-	if !ok {
-		return domain.CreateSessionRunResult{}, &domain.NotFoundError{Resource: "architect", ID: session.ArchitectKey}
+	// Action sessions belong to no architect; every other session needs its
+	// architect to still be configured.
+	var architect config.ArchitectConfig
+	if session.SessionType != domain.SessionTypeAction {
+		var ok bool
+		if architect, ok = cfg.Architects[session.ArchitectKey]; !ok {
+			return domain.CreateSessionRunResult{}, &domain.NotFoundError{Resource: "architect", ID: session.ArchitectKey}
+		}
 	}
 
 	profile, ok := cfg.Variants[req.ProfileName]
@@ -463,6 +474,9 @@ func (s *Service) RestoreRunningSessions(ctx context.Context) error {
 				)
 			}
 
+			if session.SessionType == domain.SessionTypeAction {
+				s.failActionSession(session, "restore failed after daemon restart: "+err.Error())
+			}
 			if session.SessionType == domain.SessionTypeTicket {
 				if ticketErr := s.moveTicketToBacklog(ctx, session); ticketErr != nil {
 					s.logger.Error("failed to move ticket back to backlog after restore failure",
@@ -656,7 +670,7 @@ func (s *Service) resolveStoredRunLaunchContext(session domain.Session, run doma
 		return config.VariantConfig{}, "", err
 	}
 
-	if _, ok := cfg.Architects[session.ArchitectKey]; !ok {
+	if _, ok := cfg.Architects[session.ArchitectKey]; !ok && session.SessionType != domain.SessionTypeAction {
 		return config.VariantConfig{}, "", fmt.Errorf("architect %q not found in architects.yaml", session.ArchitectKey)
 	}
 	if _, ok := cfg.Variants[run.ProfileName]; !ok {
@@ -701,12 +715,14 @@ func (s *Service) resumeSessionMainTerminal(ctx context.Context, session domain.
 	if err != nil {
 		return "", err
 	}
-	architect, err := s.currentArchitect(session.ArchitectKey)
-	if err != nil {
-		return "", err
-	}
-	if err := validateWorkerLaunchContext(architect, session); err != nil {
-		return "", err
+	if session.SessionType != domain.SessionTypeAction {
+		architect, err := s.currentArchitect(session.ArchitectKey)
+		if err != nil {
+			return "", err
+		}
+		if err := validateWorkerLaunchContext(architect, session); err != nil {
+			return "", err
+		}
 	}
 	mainTerminalID, _, err := s.startSessionMainTerminal(ctx, session, run, profile, agentKind, agentruntime.StartRequest{
 		Model:              profile.Model,
@@ -1567,6 +1583,9 @@ func (s *Service) ListTerminalWorkdirs(ctx context.Context, sessionID string) ([
 }
 
 func (s *Service) terminalWorkdirs(ctx context.Context, session domain.Session) ([]domain.TerminalWorkdir, error) {
+	if session.SessionType == domain.SessionTypeAction {
+		return actionTerminalWorkdirs(session)
+	}
 	architect, err := s.currentArchitect(session.ArchitectKey)
 	if err != nil {
 		return nil, fmt.Errorf("load architect %q terminal workdirs: %w", session.ArchitectKey, err)
@@ -1696,6 +1715,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	terminalErr := s.terminal.Shutdown(ctx)
 	s.cancelReceiverBridges()
 	s.closeEventSubscribers("")
+	s.closeActionEventSubscribers()
 	if s.archive != nil {
 		if err := s.archive.Close(); err != nil {
 			s.logger.Error("failed to close event archive", "error", err)
@@ -1885,6 +1905,9 @@ func (s *Service) handleTerminalExit(exit terminalExit) {
 			"error", err,
 		)
 		s.markRunFailed(run.ID, domain.SessionRunFailureLaunchFailed, "resume_main_terminal")
+		if session.SessionType == domain.SessionTypeAction {
+			s.failActionSession(session, "agent exited and could not be resumed: "+err.Error())
+		}
 		if session.SessionType == domain.SessionTypeTicket {
 			if ticketErr := s.moveTicketToBacklog(context.Background(), session); ticketErr != nil {
 				s.logger.Error("failed to move ticket back to backlog after resume failure",
@@ -2080,7 +2103,7 @@ func (s *Service) mcpServersForSession(sessionType domain.SessionType, architect
 		return nil, fmt.Errorf("resolve hiverynd executable: %w", err)
 	}
 
-	servers := []agentruntime.MCPServerConfig{{
+	server := agentruntime.MCPServerConfig{
 		Name:    config.ReservedMCPServerName,
 		Command: hiveryndPath,
 		Args: []string{
@@ -2094,7 +2117,14 @@ func (s *Service) mcpServersForSession(sessionType domain.SessionType, architect
 			"HIVERYN_SESSION_TYPE":  string(sessionType),
 			"HIVERYN_SESSION_ID":    sessionID,
 		},
-	}}
+	}
+	// Action sessions have no architect: the MCP server is scoped by session
+	// id alone and registers only the action tools.
+	if sessionType == domain.SessionTypeAction {
+		server.Args = []string{"mcp", "--daemon-url", s.baseURL}
+		delete(server.Env, "HIVERYN_ARCHITECT_KEY")
+	}
+	servers := []agentruntime.MCPServerConfig{server}
 
 	names := make([]string, 0, len(variantServers))
 	for name := range variantServers {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -820,5 +821,67 @@ func TestSessionStoreMarkRunFailedSetsAgentStatusStopped(t *testing.T) {
 	}
 	if run.Status != domain.SessionRunStatusFailed {
 		t.Fatalf("expected run status %q, got %q", domain.SessionRunStatusFailed, run.Status)
+	}
+}
+
+func TestActionRunStoreSingleRunningAndCompareAndSet(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "daemon.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	runs := NewActionRunStore(db)
+
+	now := time.Date(2026, 9, 24, 8, 0, 0, 0, time.UTC)
+	mk := func(id, action string) domain.ActionRun {
+		return domain.ActionRun{ID: id, Action: action, Trigger: domain.ActionRunTriggerManual, Status: domain.ActionRunRunning,
+			Prompt: "p", ProfileName: "codex", RepoPath: "/repo", OutputDir: "/out/" + id, CreatedAt: now, StartedAt: &now}
+	}
+	if err := runs.CreateActionRun(ctx, mk("a", "demo")); err != nil {
+		t.Fatal(err)
+	}
+	var conflict *domain.ConflictError
+	if err := runs.CreateActionRun(ctx, mk("b", "demo")); !errors.As(err, &conflict) || !strings.Contains(err.Error(), "execution a") {
+		t.Fatalf("second running execution err = %v", err)
+	}
+	if err := runs.CreateActionRun(ctx, mk("c", "other")); err != nil {
+		t.Fatalf("other action blocked: %v", err)
+	}
+	if err := runs.SetActionRunSession(ctx, "a", "sess-a"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runs.FinishActionRun(ctx, "a", domain.ActionRunCompleted, "delivered", "", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := runs.FinishActionRun(ctx, "a", domain.ActionRunFailed, "", "late", now.Add(2*time.Minute)); !errors.As(err, &conflict) {
+		t.Fatalf("finishing a finished execution err = %v", err)
+	}
+	got, err := runs.GetActionRun(ctx, "a")
+	if err != nil || got.Status != domain.ActionRunCompleted || got.Summary != "delivered" || got.SessionID != "sess-a" || got.EndedAt == nil || got.Error != "" {
+		t.Fatalf("finished execution = %+v, %v", got, err)
+	}
+	// The action is free again once its execution finished.
+	later := mk("d", "demo")
+	later.CreatedAt = now.Add(3 * time.Minute)
+	if err := runs.CreateActionRun(ctx, later); err != nil {
+		t.Fatalf("relaunch after completion: %v", err)
+	}
+
+	list, err := runs.ListActionRuns(ctx, "demo", 0)
+	if err != nil || len(list) != 2 || list[0].ID != "d" || list[1].ID != "a" {
+		t.Fatalf("list = %+v, %v", list, err)
+	}
+	running, err := runs.RunningActionRuns(ctx)
+	if err != nil || len(running) != 2 || running["demo"].ID != "d" || running["other"].ID != "c" {
+		t.Fatalf("running = %+v, %v", running, err)
+	}
+	conclusions, err := runs.RecentActionConclusions(ctx, "demo", 5)
+	if err != nil || len(conclusions) != 1 || conclusions[0].ExecutionID != "a" || conclusions[0].Summary != "delivered" {
+		t.Fatalf("conclusions = %+v, %v", conclusions, err)
+	}
+	if _, err := runs.GetActionRun(ctx, "missing"); !errors.As(err, new(*domain.NotFoundError)) {
+		t.Fatalf("missing err = %v", err)
 	}
 }

@@ -34,23 +34,28 @@ func NewServer(cfg Config) (*Server, error) {
 	if daemonURL == "" {
 		return nil, fmt.Errorf("mcp server requires HIVERYN_DAEMON_URL to be set")
 	}
-	architectKey := strings.TrimSpace(cfg.ArchitectKey)
-	if architectKey == "" {
-		return nil, fmt.Errorf("mcp server requires HIVERYN_ARCHITECT_KEY to be set")
-	}
-
 	sessionType := cfg.SessionType
 	if sessionType == "" {
 		sessionType = SessionTypeArchitect
 	}
-	if sessionType != SessionTypeArchitect && sessionType != SessionTypeTicket {
+	if sessionType != SessionTypeArchitect && sessionType != SessionTypeTicket && sessionType != SessionTypeAction {
 		return nil, fmt.Errorf("unsupported HIVERYN_SESSION_TYPE %q", sessionType)
 	}
 
-	// Every session type registers at least one intent-routed tool
-	// (createWorkTicket and a conclude tool), and intents are addressed by
-	// session id — so this is required up front rather than checked lazily per
-	// handler. Not role-conditional on purpose.
+	// Action sessions belong to no architect; every other role is scoped by one.
+	architectKey := strings.TrimSpace(cfg.ArchitectKey)
+	if sessionType == SessionTypeAction {
+		if architectKey != "" {
+			return nil, fmt.Errorf("action sessions do not take an architect key (got %q)", architectKey)
+		}
+	} else if architectKey == "" {
+		return nil, fmt.Errorf("mcp server requires HIVERYN_ARCHITECT_KEY to be set")
+	}
+
+	// Every session type's tools are addressed by session id (intent-routed
+	// createWorkTicket and conclude tools, and the action tools), so this is
+	// required up front rather than checked lazily per handler. Not
+	// role-conditional on purpose.
 	if strings.TrimSpace(cfg.SessionID) == "" {
 		return nil, fmt.Errorf("mcp server requires HIVERYN_SESSION_ID to be set")
 	}
@@ -76,6 +81,8 @@ func NewServer(cfg Config) (*Server, error) {
 		server.registerArchitectTools()
 	case SessionTypeTicket:
 		server.registerTicketTools()
+	case SessionTypeAction:
+		server.registerActionTools()
 	}
 
 	return server, nil

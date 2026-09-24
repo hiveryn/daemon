@@ -1944,6 +1944,9 @@ type fakeTerminalManager struct {
 	terminals  []domain.TerminalInfo
 	killed     []string
 	operations *[]string
+	// onKill runs on KillBySession, e.g. to cancel the caller's context the
+	// way killing a real agent drops its in-flight MCP request.
+	onKill func()
 }
 
 func (f *fakeTerminalManager) Start(_ context.Context, spec terminalStartSpec) error {
@@ -1979,6 +1982,9 @@ func (f *fakeTerminalManager) Kill(_ context.Context, sessionID, id string) erro
 func (f *fakeTerminalManager) KillBySession(context.Context, string) error {
 	if f.operations != nil {
 		*f.operations = append(*f.operations, "kill")
+	}
+	if f.onKill != nil {
+		f.onKill()
 	}
 	return nil
 }

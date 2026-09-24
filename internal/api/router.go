@@ -24,6 +24,7 @@ type Dependencies struct {
 	Sessions        domain.SessionService
 	Tickets         domain.TicketService
 	Workspaces      domain.WorkspaceService
+	Actions         domain.ActionService
 	IngestHandler   http.Handler
 	ArchitectEvents *archevents.Hub
 }
@@ -107,6 +108,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	eh := &architectEventsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, hub: deps.ArchitectEvents}
 	fh := &fsHandler{logger: deps.Logger}
 	wh := &workspaceHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, workspaces: deps.Workspaces}
+	ach := &actionsHandler{logger: deps.Logger, actions: deps.Actions}
 
 	if deps.ArchitectEvents != nil {
 		hub := deps.ArchitectEvents
@@ -171,6 +173,19 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}/terminals", sh.listTerminals)
 	mux.HandleFunc("DELETE /api/sessions/{id}/terminals/{uuid}", sh.killTerminal)
 	mux.HandleFunc("GET /ws/session/{id}/terminal/{uuid}", sh.wsTerminal)
+	// Actions: global definitions, manual launches and the durable execution
+	// records. Executions live under /api/action-runs so no action name can
+	// collide with a route segment.
+	mux.HandleFunc("GET /api/actions", ach.list)
+	mux.HandleFunc("GET /api/actions/events", ach.events)
+	mux.HandleFunc("GET /api/actions/{name}", ach.get)
+	mux.HandleFunc("POST /api/actions/{name}/runs", ach.launch)
+	mux.HandleFunc("GET /api/action-runs", ach.listRuns)
+	mux.HandleFunc("GET /api/action-runs/{id}", ach.getRun)
+	mux.HandleFunc("POST /api/action-runs/{id}/cancel", ach.cancelRun)
+	// Agent-facing action tools, addressed by the calling action session.
+	mux.HandleFunc("POST /api/sessions/{id}/action/conclude", ach.conclude)
+	mux.HandleFunc("GET /api/sessions/{id}/action/conclusions", ach.recentConclusions)
 	if deps.IngestHandler != nil {
 		mux.Handle(ingestRoutePrefix+"/", deps.IngestHandler)
 	}

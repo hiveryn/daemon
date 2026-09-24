@@ -91,7 +91,13 @@ func Run(configPath, databasePath string, portOverride int) error {
 		logger.Info("agent event archival enabled", "dir", runtime.Home)
 	}
 	service.SetDeferredIntentRepository(store.NewDeferredIntentStore(db))
+	service.SetActions(store.NewActionRunStore(db), runtime.ActionsDir, runtime.ActionRunsDir)
 	if err := service.RestoreRunningSessions(ctx); err != nil {
+		return err
+	}
+	// After restore: an execution whose agent session did not come back is
+	// failed as interrupted; restored executions keep running.
+	if err := service.ReconcileActionRuns(ctx); err != nil {
 		return err
 	}
 	if err := service.ReconcileIntents(ctx); err != nil {
@@ -113,6 +119,7 @@ func Run(configPath, databasePath string, portOverride int) error {
 		Sessions:        service,
 		Tickets:         ticketService,
 		Workspaces:      workspaceService,
+		Actions:         service,
 		IngestHandler:   service.IngestHandler(),
 		ArchitectEvents: architectHub,
 	})

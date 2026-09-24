@@ -14,6 +14,8 @@ const (
 	environmentEnvVar  = "HIVERYN_ENV"
 	databaseFileName   = "daemon.db"
 	logDirName         = "logs"
+	actionsDirName     = "actions"
+	actionRunsDirName  = "action-runs"
 )
 
 type Runtime struct {
@@ -22,6 +24,11 @@ type Runtime struct {
 	ConfigPath  string
 	DBPath      string
 	LogDir      string
+	// ActionsDir holds one Git repository per Action.
+	ActionsDir string
+	// ActionRunsDir holds each execution's output directory, at
+	// <ActionRunsDir>/<action>/<execution id>, outside every action repo.
+	ActionRunsDir string
 }
 
 func ResolveRuntime(configPath, databasePath string) (Runtime, error) {
@@ -56,6 +63,9 @@ func ResolveRuntime(configPath, databasePath string) (Runtime, error) {
 		ConfigPath:  resolvedConfigPath,
 		DBPath:      resolvedDBPath,
 		LogDir:      resolvedLogDir,
+		ActionsDir:  filepath.Join(home, actionsDirName),
+		// Output folders sit beside, never inside, the action repositories.
+		ActionRunsDir: filepath.Join(home, actionRunsDirName),
 	}, nil
 }
 
