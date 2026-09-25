@@ -532,12 +532,7 @@ func (s *Service) restoreSession(ctx context.Context, session domain.Session, ru
 	if err != nil {
 		return err
 	}
-	workerCtx, err := validateWorkerLaunchContext(cfg.Architects[session.ArchitectKey], session)
-	if err != nil {
-		return err
-	}
-	instructions, err := resumeInstructions(session.Instructions, workerCtx.Workflows)
-	if err != nil {
+	if _, err := validateWorkerLaunchContext(cfg.Architects[session.ArchitectKey], session); err != nil {
 		return err
 	}
 	if err := s.forgetAgentStatus(ctx, run); err != nil {
@@ -547,7 +542,7 @@ func (s *Service) restoreSession(ctx context.Context, session domain.Session, ru
 		Model:              profile.Model,
 		Yolo:               profile.Yolo,
 		Mode:               agentruntime.Mode(profile.Mode),
-		Instructions:       instructions,
+		Instructions:       session.Instructions,
 		Workdir:            run.Workdir,
 		AdditionalWorkdirs: writableAdditionalWorkdirs(session.SessionType, run.AdditionalWorkdirs),
 		Args:               append([]string(nil), profile.Args...),
@@ -758,19 +753,14 @@ func (s *Service) resumeSessionMainTerminal(ctx context.Context, session domain.
 	if err != nil {
 		return "", err
 	}
-	var workerCtx workspacefs.WorkerContext
 	if session.SessionType != domain.SessionTypeAction {
 		architect, err := s.currentArchitect(session.ArchitectKey)
 		if err != nil {
 			return "", err
 		}
-		if workerCtx, err = validateWorkerLaunchContext(architect, session); err != nil {
+		if _, err := validateWorkerLaunchContext(architect, session); err != nil {
 			return "", err
 		}
-	}
-	instructions, err := resumeInstructions(session.Instructions, workerCtx.Workflows)
-	if err != nil {
-		return "", err
 	}
 	if err := s.forgetAgentStatus(ctx, run); err != nil {
 		return "", err
@@ -779,7 +769,7 @@ func (s *Service) resumeSessionMainTerminal(ctx context.Context, session domain.
 		Model:              profile.Model,
 		Yolo:               profile.Yolo,
 		Mode:               agentruntime.Mode(profile.Mode),
-		Instructions:       instructions,
+		Instructions:       session.Instructions,
 		Workdir:            run.Workdir,
 		AdditionalWorkdirs: writableAdditionalWorkdirs(session.SessionType, run.AdditionalWorkdirs),
 		Args:               append([]string(nil), profile.Args...),
@@ -2245,7 +2235,7 @@ func validateArchitectCreateRequest(req domain.CreateSessionRequest) error {
 // validateWorkerLaunchContext reruns the worker-context check for a ticket
 // session against the workspace as it is right now — on first launch, on
 // daemon-restart restore and on main-terminal resume alike — and returns the
-// context it read, whose selected workflow bodies that launch hands the agent.
+// context it read; a first launch hands the agent its selected workflow bodies.
 // A stale successful check is no authority to proceed: the required documents
 // and the session's stored workflow selection must be valid at this moment, and
 // a selected file that has since been renamed, deleted or broken fails the

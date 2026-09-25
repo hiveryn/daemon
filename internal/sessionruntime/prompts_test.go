@@ -150,27 +150,6 @@ func TestWorkerLaunchPromptEmbedsSelectedWorkflowBodies(t *testing.T) {
 	}
 }
 
-func TestResumeInstructionsCarryCurrentWorkflowBodies(t *testing.T) {
-	t.Parallel()
-	got, err := resumeInstructions("system", nil)
-	if err != nil || got != "system" {
-		t.Fatalf("no workflows must leave instructions untouched, got %q (%v)", got, err)
-	}
-	got, err = resumeInstructions("system", []workspacefs.SelectedWorkflow{{Path: "/ws/workflows/A.md", Body: "Current A.\n"}})
-	if err != nil {
-		t.Fatalf("resumeInstructions: %v", err)
-	}
-	if !strings.HasPrefix(got, "system\n\n## Session resumed") {
-		t.Fatalf("resume note not appended:\n%s", got)
-	}
-	if !strings.HasSuffix(got, "<workflow path=\"/ws/workflows/A.md\">\nCurrent A.\n</workflow>") {
-		t.Fatalf("resume note does not carry the current workflow body:\n%s", got)
-	}
-	if !strings.Contains(got, "replaces any earlier copy") || strings.Contains(strings.ToLower(got), "unchanged") {
-		t.Fatalf("resume note must supersede the earlier copy without claiming the files are unchanged:\n%s", got)
-	}
-}
-
 // newTicketCreateService wires a Service able to create a ticket session for a
 // backlog ticket scoped to repoPath, in the given workspace.
 func newTicketCreateService(t *testing.T, workspace, repoPath string, additional map[string]string) (*Service, *fakeSessionRepository) {
@@ -414,10 +393,10 @@ func TestCreateRunFailsWhenSelectedWorkflowDisappeared(t *testing.T) {
 	}
 }
 
-// On resume the stored kickoff is not replayed, so the current workflow bodies
-// ride on the instructions channel; and the launch fails if the selection is
-// broken.
-func TestResumeAppendsCurrentWorkflowBodiesAndRevalidatesSelection(t *testing.T) {
+// A resume continues the conversation as it is: neither the kickoff nor the
+// workflow bodies are re-sent, and the stored instructions are used unchanged.
+// The launch still fails if the selection is broken.
+func TestResumeKeepsStoredInstructionsAndRevalidatesSelection(t *testing.T) {
 	t.Parallel()
 	repoPath := gitRepoDir(t)
 	workspace := testWorkspace(t, map[string]string{"daemon": repoPath})
@@ -443,7 +422,6 @@ func TestResumeAppendsCurrentWorkflowBodiesAndRevalidatesSelection(t *testing.T)
 		terminalStates: map[string]sessionTerminalState{},
 	}
 
-	writeWorkflow(t, workspace, "A.md", "---\nattach: manual\n---\n\nEdited A.\n")
 	if err := service.RestoreRunningSessions(context.Background()); err != nil {
 		t.Fatalf("RestoreRunningSessions: %v", err)
 	}
@@ -456,9 +434,8 @@ func TestResumeAppendsCurrentWorkflowBodiesAndRevalidatesSelection(t *testing.T)
 	if adapter.launchRequest.Prompt != "" {
 		t.Fatalf("resume replayed the kickoff prompt: %q", adapter.launchRequest.Prompt)
 	}
-	if !strings.HasPrefix(adapter.launchRequest.Instructions, "worker\n\n## Session resumed") ||
-		!strings.HasSuffix(adapter.launchRequest.Instructions, "<workflow path=\""+a+"\">\nEdited A.\n</workflow>") {
-		t.Fatalf("resume instructions do not carry the current body of %s:\n%s", a, adapter.launchRequest.Instructions)
+	if adapter.launchRequest.Instructions != "worker" {
+		t.Fatalf("resume must use the stored instructions unchanged, got:\n%s", adapter.launchRequest.Instructions)
 	}
 
 	// Break the selection and resume again through the main-terminal-exit path.

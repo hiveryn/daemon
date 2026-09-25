@@ -187,17 +187,15 @@ func renderWorkerKickoff(ticketID string, repos []workerRepo, ctx workspacefs.Wo
 }
 
 // workerWorkflowsData is the template data for prompts/work/WORKFLOWS.md: the
-// selected workflows with their current bodies, and whether the section is
-// the resume notice rather than part of the first kickoff.
+// selected workflows with their current bodies.
 type workerWorkflowsData struct {
-	Resumed   bool
 	Workflows []workspacefs.SelectedWorkflow
 }
 
 // renderWorkerWorkflows renders the selected workflows' full bodies, each in a
 // block labelled with its canonical path. Bodies are given verbatim apart from
 // leading and trailing blank lines; nothing is summarized or rewritten.
-func renderWorkerWorkflows(workflows []workspacefs.SelectedWorkflow, resumed bool) (string, error) {
+func renderWorkerWorkflows(workflows []workspacefs.SelectedWorkflow) (string, error) {
 	blocks := make([]workspacefs.SelectedWorkflow, 0, len(workflows))
 	for _, workflow := range workflows {
 		blocks = append(blocks, workspacefs.SelectedWorkflow{
@@ -205,35 +203,20 @@ func renderWorkerWorkflows(workflows []workspacefs.SelectedWorkflow, resumed boo
 			Body: strings.Trim(workflow.Body, "\r\n"),
 		})
 	}
-	return renderBuiltinPrompt(workerWorkflowsPromptName, workerWorkflowsData{Resumed: resumed, Workflows: blocks})
+	return renderBuiltinPrompt(workerWorkflowsPromptName, workerWorkflowsData{Workflows: blocks})
 }
 
 // workerLaunchPrompt is the first message of a ticket run: the stored kickoff
 // followed by the selected workflows' bodies as just read and validated by the
 // launch check (or "none"). Workers follow workflows more consistently when the
 // text is in the prompt than when they are pointed at a path, and reading at
-// launch means a run never starts from a copy older than its launch.
+// launch means a run never starts from a copy older than its launch. The bodies
+// go only in this first message, never in the instructions (system prompt), and
+// a resumed agent continues its conversation as it is: nothing is re-sent.
 func workerLaunchPrompt(kickoff string, workflows []workspacefs.SelectedWorkflow) (string, error) {
-	section, err := renderWorkerWorkflows(workflows, false)
+	section, err := renderWorkerWorkflows(workflows)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(kickoff) + "\n\n" + section, nil
-}
-
-// resumeInstructions appends the resume notice to a session's stored
-// instructions. Hiveryn does not track whether a selected workflow changed while
-// the agent was down (there are no content digests), so it never relies on the
-// copy in the conversation: the notice carries the bodies the resume check just
-// read, and says they replace any earlier copy. Sessions with no selected
-// workflows resume with their stored instructions unchanged.
-func resumeInstructions(instructions string, workflows []workspacefs.SelectedWorkflow) (string, error) {
-	if len(workflows) == 0 {
-		return instructions, nil
-	}
-	section, err := renderWorkerWorkflows(workflows, true)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(instructions) + "\n\n" + section, nil
 }
