@@ -39,6 +39,24 @@ hiverynd mcp --daemon-url http://127.0.0.1:4201 --architect-key hiveryn
 
 `hiverynd mcp` is intended to be spawned by `agentruntime`; session scoping comes from `HIVERYN_SESSION_TYPE` (`architect` or `ticket`; any other value, including the removed `freeform`, is a startup error).
 
+### Validating an Action
+
+```bash
+hiverynd action validate [--json] [--strict] [path]
+```
+
+Checks an Action repository (default: the current directory) with the daemon's own definition rules — `.git`, strict `action.yaml` keys and required fields, `suggestions` bounds, and the `KICKOFF.md` placeholders. It runs fully offline: no running daemon, config, database or provider setup, and the path need not be inside `HIVERYN_HOME/actions`. The action name is the directory's base name, as it will be once installed.
+
+Every finding has a stable `code`, a `severity` and the absolute `path` of the file (or action directory) it concerns; `--json` prints them as a report (`path`, `name`, `valid`, `strict`, `passed`, `errors`, `warnings`, `diagnostics`). Errors make the definition invalid, exactly as the runtime refuses to launch it. Warnings are advice that never blocks a launch — currently `SUGGESTIONS_MISSING`, when `suggestions` is absent or empty, recommending 2–3 useful manual launch prompts.
+
+| Exit | Meaning |
+|---|---|
+| `0` | No errors (warnings allowed unless `--strict`) |
+| `1` | Validation failed: errors, or any warning under `--strict` |
+| `2` | Usage error, or the path is missing / not a directory (the filesystem error is printed) |
+
+An unknown `hiverynd` command or `action` subcommand is a usage error; only no arguments, bare flags or `serve` start the daemon.
+
 ## Configuration
 
 The daemon reads five YAML files from `HIVERYN_HOME` (default `~/.hiveryn`). Only `config.yaml` is required; the others default to empty when missing. `variants.yaml`, `architects.yaml`, `tabs.yaml`, and `shortcuts.yaml` are reloaded on demand, so changes to profiles, the architect registry, tab layouts, and keybindings do not require a daemon restart. The per-architect `hiveryn.yaml` files those entries point at are reloaded the same way. Passing `--config` points `config.yaml` elsewhere and, because config loading is directory-scoped, also changes where `variants.yaml`, `architects.yaml`, `tabs.yaml`, and `shortcuts.yaml` are read from.

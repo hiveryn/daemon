@@ -2,31 +2,43 @@ package main
 
 import (
 	"flag"
-	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"github.com/hiveryn/daemon/internal/app"
 	daemonmcp "github.com/hiveryn/daemon/internal/mcp"
 )
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintf(os.Stderr, "daemon failed: %v\n", err)
-		os.Exit(1)
-	}
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-func run(args []string) error {
-	if len(args) > 0 {
-		switch args[0] {
-		case "mcp":
-			return runMCP(args[1:])
-		case "serve":
-			return runServe(args[1:])
-		}
+// run dispatches a subcommand and returns the exit status. Bare flags (or no
+// arguments) mean serve; an unknown command is a usage error, never a server.
+func run(args []string, stdout, stderr io.Writer) int {
+	command, rest := "serve", args
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		command, rest = args[0], args[1:]
 	}
 
-	return runServe(args)
+	var err error
+	switch command {
+	case "action":
+		return runAction(rest, stdout, stderr)
+	case "mcp":
+		err = runMCP(rest)
+	case "serve":
+		err = runServe(rest)
+	default:
+		say(stderr, "hiverynd: unknown command %q\nusage: hiverynd [serve] [flags] | hiverynd mcp [flags] | hiverynd action validate [path]\n", command)
+		return exitUsageErr
+	}
+	if err != nil {
+		say(stderr, "daemon failed: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func runServe(args []string) error {

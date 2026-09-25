@@ -12,6 +12,12 @@
 //	                            no other key
 //	<root>/<name>/KICKOFF.md    launch instructions containing {{prompt}} and
 //	                            {{output_dir}}; no other {{...}} placeholder
+//
+// Every finding is a Diagnostic with a stable code. Errors are the definition's
+// Problems and make it invalid; warnings (today only missing suggestions) are
+// authoring advice that never blocks a launch. Inspect applies the same rules
+// to an action repository at any path, which is what `hiverynd action
+// validate` runs offline.
 package actionfs
 
 import (
@@ -44,11 +50,62 @@ const (
 
 var placeholderPattern = regexp.MustCompile(`\{\{[^{}]*\}\}`)
 
-// Definition is an inspected action plus its kickoff template, which is not
-// part of the wire shape.
+// Severity of a Diagnostic. Only errors invalidate a definition.
+type Severity string
+
+const (
+	SeverityError   Severity = "error"
+	SeverityWarning Severity = "warning"
+)
+
+// Diagnostic codes are stable identifiers for tooling (`hiverynd action
+// validate --json`); the message is for people and may change.
+const (
+	CodeNameInvalid               = "ACTION_NAME_INVALID"
+	CodeNotGitRepository          = "ACTION_NOT_GIT_REPOSITORY"
+	CodeFileMissing               = "FILE_MISSING"
+	CodeFileNotRegular            = "FILE_NOT_REGULAR"
+	CodeFileTooLarge              = "FILE_TOO_LARGE"
+	CodeFileUnreadable            = "FILE_UNREADABLE"
+	CodeDefinitionEmpty           = "DEFINITION_EMPTY"
+	CodeDefinitionInvalidYAML     = "DEFINITION_INVALID_YAML"
+	CodeDefinitionNameRequired    = "DEFINITION_NAME_REQUIRED"
+	CodeDefinitionNameMismatch    = "DEFINITION_NAME_MISMATCH"
+	CodeDescriptionRequired       = "DEFINITION_DESCRIPTION_REQUIRED"
+	CodeArtifactsRequired         = "DEFINITION_ARTIFACTS_REQUIRED"
+	CodeSuggestionsMissing        = "SUGGESTIONS_MISSING"
+	CodeSuggestionsTooMany        = "SUGGESTIONS_TOO_MANY"
+	CodeSuggestionBlank           = "SUGGESTION_BLANK"
+	CodeSuggestionTooLong         = "SUGGESTION_TOO_LONG"
+	CodeSuggestionDuplicate       = "SUGGESTION_DUPLICATE"
+	CodeKickoffEmpty              = "KICKOFF_EMPTY"
+	CodeKickoffMissingPrompt      = "KICKOFF_MISSING_PROMPT"
+	CodeKickoffMissingOutputDir   = "KICKOFF_MISSING_OUTPUT_DIR"
+	CodeKickoffUnknownPlaceholder = "KICKOFF_UNKNOWN_PLACEHOLDER"
+)
+
+// Diagnostic is one finding about a definition, anchored to a file or the
+// action directory.
+type Diagnostic struct {
+	Code     string   `json:"code"`
+	Severity Severity `json:"severity"`
+	Path     string   `json:"path"`
+	Message  string   `json:"message"`
+}
+
+// finding is a coded message before it is anchored to a path.
+type finding struct {
+	code    string
+	message string
+}
+
+// Definition is an inspected action plus its kickoff template and every
+// diagnostic, none of which are part of the wire shape. Problems holds exactly
+// the error diagnostics.
 type Definition struct {
 	domain.ActionDefinition
-	Kickoff string
+	Kickoff     string
+	Diagnostics []Diagnostic
 }
 
 type manifest struct {
@@ -98,62 +155,96 @@ func Get(root, name string) (Definition, error) {
 	return inspect(path, name), nil
 }
 
+// Inspect applies the definition rules to the action repository at dir, which
+// need not be inside the Actions library; the action name is dir's base name,
+// as it would be once installed. dir must be an existing directory: anything
+// else is returned as an error with the original filesystem context, since
+// there is no definition to report on.
+func Inspect(dir string) (Definition, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return Definition{}, fmt.Errorf("resolve action path %s: %w", dir, err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return Definition{}, fmt.Errorf("action path: %w", err)
+	}
+	if !info.IsDir() {
+		return Definition{}, fmt.Errorf("action path %s is not a directory", abs)
+	}
+	return inspect(abs, filepath.Base(abs)), nil
+}
+
 func inspect(dir, dirName string) Definition {
-	def := Definition{ActionDefinition: domain.ActionDefinition{Name: dirName, Path: dir, Problems: []domain.ActionProblem{}}}
-	problem := func(path, format string, args ...any) {
-		def.Problems = append(def.Problems, domain.ActionProblem{Path: path, Message: fmt.Sprintf(format, args...)})
+	def := Definition{ActionDefinition: domain.ActionDefinition{Name: dirName, Path: dir, Problems: []domain.ActionProblem{}}, Diagnostics: []Diagnostic{}}
+	report := func(severity Severity, path, code, format string, args ...any) {
+		d := Diagnostic{Code: code, Severity: severity, Path: path, Message: fmt.Sprintf(format, args...)}
+		def.Diagnostics = append(def.Diagnostics, d)
+		if severity == SeverityError {
+			def.Problems = append(def.Problems, domain.ActionProblem{Path: d.Path, Message: d.Message})
+		}
+	}
+	problem := func(path, code, format string, args ...any) {
+		report(SeverityError, path, code, format, args...)
 	}
 
 	if !domain.ValidActionName(dirName) {
-		problem(dir, "directory name %q is not a valid action name: use lowercase letters, digits, '.', '_' or '-', starting with a letter or digit (at most 64 characters)", dirName)
+		problem(dir, CodeNameInvalid, "directory name %q is not a valid action name: use lowercase letters, digits, '.', '_' or '-', starting with a letter or digit (at most 64 characters)", dirName)
 	}
 	if info, err := os.Stat(filepath.Join(dir, ".git")); err != nil || !info.IsDir() {
-		problem(dir, "not a Git repository: an action directory must contain .git")
+		problem(dir, CodeNotGitRepository, "not a Git repository: an action directory must contain .git")
 	}
 
 	manifestPath := filepath.Join(dir, DefinitionFileName)
-	if data, err := readBounded(manifestPath); err != nil {
-		problem(manifestPath, "%v", err)
+	if data, f := readBounded(manifestPath); f != nil {
+		problem(manifestPath, f.code, "%s", f.message)
 	} else {
 		var m manifest
 		decoder := yaml.NewDecoder(bytes.NewReader(data))
 		decoder.KnownFields(true)
 		if err := decoder.Decode(&m); err != nil {
 			if errors.Is(err, io.EOF) {
-				problem(manifestPath, "file is empty; required keys: name, description, artifacts")
+				problem(manifestPath, CodeDefinitionEmpty, "file is empty; required keys: name, description, artifacts")
 			} else {
-				problem(manifestPath, "invalid YAML (allowed keys: name, description, artifacts, suggestions): %v", err)
+				problem(manifestPath, CodeDefinitionInvalidYAML, "invalid YAML (allowed keys: name, description, artifacts, suggestions): %v", err)
 			}
 		} else {
 			def.Description = strings.TrimSpace(m.Description)
 			def.Artifacts = strings.TrimSpace(m.Artifacts)
 			switch name := strings.TrimSpace(m.Name); {
 			case name == "":
-				problem(manifestPath, "name is required and must equal the directory name %q", dirName)
+				problem(manifestPath, CodeDefinitionNameRequired, "name is required and must equal the directory name %q", dirName)
 			case name != dirName:
-				problem(manifestPath, "name %q must equal the directory name %q", name, dirName)
+				problem(manifestPath, CodeDefinitionNameMismatch, "name %q must equal the directory name %q", name, dirName)
 			}
 			if def.Description == "" {
-				problem(manifestPath, "description is required: say what the action does and what the caller's prompt must contain")
+				problem(manifestPath, CodeDescriptionRequired, "description is required: say what the action does and what the caller's prompt must contain")
 			}
 			if def.Artifacts == "" {
-				problem(manifestPath, "artifacts is required: describe the delivered artifact package")
+				problem(manifestPath, CodeArtifactsRequired, "artifacts is required: describe the delivered artifact package")
 			}
-			var messages []string
-			def.Suggestions, messages = suggestions(m.Suggestions)
-			for _, message := range messages {
-				problem(manifestPath, "%s", message)
+			if len(m.Suggestions) == 0 {
+				state := "absent"
+				if m.Suggestions != nil {
+					state = "empty"
+				}
+				report(SeverityWarning, manifestPath, CodeSuggestionsMissing, "suggestions is %s; add 2-3 useful example prompts so the manual launch form can offer them", state)
+			}
+			var findings []finding
+			def.Suggestions, findings = suggestions(m.Suggestions)
+			for _, f := range findings {
+				problem(manifestPath, f.code, "%s", f.message)
 			}
 		}
 	}
 
 	kickoffPath := filepath.Join(dir, KickoffFileName)
-	if data, err := readBounded(kickoffPath); err != nil {
-		problem(kickoffPath, "%v", err)
+	if data, f := readBounded(kickoffPath); f != nil {
+		problem(kickoffPath, f.code, "%s", f.message)
 	} else {
 		def.Kickoff = string(data)
-		for _, message := range kickoffProblems(def.Kickoff) {
-			problem(kickoffPath, "%s", message)
+		for _, f := range kickoffProblems(def.Kickoff) {
+			problem(kickoffPath, f.code, "%s", f.message)
 		}
 	}
 
@@ -163,13 +254,13 @@ func inspect(dir, dirName string) Definition {
 
 // suggestions trims the optional suggested prompts and reports every entry
 // that breaks the bounds: blank, too long, repeated, or too many.
-func suggestions(raw []string) ([]string, []string) {
+func suggestions(raw []string) ([]string, []finding) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
-	var problems []string
+	var problems []finding
 	if len(raw) > domain.MaxActionSuggestions {
-		problems = append(problems, fmt.Sprintf("suggestions has %d entries; the limit is %d", len(raw), domain.MaxActionSuggestions))
+		problems = append(problems, finding{CodeSuggestionsTooMany, fmt.Sprintf("suggestions has %d entries; the limit is %d", len(raw), domain.MaxActionSuggestions)})
 	}
 	out := make([]string, 0, len(raw))
 	seen := make(map[string]int, len(raw))
@@ -177,13 +268,13 @@ func suggestions(raw []string) ([]string, []string) {
 		entry = strings.TrimSpace(entry)
 		switch length := utf8.RuneCountInString(entry); {
 		case entry == "":
-			problems = append(problems, fmt.Sprintf("suggestions[%d] is blank; each suggestion is a prompt the launch form can fill in", i))
+			problems = append(problems, finding{CodeSuggestionBlank, fmt.Sprintf("suggestions[%d] is blank; each suggestion is a prompt the launch form can fill in", i)})
 			continue
 		case length > domain.MaxActionSuggestionLength:
-			problems = append(problems, fmt.Sprintf("suggestions[%d] is %d characters; the limit is %d", i, length, domain.MaxActionSuggestionLength))
+			problems = append(problems, finding{CodeSuggestionTooLong, fmt.Sprintf("suggestions[%d] is %d characters; the limit is %d", i, length, domain.MaxActionSuggestionLength)})
 		}
 		if first, ok := seen[entry]; ok {
-			problems = append(problems, fmt.Sprintf("suggestions[%d] repeats suggestions[%d]", i, first))
+			problems = append(problems, finding{CodeSuggestionDuplicate, fmt.Sprintf("suggestions[%d] repeats suggestions[%d]", i, first)})
 			continue
 		}
 		seen[entry] = i
@@ -192,42 +283,42 @@ func suggestions(raw []string) ([]string, []string) {
 	return out, problems
 }
 
-func kickoffProblems(kickoff string) []string {
-	var problems []string
+func kickoffProblems(kickoff string) []finding {
+	var problems []finding
 	if strings.TrimSpace(kickoff) == "" {
-		return []string{"file is empty"}
+		return []finding{{CodeKickoffEmpty, "file is empty"}}
 	}
 	if !strings.Contains(kickoff, PromptPlaceholder) {
-		problems = append(problems, "missing the "+PromptPlaceholder+" placeholder, which receives the caller's prompt")
+		problems = append(problems, finding{CodeKickoffMissingPrompt, "missing the " + PromptPlaceholder + " placeholder, which receives the caller's prompt"})
 	}
 	if !strings.Contains(kickoff, OutputDirPlaceholder) {
-		problems = append(problems, "missing the "+OutputDirPlaceholder+" placeholder, which receives the output directory")
+		problems = append(problems, finding{CodeKickoffMissingOutputDir, "missing the " + OutputDirPlaceholder + " placeholder, which receives the output directory"})
 	}
 	for _, found := range placeholderPattern.FindAllString(kickoff, -1) {
 		if found != PromptPlaceholder && found != OutputDirPlaceholder {
-			problems = append(problems, fmt.Sprintf("unknown placeholder %s; only %s and %s are supplied", found, PromptPlaceholder, OutputDirPlaceholder))
+			problems = append(problems, finding{CodeKickoffUnknownPlaceholder, fmt.Sprintf("unknown placeholder %s; only %s and %s are supplied", found, PromptPlaceholder, OutputDirPlaceholder)})
 		}
 	}
 	return problems
 }
 
-func readBounded(path string) ([]byte, error) {
+func readBounded(path string) ([]byte, *finding) {
 	info, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, errors.New("file is missing")
+			return nil, &finding{CodeFileMissing, "file is missing"}
 		}
-		return nil, fmt.Errorf("cannot read file: %w", err)
+		return nil, &finding{CodeFileUnreadable, fmt.Sprintf("cannot read file: %v", err)}
 	}
 	if !info.Mode().IsRegular() {
-		return nil, errors.New("not a regular file")
+		return nil, &finding{CodeFileNotRegular, "not a regular file"}
 	}
 	if info.Size() > maxDefinitionBytes {
-		return nil, fmt.Errorf("file is %d bytes; the limit is %d", info.Size(), maxDefinitionBytes)
+		return nil, &finding{CodeFileTooLarge, fmt.Sprintf("file is %d bytes; the limit is %d", info.Size(), maxDefinitionBytes)}
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("cannot read file: %w", err)
+		return nil, &finding{CodeFileUnreadable, fmt.Sprintf("cannot read file: %v", err)}
 	}
 	return data, nil
 }

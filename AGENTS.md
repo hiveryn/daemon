@@ -16,10 +16,10 @@ The daemon is the **single mutation and event hub** for Hiveryn. Every state cha
 ## Package boundaries
 
 ```
-cmd/hiverynd          entrypoint: `serve` daemon mode and `mcp` stdio subcommand
+cmd/hiverynd          entrypoint: `serve` daemon mode, `mcp` stdio subcommand and the offline `action validate` CLI (actionfs only — no config, DB or daemon); unknown commands are usage errors, never a server start
 internal/
   app/                dependency wiring, startup/shutdown orchestration
-  actionfs/           read-only inspection of the global Actions library (HIVERYN_HOME/actions/<name>: Git repo + action.yaml + KICKOFF.md): per-definition problems instead of failures, single-pass kickoff rendering of {{prompt}}/{{output_dir}}
+  actionfs/           read-only inspection of the global Actions library (HIVERYN_HOME/actions/<name>: Git repo + action.yaml + KICKOFF.md) or of one repo at any path (`Inspect`): coded diagnostics instead of failures — errors are the definition's problems, warnings (missing suggestions) never block a launch — and single-pass kickoff rendering of {{prompt}}/{{output_dir}}
   archevents/         in-memory publish/subscribe hub for architect-scoped SSE events
   archive/            optional append-only JSONL archive of normalized agentruntime events (daily rotation, fire-and-forget — failures never block ingestion)
   architectfs/        architect folder filesystem operations (ticket CRUD, frontmatter, body edits)

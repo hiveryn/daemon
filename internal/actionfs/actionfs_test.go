@@ -106,7 +106,11 @@ func TestKickoffPlaceholderRules(t *testing.T) {
 		"{{prompt}} {{output_dir}} {{ prompt}}": "unknown placeholder {{ prompt}}",
 	}
 	for kickoff, want := range cases {
-		problems := strings.Join(kickoffProblems(kickoff), "\n")
+		var messages []string
+		for _, f := range kickoffProblems(kickoff) {
+			messages = append(messages, f.message)
+		}
+		problems := strings.Join(messages, "\n")
 		if !strings.Contains(problems, want) {
 			t.Errorf("kickoff %q problems %q missing %q", kickoff, problems, want)
 		}
@@ -187,5 +191,72 @@ func TestSuggestionsAreOptionalTrimmedAndBounded(t *testing.T) {
 	}
 	if many := get("many"); many.Valid || !strings.Contains(problemText(many), "suggestions has 11 entries; the limit is 10") {
 		t.Fatalf("many problems:\n%s", problemText(many))
+	}
+}
+
+func diagnosticCodes(def Definition, severity Severity) []string {
+	var codes []string
+	for _, d := range def.Diagnostics {
+		if d.Severity == severity {
+			codes = append(codes, d.Code)
+		}
+	}
+	return codes
+}
+
+func TestMissingSuggestionsWarnWithoutInvalidating(t *testing.T) {
+	root := t.TempDir()
+	kickoff := "Do {{prompt}} into {{output_dir}}."
+	cases := map[string]string{
+		"absent": "name: absent\ndescription: d\nartifacts: a\n",
+		"blank":  "name: blank\ndescription: d\nartifacts: a\nsuggestions:\n",
+		"empty":  "name: empty\ndescription: d\nartifacts: a\nsuggestions: []\n",
+	}
+	for name, manifest := range cases {
+		dir := writeAction(t, root, name, true, map[string]string{"action.yaml": manifest, "KICKOFF.md": kickoff})
+		def, err := Inspect(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !def.Valid || len(def.Problems) != 0 {
+			t.Fatalf("%s invalid: %s", name, problemText(def))
+		}
+		warnings := diagnosticCodes(def, SeverityWarning)
+		if len(warnings) != 1 || warnings[0] != CodeSuggestionsMissing {
+			t.Fatalf("%s warnings = %v", name, warnings)
+		}
+		if def.Diagnostics[0].Path != filepath.Join(dir, DefinitionFileName) {
+			t.Fatalf("%s warning path = %s", name, def.Diagnostics[0].Path)
+		}
+	}
+	dir := writeAction(t, root, "suggested", true, map[string]string{
+		"action.yaml": "name: suggested\ndescription: d\nartifacts: a\nsuggestions: [one, two]\n",
+		"KICKOFF.md":  kickoff,
+	})
+	if def, err := Inspect(dir); err != nil || !def.Valid || len(def.Diagnostics) != 0 {
+		t.Fatalf("suggested = %+v, err = %v", def.Diagnostics, err)
+	}
+}
+
+func TestInspectReportsCodedErrorsForAnyPath(t *testing.T) {
+	dir := writeAction(t, t.TempDir(), "checkout", false, map[string]string{
+		"action.yaml": "name: other\ndescription: d\nartifacts: \"\"\nsuggestions: [x, x]\n",
+		"KICKOFF.md":  "{{prompt}} {{extra}}",
+	})
+	def, err := Inspect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(diagnosticCodes(def, SeverityError), ",")
+	want := strings.Join([]string{CodeNotGitRepository, CodeDefinitionNameMismatch, CodeArtifactsRequired, CodeSuggestionDuplicate, CodeKickoffMissingOutputDir, CodeKickoffUnknownPlaceholder}, ",")
+	if def.Valid || got != want || len(def.Problems) != len(def.Diagnostics) {
+		t.Fatalf("codes = %s, want %s; problems %d diagnostics %d", got, want, len(def.Problems), len(def.Diagnostics))
+	}
+
+	if _, err := Inspect(filepath.Join(dir, "absent")); err == nil || !strings.Contains(err.Error(), "no such file or directory") {
+		t.Fatalf("missing path err = %v", err)
+	}
+	if _, err := Inspect(filepath.Join(dir, "KICKOFF.md")); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("file path err = %v", err)
 	}
 }
