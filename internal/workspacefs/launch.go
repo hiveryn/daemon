@@ -53,17 +53,36 @@ func ReadArchitectSystem(workspacePath string) ArchitectSystemDocument {
 
 // WorkerContext is the validated read-only context a ticket session is
 // launched with: the canonical paths of the required project documents, of the
-// optional roadmap when present (empty otherwise), and of the explicitly
-// selected workflows, in selection order.
+// optional roadmap when present (empty otherwise), and the explicitly selected
+// workflows, in selection order.
 //
-// Everything here is a path into the architect workspace. The worker reads
-// these files live and is granted no write scope there; nothing is copied or
-// snapshotted.
+// The project documents are paths the worker reads live. Each selected
+// workflow also carries its body as read and validated by this check, so the
+// daemon can hand the worker the current text at this launch or resume; the
+// body is never stored, and every launch and resume validates and reads again.
+// The worker is granted no write scope in the workspace.
 type WorkerContext struct {
 	ProjectOverviewPath string
 	ProjectStatePath    string
 	RoadmapCurrentPath  string
-	Workflows           []string
+	Workflows           []SelectedWorkflow
+}
+
+// SelectedWorkflow is one valid selected workflow: its canonical path and its
+// markdown body below the frontmatter, verbatim.
+type SelectedWorkflow struct {
+	Path string
+	Body string
+}
+
+// WorkflowPaths returns the canonical paths of the selected workflows, in
+// selection order — what a session records as its selection.
+func (c WorkerContext) WorkflowPaths() []string {
+	paths := make([]string, 0, len(c.Workflows))
+	for _, workflow := range c.Workflows {
+		paths = append(paths, workflow.Path)
+	}
+	return paths
 }
 
 // ValidateWorkerContext checks that a ticket session can be launched (or
@@ -144,7 +163,7 @@ func validateWorkerProjectContext(workspacePath, architectKey string) (WorkerCon
 		scope = scopeFromRepos(resolved.Repos)
 	}
 
-	ctx := WorkerContext{Workflows: []string{}}
+	ctx := WorkerContext{Workflows: []SelectedWorkflow{}}
 	documents := []struct {
 		kind   domain.ArtifactKind
 		target *string
@@ -176,9 +195,10 @@ func validateWorkerProjectContext(workspacePath, architectKey string) (WorkerCon
 }
 
 // validateSelectedWorkflows checks each selected path and returns the
-// canonical paths in selection order, or every finding when any path fails.
-func validateSelectedWorkflows(workspacePath string, scope repoScope, selected []string) ([]string, []string) {
-	workflows := make([]string, 0, len(selected))
+// canonical paths and bodies in selection order, or every finding when any
+// path fails.
+func validateSelectedWorkflows(workspacePath string, scope repoScope, selected []string) ([]SelectedWorkflow, []string) {
+	workflows := make([]SelectedWorkflow, 0, len(selected))
 	if len(selected) == 0 {
 		return workflows, nil
 	}
@@ -247,14 +267,14 @@ func validateSelectedWorkflows(workspacePath string, scope repoScope, selected [
 			continue
 		}
 
-		workflow := validateWorkflow(workspacePath, realWorkflowsDir, name, scope)
+		workflow, body := validateWorkflowDocument(workspacePath, realWorkflowsDir, name, scope)
 		if !workflow.Valid {
 			for _, line := range formatDiagnostics(workflow.Diagnostics) {
 				findings = append(findings, label+": "+line)
 			}
 			continue
 		}
-		workflows = append(workflows, workflow.Path)
+		workflows = append(workflows, SelectedWorkflow{Path: workflow.Path, Body: body})
 	}
 
 	if len(findings) > 0 {

@@ -27,6 +27,7 @@ const (
 	architectKickoffPromptName = "prompts/architect/KICKOFF.md"
 	workerSystemPromptName     = "prompts/work/SYSTEM.md"
 	workerKickoffPromptName    = "prompts/work/KICKOFF.md"
+	workerWorkflowsPromptName  = "prompts/work/WORKFLOWS.md"
 	actionSystemPromptName     = "prompts/action/SYSTEM.md"
 	actionKickoffPromptName    = "prompts/action/KICKOFF.md"
 )
@@ -156,25 +157,25 @@ type workerRepo struct {
 }
 
 // workerKickoffData is the template data for prompts/work/KICKOFF.md. Every
-// field is a daemon-supplied value: ticket identity, writable repositories, the
-// canonical project documents (RoadmapCurrentPath empty when the optional
-// roadmap is absent), and the workflows explicitly selected for the session
-// (or none).
+// field is a daemon-supplied value: ticket identity, writable repositories and
+// the canonical project documents (RoadmapCurrentPath empty when the optional
+// roadmap is absent).
 type workerKickoffData struct {
 	TicketID            string
 	Repos               []workerRepo
 	ProjectOverviewPath string
 	ProjectStatePath    string
 	RoadmapCurrentPath  string
-	Workflows           []string
 }
 
-// renderWorkerKickoff renders the fixed worker startup message. It carries only
-// the task and its context; role, scope rules and tool guidance live in the
-// built-in worker instructions, not here.
+// renderWorkerKickoff renders the fixed worker startup message that a ticket
+// session stores as its prompt. It carries only the task and its context; role,
+// scope rules and tool guidance live in the built-in worker instructions, not
+// here.
 //
-// Every path is a canonical path into the architect workspace that the worker
-// reads live; nothing is copied into the prompt.
+// The project documents are canonical paths the worker reads live. The
+// selected workflows are not part of the stored kickoff: their bodies are read
+// at each launch and attached by workerLaunchPrompt.
 func renderWorkerKickoff(ticketID string, repos []workerRepo, ctx workspacefs.WorkerContext) (string, error) {
 	return renderBuiltinPrompt(workerKickoffPromptName, workerKickoffData{
 		TicketID:            ticketID,
@@ -182,26 +183,57 @@ func renderWorkerKickoff(ticketID string, repos []workerRepo, ctx workspacefs.Wo
 		ProjectOverviewPath: ctx.ProjectOverviewPath,
 		ProjectStatePath:    ctx.ProjectStatePath,
 		RoadmapCurrentPath:  ctx.RoadmapCurrentPath,
-		Workflows:           ctx.Workflows,
 	})
+}
+
+// workerWorkflowsData is the template data for prompts/work/WORKFLOWS.md: the
+// selected workflows with their current bodies, and whether the section is
+// the resume notice rather than part of the first kickoff.
+type workerWorkflowsData struct {
+	Resumed   bool
+	Workflows []workspacefs.SelectedWorkflow
+}
+
+// renderWorkerWorkflows renders the selected workflows' full bodies, each in a
+// block labelled with its canonical path. Bodies are given verbatim apart from
+// leading and trailing blank lines; nothing is summarized or rewritten.
+func renderWorkerWorkflows(workflows []workspacefs.SelectedWorkflow, resumed bool) (string, error) {
+	blocks := make([]workspacefs.SelectedWorkflow, 0, len(workflows))
+	for _, workflow := range workflows {
+		blocks = append(blocks, workspacefs.SelectedWorkflow{
+			Path: workflow.Path,
+			Body: strings.Trim(workflow.Body, "\r\n"),
+		})
+	}
+	return renderBuiltinPrompt(workerWorkflowsPromptName, workerWorkflowsData{Resumed: resumed, Workflows: blocks})
+}
+
+// workerLaunchPrompt is the first message of a ticket run: the stored kickoff
+// followed by the selected workflows' bodies as just read and validated by the
+// launch check (or "none"). Workers follow workflows more consistently when the
+// text is in the prompt than when they are pointed at a path, and reading at
+// launch means a run never starts from a copy older than its launch.
+func workerLaunchPrompt(kickoff string, workflows []workspacefs.SelectedWorkflow) (string, error) {
+	section, err := renderWorkerWorkflows(workflows, false)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(kickoff) + "\n\n" + section, nil
 }
 
 // resumeInstructions appends the resume notice to a session's stored
 // instructions. Hiveryn does not track whether a selected workflow changed while
-// the agent was down (there are no content digests), so it never claims the
-// files are unchanged: it tells the agent to reread the canonical files before
-// continuing. Sessions with no selected workflows resume with their stored
-// instructions unchanged.
-func resumeInstructions(instructions string, workflows []string) string {
+// the agent was down (there are no content digests), so it never relies on the
+// copy in the conversation: the notice carries the bodies the resume check just
+// read, and says they replace any earlier copy. Sessions with no selected
+// workflows resume with their stored instructions unchanged.
+func resumeInstructions(instructions string, workflows []workspacefs.SelectedWorkflow) (string, error) {
 	if len(workflows) == 0 {
-		return instructions
+		return instructions, nil
 	}
-	var b strings.Builder
-	b.WriteString(strings.TrimSpace(instructions))
-	b.WriteString("\n\n## Session resumed\n\n")
-	b.WriteString("Hiveryn resumed this session. The workflows selected for it may have been edited while the session was down; Hiveryn does not track that. Before continuing, reread the selected workflows at their canonical paths and follow the current text:\n")
-	for _, path := range workflows {
-		b.WriteString(path + "\n")
+	section, err := renderWorkerWorkflows(workflows, true)
+	if err != nil {
+		return "", err
 	}
-	return strings.TrimSpace(b.String())
+	return strings.TrimSpace(instructions) + "\n\n" + section, nil
 }

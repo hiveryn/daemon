@@ -123,8 +123,32 @@ func TestValidateWorkerContextKeepsSelectionOrderAndAddsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ValidateWorkerContext: %v", err)
 	}
-	if len(ctx.Workflows) != 2 || ctx.Workflows[0] != f.workflowPath("b.md") || ctx.Workflows[1] != f.workflowPath("a.md") {
-		t.Fatalf("workflows = %v", ctx.Workflows)
+	if got := ctx.WorkflowPaths(); len(got) != 2 || got[0] != f.workflowPath("b.md") || got[1] != f.workflowPath("a.md") {
+		t.Fatalf("workflows = %v", got)
+	}
+}
+
+// A selected workflow's body is carried verbatim from the validated read, with
+// only the frontmatter removed: separators, fenced code and a `---` rule inside
+// the body all survive.
+func TestValidateWorkerContextCarriesSelectedWorkflowBodies(t *testing.T) {
+	f := newFixture(t)
+	body := "# Deliver\n\nStep one.\n\n---\n\n```yaml\nattach: manual\n---\n```\n\n  indented line\n"
+	f.write(WorkflowsDirName+"/deliver.md", "---\nattach: manual\n---\n\n"+body)
+
+	ctx, err := ValidateWorkerContext(f.Workspace, "example", []string{f.workflowPath("deliver.md")})
+	if err != nil {
+		t.Fatalf("ValidateWorkerContext: %v", err)
+	}
+	if len(ctx.Workflows) != 1 {
+		t.Fatalf("workflows = %+v", ctx.Workflows)
+	}
+	got := ctx.Workflows[0]
+	if got.Path != f.workflowPath("deliver.md") {
+		t.Fatalf("path = %q", got.Path)
+	}
+	if got.Body != body {
+		t.Fatalf("body = %q, want %q", got.Body, body)
 	}
 }
 

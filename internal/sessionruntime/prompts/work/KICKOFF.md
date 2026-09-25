@@ -12,11 +12,3 @@ Read these project documents:
 {{.RoadmapCurrentPath}}
 {{- end}}
 
-Read and follow the workflows selected for this session:
-{{- if .Workflows}}
-{{- range .Workflows}}
-{{.}}
-{{- end}}
-{{- else}}
-none
-{{- end}}

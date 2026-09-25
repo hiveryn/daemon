@@ -109,10 +109,7 @@ Writable repositories:
 Read these project documents:
 /ws/PROJECT_OVERVIEW.md
 /ws/PROJECT_STATE.md
-/ws/ROADMAP_CURRENT.md
-
-Read and follow the workflows selected for this session:
-none`)
+/ws/ROADMAP_CURRENT.md`)
 	if got != want {
 		t.Fatalf("kickoff without workflows:\n%s\nwant:\n%s", got, want)
 	}
@@ -122,38 +119,55 @@ none`)
 	if err != nil {
 		t.Fatalf("renderWorkerKickoff: %v", err)
 	}
-	if strings.Contains(got, "ROADMAP") || !strings.Contains(got, "/ws/PROJECT_STATE.md\n\nRead and follow") {
+	if strings.Contains(got, "ROADMAP") || !strings.HasSuffix(got, "/ws/PROJECT_STATE.md") {
 		t.Fatalf("kickoff without a roadmap must list only the two documents:\n%s", got)
-	}
-	ctx.RoadmapCurrentPath = "/ws/ROADMAP_CURRENT.md"
-
-	ctx.Workflows = []string{"/ws/workflows/B.md", "/ws/workflows/A.md"}
-	got, err = renderWorkerKickoff("ticket-1", repos, ctx)
-	if err != nil {
-		t.Fatalf("renderWorkerKickoff: %v", err)
-	}
-	if !strings.HasSuffix(got, "selected for this session:\n/ws/workflows/B.md\n/ws/workflows/A.md") {
-		t.Fatalf("kickoff with workflows lost order or paths:\n%s", got)
-	}
-	if strings.Contains(got, "none") {
-		t.Fatalf("kickoff with workflows still says none:\n%s", got)
 	}
 }
 
-func TestResumeInstructionsTellTheAgentToRereadSelectedWorkflows(t *testing.T) {
+func TestWorkerLaunchPromptEmbedsSelectedWorkflowBodies(t *testing.T) {
 	t.Parallel()
-	if got := resumeInstructions("system", nil); got != "system" {
-		t.Fatalf("no workflows must leave instructions untouched, got %q", got)
+	got, err := workerLaunchPrompt("kickoff\n", nil)
+	if err != nil {
+		t.Fatalf("workerLaunchPrompt: %v", err)
 	}
-	got := resumeInstructions("system", []string{"/ws/workflows/A.md"})
+	if got != "kickoff\n\nWorkflows selected for this session: none" {
+		t.Fatalf("launch prompt without workflows:\n%s", got)
+	}
+
+	body := "# B\n\nStep {{one}}.\n\n---\n\n```sh\nmake test\n```\n"
+	got, err = workerLaunchPrompt("kickoff", []workspacefs.SelectedWorkflow{
+		{Path: "/ws/workflows/B.md", Body: body},
+		{Path: "/ws/workflows/A.md", Body: "\nA body.\n\n"},
+	})
+	if err != nil {
+		t.Fatalf("workerLaunchPrompt: %v", err)
+	}
+	want := "kickoff\n\nFollow the workflows selected for this session. Their full text follows, one block per workflow, labelled with its canonical path.\n\n" +
+		"<workflow path=\"/ws/workflows/B.md\">\n" + strings.TrimSuffix(body, "\n") + "\n</workflow>\n\n" +
+		"<workflow path=\"/ws/workflows/A.md\">\nA body.\n</workflow>"
+	if got != want {
+		t.Fatalf("launch prompt with workflows:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestResumeInstructionsCarryCurrentWorkflowBodies(t *testing.T) {
+	t.Parallel()
+	got, err := resumeInstructions("system", nil)
+	if err != nil || got != "system" {
+		t.Fatalf("no workflows must leave instructions untouched, got %q (%v)", got, err)
+	}
+	got, err = resumeInstructions("system", []workspacefs.SelectedWorkflow{{Path: "/ws/workflows/A.md", Body: "Current A.\n"}})
+	if err != nil {
+		t.Fatalf("resumeInstructions: %v", err)
+	}
 	if !strings.HasPrefix(got, "system\n\n## Session resumed") {
 		t.Fatalf("resume note not appended:\n%s", got)
 	}
-	if !strings.Contains(got, "reread the selected workflows") || !strings.Contains(got, "/ws/workflows/A.md") {
-		t.Fatalf("resume note does not instruct rereading the canonical paths:\n%s", got)
+	if !strings.HasSuffix(got, "<workflow path=\"/ws/workflows/A.md\">\nCurrent A.\n</workflow>") {
+		t.Fatalf("resume note does not carry the current workflow body:\n%s", got)
 	}
-	if strings.Contains(strings.ToLower(got), "unchanged") {
-		t.Fatalf("resume note must not claim the files are unchanged:\n%s", got)
+	if !strings.Contains(got, "replaces any earlier copy") || strings.Contains(strings.ToLower(got), "unchanged") {
+		t.Fatalf("resume note must supersede the earlier copy without claiming the files are unchanged:\n%s", got)
 	}
 }
 
@@ -221,17 +235,15 @@ func TestCreateSessionTicketPersistsSelectionAndRendersFixedKickoff(t *testing.T
 		"- daemon: " + repoPath,
 		"- shared: " + sharedPath,
 		"/PROJECT_OVERVIEW.md", "/PROJECT_STATE.md", "/ROADMAP_CURRENT.md",
-		"selected for this session:\n" + b + "\n" + a,
 	} {
 		if !strings.Contains(session.Prompt, fragment) {
 			t.Fatalf("kickoff missing %q:\n%s", fragment, session.Prompt)
 		}
 	}
-	if strings.Contains(session.Prompt, "C.md") {
-		t.Fatalf("an unselected repo-matched workflow was attached:\n%s", session.Prompt)
-	}
-	if strings.Contains(session.Prompt, "A.\n") || strings.Contains(session.Prompt, "body") {
-		t.Fatalf("kickoff embeds workflow or ticket bodies instead of paths:\n%s", session.Prompt)
+	// Workflow bodies are attached at each launch from a fresh read, so the
+	// stored kickoff carries none of them; nor does it embed the ticket body.
+	if strings.Contains(session.Prompt, "workflow") || strings.Contains(session.Prompt, "A.\n") || strings.Contains(session.Prompt, "body") {
+		t.Fatalf("stored kickoff embeds workflow or ticket content:\n%s", session.Prompt)
 	}
 	if session.CreatedBy != domain.SessionCreatedByDesktop {
 		t.Fatalf("created_by = %q", session.CreatedBy)
@@ -325,6 +337,43 @@ func TestCreateSessionArchitectUsesFixedKickoffAndRejectsWorkflows(t *testing.T)
 	}
 }
 
+// A ticket run's first message is the stored kickoff plus the selected
+// workflows' bodies as read at launch, so an edit made after the session was
+// created is what the agent receives.
+func TestCreateRunEmbedsWorkflowBodiesReadAtLaunch(t *testing.T) {
+	t.Parallel()
+	repoPath := gitRepoDir(t)
+	workspace := testWorkspace(t, map[string]string{"daemon": repoPath})
+	a := writeWorkflow(t, workspace, "A.md", "---\nattach: manual\n---\n\nOld A.\n")
+
+	repo := newFakeSessionRepository()
+	repo.createdSession = domain.Session{
+		ID: "session-1", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeTicket, ContextID: "ticket-1",
+		Prompt: "kickoff", Workdir: repoPath, Workflows: []string{a}, Instructions: "worker",
+	}
+	adapter := &fakeAdapter{}
+	service := &Service{
+		intents: newIntentStore(), logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:  testRuntimeConfigWithPaths(workspace, repoPath),
+		repo: repo, tickets: &fakeTicketService{}, receiver: ingest.NewReceiver(adapter),
+		adapters: map[agentruntime.AgentKind]agentruntime.Adapter{agentruntime.AgentCodex: adapter},
+		terminal: &fakeTerminalManager{}, eventStreams: map[string]map[uint64]chan domain.SessionEvent{}, bridgeCancels: map[string]func(){},
+		terminalStates: map[string]sessionTerminalState{},
+	}
+
+	writeWorkflow(t, workspace, "A.md", "---\nattach: manual\n---\n\nCurrent A.\n")
+	if _, err := service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{ProfileName: "codex"}); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	want := "kickoff\n\nFollow the workflows selected for this session. Their full text follows, one block per workflow, labelled with its canonical path.\n\n<workflow path=\"" + a + "\">\nCurrent A.\n</workflow>"
+	if adapter.launchRequest.Prompt != want {
+		t.Fatalf("launch prompt:\n%s\nwant:\n%s", adapter.launchRequest.Prompt, want)
+	}
+	if adapter.launchRequest.Instructions != "worker" {
+		t.Fatalf("first launch must use the stored instructions, got:\n%s", adapter.launchRequest.Instructions)
+	}
+}
+
 // Launch, restore and resume all revalidate the stored selection against the
 // live workspace: a selected workflow deleted after the session was created
 // fails the launch with the path named, and is never quietly dropped.
@@ -365,9 +414,10 @@ func TestCreateRunFailsWhenSelectedWorkflowDisappeared(t *testing.T) {
 	}
 }
 
-// On resume the stored kickoff is not replayed, so the reread instruction rides
-// on the instructions channel; and the launch fails if the selection is broken.
-func TestResumeAppendsRereadInstructionAndRevalidatesSelection(t *testing.T) {
+// On resume the stored kickoff is not replayed, so the current workflow bodies
+// ride on the instructions channel; and the launch fails if the selection is
+// broken.
+func TestResumeAppendsCurrentWorkflowBodiesAndRevalidatesSelection(t *testing.T) {
 	t.Parallel()
 	repoPath := gitRepoDir(t)
 	workspace := testWorkspace(t, map[string]string{"daemon": repoPath})
@@ -393,6 +443,7 @@ func TestResumeAppendsRereadInstructionAndRevalidatesSelection(t *testing.T) {
 		terminalStates: map[string]sessionTerminalState{},
 	}
 
+	writeWorkflow(t, workspace, "A.md", "---\nattach: manual\n---\n\nEdited A.\n")
 	if err := service.RestoreRunningSessions(context.Background()); err != nil {
 		t.Fatalf("RestoreRunningSessions: %v", err)
 	}
@@ -405,8 +456,9 @@ func TestResumeAppendsRereadInstructionAndRevalidatesSelection(t *testing.T) {
 	if adapter.launchRequest.Prompt != "" {
 		t.Fatalf("resume replayed the kickoff prompt: %q", adapter.launchRequest.Prompt)
 	}
-	if !strings.HasPrefix(adapter.launchRequest.Instructions, "worker\n\n## Session resumed") || !strings.Contains(adapter.launchRequest.Instructions, a) {
-		t.Fatalf("resume instructions do not tell the agent to reread %s:\n%s", a, adapter.launchRequest.Instructions)
+	if !strings.HasPrefix(adapter.launchRequest.Instructions, "worker\n\n## Session resumed") ||
+		!strings.HasSuffix(adapter.launchRequest.Instructions, "<workflow path=\""+a+"\">\nEdited A.\n</workflow>") {
+		t.Fatalf("resume instructions do not carry the current body of %s:\n%s", a, adapter.launchRequest.Instructions)
 	}
 
 	// Break the selection and resume again through the main-terminal-exit path.

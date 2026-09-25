@@ -130,7 +130,7 @@ func TestCreateRunTicketReferencesStayInPromptAndOutOfLaunchScope(t *testing.T) 
 			if _, err := service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{ProfileName: tc.name}); err != nil {
 				t.Fatalf("CreateRun failed: %v", err)
 			}
-			if adapter.launchRequest.Prompt != prompt {
+			if adapter.launchRequest.Prompt != prompt+"\n\nWorkflows selected for this session: none" {
 				t.Fatalf("references lost from kickoff prompt: %q", adapter.launchRequest.Prompt)
 			}
 			if !slices.Equal(adapter.launchRequest.AdditionalWorkdirs, []string{additionalRepo}) {

@@ -74,6 +74,14 @@ func discoverWorkflows(workspace string, scope repoScope, dirDiags *diagnostics)
 
 // validateWorkflow validates one workflow file and resolves its canonical path.
 func validateWorkflow(workspace, dir, name string, scope repoScope) domain.Workflow {
+	workflow, _ := validateWorkflowDocument(workspace, dir, name, scope)
+	return workflow
+}
+
+// validateWorkflowDocument is validateWorkflow plus the markdown body below the
+// frontmatter from the same stable read, returned only when the workflow is
+// valid.
+func validateWorkflowDocument(workspace, dir, name string, scope repoScope) (domain.Workflow, string) {
 	def := definitions[domain.ArtifactWorkflow]
 	rel := WorkflowsDirName + "/" + name
 	diags := newDiagnostics(rel)
@@ -96,11 +104,11 @@ func validateWorkflow(workspace, dir, name string, scope repoScope) domain.Workf
 				"%s resolves to %s, outside the architect workspace; a workflow must be a real file inside %s/",
 				rel, outside.Resolved, WorkflowsDirName)
 			workflow.Diagnostics = diags.items
-			return workflow
+			return workflow, ""
 		}
 		diags.errorf(domain.DiagUnreadable, 0, "cannot resolve %s: %v", rel, err)
 		workflow.Diagnostics = diags.items
-		return workflow
+		return workflow, ""
 	}
 	workflow.Path = canonical
 
@@ -115,7 +123,10 @@ func validateWorkflow(workspace, dir, name string, scope repoScope) domain.Workf
 
 	workflow.Diagnostics = diags.items
 	workflow.Valid = !diags.hasErrors()
-	return workflow
+	if !workflow.Valid {
+		return workflow, ""
+	}
+	return workflow, result.Body
 }
 
 // readWorkflowApplicability interprets the attach/repos pair.

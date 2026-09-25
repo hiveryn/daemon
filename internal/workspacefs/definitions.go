@@ -246,7 +246,7 @@ Investigate before recommending a change, and discuss material decisions.
 			"A repo match makes a workflow suggested, never mandatory: suggestions are preselected for the user and can be removed, and manual workflows can be added.",
 			"An invalid workflow is reported with its diagnostics and excluded from suggestions rather than silently dropped.",
 			"Workflows are flat and unordered. Two workflow bodies that contradict each other are for you and the user to resolve — file order establishes no precedence and nothing here resolves it for you.",
-			"Selecting a workflow copies nothing: a session records the canonical path of the file in this workspace.",
+			"Selecting a workflow records the canonical path of the file in this workspace; nothing is stored. At every launch and resume the daemon rereads and validates the file and gives the worker its body below the frontmatter, verbatim.",
 		},
 		Example: `---
 attach: suggested

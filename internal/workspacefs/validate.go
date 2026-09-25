@@ -67,6 +67,10 @@ type documentResult struct {
 	// architect's ARCHITECT_SYSTEM.md) take it from here rather than reading
 	// the file a second time, so what was validated is what is used.
 	Data string
+	// Body is the markdown below the frontmatter, verbatim, once the file has
+	// parsed; empty otherwise. A worker receives a selected workflow's body from
+	// here, so the text it is given is the text that was validated.
+	Body string
 }
 
 // validateMarkdownArtifact runs the shared markdown pipeline for one artifact:
@@ -125,6 +129,7 @@ func validateMarkdownArtifact(def definition, absPath string, required bool, dia
 		return result
 	}
 	result.Metadata = doc.Metadata
+	result.Body = doc.Body
 	result.FrontmatterLine = frontmatterLineOffset
 
 	if def.RequireBody && strings.TrimSpace(doc.Body) == "" {
