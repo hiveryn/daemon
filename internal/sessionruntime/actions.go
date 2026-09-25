@@ -25,8 +25,10 @@ import (
 //	              an architect's approved request (actions_architect.go)
 //	              moves its pending_approval record to running and launches
 //	              the same way
-//	conclude      the agent's concludeSession finishes the record (completed or
-//	              failed) and ends the session like any other conclusion
+//	conclude      the agent's concludeSession is a concludeSession intent;
+//	              approval (or the wait window expiring) finishes the record
+//	              (completed or failed) and ends the session like any other
+//	              conclusion, a denial leaves both running
 //	cancel        the user stops a running execution: failed, session ended
 //	launch error  failed with the launch error; the session is removed
 //	PTY exit      the agent is resumed like every session; a failed resume
@@ -317,20 +319,26 @@ type actionKickoffData struct {
 	Kickoff        string
 }
 
-// ConcludeAction is the action agent's concludeSession. It needs no approval:
-// the user approved the execution by launching it, and the conclusion is the
-// execution's own result. completed requires a non-empty output directory.
-func (s *Service) ConcludeAction(ctx context.Context, sessionID string, req domain.ConcludeActionRequest) (domain.ActionRun, error) {
-	rt, err := s.actionRuntime()
-	if err != nil {
-		return domain.ActionRun{}, err
+// ConcludeAction is the action agent's concludeSession. Like every agent
+// conclusion it is proposed as a concludeSession intent under that tool's
+// policy (wait-then-allow): the user approves or denies it, and nobody
+// answering within the wait window approves it. While it is pending the
+// execution and its session stay running, so architect result/wait callers see
+// no final result early. Only the intent's Exec finishes the execution and ends
+// the session; a denial leaves both running for follow-up and is returned to
+// the agent as the outcome. completed requires a non-empty output directory,
+// checked before the request is shown and again when it is applied.
+func (s *Service) ConcludeAction(ctx context.Context, sessionID string, req domain.ConcludeActionRequest) (domain.IntentResolution[domain.ActionRun], error) {
+	var zero domain.IntentResolution[domain.ActionRun]
+	if _, err := s.actionRuntime(); err != nil {
+		return zero, err
 	}
 	summary := strings.TrimSpace(req.Summary)
 	if summary == "" {
-		return domain.ActionRun{}, &domain.ValidationError{Field: "summary", Message: "is required"}
+		return zero, &domain.ValidationError{Field: "summary", Message: "is required"}
 	}
 	if len(summary) > domain.MaxActionSummaryLength {
-		return domain.ActionRun{}, &domain.ValidationError{Field: "summary", Message: fmt.Sprintf("is %d characters; keep it under %d — the artifacts carry the detail", len(summary), domain.MaxActionSummaryLength)}
+		return zero, &domain.ValidationError{Field: "summary", Message: fmt.Sprintf("is %d characters; keep it under %d — the artifacts carry the detail", len(summary), domain.MaxActionSummaryLength)}
 	}
 	var status domain.ActionRunStatus
 	switch req.Outcome {
@@ -339,23 +347,60 @@ func (s *Service) ConcludeAction(ctx context.Context, sessionID string, req doma
 	case domain.ActionConclusionFailed:
 		status = domain.ActionRunFailed
 	default:
-		return domain.ActionRun{}, &domain.ValidationError{Field: "outcome", Message: "must be one of: completed, failed"}
+		return zero, &domain.ValidationError{Field: "outcome", Message: "must be one of: completed, failed"}
 	}
 
+	session, run, err := s.runningActionSession(ctx, sessionID)
+	if err != nil {
+		return zero, err
+	}
+	// Validate before the popup, as RequestConclusion does: a doomed
+	// conclusion goes straight back to the agent and is never shown.
+	if status == domain.ActionRunCompleted {
+		if err := checkActionOutputDelivered(run.OutputDir); err != nil {
+			return zero, err
+		}
+	}
+	if err := s.repo.UpdateRunAgentStatus(ctx, session.CurrentRun.ID, domain.AgentStatusWaiting); err != nil {
+		return zero, err
+	}
+
+	return awaitIntent(ctx, s, intentSpec[domain.ActionRun]{
+		SessionID: sessionID,
+		Type:      domain.IntentTypeConcludeSession,
+		Summary:   summary,
+		// body/outcome are what every conclusion card renders; the rest names
+		// the execution the conclusion finishes.
+		Payload: map[string]any{
+			"body":         summary,
+			"outcome":      string(req.Outcome),
+			"action":       run.Action,
+			"execution_id": run.ID,
+			"output_dir":   run.OutputDir,
+		},
+		Origin: intentOrigin(session),
+		Exec: func(ctx context.Context, _ domain.IntentInputValues) (domain.ActionRun, error) {
+			// Ending the session kills the agent and with it the MCP client
+			// whose call this is; the teardown must run to completion anyway.
+			return s.applyActionConclusion(context.WithoutCancel(ctx), sessionID, req.Outcome, status, summary)
+		},
+	})
+}
+
+// applyActionConclusion finishes an execution with its approved conclusion
+// and ends its session. The execution and its output are rechecked: the
+// agent kept running while the conclusion waited for approval.
+func (s *Service) applyActionConclusion(ctx context.Context, sessionID string, outcome domain.ActionConclusionOutcome, status domain.ActionRunStatus, summary string) (domain.ActionRun, error) {
+	rt := s.actions
 	session, run, err := s.runningActionSession(ctx, sessionID)
 	if err != nil {
 		return domain.ActionRun{}, err
 	}
 	if status == domain.ActionRunCompleted {
-		entries, err := os.ReadDir(run.OutputDir)
-		if err != nil {
-			return domain.ActionRun{}, &domain.ValidationError{Field: "outcome", Message: fmt.Sprintf("cannot read output directory %s: %v", run.OutputDir, err)}
-		}
-		if len(entries) == 0 {
-			return domain.ActionRun{}, &domain.ValidationError{Field: "outcome", Message: "output directory " + run.OutputDir + " is empty; deliver the artifact package before concluding completed, or conclude failed"}
+		if err := checkActionOutputDelivered(run.OutputDir); err != nil {
+			return domain.ActionRun{}, err
 		}
 	}
-
 	if err := rt.runs.FinishActionRun(ctx, run.ID, status, summary, "", time.Now().UTC()); err != nil {
 		return domain.ActionRun{}, err
 	}
@@ -363,11 +408,9 @@ func (s *Service) ConcludeAction(ctx context.Context, sessionID string, req doma
 	if err != nil {
 		return domain.ActionRun{}, err
 	}
-	// Ending the session kills the agent and with it the MCP client whose call
-	// this is, which cancels ctx; the teardown must run to completion anyway.
-	if err := s.endActionSession(context.WithoutCancel(ctx), session, "session concluded", "concluded", map[string]any{
+	if err := s.endActionSession(ctx, session, "session concluded", "concluded", map[string]any{
 		"execution_id": run.ID,
-		"outcome":      string(req.Outcome),
+		"outcome":      string(outcome),
 		"summary":      summary,
 		"output_dir":   run.OutputDir,
 	}); err != nil {
@@ -376,6 +419,19 @@ func (s *Service) ConcludeAction(ctx context.Context, sessionID string, req doma
 	s.publishActionEvent(run, status)
 	s.logger.Info("action execution concluded", "action", run.Action, "execution_id", run.ID, "status", status)
 	return finished, nil
+}
+
+// checkActionOutputDelivered refuses a completed conclusion while the output
+// directory is empty.
+func checkActionOutputDelivered(outputDir string) error {
+	entries, err := os.ReadDir(outputDir)
+	if err != nil {
+		return &domain.ValidationError{Field: "outcome", Message: fmt.Sprintf("cannot read output directory %s: %v", outputDir, err)}
+	}
+	if len(entries) == 0 {
+		return &domain.ValidationError{Field: "outcome", Message: "output directory " + outputDir + " is empty; deliver the artifact package before concluding completed, or conclude failed"}
+	}
+	return nil
 }
 
 // RecentActionConclusions returns the latest concluded summaries of the action

@@ -23,7 +23,7 @@ func (s *Server) registerActionTools() {
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "concludeSession",
-		Description: "End this Action execution. outcome=completed means the requested artifact package is delivered in the output directory and verified (findings such as failed checks inside the package still count as completed); outcome=failed means the Action could not be executed or delivered. summary is a concise, at-a-glance account: what was delivered, key findings, recoveries, repository changes you committed, and anything a later execution should know. completed is refused while the output directory is empty. This ends the session and kills your terminal.",
+		Description: "Propose ending this Action execution. outcome=completed means the requested artifact package is delivered in the output directory and verified (findings such as failed checks inside the package still count as completed); outcome=failed means the Action could not be executed or delivered. summary is a concise, at-a-glance account: what was delivered, key findings, recoveries, repository changes you committed, and anything a later execution should know. completed is refused while the output directory is empty. The user is asked to approve; this call blocks until they answer, and it is auto-approved if they do not answer in time. Check `outcome`: approved/auto_approved ended the execution and the session (your terminal is killed); denied_by_user/auto_denied means nothing ended and the execution is still running — read `reason`, do not retry the same conclusion, and ask the user what they want next.",
 	}, s.handleConcludeAction)
 }
 
@@ -39,9 +39,10 @@ type ConcludeActionInput struct {
 }
 
 type ConcludeActionOutput struct {
-	ExecutionID string `json:"execution_id"`
-	Status      string `json:"status"`
-	OutputDir   string `json:"output_dir"`
+	IntentEnvelopeFields
+	ExecutionID string `json:"execution_id,omitempty" jsonschema:"The concluded execution; set only when the conclusion was applied."`
+	Status      string `json:"status,omitempty" jsonschema:"The execution's final status (completed or failed); set only when the conclusion was applied."`
+	OutputDir   string `json:"output_dir,omitempty" jsonschema:"The execution's output directory; set only when the conclusion was applied."`
 }
 
 func (s *Server) handleReadRecentActionConclusions(
@@ -71,14 +72,30 @@ func (s *Server) handleConcludeAction(
 	if strings.TrimSpace(input.Summary) == "" {
 		return nil, ConcludeActionOutput{}, newValidationError("summary", "is required")
 	}
-	var run domain.ActionRun
-	if err := s.sessionRequest(ctx, http.MethodPost, "action/conclude", domain.ConcludeActionRequest{
+	res, err := s.requestIntent(ctx, "conclude-action", domain.ConcludeActionRequest{
 		Outcome: domain.ActionConclusionOutcome(outcome),
 		Summary: input.Summary,
-	}, &run); err != nil {
+	})
+	if err != nil {
 		return nil, ConcludeActionOutput{}, err
 	}
-	return nil, ConcludeActionOutput{ExecutionID: run.ID, Status: string(run.Status), OutputDir: run.OutputDir}, nil
+	envelope, err := intentEnvelope(res)
+	if err != nil {
+		return nil, ConcludeActionOutput{}, err
+	}
+	out := ConcludeActionOutput{IntentEnvelopeFields: envelope}
+	if !intentApproved(res.Outcome) {
+		return nil, out, nil
+	}
+	if len(res.Result) == 0 {
+		return nil, ConcludeActionOutput{}, newInternalError("approved concludeSession returned no execution")
+	}
+	var run domain.ActionRun
+	if err := json.Unmarshal(res.Result, &run); err != nil {
+		return nil, ConcludeActionOutput{}, newInternalError(fmt.Sprintf("decode conclude payload: %v", err))
+	}
+	out.ExecutionID, out.Status, out.OutputDir = run.ID, string(run.Status), run.OutputDir
+	return nil, out, nil
 }
 
 // sessionRequest calls /api/sessions/{session}/{subPath} — subPath may carry a

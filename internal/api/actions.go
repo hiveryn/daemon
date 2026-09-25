@@ -112,8 +112,10 @@ func (h *actionsHandler) cancelRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, run)
 }
 
-// conclude is the action agent's concludeSession, addressed by its session.
-func (h *actionsHandler) conclude(w http.ResponseWriter, r *http.Request) {
+// concludeIntent is the action agent's concludeSession, addressed by its
+// session. It blocks until the conclusion is approved, denied or
+// auto-approved, like every other conclusion.
+func (h *actionsHandler) concludeIntent(w http.ResponseWriter, r *http.Request) {
 	if !h.ready(w, r) {
 		return
 	}
@@ -122,12 +124,12 @@ func (h *actionsHandler) conclude(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
 		return
 	}
-	run, err := h.actions.ConcludeAction(r.Context(), r.PathValue("id"), input)
+	res, err := h.actions.ConcludeAction(r.Context(), r.PathValue("id"), input)
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
 	}
-	writeJSON(w, r, http.StatusOK, run)
+	writeIntentResolution(w, r, res, res.Result)
 }
 
 func (h *actionsHandler) recentConclusions(w http.ResponseWriter, r *http.Request) {

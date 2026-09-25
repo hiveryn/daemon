@@ -240,7 +240,7 @@ func TestExecuteActionReturnsPendingThenApprovalLaunchesUnderSameID(t *testing.T
 	if err := os.WriteFile(filepath.Join(run.OutputDir, "summary.md"), []byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.ConcludeAction(context.Background(), run.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "delivered"}); err != nil {
+	if _, err := f.conclude(t, run.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "delivered"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -475,7 +475,7 @@ func TestExecuteActionTeardownAndRestartFailPendingRequests(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(liveRun.OutputDir, "summary.md"), []byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.ConcludeAction(ctx, liveRun.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "ok"}); err != nil {
+	if _, err := f.conclude(t, liveRun.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "ok"}); err != nil {
 		t.Fatal(err)
 	}
 }

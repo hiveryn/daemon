@@ -46,11 +46,15 @@ func TestActionToolsCallSessionScopedEndpoints(t *testing.T) {
 		switch r.Method + " " + r.URL.Path {
 		case "GET /api/sessions/sess-action/action/conclusions":
 			writeEnvelope(t, w, http.StatusOK, map[string]any{"conclusions": []domain.ActionConclusion{{ExecutionID: "run-1", Status: domain.ActionRunCompleted, Summary: "ok", EndedAt: &ended}}})
-		case "POST /api/sessions/sess-action/action/conclude":
+		case "POST /api/sessions/sess-action/intents/conclude-action":
 			if err := json.NewDecoder(r.Body).Decode(&concluded); err != nil {
 				t.Fatalf("decode: %v", err)
 			}
-			writeEnvelope(t, w, http.StatusOK, domain.ActionRun{ID: "run-2", Status: domain.ActionRunCompleted, OutputDir: "/out/run-2"})
+			if concluded.Summary == "rejected" {
+				writeEnvelope(t, w, http.StatusOK, map[string]any{"intent_id": "intent-1", "outcome": "denied_by_user", "reason": "add FRA"})
+				return
+			}
+			writeEnvelope(t, w, http.StatusOK, map[string]any{"intent_id": "intent-2", "outcome": "auto_approved", "result": domain.ActionRun{ID: "run-2", Status: domain.ActionRunCompleted, OutputDir: "/out/run-2"}})
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
@@ -68,8 +72,13 @@ func TestActionToolsCallSessionScopedEndpoints(t *testing.T) {
 	if _, _, err := server.handleConcludeAction(context.Background(), nil, ConcludeActionInput{Outcome: "done", Summary: "x"}); err == nil {
 		t.Fatal("invalid outcome accepted")
 	}
+	// A denial is a successful result carrying the verdict, not an error.
+	_, denied, err := server.handleConcludeAction(context.Background(), nil, ConcludeActionInput{Outcome: "completed", Summary: "rejected"})
+	if err != nil || denied.Outcome != "denied_by_user" || denied.Reason != "add FRA" || denied.Guidance == "" || denied.ExecutionID != "" {
+		t.Fatalf("denied conclude = %+v, %v", denied, err)
+	}
 	_, out, err := server.handleConcludeAction(context.Background(), nil, ConcludeActionInput{Outcome: "completed", Summary: "delivered"})
-	if err != nil || out.ExecutionID != "run-2" || out.Status != "completed" || out.OutputDir != "/out/run-2" {
+	if err != nil || out.Outcome != "auto_approved" || out.ExecutionID != "run-2" || out.Status != "completed" || out.OutputDir != "/out/run-2" {
 		t.Fatalf("conclude = %+v, %v", out, err)
 	}
 	if concluded.Outcome != domain.ActionConclusionCompleted || concluded.Summary != "delivered" {

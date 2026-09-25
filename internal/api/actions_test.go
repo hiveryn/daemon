@@ -70,3 +70,51 @@ func TestActionLaunchRoutes(t *testing.T) {
 		t.Fatalf("list status = %d limit %d", rec.Code, svc.limit)
 	}
 }
+
+type fakeConcludeActionService struct {
+	domain.ActionService
+	session string
+	req     domain.ConcludeActionRequest
+	res     domain.IntentResolution[domain.ActionRun]
+}
+
+func (f *fakeConcludeActionService) ConcludeAction(_ context.Context, sessionID string, req domain.ConcludeActionRequest) (domain.IntentResolution[domain.ActionRun], error) {
+	f.session, f.req = sessionID, req
+	return f.res, nil
+}
+
+func TestActionConcludeIntentRoute(t *testing.T) {
+	svc := &fakeConcludeActionService{}
+	handler := NewHandler(Dependencies{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Actions: svc})
+	conclude := func() map[string]any {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-a/intents/conclude-action", strings.NewReader(`{"outcome":"completed","summary":"delivered"}`))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d body %s", rec.Code, rec.Body)
+		}
+		var env struct {
+			Data map[string]any `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+			t.Fatal(err)
+		}
+		return env.Data
+	}
+
+	svc.res = domain.IntentResolution[domain.ActionRun]{IntentID: "i-1", Outcome: domain.IntentOutcomeDeniedByUser, Reason: "add FRA"}
+	if got := conclude(); got["outcome"] != "denied_by_user" || got["reason"] != "add FRA" || got["result"] != nil {
+		t.Fatalf("denied = %+v", got)
+	}
+	if svc.session != "sess-a" || svc.req.Outcome != domain.ActionConclusionCompleted || svc.req.Summary != "delivered" {
+		t.Fatalf("service got session %q req %+v", svc.session, svc.req)
+	}
+
+	svc.res = domain.IntentResolution[domain.ActionRun]{IntentID: "i-2", Outcome: domain.IntentOutcomeAutoApproved, Result: domain.ActionRun{ID: "run-1", Status: domain.ActionRunCompleted}}
+	got := conclude()
+	result, _ := got["result"].(map[string]any)
+	if got["outcome"] != "auto_approved" || result["id"] != "run-1" || result["status"] != "completed" {
+		t.Fatalf("auto-approved = %+v", got)
+	}
+}

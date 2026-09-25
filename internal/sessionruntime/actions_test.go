@@ -263,21 +263,21 @@ func TestConcludeActionCompletesAndRetainsHistory(t *testing.T) {
 	result := f.launch(t, "demo", "go")
 
 	// completed is refused while nothing was delivered.
-	_, err := f.service.ConcludeAction(ctx, result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "done"})
+	_, err := f.conclude(t, result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "done"})
 	if err == nil || !strings.Contains(err.Error(), "is empty") {
 		t.Fatalf("empty-output conclusion err = %v", err)
 	}
-	if _, err := f.service.ConcludeAction(ctx, result.Session.ID, domain.ConcludeActionRequest{Outcome: "maybe", Summary: "x"}); err == nil {
+	if _, err := f.conclude(t, result.Session.ID, domain.ConcludeActionRequest{Outcome: "maybe", Summary: "x"}); err == nil {
 		t.Fatal("invalid outcome accepted")
 	}
-	if _, err := f.service.ConcludeAction(ctx, result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionFailed, Summary: strings.Repeat("x", domain.MaxActionSummaryLength+1)}); err == nil {
+	if _, err := f.conclude(t, result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionFailed, Summary: strings.Repeat("x", domain.MaxActionSummaryLength+1)}); err == nil {
 		t.Fatal("over-long summary accepted")
 	}
 
 	if err := os.WriteFile(filepath.Join(result.Run.OutputDir, "summary.md"), []byte("# synthetic\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	run, err := f.service.ConcludeAction(ctx, result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "AMS 19.7% vs LDN 8.5%; LDN run 2 recovered."})
+	run, err := f.conclude(t, result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "AMS 19.7% vs LDN 8.5%; LDN run 2 recovered."})
 	if err != nil {
 		t.Fatalf("conclude: %v", err)
 	}
@@ -301,7 +301,7 @@ func TestConcludeActionCompletesAndRetainsHistory(t *testing.T) {
 	if len(history) != 1 || history[0].ExecutionID != run.ID || history[0].Status != domain.ActionRunCompleted {
 		t.Fatalf("history = %+v", history)
 	}
-	failed, err := f.service.ConcludeAction(ctx, second.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionFailed, Summary: "collector missing"})
+	failed, err := f.conclude(t, second.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionFailed, Summary: "collector missing"})
 	if err != nil || failed.Status != domain.ActionRunFailed {
 		t.Fatalf("failed conclusion = %+v, %v", failed, err)
 	}
@@ -317,7 +317,7 @@ func TestRecentActionConclusionsReturnsAtMostFive(t *testing.T) {
 	ctx := context.Background()
 	for i := 0; i < 7; i++ {
 		r := f.launch(t, "demo", "go")
-		if _, err := f.service.ConcludeAction(ctx, r.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionFailed, Summary: "attempt"}); err != nil {
+		if _, err := f.conclude(t, r.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionFailed, Summary: "attempt"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -382,7 +382,7 @@ func TestRestartKeepsRestoredExecutionRunningAndFailsOrphans(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(live.Run.OutputDir, "results.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	done, err := f.service.ConcludeAction(ctx, live.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "ok"})
+	done, err := f.conclude(t, live.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "ok"})
 	if err != nil || done.ID != live.Run.ID || done.Status != domain.ActionRunCompleted {
 		t.Fatalf("conclude after restart = %+v, %v", done, err)
 	}
@@ -444,8 +444,9 @@ func TestAgentExitResumesOrFailsActionExecution(t *testing.T) {
 	}
 }
 
-// Concluding kills the agent, whose MCP call carries ctx: the conclusion must
-// still complete and answer when that ctx is cancelled mid-teardown.
+// Applying a conclusion kills the agent, and with it the MCP call; the
+// teardown must still complete when the resolving ctx is cancelled mid-way —
+// here the approving request's, and on auto-approval the detached agent's.
 func TestConcludeActionSurvivesCallerCancellationDuringTeardown(t *testing.T) {
 	f := newActionFixture(t)
 	f.writeValidAction(t, "demo")
@@ -453,11 +454,16 @@ func TestConcludeActionSurvivesCallerCancellationDuringTeardown(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(result.Run.OutputDir, "summary.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	done := f.startConclude(result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "ok"})
+	id, _ := f.pendingConclusion(t, result.Session.ID, done)
 	ctx, cancel := context.WithCancel(context.Background())
 	f.terminal.onKill = cancel
-	run, err := f.service.ConcludeAction(ctx, result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "ok"})
-	if err != nil || run.Status != domain.ActionRunCompleted {
-		t.Fatalf("conclude = %+v, %v", run, err)
+	if _, err := f.service.ApproveIntent(ctx, result.Session.ID, id, nil); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	call := awaitConclude(t, done)
+	if call.err != nil || call.res.Result.Status != domain.ActionRunCompleted {
+		t.Fatalf("conclude = %+v, %v", call.res, call.err)
 	}
 	if _, err := f.sessions.GetSession(context.Background(), result.Session.ID); !errors.As(err, new(*domain.NotFoundError)) {
 		t.Fatalf("session not torn down: %v", err)

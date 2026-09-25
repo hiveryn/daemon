@@ -184,8 +184,8 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/action-runs/{id}", ach.getRun)
 	mux.HandleFunc("POST /api/action-runs/{id}/cancel", ach.cancelRun)
 	// Agent-facing action tools, addressed by the calling action session.
-	mux.HandleFunc("POST /api/sessions/{id}/action/conclude", ach.conclude)
 	mux.HandleFunc("GET /api/sessions/{id}/action/conclusions", ach.recentConclusions)
+	mux.HandleFunc("POST /api/sessions/{id}/intents/conclude-action", ach.concludeIntent)
 	// Architect-facing Actions, addressed by the calling architect session:
 	// discovery, the deferred execute request, and the architect-scoped
 	// result and bounded wait under the one execution id.

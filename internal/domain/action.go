@@ -113,7 +113,7 @@ type ActionService interface {
 	SubscribeActionEvents() ActionEventSubscription
 
 	// Agent-facing, addressed by the calling action session.
-	ConcludeAction(ctx context.Context, sessionID string, req ConcludeActionRequest) (ActionRun, error)
+	ConcludeAction(ctx context.Context, sessionID string, req ConcludeActionRequest) (IntentResolution[ActionRun], error)
 	RecentActionConclusions(ctx context.Context, sessionID string) ([]ActionConclusion, error)
 
 	// Architect-facing, addressed by the calling architect session; the
