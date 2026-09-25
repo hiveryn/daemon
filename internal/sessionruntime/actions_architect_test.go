@@ -125,6 +125,26 @@ func TestAvailableActionsListsConfiguredActionsAndReportsMissing(t *testing.T) {
 	}
 }
 
+func TestSuggestionsReachManualViewsButNotArchitects(t *testing.T) {
+	f := newActionFixture(t)
+	f.writeAction(t, "demo", "name: demo\ndescription: d\nartifacts: a\nsuggestions:\n  - Compare AMS and LDN\n", testActionKickoff)
+	arch := f.architect(t, "alpha", "demo")
+	ctx := context.Background()
+
+	def, err := f.service.GetAction(ctx, "demo")
+	if err != nil || !def.Valid || len(def.Suggestions) != 1 || def.Suggestions[0] != "Compare AMS and LDN" {
+		t.Fatalf("GetAction = %+v, %v; want the suggestion", def, err)
+	}
+	library, err := f.service.ListActions(ctx)
+	if err != nil || len(library.Actions) != 1 || len(library.Actions[0].Suggestions) != 1 {
+		t.Fatalf("ListActions = %+v, %v; want the suggestion", library, err)
+	}
+	available, err := f.service.AvailableActions(ctx, arch.ID)
+	if err != nil || len(available.Actions) != 1 || !available.Actions[0].Valid || available.Actions[0].Suggestions != nil {
+		t.Fatalf("AvailableActions = %+v, %v; want the valid definition without suggestions", available, err)
+	}
+}
+
 func TestExecuteActionEnforcesAvailabilityAndValidity(t *testing.T) {
 	f := newActionFixture(t)
 	f.writeValidAction(t, "demo")

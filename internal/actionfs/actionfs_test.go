@@ -132,3 +132,60 @@ func TestRenderKickoffIsSinglePass(t *testing.T) {
 		t.Fatal("rendered an invalid definition")
 	}
 }
+
+func TestSuggestionsAreOptionalTrimmedAndBounded(t *testing.T) {
+	root := t.TempDir()
+	kickoff := "Do {{prompt}} into {{output_dir}}."
+	writeAction(t, root, "none", true, map[string]string{
+		"action.yaml": "name: none\ndescription: d\nartifacts: a\n",
+		"KICKOFF.md":  kickoff,
+	})
+	writeAction(t, root, "some", true, map[string]string{
+		"action.yaml": "name: some\ndescription: d\nartifacts: a\nsuggestions:\n  - \"  Compare AMS and LDN  \"\n  - |\n    Two lines\n    of prompt\n",
+		"KICKOFF.md":  kickoff,
+	})
+	writeAction(t, root, "broken", true, map[string]string{
+		"action.yaml": "name: broken\ndescription: d\nartifacts: a\nsuggestions:\n  - one\n  - \"  \"\n  - one\n  - " + strings.Repeat("x", 1001) + "\n",
+		"KICKOFF.md":  kickoff,
+	})
+	writeAction(t, root, "mapping", true, map[string]string{
+		"action.yaml": "name: mapping\ndescription: d\nartifacts: a\nsuggestions:\n  - label: x\n    prompt: y\n",
+		"KICKOFF.md":  kickoff,
+	})
+	var many strings.Builder
+	many.WriteString("name: many\ndescription: d\nartifacts: a\nsuggestions:\n")
+	for i := range 11 {
+		many.WriteString("  - prompt " + string(rune('a'+i)) + "\n")
+	}
+	writeAction(t, root, "many", true, map[string]string{"action.yaml": many.String(), "KICKOFF.md": kickoff})
+
+	get := func(name string) Definition {
+		t.Helper()
+		def, err := Get(root, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return def
+	}
+
+	if def := get("none"); !def.Valid || def.Suggestions != nil {
+		t.Fatalf("none = %+v problems:\n%s", def.ActionDefinition, problemText(def))
+	}
+	some := get("some")
+	if !some.Valid || strings.Join(some.Suggestions, "|") != "Compare AMS and LDN|Two lines\nof prompt" {
+		t.Fatalf("some = %q problems:\n%s", some.Suggestions, problemText(some))
+	}
+	broken := get("broken")
+	text := problemText(broken)
+	for _, want := range []string{"suggestions[1] is blank", "suggestions[2] repeats suggestions[0]", "suggestions[3] is 1001 characters; the limit is 1000"} {
+		if broken.Valid || !strings.Contains(text, want) {
+			t.Fatalf("broken problems missing %q:\n%s", want, text)
+		}
+	}
+	if mapping := get("mapping"); mapping.Valid || !strings.Contains(problemText(mapping), "invalid YAML") {
+		t.Fatalf("mapping problems:\n%s", problemText(mapping))
+	}
+	if many := get("many"); many.Valid || !strings.Contains(problemText(many), "suggestions has 11 entries; the limit is 10") {
+		t.Fatalf("many problems:\n%s", problemText(many))
+	}
+}

@@ -156,6 +156,26 @@ Before offering a launch at all, a client can ask `GET /api/architects/{key}/wor
 
 The architect also has two read-only workspace tools: parameterless `checkWorkspace` (the workspace is resolved from the session, so an agent cannot address another one) and `describeArtifact(kind)`. Both are architect-only — a worker maintains no workspace.
 
+### Action definitions — `HIVERYN_HOME/actions/<name>`
+
+Each Action is its own Git repository directly under `HIVERYN_HOME/actions`; the directory name is the action name (lowercase letters, digits, `.`, `_`, `-`, at most 64 characters). It is read live and needs two files:
+
+```yaml
+# action.yaml — decoded strictly; no other key is allowed
+name: demo-evidence            # required, equal to the directory name
+description: |                 # required: what the Action does and what the prompt must contain
+  Compare synthetic AMS and LDN evidence. Say how many collections to run.
+artifacts: |                   # required: the delivered artifact package contract
+  summary.md and results.json in the output directory.
+suggestions:                   # optional: ready-made prompts for the manual launch form
+  - Compare AMS and LDN with three collections.
+  - Compare AMS and LDN with six collections and a first-attempt failure.
+```
+
+`KICKOFF.md` holds the launch instructions and must contain `{{prompt}}` (the caller's prompt) and `{{output_dir}}` (the fresh output directory); no other `{{…}}` placeholder is supplied.
+
+`suggestions` is a list of plain prompt strings, in the order the launch form shows them — at most 10, each nonblank after trimming, unique and at most 1000 characters (multi-line block scalars are fine). In the Actions window each appears as a chip under the Launch prompt; clicking one replaces the prompt text, which stays editable, and never launches anything. Suggestions are manual-entry conveniences only: they are not part of `getAvailableActions`, architect requests or their approval. Omit the key when there is nothing to suggest. A definition that breaks any rule is listed with its problems (the Actions window shows them) and cannot launch until repaired.
+
 ### `tabs.yaml` — tab layout per session type
 
 ```yaml

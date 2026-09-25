@@ -54,8 +54,10 @@ const (
 	ActionAttentionSourceHook     = sd.ActionAttentionSourceHook
 	ActionAttentionSourceTerminal = sd.ActionAttentionSourceTerminal
 
-	MaxActionSummaryLength = sd.MaxActionSummaryLength
-	MaxActionWaitSeconds   = sd.MaxActionWaitSeconds
+	MaxActionSummaryLength    = sd.MaxActionSummaryLength
+	MaxActionWaitSeconds      = sd.MaxActionWaitSeconds
+	MaxActionSuggestions      = sd.MaxActionSuggestions
+	MaxActionSuggestionLength = sd.MaxActionSuggestionLength
 )
 
 // ValidActionName reports whether name is a well-formed action name.

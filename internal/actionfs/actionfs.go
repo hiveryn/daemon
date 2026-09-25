@@ -7,7 +7,9 @@
 // The definition contract is deliberately small:
 //
 //	<root>/<name>/.git          the action is a Git repository
-//	<root>/<name>/action.yaml   exactly: name (== <name>), description, artifacts
+//	<root>/<name>/action.yaml   name (== <name>), description, artifacts and the
+//	                            optional suggestions (manual-launch prompts);
+//	                            no other key
 //	<root>/<name>/KICKOFF.md    launch instructions containing {{prompt}} and
 //	                            {{output_dir}}; no other {{...}} placeholder
 package actionfs
@@ -22,6 +24,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/hiveryn/daemon/internal/domain"
 	"gopkg.in/yaml.v3"
@@ -49,9 +52,10 @@ type Definition struct {
 }
 
 type manifest struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
-	Artifacts   string `yaml:"artifacts"`
+	Name        string   `yaml:"name"`
+	Description string   `yaml:"description"`
+	Artifacts   string   `yaml:"artifacts"`
+	Suggestions []string `yaml:"suggestions"`
 }
 
 // List inspects every directory under root. A missing root is an empty
@@ -118,7 +122,7 @@ func inspect(dir, dirName string) Definition {
 			if errors.Is(err, io.EOF) {
 				problem(manifestPath, "file is empty; required keys: name, description, artifacts")
 			} else {
-				problem(manifestPath, "invalid YAML (allowed keys: name, description, artifacts): %v", err)
+				problem(manifestPath, "invalid YAML (allowed keys: name, description, artifacts, suggestions): %v", err)
 			}
 		} else {
 			def.Description = strings.TrimSpace(m.Description)
@@ -135,6 +139,11 @@ func inspect(dir, dirName string) Definition {
 			if def.Artifacts == "" {
 				problem(manifestPath, "artifacts is required: describe the delivered artifact package")
 			}
+			var messages []string
+			def.Suggestions, messages = suggestions(m.Suggestions)
+			for _, message := range messages {
+				problem(manifestPath, "%s", message)
+			}
 		}
 	}
 
@@ -150,6 +159,37 @@ func inspect(dir, dirName string) Definition {
 
 	def.Valid = len(def.Problems) == 0
 	return def
+}
+
+// suggestions trims the optional suggested prompts and reports every entry
+// that breaks the bounds: blank, too long, repeated, or too many.
+func suggestions(raw []string) ([]string, []string) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var problems []string
+	if len(raw) > domain.MaxActionSuggestions {
+		problems = append(problems, fmt.Sprintf("suggestions has %d entries; the limit is %d", len(raw), domain.MaxActionSuggestions))
+	}
+	out := make([]string, 0, len(raw))
+	seen := make(map[string]int, len(raw))
+	for i, entry := range raw {
+		entry = strings.TrimSpace(entry)
+		switch length := utf8.RuneCountInString(entry); {
+		case entry == "":
+			problems = append(problems, fmt.Sprintf("suggestions[%d] is blank; each suggestion is a prompt the launch form can fill in", i))
+			continue
+		case length > domain.MaxActionSuggestionLength:
+			problems = append(problems, fmt.Sprintf("suggestions[%d] is %d characters; the limit is %d", i, length, domain.MaxActionSuggestionLength))
+		}
+		if first, ok := seen[entry]; ok {
+			problems = append(problems, fmt.Sprintf("suggestions[%d] repeats suggestions[%d]", i, first))
+			continue
+		}
+		seen[entry] = i
+		out = append(out, entry)
+	}
+	return out, problems
 }
 
 func kickoffProblems(kickoff string) []string {
