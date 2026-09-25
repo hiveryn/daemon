@@ -14,31 +14,70 @@ import (
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
-func TestArchitectRegistersActionToolsAndWorkersDoNot(t *testing.T) {
+func TestActionToolsAreRegisteredPerRole(t *testing.T) {
 	t.Parallel()
 
-	architect, err := NewServer(Config{DaemonURL: "http://127.0.0.1:4200", ArchitectKey: "hiveryn", SessionID: "sess-arch", SessionType: SessionTypeArchitect})
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
+	requestTools := []string{"getAvailableActions", "executeAction", "getActionResult", "waitForActionResult"}
+	cases := []struct {
+		name        string
+		cfg         Config
+		wantRequest bool
+		wantAdd     bool
+	}{
+		{"architect", Config{ArchitectKey: "hiveryn", SessionID: "sess-arch", SessionType: SessionTypeArchitect}, true, true},
+		{"ticket", Config{ArchitectKey: "hiveryn", SessionID: "sess-ticket", SessionType: SessionTypeTicket}, true, false},
+		{"action", Config{SessionID: "sess-action", SessionType: SessionTypeAction}, false, false},
 	}
-	names := registeredToolNames(t, architect)
-	for _, want := range []string{"getAvailableActions", "executeAction", "getActionResult", "waitForActionResult"} {
-		if _, ok := names[want]; !ok {
-			t.Errorf("architect is missing %s", want)
+	for _, tc := range cases {
+		tc.cfg.DaemonURL = "http://127.0.0.1:4200"
+		server, err := NewServer(tc.cfg)
+		if err != nil {
+			t.Fatalf("%s: NewServer: %v", tc.name, err)
 		}
-	}
-	ticket, err := NewServer(Config{DaemonURL: "http://127.0.0.1:4200", ArchitectKey: "hiveryn", SessionID: "sess-ticket", SessionType: SessionTypeTicket})
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	for name := range registeredToolNames(t, ticket) {
-		if strings.Contains(name, "Action") {
-			t.Errorf("ticket session has %s", name)
+		names := registeredToolNames(t, server)
+		for _, tool := range requestTools {
+			if _, ok := names[tool]; ok != tc.wantRequest {
+				t.Errorf("%s: has %s = %v, want %v", tc.name, tool, ok, tc.wantRequest)
+			}
+		}
+		if _, ok := names["addAvailableAction"]; ok != tc.wantAdd {
+			t.Errorf("%s: has addAvailableAction = %v, want %v", tc.name, ok, tc.wantAdd)
 		}
 	}
 }
 
-func TestArchitectActionToolsCallSessionScopedEndpoints(t *testing.T) {
+func TestAddAvailableActionCallsSessionScopedEndpoint(t *testing.T) {
+	t.Parallel()
+
+	var got domain.AddAvailableActionRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method+" "+r.URL.Path != "POST /api/sessions/sess-arch/available-actions" {
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		writeEnvelope(t, w, http.StatusOK, domain.AddAvailableActionResult{Changed: true, AvailableActions: []string{"demo", "nova"}})
+	}))
+	t.Cleanup(ts.Close)
+
+	server, err := NewServer(Config{DaemonURL: ts.URL, ArchitectKey: "hiveryn", SessionID: "sess-arch", SessionType: SessionTypeArchitect, HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if _, _, err := server.handleAddAvailableAction(context.Background(), nil, AddAvailableActionInput{Name: "  "}); err == nil {
+		t.Fatal("blank name accepted")
+	}
+	_, out, err := server.handleAddAvailableAction(context.Background(), nil, AddAvailableActionInput{Name: " nova "})
+	if err != nil || !out.Changed || strings.Join(out.AvailableActions, ",") != "demo,nova" {
+		t.Fatalf("addAvailableAction = %+v, %v", out, err)
+	}
+	if got.Name != "nova" {
+		t.Fatalf("daemon received %+v", got)
+	}
+}
+
+func TestAgentActionToolsCallSessionScopedEndpoints(t *testing.T) {
 	t.Parallel()
 
 	started := time.Date(2026, 9, 24, 9, 0, 0, 0, time.UTC)

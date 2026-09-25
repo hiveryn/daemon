@@ -186,10 +186,12 @@ func NewHandler(deps Dependencies) http.Handler {
 	// Agent-facing action tools, addressed by the calling action session.
 	mux.HandleFunc("GET /api/sessions/{id}/action/conclusions", ach.recentConclusions)
 	mux.HandleFunc("POST /api/sessions/{id}/intents/conclude-action", ach.concludeIntent)
-	// Architect-facing Actions, addressed by the calling architect session:
-	// discovery, the deferred execute request, and the architect-scoped
-	// result and bounded wait under the one execution id.
+	// Architect- and worker-facing Actions, addressed by the calling session:
+	// discovery, the deferred execute request, and the project-scoped result
+	// and bounded wait under the one execution id. Adding to availableActions
+	// is architect-only.
 	mux.HandleFunc("GET /api/sessions/{id}/available-actions", ach.available)
+	mux.HandleFunc("POST /api/sessions/{id}/available-actions", ach.addAvailable)
 	mux.HandleFunc("POST /api/sessions/{id}/intents/execute-action", ach.executeIntent)
 	mux.HandleFunc("GET /api/sessions/{id}/action-results/{executionID}", ach.result)
 	mux.HandleFunc("GET /api/sessions/{id}/action-results/{executionID}/wait", ach.wait)

@@ -11,10 +11,11 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Architect Actions tools. The architect is always the calling session's; the
-// daemon enforces availableActions on discovery and on every request, and
-// scopes results to the architect.
-func (s *Server) registerArchitectActionTools() {
+// Actions tools for architects and ticket workers. The project is always the
+// calling session's; the daemon enforces its availableActions on discovery and
+// on every request, and scopes results to the project. Action agents get none
+// of these.
+func (s *Server) registerAgentActionTools() {
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "getAvailableActions",
 		Description: "List the Actions this project may request (hiveryn.yaml availableActions), each with its description — what the Action does and what your prompt must contain — and its artifact contract. A listed Action with valid=false cannot be requested; its problems say why (for example a missing definition). running_execution_id is set while an execution of that Action is running.",
@@ -34,6 +35,43 @@ func (s *Server) registerArchitectActionTools() {
 		Name:        "waitForActionResult",
 		Description: fmt.Sprintf("Wait for an execution this project requested to change state, for at most timeout_seconds (1-%d, default %d). Returns as soon as the status changes (for example pending_approval → running, running → completed) or the agent's attention changes (input_required appearing, clearing or changing reason — see getActionResult), or immediately if it is already final; otherwise returns the unchanged state with timed_out=true, and you may call it again. Waiting never affects the execution.", domain.MaxActionWaitSeconds, domain.MaxActionWaitSeconds),
 	}, s.handleWaitForActionResult)
+}
+
+// registerAddAvailableActionTool is architect-only: workers and Action agents
+// consume the project's availableActions but never change it.
+func (s *Server) registerAddAvailableActionTool() {
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "addAvailableAction",
+		Description: "Allow one more Action for this project by adding its name to availableActions in this project's hiveryn.yaml. Keeps every existing entry and all other configuration; adding a name that is already listed succeeds without duplicating it (changed=false). Returns the resulting list, which getAvailableActions reflects at once. The name is not checked against the Actions library: getAvailableActions reports a missing or invalid definition. Errors if the name is malformed, hiveryn.yaml does not load (repair it first) or the file was edited concurrently (add it again).",
+	}, s.handleAddAvailableAction)
+}
+
+type AddAvailableActionInput struct {
+	Name string `json:"name" jsonschema:"The Action name: its directory name in the Actions library (required)."`
+}
+
+type AddAvailableActionOutput struct {
+	Changed          bool     `json:"changed" jsonschema:"hiveryn.yaml was changed; false when the name was already listed."`
+	AvailableActions []string `json:"available_actions" jsonschema:"availableActions after the call, in file order."`
+}
+
+func (s *Server) handleAddAvailableAction(
+	ctx context.Context,
+	_ *mcp.CallToolRequest,
+	input AddAvailableActionInput,
+) (*mcp.CallToolResult, AddAvailableActionOutput, error) {
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		return nil, AddAvailableActionOutput{}, newValidationError("name", "is required")
+	}
+	var out domain.AddAvailableActionResult
+	if err := s.sessionRequest(ctx, http.MethodPost, "available-actions", domain.AddAvailableActionRequest{Name: name}, &out); err != nil {
+		return nil, AddAvailableActionOutput{}, err
+	}
+	if out.AvailableActions == nil {
+		out.AvailableActions = []string{}
+	}
+	return nil, AddAvailableActionOutput{Changed: out.Changed, AvailableActions: out.AvailableActions}, nil
 }
 
 type GetAvailableActionsInput struct{}

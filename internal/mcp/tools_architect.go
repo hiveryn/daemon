@@ -78,7 +78,8 @@ func (s *Server) registerArchitectTools() {
 	// Actions: discovery of this architect's availableActions, the deferred
 	// executeAction request and its result/wait under the one execution id.
 	// Only architects get these; action agents cannot invoke Actions.
-	s.registerArchitectActionTools()
+	s.registerAgentActionTools()
+	s.registerAddAvailableActionTool()
 }
 
 func (s *Server) handleReadTicketConclusion(

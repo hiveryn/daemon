@@ -11,53 +11,95 @@ import (
 	"time"
 
 	"github.com/hiveryn/daemon/internal/actionfs"
+	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
-// Architect-requested Actions. An architect discovers the Actions its
-// hiveryn.yaml lists under availableActions and requests one with
-// executeAction(name, prompt). The request is a deferred intent (policy
+// Agent-requested Actions. An architect or one of its ticket workers
+// discovers the Actions the project's hiveryn.yaml lists under
+// availableActions and requests one with executeAction(name, prompt). The request is a deferred intent (policy
 // manual) with one required input, the agent variant; its intent id IS the
-// execution id, so the architect holds one id from request to result:
+// execution id, so the requester holds one id from request to result:
 //
-//	executeAction   execution recorded pending_approval (trigger architect),
-//	                intent shown; the call returns at once
+//	executeAction   execution recorded pending_approval (trigger architect
+//	                or worker), intent shown; the call returns at once
 //	deny            execution denied, with the user's reason
 //	approve         variant and availability rechecked, pending_approval →
 //	                running under the single-run rule, agent session launched;
 //	                from here the Action lifecycle (actions.go) owns the record
 //	start failure   execution failed with why it could not start — including
 //	                another execution of the action winning meanwhile
-//	session end     the requesting architect session ended before approval:
-//	                failed, it never ran
+//	session end     the requesting session ended before approval: failed, it
+//	                never ran
 //	restart         pending requests are failed (ReconcileActionRuns); a
 //	                running execution follows the Action restart rules
 //
 // The generic deferred record completes when the launch returns and is pruned
 // after its retention; neither says anything about the execution, whose
 // action_runs record is the only source for results. Results are scoped to
-// the architect, not the requesting session, so a later session of the same
-// architect can still read them and another architect cannot.
+// the project (architect key), not the requesting session, so a later session
+// of the same project — architect or worker — can still read them and another
+// project cannot. Action agents cannot request Actions.
 
 const (
 	actionVariantInput           = "variant"
 	actionRequestFailedOnRestart = "daemon restarted before this request was approved; it never ran"
 )
 
-// architectSession returns the calling session, which must be an architect
-// session. The architect key always comes from the stored session.
-func (s *Service) architectSession(ctx context.Context, sessionID string) (domain.Session, error) {
+// requesterSession returns the calling session, which must be an architect or
+// ticket session. The architect key — the project whose availableActions and
+// results apply — always comes from the stored session.
+func (s *Service) requesterSession(ctx context.Context, sessionID string) (domain.Session, error) {
 	session, err := s.repo.GetSession(ctx, sessionID)
 	if err != nil {
 		return domain.Session{}, err
 	}
-	if session.SessionType != domain.SessionTypeArchitect {
-		return domain.Session{}, &domain.ValidationError{Field: "session_id", Message: "Actions are available to architect sessions only"}
+	switch session.SessionType {
+	case domain.SessionTypeArchitect, domain.SessionTypeTicket:
+		return session, nil
+	default:
+		return domain.Session{}, &domain.ValidationError{Field: "session_id", Message: "Actions are available to architect and ticket sessions only"}
 	}
-	return session, nil
 }
 
-// AvailableActions lists the architect's configured Actions in config order,
+// AddAvailableAction adds name to the calling architect's own hiveryn.yaml
+// availableActions. Only architect sessions may, and only for their own
+// project. Discovery reflects it at once: the config is reread per request.
+// Whether the library holds the Action is not checked; getAvailableActions
+// reports a missing or invalid definition.
+func (s *Service) AddAvailableAction(ctx context.Context, sessionID string, req domain.AddAvailableActionRequest) (domain.AddAvailableActionResult, error) {
+	session, err := s.repo.GetSession(ctx, sessionID)
+	if err != nil {
+		return domain.AddAvailableActionResult{}, err
+	}
+	if session.SessionType != domain.SessionTypeArchitect {
+		return domain.AddAvailableActionResult{}, &domain.ValidationError{Field: "session_id", Message: "only architect sessions may change availableActions"}
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return domain.AddAvailableActionResult{}, &domain.ValidationError{Field: "name", Message: "is required"}
+	}
+	if !domain.ValidActionName(name) {
+		return domain.AddAvailableActionResult{}, &domain.ValidationError{Field: "name", Message: fmt.Sprintf("%q is not a valid action name: use lowercase letters, digits, '.', '_' or '-', starting with a letter or digit (at most 64 characters)", name)}
+	}
+	architect, err := s.currentArchitect(session.ArchitectKey)
+	if err != nil {
+		return domain.AddAvailableActionResult{}, err
+	}
+	update, err := config.AddAvailableAction(architect.Path, session.ArchitectKey, name)
+	switch {
+	case errors.Is(err, config.ErrInvalidArchitectConfig):
+		return domain.AddAvailableActionResult{}, &domain.ValidationError{Field: "hiveryn.yaml", Message: err.Error() + " — repair it (see checkWorkspace), then add the Action again"}
+	case errors.Is(err, config.ErrArchitectConfigChanged):
+		return domain.AddAvailableActionResult{}, &domain.ConflictError{Resource: "hiveryn.yaml", Field: "availableActions", Message: err.Error() + "; add the Action again to apply it to the current file"}
+	case err != nil:
+		return domain.AddAvailableActionResult{}, fmt.Errorf("add %q to availableActions of architect %s: %w", name, session.ArchitectKey, err)
+	}
+	s.logger.Info("available action added", "architect", session.ArchitectKey, "action", name, "changed", update.Changed, "session_id", sessionID)
+	return domain.AddAvailableActionResult{Changed: update.Changed, AvailableActions: update.AvailableActions}, nil
+}
+
+// AvailableActions lists the project's configured Actions in config order,
 // each enriched from the library. A configured name without a definition is
 // listed invalid with a problem, never dropped.
 func (s *Service) AvailableActions(ctx context.Context, sessionID string) (domain.AvailableActionList, error) {
@@ -65,7 +107,7 @@ func (s *Service) AvailableActions(ctx context.Context, sessionID string) (domai
 	if err != nil {
 		return domain.AvailableActionList{}, err
 	}
-	session, err := s.architectSession(ctx, sessionID)
+	session, err := s.requesterSession(ctx, sessionID)
 	if err != nil {
 		return domain.AvailableActionList{}, err
 	}
@@ -85,7 +127,7 @@ func (s *Service) AvailableActions(ctx context.Context, sessionID string) (domai
 		}
 		item := def.ActionDefinition
 		// Suggestions prefill the user's manual launch form; they are not
-		// guidance for an architect composing a request.
+		// guidance for an agent composing a request.
 		item.Suggestions = nil
 		if run, ok := running[item.Name]; ok {
 			item.RunningExecutionID = run.ID
@@ -125,7 +167,7 @@ func (s *Service) architectAllows(architectKey, name string) (bool, error) {
 }
 
 func notAvailableError(architectKey, name string) error {
-	return &domain.ValidationError{Field: "name", Message: fmt.Sprintf("action %q is not available to architect %s: it must be listed under availableActions in hiveryn.yaml (see getAvailableActions)", name, architectKey)}
+	return &domain.ValidationError{Field: "name", Message: fmt.Sprintf("action %q is not available to project %s: it must be listed under availableActions in hiveryn.yaml (see getAvailableActions)", name, architectKey)}
 }
 
 // RequestExecuteAction raises the approval request for one execution and
@@ -136,7 +178,7 @@ func (s *Service) RequestExecuteAction(ctx context.Context, sessionID string, re
 	if err != nil {
 		return domain.ActionResult{}, err
 	}
-	session, err := s.architectSession(ctx, sessionID)
+	session, err := s.requesterSession(ctx, sessionID)
 	if err != nil {
 		return domain.ActionResult{}, err
 	}
@@ -198,7 +240,7 @@ func (s *Service) RequestExecuteAction(ctx context.Context, sessionID string, re
 				run := domain.ActionRun{
 					ID:                 in.ID,
 					Action:             name,
-					Trigger:            domain.ActionRunTriggerArchitect,
+					Trigger:            actionRequestTrigger(session),
 					Status:             domain.ActionRunPendingApproval,
 					Prompt:             prompt,
 					RepoPath:           filepath.Clean(def.Path),
@@ -206,6 +248,9 @@ func (s *Service) RequestExecuteAction(ctx context.Context, sessionID string, re
 					CreatedAt:          in.CreatedAt,
 					ArchitectKey:       session.ArchitectKey,
 					RequesterSessionID: session.ID,
+				}
+				if session.SessionType == domain.SessionTypeTicket {
+					run.RequesterTicketID = session.ContextID
 				}
 				if err := rt.runs.CreateActionRun(ctx, run); err != nil {
 					return fmt.Errorf("record action request: %w", err)
@@ -230,6 +275,15 @@ func (s *Service) RequestExecuteAction(ctx context.Context, sessionID string, re
 	}
 	s.logger.Info("action requested", "action", name, "execution_id", record.ID, "architect", session.ArchitectKey, "session_id", sessionID, "status", record.Status)
 	return s.GetActionResult(ctx, sessionID, record.ID)
+}
+
+// actionRequestTrigger attributes a request to the kind of session that made
+// it; requesterSession admits only these two.
+func actionRequestTrigger(session domain.Session) domain.ActionRunTrigger {
+	if session.SessionType == domain.SessionTypeTicket {
+		return domain.ActionRunTriggerWorker
+	}
+	return domain.ActionRunTriggerArchitect
 }
 
 // actionVariantInput is the required variant choice, offering every
@@ -346,15 +400,15 @@ func (s *Service) endActionRequest(executionID string, status domain.ActionRunSt
 	s.publishActionEvent(run, status)
 }
 
-// GetActionResult returns one execution requested by the calling session's
-// architect. Any other execution — another architect's, or a manual launch —
-// reads as not found.
+// GetActionResult returns one execution requested within the calling
+// session's project, by its architect or any of its workers. Any other
+// execution — another project's, or a manual launch — reads as not found.
 func (s *Service) GetActionResult(ctx context.Context, sessionID, executionID string) (domain.ActionResult, error) {
 	rt, err := s.actionRuntime()
 	if err != nil {
 		return domain.ActionResult{}, err
 	}
-	session, err := s.architectSession(ctx, sessionID)
+	session, err := s.requesterSession(ctx, sessionID)
 	if err != nil {
 		return domain.ActionResult{}, err
 	}

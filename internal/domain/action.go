@@ -9,26 +9,28 @@ import (
 
 // Re-export the Actions wire types from shared.
 type (
-	ActionProblem           = sd.ActionProblem
-	ActionDefinition        = sd.ActionDefinition
-	ActionList              = sd.ActionList
-	ActionRunStatus         = sd.ActionRunStatus
-	ActionRunTrigger        = sd.ActionRunTrigger
-	ActionRun               = sd.ActionRun
-	LaunchActionRequest     = sd.LaunchActionRequest
-	LaunchActionResult      = sd.LaunchActionResult
-	ActionConclusionOutcome = sd.ActionConclusionOutcome
-	ConcludeActionRequest   = sd.ConcludeActionRequest
-	ActionConclusion        = sd.ActionConclusion
-	ActionEvent             = sd.ActionEvent
-	ExecuteActionRequest    = sd.ExecuteActionRequest
-	AvailableActionList     = sd.AvailableActionList
-	ActionAgentActivity     = sd.ActionAgentActivity
-	ActionAgentAttention    = sd.ActionAgentAttention
-	ActionAttentionState    = sd.ActionAttentionState
-	ActionAttentionSource   = sd.ActionAttentionSource
-	ActionResult            = sd.ActionResult
-	ActionWaitResult        = sd.ActionWaitResult
+	ActionProblem             = sd.ActionProblem
+	ActionDefinition          = sd.ActionDefinition
+	ActionList                = sd.ActionList
+	ActionRunStatus           = sd.ActionRunStatus
+	ActionRunTrigger          = sd.ActionRunTrigger
+	ActionRun                 = sd.ActionRun
+	LaunchActionRequest       = sd.LaunchActionRequest
+	LaunchActionResult        = sd.LaunchActionResult
+	ActionConclusionOutcome   = sd.ActionConclusionOutcome
+	ConcludeActionRequest     = sd.ConcludeActionRequest
+	ActionConclusion          = sd.ActionConclusion
+	ActionEvent               = sd.ActionEvent
+	ExecuteActionRequest      = sd.ExecuteActionRequest
+	AvailableActionList       = sd.AvailableActionList
+	AddAvailableActionRequest = sd.AddAvailableActionRequest
+	AddAvailableActionResult  = sd.AddAvailableActionResult
+	ActionAgentActivity       = sd.ActionAgentActivity
+	ActionAgentAttention      = sd.ActionAgentAttention
+	ActionAttentionState      = sd.ActionAttentionState
+	ActionAttentionSource     = sd.ActionAttentionSource
+	ActionResult              = sd.ActionResult
+	ActionWaitResult          = sd.ActionWaitResult
 )
 
 const (
@@ -44,6 +46,7 @@ const (
 
 	ActionRunTriggerManual    = sd.ActionRunTriggerManual
 	ActionRunTriggerArchitect = sd.ActionRunTriggerArchitect
+	ActionRunTriggerWorker    = sd.ActionRunTriggerWorker
 
 	ActionConclusionCompleted = sd.ActionConclusionCompleted
 	ActionConclusionFailed    = sd.ActionConclusionFailed
@@ -118,8 +121,10 @@ type ActionService interface {
 	ConcludeAction(ctx context.Context, sessionID string, req ConcludeActionRequest) (IntentResolution[ActionRun], error)
 	RecentActionConclusions(ctx context.Context, sessionID string) ([]ActionConclusion, error)
 
-	// Architect-facing, addressed by the calling architect session; the
-	// architect is always the session's, never the caller's claim.
+	// Architect- and worker-facing, addressed by the calling architect or
+	// ticket session; the project is always the session's, never the caller's
+	// claim. AddAvailableAction is architect-only.
+	AddAvailableAction(ctx context.Context, sessionID string, req AddAvailableActionRequest) (AddAvailableActionResult, error)
 	AvailableActions(ctx context.Context, sessionID string) (AvailableActionList, error)
 	RequestExecuteAction(ctx context.Context, sessionID string, req ExecuteActionRequest) (ActionResult, error)
 	GetActionResult(ctx context.Context, sessionID, executionID string) (ActionResult, error)

@@ -23,7 +23,8 @@ func NewActionRunStore(db *sql.DB) *ActionRunStore {
 const actionRunColumns = `id, action, trigger, status, prompt, profile_name, repo_path, output_dir,
 	COALESCE(session_id, ''), COALESCE(summary, ''), COALESCE(error, ''),
 	created_at, COALESCE(started_at, ''), COALESCE(ended_at, ''),
-	COALESCE(architect_key, ''), COALESCE(requester_session_id, ''), COALESCE(reason, '')`
+	COALESCE(architect_key, ''), COALESCE(requester_session_id, ''), COALESCE(reason, ''),
+	COALESCE(requester_ticket_id, '')`
 
 func (s *ActionRunStore) CreateActionRun(ctx context.Context, run domain.ActionRun) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -46,12 +47,12 @@ func (s *ActionRunStore) CreateActionRun(ctx context.Context, run domain.ActionR
 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO action_runs (id, action, trigger, status, prompt, profile_name, repo_path, output_dir, session_id, summary, error, created_at, started_at, ended_at,
-		                         architect_key, requester_session_id, reason)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                         architect_key, requester_session_id, reason, requester_ticket_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, run.ID, run.Action, string(run.Trigger), string(run.Status), run.Prompt, run.ProfileName, run.RepoPath, run.OutputDir,
 		nullIfEmpty(run.SessionID), nullIfEmpty(run.Summary), nullIfEmpty(run.Error),
 		formatPreciseTime(run.CreatedAt), nullableTime(run.StartedAt), nullableTime(run.EndedAt),
-		nullIfEmpty(run.ArchitectKey), nullIfEmpty(run.RequesterSessionID), nullIfEmpty(run.Reason))
+		nullIfEmpty(run.ArchitectKey), nullIfEmpty(run.RequesterSessionID), nullIfEmpty(run.Reason), nullIfEmpty(run.RequesterTicketID))
 	if err != nil {
 		// The partial unique index is the backstop for the check above.
 		if strings.Contains(err.Error(), "UNIQUE constraint failed: action_runs.action") {
@@ -319,7 +320,7 @@ func scanActionRun(row rowScanner) (domain.ActionRun, error) {
 	)
 	if err := row.Scan(&run.ID, &run.Action, &trigger, &status, &run.Prompt, &run.ProfileName, &run.RepoPath, &run.OutputDir,
 		&run.SessionID, &run.Summary, &run.Error, &createdAt, &startedAt, &endedAt,
-		&run.ArchitectKey, &run.RequesterSessionID, &run.Reason); err != nil {
+		&run.ArchitectKey, &run.RequesterSessionID, &run.Reason, &run.RequesterTicketID); err != nil {
 		return domain.ActionRun{}, err
 	}
 	run.Trigger = domain.ActionRunTrigger(trigger)

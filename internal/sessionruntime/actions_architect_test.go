@@ -115,7 +115,7 @@ func TestAvailableActionsListsConfiguredActionsAndReportsMissing(t *testing.T) {
 		t.Fatalf("omitted availableActions = %+v, %v; want none", list, err)
 	}
 
-	// Only architects discover Actions: an action agent cannot.
+	// Action agents can neither discover nor request Actions.
 	launched := f.launch(t, "hidden", "go")
 	if _, err := f.service.AvailableActions(ctx, launched.Session.ID); !errors.As(err, new(*domain.ValidationError)) {
 		t.Fatalf("action session discovery err = %v, want validation error", err)
