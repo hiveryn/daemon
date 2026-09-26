@@ -7,11 +7,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/hiveryn/daemon/internal/domain"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestActionToolsAreRegisteredPerRole(t *testing.T) {
@@ -92,7 +94,11 @@ func TestAgentActionToolsCallSessionScopedEndpoints(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&executed); err != nil {
 				t.Fatalf("decode: %v", err)
 			}
-			writeEnvelope(t, w, http.StatusAccepted, domain.ActionResult{ExecutionID: "exec-1", Action: "demo", Status: domain.ActionRunPendingApproval})
+			if executed.Variant == "" {
+				writeErrorEnvelope(t, w, http.StatusBadRequest, &domain.ErrorBody{Code: string(domain.ErrCodeValidation), Message: missingVariantMessage})
+				return
+			}
+			writeEnvelope(t, w, http.StatusOK, domain.ExecuteActionResponse{Outcome: domain.IntentOutcomeAutoApproved, Result: domain.ActionResult{ExecutionID: "exec-1", Action: "demo", Status: domain.ActionRunRunning, ProfileName: executed.Variant}})
 		case "GET /api/sessions/sess-arch/action-results/exec-1":
 			writeEnvelope(t, w, http.StatusOK, domain.ActionResult{ExecutionID: "exec-1", Status: domain.ActionRunRunning, StartedAt: &started, ElapsedSeconds: &elapsed, Activity: domain.ActionAgentActivity{Available: true, Status: "active"}})
 		case "GET /api/sessions/sess-arch/action-results/exec-1/wait":
@@ -118,11 +124,15 @@ func TestAgentActionToolsCallSessionScopedEndpoints(t *testing.T) {
 	if _, _, err := server.handleExecuteAction(ctx, nil, ExecuteActionInput{Name: "demo"}); err == nil {
 		t.Fatal("blank prompt accepted")
 	}
-	_, pending, err := server.handleExecuteAction(ctx, nil, ExecuteActionInput{Name: "demo", Prompt: "compare"})
-	if err != nil || pending.Result.ExecutionID != "exec-1" || pending.Result.Status != domain.ActionRunPendingApproval || !strings.Contains(pending.Guidance, "approve") {
-		t.Fatalf("executeAction = %+v, %v", pending, err)
+	// A missing variant reaches the daemon, whose error lists the choices.
+	if _, _, err := server.handleExecuteAction(ctx, nil, ExecuteActionInput{Name: "demo", Prompt: "compare"}); err == nil || !strings.Contains(err.Error(), missingVariantMessage) {
+		t.Fatalf("missing variant err = %v, want the daemon's message", err)
 	}
-	if executed.Name != "demo" || executed.Prompt != "compare" {
+	_, launched, err := server.handleExecuteAction(ctx, nil, ExecuteActionInput{Name: "demo", Prompt: "compare", Variant: "codex"})
+	if err != nil || launched.Outcome != "auto_approved" || launched.IntentID != "exec-1" || launched.Result.ExecutionID != "exec-1" || launched.Result.Status != domain.ActionRunRunning || !strings.Contains(launched.Guidance, "runs independently") {
+		t.Fatalf("executeAction = %+v, %v", launched, err)
+	}
+	if executed.Name != "demo" || executed.Prompt != "compare" || executed.Variant != "codex" {
 		t.Fatalf("daemon received %+v", executed)
 	}
 
@@ -142,5 +152,77 @@ func TestAgentActionToolsCallSessionScopedEndpoints(t *testing.T) {
 	}
 	if waitQuery != "timeout_seconds=30" {
 		t.Fatalf("wait query = %q, want the 30s default", waitQuery)
+	}
+}
+
+const missingVariantMessage = "variant is required and has no default. Ask the user which agent variant should run this Action, then request it again with that variant. Configured variants: codex (codex)"
+
+// Over a real MCP connection, an executeAction call without a variant must
+// reach the daemon's diagnostic instead of failing input-schema validation.
+func TestExecuteActionWithoutVariantReachesDaemonDiagnostic(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method+" "+r.URL.Path != "POST /api/sessions/sess-ticket/intents/execute-action" {
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		writeErrorEnvelope(t, w, http.StatusBadRequest, &domain.ErrorBody{Code: string(domain.ErrCodeValidation), Message: missingVariantMessage})
+	}))
+	t.Cleanup(ts.Close)
+	server, err := NewServer(Config{DaemonURL: ts.URL, ArchitectKey: "hiveryn", SessionID: "sess-ticket", SessionType: SessionTypeTicket, HTTPClient: ts.Client(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	serverSession, err := server.mcpServer.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("connect server: %v", err)
+	}
+	defer func() { _ = serverSession.Close() }()
+	clientSession, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "dev"}, nil).Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("connect client: %v", err)
+	}
+	defer func() { _ = clientSession.Close() }()
+
+	tools, err := clientSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	for _, tool := range tools.Tools {
+		if tool.Name != "executeAction" {
+			continue
+		}
+		raw, _ := json.Marshal(tool.InputSchema)
+		var schema struct {
+			Properties map[string]any `json:"properties"`
+			Required   []string       `json:"required"`
+		}
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			t.Fatalf("decode input schema: %v", err)
+		}
+		if _, ok := schema.Properties["variant"]; !ok || slices.Contains(schema.Required, "variant") {
+			t.Fatalf("executeAction input schema = %s, want variant described but not schema-required", raw)
+		}
+	}
+
+	result, err := clientSession.CallTool(ctx, &mcp.CallToolParams{Name: "executeAction", Arguments: map[string]any{"name": "demo", "prompt": "compare"}})
+	if err != nil {
+		t.Fatalf("CallTool(executeAction): %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("executeAction without variant succeeded: %+v", result)
+	}
+	text := ""
+	for _, c := range result.Content {
+		if tc, ok := c.(*mcp.TextContent); ok {
+			text += tc.Text
+		}
+	}
+	if !strings.Contains(text, "Ask the user") || !strings.Contains(text, "codex (codex)") {
+		t.Fatalf("tool error = %q, want the daemon's variant diagnostic", text)
 	}
 }

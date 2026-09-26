@@ -60,17 +60,88 @@ func (f *actionFixture) endArchitect(t *testing.T, session domain.Session) {
 	}
 }
 
-func (f *actionFixture) request(t *testing.T, sessionID, name, prompt string) domain.ActionResult {
-	t.Helper()
-	result, err := f.service.RequestExecuteAction(context.Background(), sessionID, domain.ExecuteActionRequest{Name: name, Prompt: prompt})
-	if err != nil {
-		t.Fatalf("executeAction %s: %v", name, err)
-	}
-	return result
+// actionRequest is an executeAction call blocked on its approval. The
+// embedded result is the execution as it was when the request was shown.
+type actionRequest struct {
+	domain.ActionResult
+	done chan actionRequestOutcome
 }
 
-func (f *actionFixture) approve(sessionID, executionID, variant string) error {
-	_, err := f.service.ApproveIntent(context.Background(), sessionID, executionID, domain.IntentInputValues{actionVariantInput: variant})
+type actionRequestOutcome struct {
+	res domain.ExecuteActionResponse
+	err error
+}
+
+// call runs RequestExecuteAction in the background; it blocks until the
+// request resolves.
+func (f *actionFixture) call(sessionID string, req domain.ExecuteActionRequest) chan actionRequestOutcome {
+	done := make(chan actionRequestOutcome, 1)
+	go func() {
+		res, err := f.service.RequestExecuteAction(context.Background(), sessionID, req)
+		done <- actionRequestOutcome{res, err}
+	}()
+	return done
+}
+
+// request raises a new codex request and returns once it is shown.
+func (f *actionFixture) request(t *testing.T, sessionID, name, prompt string) actionRequest {
+	t.Helper()
+	return f.requestVariant(t, sessionID, name, prompt, "codex")
+}
+
+func (f *actionFixture) requestVariant(t *testing.T, sessionID, name, prompt, variant string) actionRequest {
+	t.Helper()
+	before := map[string]bool{}
+	for _, id := range f.service.intents.PendingForSession(sessionID) {
+		before[id] = true
+	}
+	done := f.call(sessionID, domain.ExecuteActionRequest{Name: name, Prompt: prompt, Variant: variant})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case out := <-done:
+			t.Fatalf("executeAction %s resolved before it was shown: %+v, %v", name, out.res, out.err)
+		default:
+		}
+		for _, id := range f.service.intents.PendingForSession(sessionID) {
+			if before[id] {
+				continue
+			}
+			if _, err := f.service.GetActionRun(context.Background(), id); err != nil {
+				continue
+			}
+			if _, shown := f.service.intents.GetForSession(sessionID, id); !shown {
+				continue
+			}
+			return actionRequest{ActionResult: f.result(t, sessionID, id), done: done}
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("executeAction %s was never shown", name)
+	return actionRequest{}
+}
+
+// wait returns the request's resolution.
+func (r actionRequest) wait(t *testing.T) (domain.ExecuteActionResponse, error) {
+	t.Helper()
+	return receiveOutcome(t, r.done)
+}
+
+func receiveOutcome(t *testing.T, done chan actionRequestOutcome) (domain.ExecuteActionResponse, error) {
+	t.Helper()
+	select {
+	case out := <-done:
+		return out.res, out.err
+	case <-time.After(10 * time.Second):
+		t.Fatal("executeAction did not resolve")
+		return domain.ExecuteActionResponse{}, nil
+	}
+}
+
+// approve approves a request: the variant was chosen when it was made, so the
+// approval carries no inputs.
+func (f *actionFixture) approve(sessionID, executionID string) error {
+	_, err := f.service.ApproveIntent(context.Background(), sessionID, executionID, nil)
 	return err
 }
 
@@ -120,7 +191,7 @@ func TestAvailableActionsListsConfiguredActionsAndReportsMissing(t *testing.T) {
 	if _, err := f.service.AvailableActions(ctx, launched.Session.ID); !errors.As(err, new(*domain.ValidationError)) {
 		t.Fatalf("action session discovery err = %v, want validation error", err)
 	}
-	if _, err := f.service.RequestExecuteAction(ctx, launched.Session.ID, domain.ExecuteActionRequest{Name: "demo", Prompt: "x"}); !errors.As(err, new(*domain.ValidationError)) {
+	if _, err := f.service.RequestExecuteAction(ctx, launched.Session.ID, domain.ExecuteActionRequest{Name: "demo", Prompt: "x", Variant: "codex"}); !errors.As(err, new(*domain.ValidationError)) {
 		t.Fatalf("action session executeAction err = %v, want validation error", err)
 	}
 }
@@ -153,18 +224,39 @@ func TestExecuteActionEnforcesAvailabilityAndValidity(t *testing.T) {
 	arch := f.architect(t, "alpha", "demo", "broken", "gone")
 	ctx := context.Background()
 
-	for _, tc := range []struct{ name, prompt, want string }{
-		{"other", "x", "not available"},
-		{"gone", "x", "not found"},
-		{"broken", "x", "invalid definition"},
-		{"demo", "  ", "prompt"},
-		{"", "x", "name"},
+	f.service.cfg.Variants["claude"] = config.VariantConfig{Agent: "claude"}
+	for _, tc := range []struct {
+		name, prompt, variant string
+		want                  []string
+	}{
+		{"other", "x", "codex", []string{"not available"}},
+		{"gone", "x", "codex", []string{"not found"}},
+		{"broken", "x", "codex", []string{"invalid definition"}},
+		{"demo", "  ", "codex", []string{"prompt"}},
+		{"", "x", "codex", []string{"name"}},
+		// A missing variant is never defaulted: the error lists every
+		// configured variant and tells the agent to ask the user.
+		{"demo", "x", "", []string{"variant is required", "no default", "Ask the user", "claude (claude)", "codex (codex)"}},
+		{"demo", "x", "  ", []string{"variant is required", "Ask the user"}},
+		{"demo", "x", "nope", []string{`"nope" is not a configured agent variant`, "Ask the user", "claude (claude), codex (codex)"}},
 	} {
-		_, err := f.service.RequestExecuteAction(ctx, arch.ID, domain.ExecuteActionRequest{Name: tc.name, Prompt: tc.prompt})
-		if !errors.As(err, new(*domain.ValidationError)) || !strings.Contains(err.Error(), tc.want) {
-			t.Errorf("executeAction(%q, %q) err = %v, want validation error mentioning %q", tc.name, tc.prompt, err, tc.want)
+		_, err := f.service.RequestExecuteAction(ctx, arch.ID, domain.ExecuteActionRequest{Name: tc.name, Prompt: tc.prompt, Variant: tc.variant})
+		if !errors.As(err, new(*domain.ValidationError)) {
+			t.Errorf("executeAction(%q, %q, %q) err = %v, want validation error", tc.name, tc.prompt, tc.variant, err)
+			continue
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("executeAction(%q, %q, %q) err = %v, want it to mention %q", tc.name, tc.prompt, tc.variant, err, want)
+			}
 		}
 	}
+	variants := f.service.cfg.Variants
+	f.service.cfg.Variants = map[string]config.VariantConfig{}
+	if _, err := f.service.RequestExecuteAction(ctx, arch.ID, domain.ExecuteActionRequest{Name: "demo", Prompt: "x", Variant: "codex"}); !errors.As(err, new(*domain.ValidationError)) || !strings.Contains(err.Error(), "no agent variants are configured") {
+		t.Errorf("no variants err = %v, want validation error saying none are configured", err)
+	}
+	f.service.cfg.Variants = variants
 	runs, _ := f.service.ListActionRuns(ctx, "", 0)
 	if len(runs) != 0 {
 		t.Fatalf("rejected requests left records: %+v", runs)
@@ -172,23 +264,24 @@ func TestExecuteActionEnforcesAvailabilityAndValidity(t *testing.T) {
 
 	// Busy: a running execution (here a manual one) is an explicit error.
 	manual := f.launch(t, "demo", "manual")
-	_, err := f.service.RequestExecuteAction(ctx, arch.ID, domain.ExecuteActionRequest{Name: "demo", Prompt: "x"})
+	_, err := f.service.RequestExecuteAction(ctx, arch.ID, domain.ExecuteActionRequest{Name: "demo", Prompt: "x", Variant: "codex"})
 	if !errors.As(err, new(*domain.ConflictError)) || !strings.Contains(err.Error(), manual.Run.ID) {
 		t.Fatalf("busy executeAction err = %v, want conflict naming %s", err, manual.Run.ID)
 	}
 }
 
-func TestExecuteActionReturnsPendingThenApprovalLaunchesUnderSameID(t *testing.T) {
+func TestExecuteActionWaitsForApprovalThenLaunchesUnderSameID(t *testing.T) {
 	f := newActionFixture(t)
 	f.service.cfg.Variants["claude"] = config.VariantConfig{Agent: "claude"}
+	f.service.cfg.IntentWaitTimeout = 20
 	repoPath := f.writeValidAction(t, "demo")
 	arch := f.architect(t, "alpha", "demo")
 	events := f.service.SubscribeActionEvents()
 	defer events.Close()
 
-	pending := f.request(t, arch.ID, "demo", "compare AMS and LDN")
-	if pending.Status != domain.ActionRunPendingApproval || pending.ExecutionID == "" || pending.StartedAt != nil || pending.ElapsedSeconds != nil || pending.OutputDir != "" || pending.Activity.Available {
-		t.Fatalf("pending = %+v, want pending_approval with nothing started", pending)
+	pending := f.requestVariant(t, arch.ID, "demo", "compare AMS and LDN", "codex")
+	if pending.Status != domain.ActionRunPendingApproval || pending.ExecutionID == "" || pending.ProfileName != "codex" || pending.StartedAt != nil || pending.ElapsedSeconds != nil || pending.OutputDir != "" || pending.Activity.Available {
+		t.Fatalf("pending = %+v, want pending_approval for codex with nothing started", pending)
 	}
 	if f.adapter.launchRequest.Workdir != "" {
 		t.Fatal("an agent launched before approval")
@@ -197,50 +290,38 @@ func TestExecuteActionReturnsPendingThenApprovalLaunchesUnderSameID(t *testing.T
 		t.Fatalf("event = %+v, want pending_approval", ev)
 	}
 
-	// The request is shown with a required variant choice and no default.
+	// The request is shown like createWorkTicket: a countdown, no inputs, the
+	// requested variant as information.
 	in, ok := f.service.intents.Get(pending.ExecutionID)
-	if !ok || in.Type != domain.IntentTypeExecuteAction || in.Policy != domain.IntentPolicyManual || in.WaitSeconds != 0 {
-		t.Fatalf("intent = %+v, %v; want deferred executeAction under the execution id", in, ok)
+	if !ok || in.Type != domain.IntentTypeExecuteAction || in.Policy != domain.IntentPolicyWaitThenAllow || in.WaitSeconds != 20 || len(in.Inputs) != 0 {
+		t.Fatalf("intent = %+v, %v; want a wait-then-allow executeAction without inputs under the execution id", in, ok)
 	}
-	if len(in.Inputs) != 1 || in.Inputs[0].Name != actionVariantInput || !in.Inputs[0].Required || in.Inputs[0].Default != nil || len(in.Inputs[0].Options) != 2 {
-		t.Fatalf("inputs = %+v, want one required variant choice over both variants", in.Inputs)
-	}
-	if in.Payload["action"] != "demo" || in.Payload["prompt"] != "compare AMS and LDN" {
+	if in.Payload["action"] != "demo" || in.Payload["prompt"] != "compare AMS and LDN" || in.Payload["variant"] != "codex" {
 		t.Fatalf("payload = %+v", in.Payload)
 	}
-
-	// An invalid choice is correctable: the request stays pending.
-	if err := f.approve(arch.ID, pending.ExecutionID, "nope"); !errors.As(err, new(*domain.ValidationError)) {
-		t.Fatalf("invalid variant err = %v, want validation error", err)
-	}
-	if err := f.approve(arch.ID, pending.ExecutionID, ""); !errors.As(err, new(*domain.ValidationError)) {
-		t.Fatalf("missing variant err = %v, want validation error", err)
-	}
-	if got := f.result(t, arch.ID, pending.ExecutionID); got.Status != domain.ActionRunPendingApproval {
-		t.Fatalf("after invalid approvals = %+v, want still pending", got)
+	select {
+	case out := <-pending.done:
+		t.Fatalf("executeAction returned before approval: %+v, %v", out.res, out.err)
+	default:
 	}
 
-	if err := f.approve(arch.ID, pending.ExecutionID, "codex"); err != nil {
+	if err := f.approve(arch.ID, pending.ExecutionID); err != nil {
 		t.Fatalf("approve: %v", err)
+	}
+	res, err := pending.wait(t)
+	if err != nil || res.Outcome != domain.IntentOutcomeApproved || res.Result.ExecutionID != pending.ExecutionID || res.Result.Status != domain.ActionRunRunning {
+		t.Fatalf("resolution = %+v, %v; want approved and running under the execution id", res, err)
 	}
 	running := f.result(t, arch.ID, pending.ExecutionID)
 	if running.Status != domain.ActionRunRunning || running.ProfileName != "codex" || running.StartedAt == nil || running.ElapsedSeconds == nil || running.OutputDir == "" {
-		t.Fatalf("after approve = %+v, want running with start and output", running)
+		t.Fatalf("after approve = %+v, want running codex with start and output", running)
 	}
 	run, _ := f.service.GetActionRun(context.Background(), pending.ExecutionID)
-	if run.Trigger != domain.ActionRunTriggerArchitect || run.ArchitectKey != "alpha" || run.RequesterSessionID != arch.ID || run.SessionID == "" {
+	if run.Trigger != domain.ActionRunTriggerArchitect || run.ArchitectKey != "alpha" || run.RequesterSessionID != arch.ID || run.SessionID == "" || run.ProfileName != "codex" {
 		t.Fatalf("run = %+v", run)
 	}
 	if f.adapter.launchRequest.Workdir != repoPath || !strings.Contains(f.adapter.launchRequest.Prompt, "compare AMS and LDN") {
 		t.Fatalf("agent launch = %+v", f.adapter.launchRequest)
-	}
-	// The generic approval completed with the launch; the Action did not.
-	record, err := f.service.GetDeferredIntent(context.Background(), arch.ID, pending.ExecutionID)
-	if err != nil || record.Status != domain.DeferredIntentCompleted {
-		t.Fatalf("deferred record = %+v, %v", record, err)
-	}
-	if running.Status != domain.ActionRunRunning {
-		t.Fatal("approval callback completed the Action")
 	}
 
 	// Activity is reported only once the agent has reported it.
@@ -282,32 +363,74 @@ func TestExecuteActionReturnsPendingThenApprovalLaunchesUnderSameID(t *testing.T
 
 func TestExecuteActionDenialKeepsReasonAndRetryReplays(t *testing.T) {
 	f := newActionFixture(t)
+	f.service.cfg.Variants["claude"] = config.VariantConfig{Agent: "claude"}
 	f.writeValidAction(t, "demo")
 	arch := f.architect(t, "alpha", "demo")
 	ctx := context.Background()
+	codexReq := domain.ExecuteActionRequest{Name: "demo", Prompt: "go", Variant: "codex"}
 
 	first := f.request(t, arch.ID, "demo", "go")
-	again := f.request(t, arch.ID, "demo", "go")
-	if again.ExecutionID != first.ExecutionID {
-		t.Fatalf("retry minted %s, want the original %s", again.ExecutionID, first.ExecutionID)
+	// An identical call while it is pending attaches to it.
+	again := f.call(arch.ID, codexReq)
+	// Another variant is another request, never the same execution.
+	other := f.requestVariant(t, arch.ID, "demo", "go", "claude")
+	if other.ExecutionID == first.ExecutionID {
+		t.Fatal("a request for another variant reused the execution")
 	}
 	if err := f.service.DenyIntent(ctx, arch.ID, first.ExecutionID, "not now"); err != nil {
 		t.Fatal(err)
 	}
+	for _, done := range []chan actionRequestOutcome{first.done, again} {
+		res, err := receiveOutcome(t, done)
+		if err != nil || res.Outcome != domain.IntentOutcomeDeniedByUser || res.Reason != "not now" || res.Result.ExecutionID != first.ExecutionID || res.Result.Status != domain.ActionRunDenied {
+			t.Fatalf("denied resolution = %+v, %v; want denied_by_user with the denied execution", res, err)
+		}
+	}
 	denied := f.result(t, arch.ID, first.ExecutionID)
-	if denied.Status != domain.ActionRunDenied || denied.Reason != "not now" || denied.StartedAt != nil || denied.EndedAt == nil {
+	if denied.Status != domain.ActionRunDenied || denied.Reason != "not now" || denied.StartedAt != nil || denied.EndedAt == nil || denied.ProfileName != "codex" {
 		t.Fatalf("denied = %+v", denied)
 	}
-	if replay := f.request(t, arch.ID, "demo", "go"); replay.ExecutionID != first.ExecutionID || replay.Status != domain.ActionRunDenied {
-		t.Fatalf("replay = %+v, want the denied original", replay)
+	if f.adapter.launchRequest.Workdir != "" {
+		t.Fatal("a denied request launched an agent")
 	}
-	if err := f.approve(arch.ID, first.ExecutionID, "codex"); !errors.As(err, new(*domain.NotFoundError)) {
+	replay, err := f.service.RequestExecuteAction(ctx, arch.ID, codexReq)
+	if err != nil || replay.Outcome != domain.IntentOutcomeDeniedByUser || replay.Result.ExecutionID != first.ExecutionID || replay.Result.Status != domain.ActionRunDenied {
+		t.Fatalf("replay = %+v, %v; want the denied original at once", replay, err)
+	}
+	if err := f.approve(arch.ID, first.ExecutionID); !errors.As(err, new(*domain.NotFoundError)) {
 		t.Fatalf("approve after deny err = %v", err)
+	}
+	// The other variant's request is still pending and independent.
+	if got := f.result(t, arch.ID, other.ExecutionID); got.Status != domain.ActionRunPendingApproval || got.ProfileName != "claude" {
+		t.Fatalf("other variant = %+v, want still pending for claude", got)
+	}
+	if err := f.service.DenyIntent(ctx, arch.ID, other.ExecutionID, "no"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.wait(t); err != nil {
+		t.Fatal(err)
 	}
 	// Denial is history in the Actions window too.
 	runs, _ := f.service.ListActionRuns(ctx, "demo", 0)
-	if len(runs) != 1 || runs[0].Status != domain.ActionRunDenied {
+	if len(runs) != 2 || runs[0].Status != domain.ActionRunDenied || runs[1].Status != domain.ActionRunDenied {
 		t.Fatalf("history = %+v", runs)
+	}
+}
+
+func TestExecuteActionAutoApprovesWhenTheWindowExpires(t *testing.T) {
+	f := newActionFixture(t)
+	f.service.cfg.IntentWaitTimeout = 1
+	f.writeValidAction(t, "demo")
+	arch := f.architect(t, "alpha", "demo")
+
+	pending := f.request(t, arch.ID, "demo", "go")
+	res, err := pending.wait(t)
+	if err != nil || res.Outcome != domain.IntentOutcomeAutoApproved || res.Result.ExecutionID != pending.ExecutionID || res.Result.Status != domain.ActionRunRunning || res.Result.ProfileName != "codex" {
+		t.Fatalf("resolution = %+v, %v; want auto_approved and running", res, err)
+	}
+	run, _ := f.service.GetActionRun(context.Background(), pending.ExecutionID)
+	if run.Status != domain.ActionRunRunning || run.SessionID == "" || run.ProfileName != "codex" {
+		t.Fatalf("run = %+v, want launched with codex", run)
 	}
 }
 
@@ -317,38 +440,45 @@ func TestExecuteActionReplayWindowIsTenMinutes(t *testing.T) {
 	arch := f.architect(t, "alpha", "demo")
 	ctx := context.Background()
 	now := time.Now().UTC()
-	f.service.intents.now = func() time.Time { return now }
+	var mu sync.Mutex
+	f.service.intents.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	advance := func(d time.Duration) { mu.Lock(); now = now.Add(d); mu.Unlock() }
+	req := domain.ExecuteActionRequest{Name: "demo", Prompt: "go", Variant: "codex"}
 
 	first := f.request(t, arch.ID, "demo", "go")
 	// A pending request never expires: it is deduplicated, not replayed.
-	now = now.Add(time.Hour)
-	if again := f.request(t, arch.ID, "demo", "go"); again.ExecutionID != first.ExecutionID {
-		t.Fatalf("pending retry after 1h minted %s, want %s", again.ExecutionID, first.ExecutionID)
-	}
+	advance(time.Hour)
+	again := f.call(arch.ID, req)
 	if err := f.service.DenyIntent(ctx, arch.ID, first.ExecutionID, "not now"); err != nil {
 		t.Fatal(err)
 	}
-
-	now = now.Add(10 * time.Minute)
-	if replay := f.request(t, arch.ID, "demo", "go"); replay.ExecutionID != first.ExecutionID || replay.Status != domain.ActionRunDenied {
-		t.Fatalf("inside window = %+v, want the denied original", replay)
+	if res, err := receiveOutcome(t, again); err != nil || res.Result.ExecutionID != first.ExecutionID {
+		t.Fatalf("pending retry after 1h = %+v, %v; want the original %s", res, err, first.ExecutionID)
+	}
+	if _, err := first.wait(t); err != nil {
+		t.Fatal(err)
 	}
 
-	now = now.Add(time.Second)
+	advance(10 * time.Minute)
+	if replay, err := f.service.RequestExecuteAction(ctx, arch.ID, req); err != nil || replay.Result.ExecutionID != first.ExecutionID || replay.Result.Status != domain.ActionRunDenied {
+		t.Fatalf("inside window = %+v, %v; want the denied original", replay, err)
+	}
+
+	advance(time.Second)
 	second := f.request(t, arch.ID, "demo", "go")
 	if second.ExecutionID == first.ExecutionID || second.Status != domain.ActionRunPendingApproval {
 		t.Fatalf("past window = %+v, want a new pending request", second)
 	}
-	if err := f.approve(arch.ID, second.ExecutionID, "codex"); err != nil {
+	if err := f.approve(arch.ID, second.ExecutionID); err != nil {
 		t.Fatalf("approve new request: %v", err)
 	}
-	if got := f.result(t, arch.ID, second.ExecutionID); got.Status != domain.ActionRunRunning {
-		t.Fatalf("new request = %+v, want running", got)
+	if res, err := second.wait(t); err != nil || res.Result.Status != domain.ActionRunRunning {
+		t.Fatalf("new request = %+v, %v; want running", res, err)
 	}
 
 	// Once the running execution's replay expires, the single-run rule still holds.
-	now = now.Add(11 * time.Minute)
-	if _, err := f.service.RequestExecuteAction(ctx, arch.ID, domain.ExecuteActionRequest{Name: "demo", Prompt: "go"}); !errors.As(err, new(*domain.ConflictError)) {
+	advance(11 * time.Minute)
+	if _, err := f.service.RequestExecuteAction(ctx, arch.ID, req); !errors.As(err, new(*domain.ConflictError)) {
 		t.Fatalf("request while running err = %v, want conflict", err)
 	}
 	// Expiry forgets the replay, never the history.
@@ -370,9 +500,13 @@ func TestExecuteActionApprovalRechecksBusyAndAvailability(t *testing.T) {
 	// Another launch wins while the request is pending.
 	pending := f.request(t, arch.ID, "demo", "go")
 	manual := f.launch(t, "demo", "manual wins")
-	err := f.approve(arch.ID, pending.ExecutionID, "codex")
+	err := f.approve(arch.ID, pending.ExecutionID)
 	if !errors.As(err, new(*domain.ConflictError)) {
 		t.Fatalf("approve while busy err = %v, want conflict", err)
+	}
+	res, err := pending.wait(t)
+	if err != nil || res.Outcome != domain.IntentOutcomeError || !strings.Contains(res.Reason, manual.Run.ID) || res.Result.Status != domain.ActionRunFailed {
+		t.Fatalf("busy resolution = %+v, %v; want error with the failed execution", res, err)
 	}
 	failed := f.result(t, arch.ID, pending.ExecutionID)
 	if failed.Status != domain.ActionRunFailed || !strings.Contains(failed.Error, "could not start") || !strings.Contains(failed.Error, manual.Run.ID) || failed.StartedAt != nil {
@@ -388,11 +522,29 @@ func TestExecuteActionApprovalRechecksBusyAndAvailability(t *testing.T) {
 	// Removed from availableActions while pending.
 	second := f.request(t, arch.ID, "demo", "second")
 	f.service.cfg.Architects["alpha"] = config.ArchitectConfig{Name: "alpha", Path: t.TempDir(), Repos: map[string]string{}}
-	if err := f.approve(arch.ID, second.ExecutionID, "codex"); !errors.As(err, new(*domain.ValidationError)) {
+	if err := f.approve(arch.ID, second.ExecutionID); !errors.As(err, new(*domain.ValidationError)) {
 		t.Fatalf("approve after removal err = %v", err)
 	}
 	if got := f.result(t, arch.ID, second.ExecutionID); got.Status != domain.ActionRunFailed || !strings.Contains(got.Error, "not available") {
 		t.Fatalf("removed approval = %+v", got)
+	}
+	if _, err := second.wait(t); err != nil {
+		t.Fatalf("removed approval resolution err = %v", err)
+	}
+
+	// A variant removed from the configuration while pending.
+	f.service.cfg.Architects["alpha"] = config.ArchitectConfig{Name: "alpha", Path: t.TempDir(), Repos: map[string]string{}, AvailableActions: []string{"demo"}}
+	f.service.cfg.Variants["claude"] = config.VariantConfig{Agent: "claude"}
+	third := f.requestVariant(t, arch.ID, "demo", "third", "claude")
+	delete(f.service.cfg.Variants, "claude")
+	if err := f.approve(arch.ID, third.ExecutionID); !errors.As(err, new(*domain.ValidationError)) {
+		t.Fatalf("approve after variant removal err = %v", err)
+	}
+	if got := f.result(t, arch.ID, third.ExecutionID); got.Status != domain.ActionRunFailed || !strings.Contains(got.Error, "not a configured agent variant") || got.StartedAt != nil {
+		t.Fatalf("removed variant approval = %+v", got)
+	}
+	if _, err := third.wait(t); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -411,11 +563,16 @@ func TestExecuteActionConcurrentApprovalLaunchesOnce(t *testing.T) {
 		wg.Add(1)
 		go func(id string) {
 			defer wg.Done()
-			errs <- f.approve(arch.ID, id, "codex")
+			errs <- f.approve(arch.ID, id)
 		}(id)
 	}
 	wg.Wait()
 	close(errs)
+	for _, r := range []actionRequest{a, b} {
+		if _, err := r.wait(t); err != nil {
+			t.Fatalf("resolution err = %v", err)
+		}
+	}
 
 	ra, rb := f.result(t, arch.ID, a.ExecutionID), f.result(t, arch.ID, b.ExecutionID)
 	statuses := []domain.ActionRunStatus{ra.Status, rb.Status}
@@ -452,6 +609,8 @@ func TestExecuteActionTeardownAndRestartFailPendingRequests(t *testing.T) {
 	arch := f.architect(t, "alpha", "demo", "live")
 	abandoned := f.request(t, arch.ID, "demo", "abandoned")
 	f.endArchitect(t, arch)
+	// The requester is gone, so how its call ended is moot; it must end.
+	_, _ = abandoned.wait(t)
 	later := f.architect(t, "alpha", "demo", "live")
 	if got := f.result(t, later.ID, abandoned.ExecutionID); got.Status != domain.ActionRunFailed || got.StartedAt != nil || !strings.Contains(got.Error, "session ended") {
 		t.Fatalf("abandoned = %+v, want failed as never run", got)
@@ -459,7 +618,10 @@ func TestExecuteActionTeardownAndRestartFailPendingRequests(t *testing.T) {
 
 	pending := f.request(t, later.ID, "demo", "pending at restart")
 	launched := f.request(t, later.ID, "live", "running at restart")
-	if err := f.approve(later.ID, launched.ExecutionID, "codex"); err != nil {
+	if err := f.approve(later.ID, launched.ExecutionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := launched.wait(t); err != nil {
 		t.Fatal(err)
 	}
 	liveRun, _ := f.service.GetActionRun(ctx, launched.ExecutionID)
@@ -523,7 +685,7 @@ func TestWaitForActionResult(t *testing.T) {
 	// A status change ends the wait early.
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		_ = f.approve(arch.ID, pending.ExecutionID, "codex")
+		_ = f.approve(arch.ID, pending.ExecutionID)
 	}()
 	start = time.Now()
 	res, err = f.service.WaitForActionResult(ctx, arch.ID, pending.ExecutionID, 10*time.Second)

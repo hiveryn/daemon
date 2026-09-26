@@ -35,7 +35,7 @@ const deferredIntentRetention = 30 * 24 * time.Hour
 const (
 	deferredFailedOnRestartPending = "daemon restarted before this request was approved; it never ran"
 	deferredFailedOnRestartRunning = "daemon restarted while this request was running; it may or may not have taken effect"
-	deferredFailedOnSessionEnd     = "session ended before this request was approved; it never ran"
+	intentFailedOnSessionEnd       = "session ended before this request was approved; it never ran"
 )
 
 // SetDeferredIntentRepository wires durable storage for deferred intents. It is
@@ -148,8 +148,8 @@ func submitDeferredIntent[R any](ctx context.Context, s *Service, spec intentSpe
 		// Resolved before its records existed: the session ended in between,
 		// and its teardown could not fail a record that was not written yet.
 		// Either record may already have been failed by that teardown.
-		spec.Hooks.abandoned(ctx, in, deferredFailedOnSessionEnd)
-		if err := s.failDeferredRecord(ctx, in, domain.DeferredIntentPendingApproval, deferredFailedOnSessionEnd); err != nil && !errors.As(err, new(*domain.ConflictError)) {
+		spec.Hooks.abandoned(ctx, in, intentFailedOnSessionEnd)
+		if err := s.failDeferredRecord(ctx, in, domain.DeferredIntentPendingApproval, intentFailedOnSessionEnd); err != nil && !errors.As(err, new(*domain.ConflictError)) {
 			return zero, fmt.Errorf("fail deferred intent resolved during submission: %w", err)
 		}
 		return repo.GetDeferredIntent(ctx, id)
@@ -236,7 +236,7 @@ func (s *Service) denyDeferred(ctx context.Context, pending *pendingIntent, reas
 	return s.publishIntentResolved(ctx, pending.intent, res)
 }
 
-func (h deferredHooks) abandoned(ctx context.Context, in domain.Intent, reason string) {
+func (h intentHooks) abandoned(ctx context.Context, in domain.Intent, reason string) {
 	if h.Abandoned != nil {
 		h.Abandoned(ctx, in, reason)
 	}

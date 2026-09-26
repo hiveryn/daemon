@@ -28,18 +28,19 @@ type intentSpec[R any] struct {
 	Inputs    []domain.IntentInputField
 	Origin    domain.IntentOrigin
 	Exec      func(context.Context, domain.IntentInputValues) (R, error)
-	// Hooks is for deferred tools only; see deferredHooks.
-	Hooks deferredHooks
+	// Hooks keep a tool's own record in step; see intentHooks.
+	Hooks intentHooks
 }
 
-// deferredHooks keep a tool's own durable record in step with a deferred
-// intent whose outcome that record — not the generic DeferredIntent — is
-// authoritative for (executeAction: the Action execution). Every hook is
-// optional, and each runs at most once per intent.
-type deferredHooks struct {
-	// Created runs once the generic record exists, before the request is
-	// shown. An error withdraws the request: nothing is shown, and a retry
-	// is free to try again.
+// intentHooks keep a tool's own durable record in step with an intent whose
+// outcome that record is authoritative for (executeAction: the Action
+// execution, whose id is the intent id). Every hook is optional, and each
+// runs at most once per intent. They serve deferred and blocking intents
+// alike; an approval's outcome reaches the record through the tool's Exec.
+type intentHooks struct {
+	// Created runs before the request is shown (for a deferred intent, once
+	// its generic record exists). An error withdraws the request: nothing is
+	// shown, and a retry is free to try again.
 	Created func(ctx context.Context, in domain.Intent) error
 	// Denied runs after the user's denial is recorded.
 	Denied func(ctx context.Context, in domain.Intent, reason string)
@@ -127,14 +128,31 @@ func awaitIntent[R any](ctx context.Context, s *Service, spec intentSpec[R]) (do
 		return zero, err
 	}
 
-	id, ch, replayed, disposition := s.intents.Begin(key, in, erased)
+	id, ch, replayed, disposition := s.intents.BeginWithHooks(key, in, erased, spec.Hooks)
 	switch disposition {
 	case intentReplayed:
 		// A retry inside the idempotency window: hand back the original
 		// outcome rather than blocking on a dead intent or minting a duplicate.
 		return typedResolution[R](replayed)
 	case intentCreated:
+		if spec.Hooks.Created != nil {
+			if err := spec.Hooks.Created(ctx, in); err != nil {
+				// Withdrawn before anyone saw it: no replay, so a retry mints
+				// a fresh request instead of replaying this failure.
+				s.intents.Abort(id, intentResult{Outcome: domain.IntentOutcomeError, Err: err, Reason: err.Error()})
+				return zero, err
+			}
+			if _, ok := s.intents.Get(id); !ok {
+				// The session ended while the tool's record was being
+				// written, and its teardown ran before the record existed.
+				// Bring the record in line; the teardown's resolution is
+				// already on ch, and nothing is shown.
+				spec.Hooks.abandoned(ctx, in, intentFailedOnSessionEnd)
+				break
+			}
+		}
 		if err := s.publishIntentRequired(ctx, in); err != nil {
+			spec.Hooks.abandoned(ctx, in, "approval request could not be shown: "+err.Error())
 			// Roll back through Finish rather than a bare delete, so any
 			// waiter that attached in the meantime also learns.
 			s.intents.Finish(id, intentResult{
@@ -305,6 +323,9 @@ func (s *Service) DenyIntent(ctx context.Context, sessionID, intentID, reason st
 		return s.denyDeferred(ctx, pending, reason)
 	}
 
+	if pending.hooks.Denied != nil {
+		pending.hooks.Denied(ctx, pending.intent, reason)
+	}
 	res := intentResult{Outcome: domain.IntentOutcomeDeniedByUser, Reason: reason}
 	s.intents.Finish(intentID, res)
 	return s.publishIntentResolved(ctx, pending.intent, res)
@@ -314,7 +335,8 @@ func (s *Service) DenyIntent(ctx context.Context, sessionID, intentID, reason st
 // ending. Without it an intent would outlive its session and fire its side
 // effect into a dead session when the policy expires — a gap that could not
 // exist when there was one approval per session and it *was* the conclusion.
-// A deferred intent's record is failed too, so it never reads as pending.
+// A deferred intent's record is failed too, and a tool's own record through
+// its Abandoned hook, so neither reads as pending.
 // Claimed intents are skipped: they are already resolving, and a deferred
 // one that is running finishes and records its own outcome.
 func (s *Service) failPendingIntents(ctx context.Context, sessionID, reason string) {
@@ -325,13 +347,13 @@ func (s *Service) failPendingIntents(ctx context.Context, sessionID, reason stri
 		}
 		res := intentResult{Outcome: domain.IntentOutcomeError, Reason: reason}
 		if pending.intent.Policy == domain.IntentPolicyManual {
-			res = intentResult{Outcome: domain.IntentOutcomeError, Reason: deferredFailedOnSessionEnd, Status: domain.DeferredIntentFailed}
-			if err := s.failDeferredRecord(ctx, pending.intent, domain.DeferredIntentPendingApproval, deferredFailedOnSessionEnd); err != nil {
+			res = intentResult{Outcome: domain.IntentOutcomeError, Reason: intentFailedOnSessionEnd, Status: domain.DeferredIntentFailed}
+			if err := s.failDeferredRecord(ctx, pending.intent, domain.DeferredIntentPendingApproval, intentFailedOnSessionEnd); err != nil {
 				s.logger.Error("fail deferred intent on session teardown",
 					"session_id", sessionID, "intent_id", id, "error", err)
 			}
-			pending.hooks.abandoned(ctx, pending.intent, deferredFailedOnSessionEnd)
 		}
+		pending.hooks.abandoned(ctx, pending.intent, intentFailedOnSessionEnd)
 		s.intents.Finish(id, res)
 		if err := s.publishIntentResolved(ctx, pending.intent, res); err != nil {
 			s.logger.Error("publish intent resolved on session teardown",

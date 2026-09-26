@@ -256,7 +256,7 @@ func TestArchitectSeesNoFinalResultWhileActionConclusionIsPending(t *testing.T) 
 	arch := f.architect(t, "alpha", "demo")
 	ctx := context.Background()
 	pending := f.request(t, arch.ID, "demo", "go")
-	if err := f.approve(arch.ID, pending.ExecutionID, "codex"); err != nil {
+	if err := f.approve(arch.ID, pending.ExecutionID); err != nil {
 		t.Fatal(err)
 	}
 	run, _ := f.service.GetActionRun(ctx, pending.ExecutionID)

@@ -80,7 +80,7 @@ func TestActionResultReportsAndWakesOnTerminalAttention(t *testing.T) {
 	if pending.Attention.State != domain.ActionAttentionUnavailable {
 		t.Fatalf("pending attention = %+v, want unavailable", pending.Attention)
 	}
-	if err := f.approve(arch.ID, pending.ExecutionID, "codex"); err != nil {
+	if err := f.approve(arch.ID, pending.ExecutionID); err != nil {
 		t.Fatal(err)
 	}
 	running := f.result(t, arch.ID, pending.ExecutionID)

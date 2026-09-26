@@ -75,9 +75,10 @@ func (s *Server) registerArchitectTools() {
 	// spawn tool: prompts are built in, and only the user launches workers.
 	s.registerWorkspaceTools()
 
-	// Actions: discovery of this architect's availableActions, the deferred
-	// executeAction request and its result/wait under the one execution id.
-	// Only architects get these; action agents cannot invoke Actions.
+	// Actions: discovery of this architect's availableActions, the
+	// executeAction request (waits for approval) and its result/wait under the
+	// one execution id, plus the architect-only addAvailableAction. Action
+	// agents cannot invoke Actions.
 	s.registerAgentActionTools()
 	s.registerAddAvailableActionTool()
 }

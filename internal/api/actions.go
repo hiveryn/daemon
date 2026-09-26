@@ -229,9 +229,10 @@ func (h *actionsHandler) available(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, list)
 }
 
-// executeIntent is the architect's or worker's executeAction. It does NOT block: the
-// approval is deferred, so it returns the pending_approval result at once,
-// under the execution id that stays the same through approval and execution.
+// executeIntent is the architect's or worker's executeAction. It blocks until
+// the approval resolves (wait-then-allow, like createWorkTicket) and returns
+// the outcome with the execution record, under the execution id that stays the
+// same through approval, execution and result.
 func (h *actionsHandler) executeIntent(w http.ResponseWriter, r *http.Request) {
 	if !h.ready(w, r) {
 		return
@@ -246,7 +247,7 @@ func (h *actionsHandler) executeIntent(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, r, err)
 		return
 	}
-	writeJSON(w, r, http.StatusAccepted, result)
+	writeJSON(w, r, http.StatusOK, result)
 }
 
 // result returns one execution requested within the calling session's project.

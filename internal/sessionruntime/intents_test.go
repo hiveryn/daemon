@@ -229,21 +229,21 @@ func TestIntentStoreReplayWindowIsPerTool(t *testing.T) {
 
 	action := testIntent("a-1", "sess-1")
 	action.Type = domain.IntentTypeExecuteAction
-	_, _, _ = s.BeginDeferred("action", action, noopExec, deferredHooks{})
+	_, _, _ = s.BeginDeferred("action", action, noopExec, intentHooks{})
 	s.Finish("a-1", intentResult{Outcome: domain.IntentOutcomeDeniedByUser})
 	_, _, _, _ = s.Begin("ticket", testIntent("t-1", "sess-1"), noopExec)
 	s.Finish("t-1", intentResult{Outcome: domain.IntentOutcomeApproved})
 
 	// The window is anchored at resolution: exactly ten minutes later still replays.
 	now = now.Add(10 * time.Minute)
-	if _, _, d := s.BeginDeferred("action", action, noopExec, deferredHooks{}); d != intentReplayed {
+	if _, _, d := s.BeginDeferred("action", action, noopExec, intentHooks{}); d != intentReplayed {
 		t.Fatalf("executeAction at 10m: disposition = %v, want intentReplayed", d)
 	}
 
 	now = now.Add(time.Second)
 	again := action
 	again.ID = "a-2"
-	if id, _, d := s.BeginDeferred("action", again, noopExec, deferredHooks{}); d != intentCreated || id != "a-2" {
+	if id, _, d := s.BeginDeferred("action", again, noopExec, intentHooks{}); d != intentCreated || id != "a-2" {
 		t.Fatalf("executeAction past 10m: id=%s disposition=%v, want a fresh a-2", id, d)
 	}
 	// Other tools keep the default hour.
@@ -326,5 +326,31 @@ func TestIntentStoreConcurrentIdenticalBeginsCollapseToOne(t *testing.T) {
 		default:
 			t.Fatalf("waiter %d received nothing", i)
 		}
+	}
+}
+
+// Abort withdraws an intent nobody saw: attached waiters learn, and nothing is
+// cached, so the same call again creates a fresh intent instead of replaying.
+func TestIntentStoreAbortBroadcastsWithoutReplay(t *testing.T) {
+	s := newIntentStore()
+
+	_, ch, _, _ := s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec)
+	_, ch2, _, _ := s.Begin("key-1", testIntent("i-2", "sess-1"), noopExec)
+	s.Abort("i-1", intentResult{Outcome: domain.IntentOutcomeError, Reason: "record failed"})
+	for i, c := range []<-chan intentResult{ch, ch2} {
+		select {
+		case got := <-c:
+			if got.IntentID != "i-1" || got.Outcome != domain.IntentOutcomeError {
+				t.Errorf("waiter %d = %+v, want the error for i-1", i, got)
+			}
+		default:
+			t.Errorf("waiter %d received nothing", i)
+		}
+	}
+	if len(s.PendingForSession("sess-1")) != 0 {
+		t.Fatal("aborted intent is still pending")
+	}
+	if _, _, _, d := s.Begin("key-1", testIntent("i-3", "sess-1"), noopExec); d != intentCreated {
+		t.Fatalf("Begin after Abort disposition = %v, want intentCreated", d)
 	}
 }

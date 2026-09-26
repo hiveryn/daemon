@@ -17,16 +17,22 @@ import (
 
 // Agent-requested Actions. An architect or one of its ticket workers
 // discovers the Actions the project's hiveryn.yaml lists under
-// availableActions and requests one with executeAction(name, prompt). The request is a deferred intent (policy
-// manual) with one required input, the agent variant; its intent id IS the
-// execution id, so the requester holds one id from request to result:
+// availableActions and requests one with executeAction(name, prompt,
+// variant). The variant is the requester's explicit choice — never a default —
+// and is checked before anything is shown. The request is a blocking intent
+// with createWorkTicket's wait-then-allow policy and no approval inputs; its
+// intent id IS the execution id, so the requester holds one id from request
+// to result:
 //
-//	executeAction   execution recorded pending_approval (trigger architect
-//	                or worker), intent shown; the call returns at once
-//	deny            execution denied, with the user's reason
-//	approve         variant and availability rechecked, pending_approval →
-//	                running under the single-run rule, agent session launched;
-//	                from here the Action lifecycle (actions.go) owns the record
+//	executeAction   execution recorded pending_approval with its variant
+//	                (trigger architect or worker), intent shown; the call
+//	                waits for the resolution
+//	deny            execution denied, with the user's reason; it never runs
+//	approve/expiry  availability, variant and definition rechecked,
+//	                pending_approval → running under the single-run rule,
+//	                agent session launched; the call returns the running
+//	                execution and from here the Action lifecycle (actions.go)
+//	                owns the record — the call never waits for delivery
 //	start failure   execution failed with why it could not start — including
 //	                another execution of the action winning meanwhile
 //	session end     the requesting session ended before approval: failed, it
@@ -34,17 +40,12 @@ import (
 //	restart         pending requests are failed (ReconcileActionRuns); a
 //	                running execution follows the Action restart rules
 //
-// The generic deferred record completes when the launch returns and is pruned
-// after its retention; neither says anything about the execution, whose
-// action_runs record is the only source for results. Results are scoped to
-// the project (architect key), not the requesting session, so a later session
-// of the same project — architect or worker — can still read them and another
-// project cannot. Action agents cannot request Actions.
+// Results are scoped to the project (architect key), not the requesting
+// session, so a later session of the same project — architect or worker — can
+// still read them and another project cannot. Action agents cannot request
+// Actions.
 
-const (
-	actionVariantInput           = "variant"
-	actionRequestFailedOnRestart = "daemon restarted before this request was approved; it never ran"
-)
+const actionRequestFailedOnRestart = "daemon restarted before this request was approved; it never ran"
 
 // requesterSession returns the calling session, which must be an architect or
 // ticket session. The architect key — the project whose availableActions and
@@ -171,70 +172,75 @@ func notAvailableError(architectKey, name string) error {
 }
 
 // RequestExecuteAction raises the approval request for one execution and
-// returns at once with its pending_approval result. Nothing runs until the
-// user approves and picks a variant.
-func (s *Service) RequestExecuteAction(ctx context.Context, sessionID string, req domain.ExecuteActionRequest) (domain.ActionResult, error) {
+// waits for its resolution, like createWorkTicket. Approval — the user's, or
+// the policy's when the window expires — launches the Action and returns it
+// running; the Action then runs independently. The execution record is
+// returned whatever the outcome, so a denial or a failed start stays visible
+// under the execution id.
+func (s *Service) RequestExecuteAction(ctx context.Context, sessionID string, req domain.ExecuteActionRequest) (domain.ExecuteActionResponse, error) {
+	var zero domain.ExecuteActionResponse
 	rt, err := s.actionRuntime()
 	if err != nil {
-		return domain.ActionResult{}, err
+		return zero, err
 	}
 	session, err := s.requesterSession(ctx, sessionID)
 	if err != nil {
-		return domain.ActionResult{}, err
+		return zero, err
 	}
 	if session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
-		return domain.ActionResult{}, &domain.ValidationError{Field: "session_id", Message: "session run is not running"}
+		return zero, &domain.ValidationError{Field: "session_id", Message: "session run is not running"}
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
-		return domain.ActionResult{}, &domain.ValidationError{Field: "name", Message: "is required"}
+		return zero, &domain.ValidationError{Field: "name", Message: "is required"}
 	}
 	prompt := strings.TrimSpace(req.Prompt)
 	if prompt == "" {
-		return domain.ActionResult{}, &domain.ValidationError{Field: "prompt", Message: "is required"}
+		return zero, &domain.ValidationError{Field: "prompt", Message: "is required"}
+	}
+	variant, err := s.requestedActionVariant(req.Variant)
+	if err != nil {
+		return zero, err
 	}
 	allowed, err := s.architectAllows(session.ArchitectKey, name)
 	if err != nil {
-		return domain.ActionResult{}, err
+		return zero, err
 	}
 	if !allowed {
-		return domain.ActionResult{}, notAvailableError(session.ArchitectKey, name)
+		return zero, notAvailableError(session.ArchitectKey, name)
 	}
 	def, err := rt.availableDefinition(name)
 	if err != nil {
-		return domain.ActionResult{}, err
+		return zero, err
 	}
 	if !def.Valid {
-		return domain.ActionResult{}, actionfs.InvalidError(def)
+		return zero, actionfs.InvalidError(def)
 	}
 	running, err := rt.runs.RunningActionRuns(ctx)
 	if err != nil {
-		return domain.ActionResult{}, err
+		return zero, err
 	}
 	if run, ok := running[name]; ok {
-		return domain.ActionResult{}, &domain.ConflictError{Resource: "action", Field: "name", Message: fmt.Sprintf("%s is already running (execution %s); only one execution of an action may run at a time — request it again once that execution ends", name, run.ID)}
-	}
-	variants, err := s.actionVariantInput()
-	if err != nil {
-		return domain.ActionResult{}, err
+		return zero, &domain.ConflictError{Resource: "action", Field: "name", Message: fmt.Sprintf("%s is already running (execution %s); only one execution of an action may run at a time — request it again once that execution ends", name, run.ID)}
 	}
 
-	// The execution id is the intent id, which submitDeferredIntent mints; the
+	// The execution id is the intent id, which awaitIntent mints; the
 	// creator's Created hook records it for the Exec below. A retry attaches
-	// to the original intent and never runs this spec's hooks or Exec.
+	// to the original intent and never runs this spec's hooks or Exec. The
+	// variant is in the payload, so it is part of the request's identity: a
+	// request for another variant never replays this one.
 	var executionID string
-	origin := intentOrigin(session)
-	record, err := submitDeferredIntent(ctx, s, intentSpec[domain.ActionRun]{
+	res, err := awaitIntent(ctx, s, intentSpec[domain.ActionRun]{
 		SessionID: sessionID,
 		Type:      domain.IntentTypeExecuteAction,
 		Summary:   "Run " + name,
 		Payload: map[string]any{
-			"action": name,
-			"prompt": prompt,
+			"action":  name,
+			"prompt":  prompt,
+			"variant": variant,
 		},
-		Inputs: []domain.IntentInputField{variants},
-		Origin: origin,
-		Hooks: deferredHooks{
+		Origin: intentOrigin(session),
+		Hooks: intentHooks{
 			Created: func(ctx context.Context, in domain.Intent) error {
 				executionID = in.ID
 				run := domain.ActionRun{
@@ -243,6 +249,7 @@ func (s *Service) RequestExecuteAction(ctx context.Context, sessionID string, re
 					Trigger:            actionRequestTrigger(session),
 					Status:             domain.ActionRunPendingApproval,
 					Prompt:             prompt,
+					ProfileName:        variant,
 					RepoPath:           filepath.Clean(def.Path),
 					OutputDir:          rt.outputDir(name, in.ID),
 					CreatedAt:          in.CreatedAt,
@@ -265,16 +272,24 @@ func (s *Service) RequestExecuteAction(ctx context.Context, sessionID string, re
 				s.endActionRequest(in.ID, domain.ActionRunFailed, "", reason)
 			},
 		},
-		Exec: func(ctx context.Context, inputs domain.IntentInputValues) (domain.ActionRun, error) {
-			variant, _ := inputs[actionVariantInput].(string)
-			return s.startRequestedAction(ctx, executionID, session.ArchitectKey, variant)
+		Exec: func(ctx context.Context, _ domain.IntentInputValues) (domain.ActionRun, error) {
+			// Detached: the approving request going away must not abort a
+			// launch halfway and leave the execution running without a session.
+			return s.startRequestedAction(context.WithoutCancel(ctx), executionID, session.ArchitectKey, variant)
 		},
 	})
 	if err != nil {
-		return domain.ActionResult{}, err
+		return zero, err
 	}
-	s.logger.Info("action requested", "action", name, "execution_id", record.ID, "architect", session.ArchitectKey, "session_id", sessionID, "status", record.Status)
-	return s.GetActionResult(ctx, sessionID, record.ID)
+	if res.IntentID == "" {
+		return zero, errors.New("executeAction resolved without an execution id")
+	}
+	result, err := s.GetActionResult(ctx, sessionID, res.IntentID)
+	if err != nil {
+		return zero, fmt.Errorf("read execution %s after its request resolved %s: %w", res.IntentID, res.Outcome, err)
+	}
+	s.logger.Info("action request resolved", "action", name, "variant", variant, "execution_id", res.IntentID, "architect", session.ArchitectKey, "session_id", sessionID, "outcome", res.Outcome, "status", result.Status)
+	return domain.ExecuteActionResponse{Outcome: res.Outcome, Reason: res.Reason, Result: result}, nil
 }
 
 // actionRequestTrigger attributes a request to the kind of session that made
@@ -286,12 +301,14 @@ func actionRequestTrigger(session domain.Session) domain.ActionRunTrigger {
 	return domain.ActionRunTriggerArchitect
 }
 
-// actionVariantInput is the required variant choice, offering every
-// configured variant. There is no default: the user picks one each time.
-func (s *Service) actionVariantInput() (domain.IntentInputField, error) {
+// requestedActionVariant checks the requester's variant against the current
+// configuration. There is no default: a missing or unknown variant is an
+// error that lists every configured variant and tells the agent to ask the
+// user which one to use.
+func (s *Service) requestedActionVariant(raw string) (string, error) {
 	cfg, err := s.currentConfig()
 	if err != nil {
-		return domain.IntentInputField{}, err
+		return "", err
 	}
 	names := make([]string, 0, len(cfg.Variants))
 	for name := range cfg.Variants {
@@ -299,23 +316,24 @@ func (s *Service) actionVariantInput() (domain.IntentInputField, error) {
 	}
 	sort.Strings(names)
 	if len(names) == 0 {
-		return domain.IntentInputField{}, &domain.ValidationError{Field: "variant", Message: "no agent variants are configured (variants.yaml); an Action needs one to run"}
+		return "", &domain.ValidationError{Field: "variant", Message: "no agent variants are configured (variants.yaml), so no Action can run; tell the user, who must configure one first"}
 	}
-	if len(names) > domain.MaxIntentInputOptions {
-		return domain.IntentInputField{}, &domain.ValidationError{Field: "variant", Message: fmt.Sprintf("%d agent variants are configured; an approval choice offers at most %d", len(names), domain.MaxIntentInputOptions)}
-	}
-	options := make([]domain.IntentInputOption, 0, len(names))
+	choices := make([]string, 0, len(names))
 	for _, name := range names {
-		options = append(options, domain.IntentInputOption{Value: name, Description: cfg.Variants[name].Agent})
+		choices = append(choices, fmt.Sprintf("%s (%s)", name, cfg.Variants[name].Agent))
 	}
-	return domain.IntentInputField{
-		Name:        actionVariantInput,
-		Label:       "Agent variant",
-		Description: "The agent that runs this Action.",
-		Type:        domain.IntentInputChoice,
-		Required:    true,
-		Options:     options,
-	}, nil
+	available := strings.Join(choices, ", ")
+	variant := strings.TrimSpace(raw)
+	if variant == "" {
+		return "", &domain.ValidationError{Field: "variant", Message: "is required and has no default. Ask the user which agent variant should run this Action, then request it again with that variant. Configured variants: " + available}
+	}
+	if _, ok := cfg.Variants[variant]; !ok {
+		return "", &domain.ValidationError{Field: "variant", Message: fmt.Sprintf("%q is not a configured agent variant. Ask the user which one should run this Action. Configured variants: %s", variant, available)}
+	}
+	if err := s.checkActionVariant(variant); err != nil {
+		return "", err
+	}
+	return variant, nil
 }
 
 // startRequestedAction is the approved request's operation. Everything that
@@ -345,10 +363,7 @@ func (s *Service) startRequestedAction(ctx context.Context, executionID, archite
 	if !allowed {
 		return fail(notAvailableError(architectKey, run.Action))
 	}
-	if strings.TrimSpace(variant) == "" {
-		return fail(&domain.ValidationError{Field: actionVariantInput, Message: "is required"})
-	}
-	if err := s.checkActionVariant(variant); err != nil {
+	if _, err := s.requestedActionVariant(variant); err != nil {
 		return fail(err)
 	}
 

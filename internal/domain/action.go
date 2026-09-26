@@ -22,6 +22,7 @@ type (
 	ActionConclusion          = sd.ActionConclusion
 	ActionEvent               = sd.ActionEvent
 	ExecuteActionRequest      = sd.ExecuteActionRequest
+	ExecuteActionResponse     = sd.ExecuteActionResponse
 	AvailableActionList       = sd.AvailableActionList
 	AddAvailableActionRequest = sd.AddAvailableActionRequest
 	AddAvailableActionResult  = sd.AddAvailableActionResult
@@ -126,7 +127,7 @@ type ActionService interface {
 	// claim. AddAvailableAction is architect-only.
 	AddAvailableAction(ctx context.Context, sessionID string, req AddAvailableActionRequest) (AddAvailableActionResult, error)
 	AvailableActions(ctx context.Context, sessionID string) (AvailableActionList, error)
-	RequestExecuteAction(ctx context.Context, sessionID string, req ExecuteActionRequest) (ActionResult, error)
+	RequestExecuteAction(ctx context.Context, sessionID string, req ExecuteActionRequest) (ExecuteActionResponse, error)
 	GetActionResult(ctx context.Context, sessionID, executionID string) (ActionResult, error)
 	WaitForActionResult(ctx context.Context, sessionID, executionID string, timeout time.Duration) (ActionWaitResult, error)
 }

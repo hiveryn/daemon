@@ -23,7 +23,7 @@ func (s *Server) registerAgentActionTools() {
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "executeAction",
-		Description: "Request one execution of an available Action with a prompt. Returns immediately with the execution_id and status pending_approval: the user reviews the request, picks the agent variant and approves or denies it — nothing runs until then, and there is no timeout that approves it. Keep the execution_id; it is the same through approval, execution and result. Follow up with waitForActionResult or getActionResult. Errors if the Action is not available to this project, is invalid, or is already running (only one execution of an Action runs at a time). An identical request (same name and prompt) from this session while it is pending, or within ten minutes of its approval or denial, returns the original execution instead of creating another.",
+		Description: "Request one execution of an available Action with a prompt and the agent variant that runs it. variant is required and has no default: if the user has not said which variant to use, ask them first — an omitted or unknown variant is rejected with the list of configured variants. The call waits for the user's approval like createWorkTicket: the user reviews the Action, prompt and variant and approves or denies it; if they do not answer within the approval window it is auto-approved. Check outcome: approved or auto_approved means the Action was launched and now runs independently (result.status running); denied_by_user means it never ran; error means it could not start (reason and result.error say why). The call never waits for the Action to finish: keep result.execution_id and follow it with waitForActionResult or getActionResult. Errors before any approval if the Action is not available to this project, is invalid, or is already running (only one execution of an Action runs at a time). An identical request (same name, prompt and variant) from this session while it is pending, or within ten minutes of its resolution, returns the original execution instead of creating another; a different variant is a new request.",
 	}, s.handleExecuteAction)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
@@ -80,9 +80,19 @@ type GetAvailableActionsOutput struct {
 	Actions []domain.ActionDefinition `json:"actions"`
 }
 
+// Variant is omitempty on purpose: a required schema field would make the
+// MCP SDK reject a missing variant with a bare schema error, before the
+// daemon can answer with the configured variants and tell the agent to ask
+// the user. The daemon enforces that it is present.
 type ExecuteActionInput struct {
-	Name   string `json:"name" jsonschema:"The Action name, from getAvailableActions (required)."`
-	Prompt string `json:"prompt" jsonschema:"What to do, containing everything the Action's description asks for (required)."`
+	Name    string `json:"name" jsonschema:"The Action name, from getAvailableActions (required)."`
+	Prompt  string `json:"prompt" jsonschema:"What to do, containing everything the Action's description asks for (required)."`
+	Variant string `json:"variant,omitempty" jsonschema:"The configured agent variant that runs the Action (required, no default). Ask the user which variant to use if they have not said; an omitted or unknown variant is rejected with the configured choices."`
+}
+
+type ExecuteActionOutput struct {
+	IntentEnvelopeFields
+	Result domain.ActionResult `json:"result" jsonschema:"The execution under its execution_id: running once launched, denied or failed otherwise."`
 }
 
 type ActionResultInput struct {
@@ -108,7 +118,7 @@ type WaitForActionResultOutput struct {
 
 // actionGuidance spells out, per status, what the state means and what to do.
 var actionGuidance = map[domain.ActionRunStatus]string{
-	domain.ActionRunPendingApproval: "Waiting for the user to approve it and choose the agent variant. Nothing has started. Call waitForActionResult to wait for the decision, or carry on and check getActionResult later.",
+	domain.ActionRunPendingApproval: "Waiting for the user's approval. Nothing has started. Call waitForActionResult to wait for the decision, or carry on and check getActionResult later.",
 	domain.ActionRunDenied:          "The user denied this request; it never ran. Do not request it again without asking the user — read `reason` and ask what they want instead.",
 	domain.ActionRunRunning:         "Approved and running. The Action agent is working; it ends in completed or failed. Call waitForActionResult again to keep waiting.",
 	domain.ActionRunCompleted:       "Completed: the artifact package is in `output_dir`. Read `summary`, then the artifacts. Findings inside the package (for example failed checks) are results, not a failed execution.",
@@ -147,25 +157,46 @@ func (s *Server) handleExecuteAction(
 	ctx context.Context,
 	_ *mcp.CallToolRequest,
 	input ExecuteActionInput,
-) (*mcp.CallToolResult, ActionResultOutput, error) {
+) (*mcp.CallToolResult, ExecuteActionOutput, error) {
 	if strings.TrimSpace(input.Name) == "" {
-		return nil, ActionResultOutput{}, newValidationError("name", "is required")
+		return nil, ExecuteActionOutput{}, newValidationError("name", "is required")
 	}
 	if strings.TrimSpace(input.Prompt) == "" {
-		return nil, ActionResultOutput{}, newValidationError("prompt", "is required")
+		return nil, ExecuteActionOutput{}, newValidationError("prompt", "is required")
 	}
-	var result domain.ActionResult
+	// A blank variant still goes to the daemon: only it knows the configured
+	// variants the error must list.
+	var res domain.ExecuteActionResponse
 	if err := s.sessionRequest(ctx, http.MethodPost, "intents/execute-action", domain.ExecuteActionRequest{
-		Name:   input.Name,
-		Prompt: input.Prompt,
-	}, &result); err != nil {
-		return nil, ActionResultOutput{}, err
+		Name:    input.Name,
+		Prompt:  input.Prompt,
+		Variant: input.Variant,
+	}, &res); err != nil {
+		return nil, ExecuteActionOutput{}, err
 	}
-	guidance, err := actionResultGuidance(result)
-	if err != nil {
-		return nil, ActionResultOutput{}, err
+	guidance, ok := executeActionGuidance[res.Outcome]
+	if !ok {
+		return nil, ExecuteActionOutput{}, newInternalError(fmt.Sprintf("daemon returned unknown intent outcome %q", res.Outcome))
 	}
-	return nil, ActionResultOutput{Result: result, Guidance: guidance}, nil
+	return nil, ExecuteActionOutput{
+		IntentEnvelopeFields: IntentEnvelopeFields{
+			Outcome:  string(res.Outcome),
+			Guidance: guidance,
+			Reason:   res.Reason,
+			IntentID: res.Result.ExecutionID,
+		},
+		Result: res.Result,
+	}, nil
+}
+
+// executeActionGuidance is the per-outcome instruction for a resolved
+// request. Approval means launched, never delivered.
+var executeActionGuidance = map[domain.IntentOutcome]string{
+	domain.IntentOutcomeApproved:     "The user approved the request and the Action was launched; it now runs independently. Follow result.execution_id with waitForActionResult or getActionResult for its progress and artifacts.",
+	domain.IntentOutcomeAutoApproved: "The user did not answer within the approval window, so the request was auto-approved and the Action was launched; it now runs independently. Follow result.execution_id with waitForActionResult or getActionResult for its progress and artifacts.",
+	domain.IntentOutcomeDeniedByUser: "The user denied this request; it never ran. Do not request it again without asking the user — read `reason` and ask what they want instead.",
+	domain.IntentOutcomeAutoDenied:   "The request was denied without a user response; it never ran. Do not request it again without asking the user.",
+	domain.IntentOutcomeError:        "The Action did not start: it failed to launch after approval, or the request ended unresolved. Read `reason` and result.error. It may be requested again once the cause is resolved.",
 }
 
 func (s *Server) handleGetActionResult(

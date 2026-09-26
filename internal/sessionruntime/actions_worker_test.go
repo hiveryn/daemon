@@ -51,7 +51,7 @@ func TestWorkerRequestsActionsOfItsProject(t *testing.T) {
 	if err != nil || len(list.Actions) != 2 || list.Actions[0].Name != "demo" || !list.Actions[0].Valid || list.Actions[1].Valid {
 		t.Fatalf("worker discovery = %+v, %v", list, err)
 	}
-	if _, err := f.service.RequestExecuteAction(ctx, w.ID, domain.ExecuteActionRequest{Name: "other", Prompt: "x"}); !errors.As(err, new(*domain.ValidationError)) || !strings.Contains(err.Error(), "not available") {
+	if _, err := f.service.RequestExecuteAction(ctx, w.ID, domain.ExecuteActionRequest{Name: "other", Prompt: "x", Variant: "codex"}); !errors.As(err, new(*domain.ValidationError)) || !strings.Contains(err.Error(), "not available") {
 		t.Fatalf("unlisted action err = %v, want not available", err)
 	}
 
@@ -64,12 +64,12 @@ func TestWorkerRequestsActionsOfItsProject(t *testing.T) {
 		t.Fatalf("worker request record = %+v, want trigger worker attributed to its ticket", run)
 	}
 	in, ok := f.service.intents.Get(pending.ExecutionID)
-	if !ok || in.Policy != domain.IntentPolicyManual || in.Origin.SessionType != domain.SessionTypeTicket || in.Origin.TicketID != "ticket-1" || in.Origin.ArchitectKey != "alpha" {
-		t.Fatalf("intent = %+v, %v; want a manual request from the ticket session", in, ok)
+	if !ok || in.Policy != domain.IntentPolicyWaitThenAllow || in.Origin.SessionType != domain.SessionTypeTicket || in.Origin.TicketID != "ticket-1" || in.Origin.ArchitectKey != "alpha" {
+		t.Fatalf("intent = %+v, %v; want a wait-then-allow request from the ticket session", in, ok)
 	}
 
 	// Same execution id throughout; the architect of the project reads it too.
-	if err := f.approve(w.ID, pending.ExecutionID, "codex"); err != nil {
+	if err := f.approve(w.ID, pending.ExecutionID); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 	if got := f.result(t, arch.ID, pending.ExecutionID); got.Status != domain.ActionRunRunning || got.ExecutionID != pending.ExecutionID {

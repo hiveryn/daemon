@@ -55,7 +55,7 @@ type pendingIntent struct {
 	intent   domain.Intent
 	dedupKey string
 	exec     func(context.Context, domain.IntentInputValues) (any, error)
-	hooks    deferredHooks       // deferred only
+	hooks    intentHooks
 	claimed  bool                // CAS'd under mu: exactly one resolver wins
 	waiters  []chan intentResult // each buffered 1, so a broadcast never blocks
 	ready    chan struct{}       // deferred only; closed by MarkReady
@@ -119,6 +119,18 @@ func (s *intentStore) Begin(
 	in domain.Intent,
 	exec func(context.Context, domain.IntentInputValues) (any, error),
 ) (id string, ch <-chan intentResult, replayed intentResult, d intentDisposition) {
+	return s.BeginWithHooks(dedupKey, in, exec, intentHooks{})
+}
+
+// BeginWithHooks is Begin for a blocking tool that keeps its own durable
+// record in step with the intent (see intentHooks). The hooks are kept only
+// when this call creates the intent.
+func (s *intentStore) BeginWithHooks(
+	dedupKey string,
+	in domain.Intent,
+	exec func(context.Context, domain.IntentInputValues) (any, error),
+	hooks intentHooks,
+) (id string, ch <-chan intentResult, replayed intentResult, d intentDisposition) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -140,6 +152,7 @@ func (s *intentStore) Begin(
 		intent:   in,
 		dedupKey: dedupKey,
 		exec:     exec,
+		hooks:    hooks,
 		waiters:  []chan intentResult{w},
 	})
 	return in.ID, w, intentResult{}, intentCreated
@@ -154,7 +167,7 @@ func (s *intentStore) BeginDeferred(
 	dedupKey string,
 	in domain.Intent,
 	exec func(context.Context, domain.IntentInputValues) (any, error),
-	hooks deferredHooks,
+	hooks intentHooks,
 ) (id string, ready <-chan struct{}, d intentDisposition) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -250,6 +263,26 @@ func (s *intentStore) Discard(intentID string) {
 	if p, ok := s.pending[intentID]; ok {
 		s.unregisterLocked(p)
 	}
+}
+
+// Abort ends a blocking intent that was withdrawn before anyone saw it: its
+// waiters learn res, and no replay is cached, so a retry is free to try again.
+func (s *intentStore) Abort(intentID string, res intentResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.pending[intentID]
+	if !ok {
+		return
+	}
+	res.IntentID = p.intent.ID
+	for _, w := range p.waiters {
+		select {
+		case w <- res:
+		default:
+		}
+	}
+	p.waiters = nil
+	s.unregisterLocked(p)
 }
 
 // Release gives up a claim whose resolution could not be recorded, so the

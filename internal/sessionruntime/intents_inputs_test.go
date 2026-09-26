@@ -549,7 +549,7 @@ func TestDeferredSessionTeardownFailsPending(t *testing.T) {
 	f.service.failPendingIntents(context.Background(), "session-1", "session ended before this intent was resolved")
 
 	got := f.lookup(t, record.ID)
-	if got.Status != domain.DeferredIntentFailed || got.Error != deferredFailedOnSessionEnd || got.ApprovedAt != nil {
+	if got.Status != domain.DeferredIntentFailed || got.Error != intentFailedOnSessionEnd || got.ApprovedAt != nil {
 		t.Fatalf("record = %+v, want failed before approval", got)
 	}
 	resolved := f.eventsFor(record.ID, sessionEventStatusResolvd)
