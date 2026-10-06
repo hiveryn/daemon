@@ -84,6 +84,7 @@ func NewServer(cfg Config) (*Server, error) {
 	case SessionTypeAction:
 		server.registerActionTools()
 	}
+	server.registerUserTools()
 
 	return server, nil
 }

@@ -84,7 +84,7 @@ func TestMigrationRemovesLegacyFreeformSessions(t *testing.T) {
 	}
 }
 
-func TestSessionEventRingKeepsIntentEventsOutsideCap(t *testing.T) {
+func TestSessionEventRingKeepsIntentAndQuestionEventsOutsideCap(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db, err := Open(ctx, filepath.Join(t.TempDir(), "state.db"))
@@ -106,6 +106,12 @@ func TestSessionEventRingKeepsIntentEventsOutsideCap(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("append intent event: %v", err)
 	}
+	if _, err := store.AppendSessionEvent(ctx, domain.AppendSessionEventParams{
+		SessionID: "session-1", Type: "question", Status: "required",
+		Raw: map[string]any{"question_id": "question-1"},
+	}); err != nil {
+		t.Fatalf("append question event: %v", err)
+	}
 	for i := 0; i < 105; i++ {
 		if _, err := store.AppendSessionEvent(ctx, domain.AppendSessionEventParams{
 			SessionID: "session-1", Type: "output", Message: "event",
@@ -118,15 +124,16 @@ func TestSessionEventRingKeepsIntentEventsOutsideCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
-	if len(events) != 101 {
-		t.Fatalf("got %d events, want 100 capped ordinary events plus intent", len(events))
+	if len(events) != 102 {
+		t.Fatalf("got %d events, want 100 capped ordinary events plus intent and question", len(events))
 	}
-	foundIntent := false
+	foundIntent, foundQuestion := false, false
 	for _, event := range events {
 		foundIntent = foundIntent || event.Type == "intent"
+		foundQuestion = foundQuestion || event.Type == "question"
 	}
-	if !foundIntent {
-		t.Fatal("intent event was evicted by ordinary event ring")
+	if !foundIntent || !foundQuestion {
+		t.Fatalf("evicted by ordinary event ring: intent kept %v, question kept %v", foundIntent, foundQuestion)
 	}
 }
 

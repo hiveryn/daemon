@@ -39,6 +39,7 @@ type Config struct {
 	DesktopHealthPollInterval string                       `yaml:"desktop_health_poll_interval,omitempty"`
 	IntentWaitTimeout         int                          `yaml:"intent_wait_timeout,omitempty"`
 	ArchiveAgentEvents        bool                         `yaml:"archive_agent_events"`
+	Notifications             *NotificationsConfig         `yaml:"notifications,omitempty"`
 	Variants                  map[string]VariantConfig     `yaml:"-"`
 	Architects                map[string]ArchitectConfig   `yaml:"-"`
 	Tabs                      map[string][]TabEntry        `yaml:"-"`
@@ -272,6 +273,7 @@ func (c Config) Clone() Config {
 	cloned.Architects = cloneArchitectConfigs(c.Architects)
 	cloned.Tabs = cloneTabs(c.Tabs)
 	cloned.Shortcuts = cloneShortcuts(c.Shortcuts)
+	cloned.Notifications = c.Notifications.clone()
 	return cloned
 }
 
@@ -510,12 +512,13 @@ func expandHomePath(p string) (string, error) {
 }
 
 type coreConfig struct {
-	Port                      int    `yaml:"port"`
-	BindAddress               string `yaml:"bind_address"`
-	LogLevel                  string `yaml:"log_level"`
-	Shell                     string `yaml:"shell,omitempty"`
-	DesktopHealthPollInterval string `yaml:"desktop_health_poll_interval,omitempty"`
-	IntentWaitTimeout         int    `yaml:"intent_wait_timeout,omitempty"`
+	Port                      int                  `yaml:"port"`
+	BindAddress               string               `yaml:"bind_address"`
+	LogLevel                  string               `yaml:"log_level"`
+	Shell                     string               `yaml:"shell,omitempty"`
+	DesktopHealthPollInterval string               `yaml:"desktop_health_poll_interval,omitempty"`
+	IntentWaitTimeout         int                  `yaml:"intent_wait_timeout,omitempty"`
+	Notifications             *NotificationsConfig `yaml:"notifications,omitempty"`
 }
 
 func (c Config) Save(path string) error {
@@ -543,6 +546,7 @@ func (c Config) Save(path string) error {
 		Shell:                     c.Shell,
 		DesktopHealthPollInterval: c.DesktopHealthPollInterval,
 		IntentWaitTimeout:         c.IntentWaitTimeout,
+		Notifications:             c.Notifications,
 	}
 
 	data, err := yaml.Marshal(core)
@@ -585,6 +589,10 @@ func (c Config) Validate() error {
 
 	if c.IntentWaitTimeout < 0 {
 		return fmt.Errorf("intent_wait_timeout must be >= 0")
+	}
+
+	if err := c.Notifications.validate(); err != nil {
+		return err
 	}
 
 	variantNames := sortedKeys(c.Variants)
@@ -678,6 +686,7 @@ func (c *Config) normalize() {
 	if c.IntentWaitTimeout <= 0 {
 		c.IntentWaitTimeout = DefaultIntentWaitTimeout
 	}
+	c.Notifications.normalize()
 	if c.Variants == nil {
 		c.Variants = map[string]VariantConfig{}
 	}

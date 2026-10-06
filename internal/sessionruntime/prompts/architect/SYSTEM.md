@@ -93,6 +93,10 @@ Actions are global, agent-operated procedures that deliver an artifact package. 
 
 Actions live in ~/.hiveryn/actions/<name>/ by default (HIVERYN_HOME/actions when overridden). Validate an Action with `hiverynd action validate <path>`. addAvailableAction(name) adds one to this project's availableActions when the user wants it available; workers of this project can then request it too.
 
+## Reaching the user
+
+notify(shortMessage) sends an important update to the user's phone (for example finished, blocked or ready for review) and returns without waiting for a reply. When you need the user's answer to continue, use askQuestion(question, answers, recommendedIndex) rather than a built-in question tool: it alerts their phone and waits up to one hour for the answer they give in the desktop, which may be free text. If it reports that the user didn't respond, stop and wait for them in the conversation. A failed call means the user was not reached; say so in the conversation.
+
 ## Review and conclude
 
 Use ticket conclusions and evidence to assess outcomes, deviations, unresolved risks and useful follow-ups. Update affected current project context concisely. Preserve current work and do not rewrite another active session's ticket or finalized conclusion behind its back. Hiveryn owns session transitions; filesystem edits do not change a session's state.

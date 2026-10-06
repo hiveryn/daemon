@@ -79,7 +79,30 @@ archive_agent_events: false
 | `bind_address` | `127.0.0.1` (localhost only) |
 | `log_level` | `info` |
 | `intent_wait_timeout` | `20` (seconds) — how long a pending intent waits for the user before its tool's policy fires. Values `<= 0` are coerced back to the default. Must stay safely under the smallest agent-runtime tool-call ceiling (~60s). |
-| `archive_agent_events` | `false` — set `true` to archive every normalized agentruntime event to per-day JSONL files under `HIVERYN_HOME/archive/agent_events/`. Full `Raw` payloads are preserved unredacted; archival failures never block ingestion.
+| `archive_agent_events` | `false` — set `true` to archive every normalized agentruntime event to per-day JSONL files under `HIVERYN_HOME/archive/agent_events/`. Full `Raw` payloads are preserved unredacted; archival failures never block ingestion. |
+| `notifications.ntfy` | absent — phone notifications for agents' `notify` and `askQuestion` (below). |
+
+#### Phone notifications (`notifications.ntfy`)
+
+Agents (architects, ticket workers and Actions) reach the user through two MCP tools: `notify(shortMessage)` publishes an alert and returns `Notification sent to user`; `askQuestion(question, answers, recommendedIndex)` publishes an alert, shows the question in the agent's desktop session (suggested answers, the recommended one marked, or free text) and waits up to one hour for the answer. The daemon publishes to [ntfy](https://ntfy.sh):
+
+```yaml
+notifications:
+  ntfy:
+    server: https://ntfy.sh      # or your own ntfy server
+    topic: kareem-hiveryn-7f3k   # subscribe to it in the ntfy phone app
+    # optional authentication — either an access token…
+    token: tk_xxxxxxxxxxxxxxxx
+    # …or a username and password
+    # username: kareem
+    # password: secret
+```
+
+1. Install the ntfy app on the phone and subscribe to the topic (on the public `ntfy.sh`, anyone who knows the topic can read it: pick a hard-to-guess name, or use a reserved/protected topic with a token).
+2. Add the section to `config.yaml` and restart the daemon; like the rest of `config.yaml` it is read at startup, and an invalid section (missing server or topic, credentials embedded in the URL, both a token and a password) stops the daemon from starting with the field named.
+3. Without the section, `notify` and `askQuestion` fail with an error telling the agent the user was not notified; nothing is ever reported as sent unless the ntfy server accepted it (which is publication, not proof of phone delivery). A refused or failed publication returns the server's reason, never the credentials.
+
+Alerts are titled with the project and session (`<project> · architect`, `<project> · <ticket title>`, `Action <name> · <execution>`). Pending questions belong to the daemon: they expire after one hour regardless of the agent's client, end when the session ends or the agent stops waiting, and are marked interrupted if the daemon stops — an answer is accepted only while the agent's call is still waiting for it.
 
 ### `variants.yaml` — agent variants
 

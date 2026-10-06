@@ -88,6 +88,9 @@ func TestCreateRunMarksRunFailedWhenTerminalStartFails(t *testing.T) {
 	if want := service.baseURL + ingestPathPrefix; adapter.launchRequest.HookEndpoint != want {
 		t.Fatalf("expected session hook endpoint %q, got %q", want, adapter.launchRequest.HookEndpoint)
 	}
+	if !adapter.launchRequest.DisableNativeQuestions {
+		t.Fatal("new launch keeps the provider's native question tool")
+	}
 }
 
 func TestCreateRunTicketReferencesStayInPromptAndOutOfLaunchScope(t *testing.T) {
@@ -1369,6 +1372,12 @@ func TestHandleTerminalExitResumesMainTerminal(t *testing.T) {
 	if !adapter.launchRequest.Resume || adapter.launchRequest.ResumeID != "native-1" {
 		t.Fatalf("expected resume launch request, got %#v", adapter.launchRequest)
 	}
+	if !adapter.launchRequest.DisableNativeQuestions {
+		t.Fatal("resumed launch keeps the provider's native question tool")
+	}
+	if len(adapter.launchRequest.MCPServers) == 0 || adapter.launchRequest.MCPServers[0].ToolTimeout != 65*time.Minute {
+		t.Fatalf("resumed launch lost the hiveryn MCP tool timeout: %#v", adapter.launchRequest.MCPServers)
+	}
 	state := service.terminalStates["session-1"]
 	if state.mainTerminalID != startSpec.TerminalID {
 		t.Fatalf("expected terminal state to point at resumed terminal %q, got %#v", startSpec.TerminalID, state)
@@ -1585,6 +1594,11 @@ func TestCreateRunMergesVariantMCPServers(t *testing.T) {
 	}
 	if servers[2].Command != "sentrux" || len(servers[2].Args) != 1 || servers[2].Args[0] != "--mcp" {
 		t.Fatalf("unexpected sentrux server config %#v", servers[2])
+	}
+	// Only the Hiveryn server gets the long deadline; variant servers keep
+	// their provider default.
+	if servers[0].ToolTimeout != hiverynMCPToolTimeout || servers[1].ToolTimeout != 0 || servers[2].ToolTimeout != 0 {
+		t.Fatalf("tool timeouts = %v, %v, %v", servers[0].ToolTimeout, servers[1].ToolTimeout, servers[2].ToolTimeout)
 	}
 }
 
@@ -2253,6 +2267,10 @@ func assertMCPServer(t *testing.T, servers []agentruntime.MCPServerConfig, sessi
 	}
 	if server.Env["HIVERYN_SESSION_TYPE"] != string(sessionType) || server.Env["HIVERYN_SESSION_ID"] != sessionID {
 		t.Fatalf("unexpected mcp env %#v", server.Env)
+	}
+	// askQuestion waits up to an hour; the client deadline must outlast it.
+	if server.ToolTimeout != 65*time.Minute {
+		t.Fatalf("hiveryn MCP tool timeout = %v, want 65m", server.ToolTimeout)
 	}
 }
 

@@ -78,6 +78,12 @@ type Service struct {
 
 	actions      *actionRuntime
 	actionEvents actionEventHub
+
+	// notifier publishes phone alerts (nil when notifications.ntfy is not
+	// configured); questions holds pending agent questions and their waiters.
+	notifier        notificationPublisher
+	questions       *questionStore
+	questionTimeout time.Duration
 }
 
 type eventSubscription struct {
@@ -138,6 +144,8 @@ func New(ctx context.Context, cfg config.Config, configSource config.Source, rep
 		adapters:       adapters,
 		terminal:       newPTYTerminalManager(logger),
 		intents:        newIntentStore(),
+		notifier:       notifierFromConfig(cfg),
+		questions:      newQuestionStore(),
 		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
 		bridgeCancels:  map[string]func(){},
 		attention:      map[string]*attentionMonitor{},
@@ -638,6 +646,11 @@ func (s *Service) prepareLaunchSpec(ctx context.Context, session domain.Session,
 	}
 
 	startReq.HookEndpoint = s.baseURL + ingestPathPrefix
+	// Questions go through Hiveryn's askQuestion (phone alert + desktop
+	// answer), so the provider's own ask-the-user tool is removed on every
+	// launch and resume. Codex's model-catalog request_user_input_async has no
+	// disabling setting and remains.
+	startReq.DisableNativeQuestions = true
 
 	adapter := s.adapters[agentKind]
 	if _, err := adapter.EnsureSetup(ctx, setupRequestForAgent(adapter, profile.Env)); err != nil {
@@ -1348,6 +1361,7 @@ func (s *Service) appendAndPublishSessionEnded(ctx context.Context, sessionID, r
 	// wait window expired. The conclude intent driving this teardown is already
 	// claimed, so it is skipped rather than resolved twice.
 	s.failPendingIntents(ctx, sessionID, "session ended before this intent was resolved")
+	s.cancelSessionQuestions(ctx, sessionID)
 
 	raw = cloneAnyMap(raw)
 	raw["lifecycle"] = lifecycle
@@ -1753,6 +1767,10 @@ func (s *Service) KillTerminal(ctx context.Context, sessionID, terminalID string
 }
 
 func (s *Service) Shutdown(ctx context.Context) error {
+	// First, while the event store and the agents' HTTP calls are still up:
+	// a blocked askQuestion gets an honest reply instead of a dropped
+	// connection, and the desktop stops offering an answer nobody would read.
+	s.interruptQuestions(ctx)
 	terminalErr := s.terminal.Shutdown(ctx)
 	s.cancelReceiverBridges()
 	s.closeEventSubscribers("")
@@ -2157,6 +2175,14 @@ func cloneStringMap(input map[string]string) map[string]string {
 	return cloned
 }
 
+// hiverynMCPToolTimeout is the provider-side deadline for one call to the
+// Hiveryn MCP server. askQuestion holds its call open for up to
+// domain.QuestionTimeout and the daemon enforces that expiry itself; the client
+// deadline sits beyond it so the timeout reply always reaches the agent. On
+// Claude this also disables automatic MCP backgrounding for the session; on
+// OpenCode it also bounds connecting and listing tools.
+const hiverynMCPToolTimeout = 65 * time.Minute
+
 func (s *Service) mcpServersForSession(sessionType domain.SessionType, architectKey, sessionID string, variantServers map[string]config.MCPServerConfig) ([]agentruntime.MCPServerConfig, error) {
 	hiveryndPath, err := s.resolveExecutablePath()
 	if err != nil {
@@ -2164,8 +2190,9 @@ func (s *Service) mcpServersForSession(sessionType domain.SessionType, architect
 	}
 
 	server := agentruntime.MCPServerConfig{
-		Name:    config.ReservedMCPServerName,
-		Command: hiveryndPath,
+		Name:        config.ReservedMCPServerName,
+		ToolTimeout: hiverynMCPToolTimeout,
+		Command:     hiveryndPath,
 		Args: []string{
 			"mcp",
 			"--architect-key", architectKey,

@@ -13,8 +13,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Action agents get exactly two tools. They cannot invoke other Actions and
-// inherit none of the architect or ticket tools.
+// Action agents get these two tools plus notify and askQuestion (see
+// registerUserTools). They cannot invoke other Actions and inherit none of the
+// architect or ticket tools.
 func (s *Server) registerActionTools() {
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "readRecentConclusions",

@@ -226,7 +226,7 @@ func (s *SessionStore) AppendSessionEvent(ctx context.Context, params domain.App
 	}
 
 	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_events WHERE session_id = ? AND type <> 'intent'`, params.SessionID).Scan(&count); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_events WHERE session_id = ? AND type NOT IN ('intent', 'question')`, params.SessionID).Scan(&count); err != nil {
 		return domain.SessionEvent{}, fmt.Errorf("count session events: %w", err)
 	}
 	if count >= 100 {
@@ -234,7 +234,7 @@ func (s *SessionStore) AppendSessionEvent(ctx context.Context, params domain.App
 			DELETE FROM session_events
 			WHERE id = (
 				SELECT id FROM session_events
-				WHERE session_id = ? AND type <> 'intent'
+				WHERE session_id = ? AND type NOT IN ('intent', 'question')
 				ORDER BY seq ASC
 				LIMIT 1
 			)

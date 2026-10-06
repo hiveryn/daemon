@@ -92,6 +92,11 @@ func Run(configPath, databasePath string, portOverride int) error {
 	}
 	service.SetDeferredIntentRepository(store.NewDeferredIntentStore(db))
 	service.SetActions(store.NewActionRunStore(db), runtime.ActionsDir, runtime.ActionRunsDir)
+	// Before restore: every question still pending in the log belongs to an
+	// agent call that died with the previous daemon.
+	if err := service.ReconcileQuestions(ctx); err != nil {
+		return fmt.Errorf("reconcile questions: %w", err)
+	}
 	if err := service.RestoreRunningSessions(ctx); err != nil {
 		return err
 	}
@@ -120,6 +125,7 @@ func Run(configPath, databasePath string, portOverride int) error {
 		Tickets:         ticketService,
 		Workspaces:      workspaceService,
 		Actions:         service,
+		Questions:       service,
 		IngestHandler:   service.IngestHandler(),
 		ArchitectEvents: architectHub,
 	})

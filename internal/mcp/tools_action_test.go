@@ -28,7 +28,7 @@ func TestActionSessionRegistersOnlyActionTools(t *testing.T) {
 		got = append(got, name)
 	}
 	sort.Strings(got)
-	if strings.Join(got, ",") != "concludeSession,readRecentConclusions" {
+	if strings.Join(got, ",") != "askQuestion,concludeSession,notify,readRecentConclusions" {
 		t.Fatalf("action tools = %v", got)
 	}
 

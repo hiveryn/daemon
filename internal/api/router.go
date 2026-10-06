@@ -25,6 +25,7 @@ type Dependencies struct {
 	Tickets         domain.TicketService
 	Workspaces      domain.WorkspaceService
 	Actions         domain.ActionService
+	Questions       domain.QuestionService
 	IngestHandler   http.Handler
 	ArchitectEvents *archevents.Hub
 }
@@ -109,6 +110,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	fh := &fsHandler{logger: deps.Logger}
 	wh := &workspaceHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, workspaces: deps.Workspaces}
 	ach := &actionsHandler{logger: deps.Logger, actions: deps.Actions}
+	qh := &questionsHandler{logger: deps.Logger, questions: deps.Questions}
 
 	if deps.ArchitectEvents != nil {
 		hub := deps.ArchitectEvents
@@ -195,6 +197,12 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/intents/execute-action", ach.executeIntent)
 	mux.HandleFunc("GET /api/sessions/{id}/action-results/{executionID}", ach.result)
 	mux.HandleFunc("GET /api/sessions/{id}/action-results/{executionID}/wait", ach.wait)
+	// Agent notifications and questions (every session type). The question
+	// request blocks until answered, expired or cancelled; the answer is the
+	// desktop's.
+	mux.HandleFunc("POST /api/sessions/{id}/notify", qh.notify)
+	mux.HandleFunc("POST /api/sessions/{id}/questions", qh.ask)
+	mux.HandleFunc("POST /api/sessions/{id}/questions/{questionID}/answer", qh.answer)
 	if deps.IngestHandler != nil {
 		mux.Handle(ingestRoutePrefix+"/", deps.IngestHandler)
 	}
