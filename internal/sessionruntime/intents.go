@@ -183,6 +183,20 @@ func (s *intentStore) BeginDeferred(
 	return in.ID, p.ready, intentCreated
 }
 
+// Known reports whether dedupKey has an intent in flight or a resolved
+// outcome still inside its replay window — that is, whether Begin would
+// attach or replay rather than create. A tool uses it to let a retry reach
+// that outcome even when the request would no longer pass its pre-approval
+// checks because the original already took effect.
+func (s *intentStore) Known(dedupKey string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.lookupReplayLocked(dedupKey); ok {
+		return true
+	}
+	return s.lookupPendingLocked(dedupKey) != nil
+}
+
 func (s *intentStore) lookupReplayLocked(dedupKey string) (intentResult, bool) {
 	// Lazy sweep on access is the replay cache's entire lifecycle — no
 	// goroutine, no timer. Safe given the daemon's load profile (1 desktop,

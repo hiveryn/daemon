@@ -163,6 +163,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	// tool's policy fires.
 	mux.HandleFunc("POST /api/sessions/{id}/intents/conclude-session", sh.concludeSessionIntent)
 	mux.HandleFunc("POST /api/sessions/{id}/intents/create-work-ticket", sh.createWorkTicketIntent)
+	mux.HandleFunc("POST /api/sessions/{id}/intents/spawn-ticket-worker", sh.spawnTicketWorkerIntent)
 	// Desktop-facing intent resolution, addressed by intent id.
 	mux.HandleFunc("GET /api/sessions/{id}/intents/{intentID}", sh.getDeferredIntent)
 	mux.HandleFunc("POST /api/sessions/{id}/intents/{intentID}/approve", sh.approveIntent)

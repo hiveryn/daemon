@@ -20,6 +20,9 @@ var intentPolicies = map[domain.IntentType]domain.IntentPolicy{
 	// The variant is chosen by the requester, so there is nothing left for
 	// the user to fill in: like a ticket, an unanswered request launches.
 	domain.IntentTypeExecuteAction: domain.IntentPolicyWaitThenAllow,
+	// The ticket, variant and workflows are all chosen by the architect and
+	// shown for review; like a ticket, an unanswered request launches.
+	domain.IntentTypeSpawnTicketWorker: domain.IntentPolicyWaitThenAllow,
 }
 
 // policyFor fails fast on an unregistered tool. A typo must never silently

@@ -15,28 +15,31 @@ type (
 	SessionRunStatus        = sd.SessionRunStatus
 	SessionRunFailureReason = sd.SessionRunFailureReason
 
-	AgentProfileSnapshot     = sd.AgentProfileSnapshot
-	MCPServerSnapshot        = sd.MCPServerSnapshot
-	Session                  = sd.Session
-	SessionRun               = sd.SessionRun
-	SessionEvent             = sd.SessionEvent
-	CreateSessionRequest     = sd.CreateSessionRequest
-	CreateSessionParams      = sd.CreateSessionParams
-	CreateSessionRunRequest  = sd.CreateSessionRunRequest
-	CreateSessionRunParams   = sd.CreateSessionRunParams
-	CreateSessionRunResult   = sd.CreateSessionRunResult
-	AppendSessionEventParams = sd.AppendSessionEventParams
-	ConcludeSessionParams    = sd.ConcludeSessionParams
-	ConcludeSessionResult    = sd.ConcludeSessionResult
-	MoveTicketToDoneParams   = sd.MoveTicketToDoneParams
-	MoveTicketToDoneResult   = sd.MoveTicketToDoneResult
-	TerminalInfo             = sd.TerminalInfo
-	TerminalWorkdir          = sd.TerminalWorkdir
-	TerminalPlacement        = sd.TerminalPlacement
-	CreateTerminalParams     = sd.CreateTerminalParams
-	SessionTab               = sd.SessionTab
-	ArchitectConclusion      = sd.ArchitectConclusion
-	ConclusionSummary        = sd.ConclusionSummary
+	AgentProfileSnapshot      = sd.AgentProfileSnapshot
+	MCPServerSnapshot         = sd.MCPServerSnapshot
+	Session                   = sd.Session
+	SessionRun                = sd.SessionRun
+	SessionEvent              = sd.SessionEvent
+	CreateSessionRequest      = sd.CreateSessionRequest
+	SpawnTicketWorkerRequest  = sd.SpawnTicketWorkerRequest
+	SpawnTicketWorkerResponse = sd.SpawnTicketWorkerResponse
+	SpawnedTicketWorker       = sd.SpawnedTicketWorker
+	CreateSessionParams       = sd.CreateSessionParams
+	CreateSessionRunRequest   = sd.CreateSessionRunRequest
+	CreateSessionRunParams    = sd.CreateSessionRunParams
+	CreateSessionRunResult    = sd.CreateSessionRunResult
+	AppendSessionEventParams  = sd.AppendSessionEventParams
+	ConcludeSessionParams     = sd.ConcludeSessionParams
+	ConcludeSessionResult     = sd.ConcludeSessionResult
+	MoveTicketToDoneParams    = sd.MoveTicketToDoneParams
+	MoveTicketToDoneResult    = sd.MoveTicketToDoneResult
+	TerminalInfo              = sd.TerminalInfo
+	TerminalWorkdir           = sd.TerminalWorkdir
+	TerminalPlacement         = sd.TerminalPlacement
+	CreateTerminalParams      = sd.CreateTerminalParams
+	SessionTab                = sd.SessionTab
+	ArchitectConclusion       = sd.ArchitectConclusion
+	ConclusionSummary         = sd.ConclusionSummary
 )
 
 // Daemon-local agent status values used by the runtime bridge and stored on
@@ -55,7 +58,8 @@ const (
 	SessionTypeArchitect = sd.SessionTypeArchitect
 	SessionTypeTicket    = sd.SessionTypeTicket
 
-	SessionCreatedByDesktop = sd.SessionCreatedByDesktop
+	SessionCreatedByDesktop   = sd.SessionCreatedByDesktop
+	SessionCreatedByArchitect = sd.SessionCreatedByArchitect
 
 	SessionRunStatusRunning   = sd.SessionRunStatusRunning
 	SessionRunStatusCompleted = sd.SessionRunStatusCompleted
@@ -110,6 +114,9 @@ type SessionService interface {
 	// tool's policy fires, and performs its write only on approval.
 	RequestConclusion(context.Context, string, ConcludeSessionParams) (IntentResolution[ConcludeSessionResult], error)
 	RequestCreateWorkTicket(context.Context, string, CreateTicketParams) (IntentResolution[Ticket], error)
+	// RequestSpawnTicketWorker returns the resolution with the launched
+	// worker; an approval whose launch failed is outcome error, never success.
+	RequestSpawnTicketWorker(context.Context, string, SpawnTicketWorkerRequest) (SpawnTicketWorkerResponse, error)
 
 	// Desktop-facing intent resolution, addressed by intent id. Approval
 	// carries the user's input values; invalid input is a ValidationError that

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -448,6 +449,10 @@ type fakeSessionService struct {
 	requestConclusionErr     error
 	createWorkTicketResult   domain.IntentResolution[domain.Ticket]
 	createWorkTicketErr      error
+	lastSpawnSessionID       string
+	lastSpawnRequest         domain.SpawnTicketWorkerRequest
+	spawnResult              domain.SpawnTicketWorkerResponse
+	spawnErr                 error
 	lastCreateWorkTicketID   string
 	lastCreateWorkTicket     domain.CreateTicketParams
 	approveIntentResult      domain.Intent
@@ -492,6 +497,12 @@ func (f *fakeSessionService) RequestCreateWorkTicket(_ context.Context, id strin
 	f.lastCreateWorkTicketID = id
 	f.lastCreateWorkTicket = params
 	return f.createWorkTicketResult, f.createWorkTicketErr
+}
+
+func (f *fakeSessionService) RequestSpawnTicketWorker(_ context.Context, id string, req domain.SpawnTicketWorkerRequest) (domain.SpawnTicketWorkerResponse, error) {
+	f.lastSpawnSessionID = id
+	f.lastSpawnRequest = req
+	return f.spawnResult, f.spawnErr
 }
 
 func (f *fakeSessionService) MoveTicketToDone(_ context.Context, architectKey, ticketID string, params domain.MoveTicketToDoneParams) (domain.MoveTicketToDoneResult, error) {
@@ -677,4 +688,41 @@ func (f *fakeSessionServiceWithEvents) ListSessionEvents(context.Context, string
 
 func (f *fakeSessionServiceWithEvents) SubscribeSessionEvents(context.Context, string) (domain.SessionEventSubscription, error) {
 	return &fakeEventSubscription{ch: make(chan domain.SessionEvent)}, nil
+}
+
+// The architect's spawn request reaches the service verbatim, scoped to the
+// calling session, and the resolution — outcome plus the launched worker —
+// comes back unchanged.
+func TestSpawnTicketWorkerIntentEndpoint(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeSessionService{
+		spawnResult: domain.SpawnTicketWorkerResponse{
+			IntentID: "intent-1",
+			Outcome:  domain.IntentOutcomeApproved,
+			Worker: &domain.SpawnedTicketWorker{
+				SessionID: "session-w", RunID: "run-w", MainTerminalID: "term-w", TicketID: "ticket-1",
+				Variant: "claude", Workflows: []string{"AUTONOMOUS_COMMIT"}, WorkflowPaths: []string{"/ws/workflows/AUTONOMOUS_COMMIT.md"},
+			},
+		},
+	}
+	handler := newSessionTestHandler(t, service)
+
+	status, body := request(t, handler, http.MethodPost, "/api/sessions/session-a/intents/spawn-ticket-worker",
+		strings.NewReader(`{"ticket_id":"ticket-1","variant":"claude","workflows":["AUTONOMOUS_COMMIT.md"]}`))
+	if status != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, status, string(body))
+	}
+	if service.lastSpawnSessionID != "session-a" {
+		t.Fatalf("spawn routed to session %q", service.lastSpawnSessionID)
+	}
+	want := domain.SpawnTicketWorkerRequest{TicketID: "ticket-1", Variant: "claude", Workflows: []string{"AUTONOMOUS_COMMIT.md"}}
+	if !reflect.DeepEqual(service.lastSpawnRequest, want) {
+		t.Fatalf("spawn request = %#v, want %#v", service.lastSpawnRequest, want)
+	}
+	var payload domain.SpawnTicketWorkerResponse
+	decodeEnvelopeData(t, body, &payload)
+	if !reflect.DeepEqual(payload, service.spawnResult) {
+		t.Fatalf("response = %#v, want %#v", payload, service.spawnResult)
+	}
 }

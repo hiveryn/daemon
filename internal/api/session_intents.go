@@ -10,7 +10,8 @@ import (
 
 // Intent endpoints come in two shapes:
 //
-//   - Agent-facing, per tool (conclude-session, create-work-ticket). These
+//   - Agent-facing, per tool (conclude-session, create-work-ticket,
+//     spawn-ticket-worker). These
 //     BLOCK: the request is held open until the user answers or the tool's
 //     policy fires. Each has a typed body and tool-specific pre-validation, so
 //     they are separate routes rather than one generic /intents/{type}.
@@ -210,4 +211,25 @@ func (h *sessionsHandler) getDeferredIntent(w http.ResponseWriter, r *http.Reque
 	}
 
 	writeJSON(w, r, http.StatusOK, record)
+}
+
+// spawnTicketWorkerIntent is an architect's worker-launch request. It blocks
+// until the approval resolves and the launch returns; the response carries the
+// outcome and, only when the worker actually launched, its session identity.
+func (h *sessionsHandler) spawnTicketWorkerIntent(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
+		return
+	}
+	var input domain.SpawnTicketWorkerRequest
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
+		return
+	}
+	result, err := h.sessions.RequestSpawnTicketWorker(r.Context(), r.PathValue("id"), input)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, result)
 }

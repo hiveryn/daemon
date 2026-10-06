@@ -45,6 +45,10 @@ func TestActionToolsAreRegisteredPerRole(t *testing.T) {
 		if _, ok := names["addAvailableAction"]; ok != tc.wantAdd {
 			t.Errorf("%s: has addAvailableAction = %v, want %v", tc.name, ok, tc.wantAdd)
 		}
+		// Architect-only, like addAvailableAction.
+		if _, ok := names["spawnTicketWorker"]; ok != tc.wantAdd {
+			t.Errorf("%s: has spawnTicketWorker = %v, want %v", tc.name, ok, tc.wantAdd)
+		}
 	}
 }
 
@@ -224,5 +228,58 @@ func TestExecuteActionWithoutVariantReachesDaemonDiagnostic(t *testing.T) {
 	}
 	if !strings.Contains(text, "Ask the user") || !strings.Contains(text, "codex (codex)") {
 		t.Fatalf("tool error = %q, want the daemon's variant diagnostic", text)
+	}
+}
+
+func TestSpawnTicketWorkerCallsSessionScopedEndpoint(t *testing.T) {
+	t.Parallel()
+
+	var got domain.SpawnTicketWorkerRequest
+	reply := domain.SpawnTicketWorkerResponse{
+		IntentID: "intent-1",
+		Outcome:  domain.IntentOutcomeAutoApproved,
+		Worker:   &domain.SpawnedTicketWorker{SessionID: "sess-w", RunID: "run-w", TicketID: "ticket-1", Variant: "claude", Workflows: []string{"AUTONOMOUS_COMMIT"}, WorkflowPaths: []string{"/ws/workflows/AUTONOMOUS_COMMIT.md"}},
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method+" "+r.URL.Path != "POST /api/sessions/sess-arch/intents/spawn-ticket-worker" {
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.Variant == "" {
+			writeEnvelope(t, w, http.StatusOK, domain.SpawnTicketWorkerResponse{IntentID: "intent-2", Outcome: domain.IntentOutcomeError, Reason: "launch worker for ticket ticket-1: boom"})
+			return
+		}
+		writeEnvelope(t, w, http.StatusOK, reply)
+	}))
+	t.Cleanup(ts.Close)
+
+	server, err := NewServer(Config{DaemonURL: ts.URL, ArchitectKey: "hiveryn", SessionID: "sess-arch", SessionType: SessionTypeArchitect, HTTPClient: ts.Client()})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ctx := context.Background()
+	if _, _, err := server.handleSpawnTicketWorker(ctx, nil, SpawnTicketWorkerInput{TicketID: " "}); err == nil {
+		t.Fatal("blank ticketId accepted")
+	}
+	_, out, err := server.handleSpawnTicketWorker(ctx, nil, SpawnTicketWorkerInput{TicketID: "ticket-1", Variant: "claude", Workflows: []string{"AUTONOMOUS_COMMIT.md"}})
+	if err != nil {
+		t.Fatalf("spawnTicketWorker: %v", err)
+	}
+	if got.TicketID != "ticket-1" || got.Variant != "claude" || !slices.Equal(got.Workflows, []string{"AUTONOMOUS_COMMIT.md"}) {
+		t.Fatalf("daemon received %+v", got)
+	}
+	if out.Outcome != string(domain.IntentOutcomeAutoApproved) || out.IntentID != "intent-1" || out.Worker == nil || out.Worker.SessionID != "sess-w" || !strings.Contains(out.Guidance, "launched") {
+		t.Fatalf("output = %+v", out)
+	}
+
+	// A failed launch is reported as such, with its cause, and no worker.
+	_, out, err = server.handleSpawnTicketWorker(ctx, nil, SpawnTicketWorkerInput{TicketID: "ticket-1"})
+	if err != nil {
+		t.Fatalf("spawnTicketWorker error outcome: %v", err)
+	}
+	if out.Outcome != string(domain.IntentOutcomeError) || out.Worker != nil || !strings.Contains(out.Reason, "boom") {
+		t.Fatalf("error output = %+v", out)
 	}
 }

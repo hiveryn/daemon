@@ -37,6 +37,9 @@ func TestBuildArchitectInstructionsWithoutCustomFile(t *testing.T) {
 			t.Fatalf("built-in architect prompt still names removed tool %q", removed)
 		}
 	}
+	if !strings.Contains(got.Text, "spawnTicketWorker(ticketId, variant, workflows)") {
+		t.Fatal("built-in architect prompt does not describe spawnTicketWorker")
+	}
 	if !strings.Contains(got.Text, "Start by running checkWorkspace") {
 		t.Fatal("built-in architect prompt does not tell the architect to run checkWorkspace")
 	}

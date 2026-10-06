@@ -300,3 +300,85 @@ func formatDiagnostics(diags []domain.WorkspaceDiagnostic) []string {
 	sort.Stable(sort.StringSlice(lines))
 	return lines
 }
+
+// NamedWorkflow is one workflow selected by name: the name as normalized (the
+// file name without its .md extension) and the canonical path a session
+// records.
+type NamedWorkflow struct {
+	Name string
+	Path string
+}
+
+// ResolveWorkflowNames maps workflow names to the canonical workflow paths of
+// this workspace, for a selection made by name rather than from the listing.
+//
+// A name is NAME or NAME.md and denotes the file directly inside workflows/;
+// anything containing a path separator, and "." or "..", is refused, so a name
+// can never reach outside the directory. Equivalent names (NAME and NAME.md,
+// or a repeat) are one selection, kept at its first position. The list is the
+// whole selection: nothing is added from repository suggestions, and an empty
+// list selects nothing. Every unknown or malformed name is reported at once,
+// together with the available names, as a *domain.ValidationError.
+//
+// Only names are resolved here. Whether each selected file is launchable is
+// ValidateWorkerContext's verdict, which the launch runs on the returned paths.
+func ResolveWorkflowNames(workspacePath, architectKey string, names []string) ([]NamedWorkflow, error) {
+	selected := make([]NamedWorkflow, 0, len(names))
+	if len(names) == 0 {
+		return selected, nil
+	}
+
+	// A broken config only turns off the repo-key check inside each workflow's
+	// validation, which is not consulted here; the launch reports it.
+	scope, _ := loadRepoScope(workspacePath, architectKey)
+	available, err := discoverWorkflows(workspacePath, scope, newDiagnostics(WorkflowsDirName))
+	if err != nil {
+		return nil, err
+	}
+	byName := make(map[string]domain.Workflow, len(available))
+	availableNames := make([]string, 0, len(available))
+	for _, workflow := range available {
+		byName[workflow.Name] = workflow
+		availableNames = append(availableNames, workflow.Name)
+	}
+
+	var findings []string
+	seen := make(map[string]struct{}, len(names))
+	for i, raw := range names {
+		label := fmt.Sprintf("workflows[%d]", i)
+		name := strings.TrimSpace(raw)
+		if strings.EqualFold(filepath.Ext(name), markdownExt) {
+			name = strings.TrimSpace(name[:len(name)-len(markdownExt)])
+		}
+		switch {
+		case name == "":
+			findings = append(findings, fmt.Sprintf("%s: %q is not a workflow name", label, raw))
+			continue
+		case strings.ContainsAny(name, `/\`) || name == "." || name == "..":
+			findings = append(findings, fmt.Sprintf("%s: %q is a path; give the name of a file in %s/ (NAME or NAME.md)", label, raw, WorkflowsDirName))
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		workflow, ok := byName[name]
+		if !ok {
+			findings = append(findings, fmt.Sprintf("%s: %q is not a workflow in %s/", label, raw, WorkflowsDirName))
+			continue
+		}
+		seen[name] = struct{}{}
+		selected = append(selected, NamedWorkflow{Name: name, Path: workflow.Path})
+	}
+
+	if len(findings) > 0 {
+		list := "none (" + WorkflowsDirName + "/ holds no *.md files)"
+		if len(availableNames) > 0 {
+			list = strings.Join(availableNames, ", ")
+		}
+		return nil, &domain.ValidationError{
+			Field:   "workflows",
+			Message: "invalid workflow selection:\n" + strings.Join(findings, "\n") + "\navailable workflows: " + list,
+		}
+	}
+	return selected, nil
+}

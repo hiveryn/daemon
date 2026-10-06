@@ -71,9 +71,13 @@ func (s *Server) registerArchitectTools() {
 
 	// The architect edits hiveryn.yaml, the project documents and workflows
 	// with its own file tools, guided by describeArtifact and checked by
-	// checkWorkspace. There is no config-authoring tool, no prompt tool and no
-	// spawn tool: prompts are built in, and only the user launches workers.
+	// checkWorkspace. There is no config-authoring tool and no prompt tool:
+	// prompts are built in.
 	s.registerWorkspaceTools()
+
+	// Worker launches: the user's from the desktop, or an architect's
+	// spawnTicketWorker request, which the user approves (or lets expire).
+	s.registerSpawnTicketWorkerTool()
 
 	// Actions: discovery of this architect's availableActions, the
 	// executeAction request (waits for approval) and its result/wait under the

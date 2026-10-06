@@ -239,67 +239,83 @@ func (s *Service) CreateSession(ctx context.Context, req domain.CreateSessionReq
 			CreatedBy:          domain.SessionCreatedByDesktop,
 		})
 	case domain.SessionTypeTicket:
-		if strings.TrimSpace(req.TicketID) == "" {
-			return domain.Session{}, &domain.ValidationError{Field: "ticket_id", Message: "is required"}
-		}
-		ticket, err := s.tickets.GetTicket(ctx, architect.Path, req.TicketID)
+		params, err := s.ticketSessionParams(ctx, req.ArchitectKey, architect, req.TicketID, req.Workflows)
 		if err != nil {
 			return domain.Session{}, err
 		}
-		if ticket.Status != domain.TicketStatusBacklog {
-			return domain.Session{}, &domain.ValidationError{Field: "ticket_id", Message: "ticket must be in backlog to create a ticket session"}
-		}
-		repoKey := ticket.Repo
-		if repoKey == "" {
-			return domain.Session{}, &domain.ValidationError{Field: "repo", Message: "ticket has no repo key in frontmatter"}
-		}
-		repoPath, ok := architect.Repos[repoKey]
-		if !ok {
-			return domain.Session{}, &domain.ValidationError{Field: "repo", Message: "repo key " + repoKey + " not configured in architect repos"}
-		}
-		if err := validateRepoPath(repoPath); err != nil {
-			return domain.Session{}, err
-		}
-		additionalRepos, additionalWorkdirs, err := resolveAdditionalRepos(architect.Repos, repoKey, repoPath, ticket.AdditionalRepos)
-		if err != nil {
-			return domain.Session{}, err
-		}
-
-		// The selection is the user's explicit choice from the desktop. It is
-		// validated as given — never widened from repo matches, never pruned of
-		// broken entries — and the same validation reruns at every launch and
-		// resume against the live workspace.
-		workerCtx, err := workspacefs.ValidateWorkerContext(architect.Path, req.ArchitectKey, req.Workflows)
-		if err != nil {
-			return domain.Session{}, err
-		}
-		instructions, err := workerInstructions()
-		if err != nil {
-			return domain.Session{}, err
-		}
-		repos := []workerRepo{{Key: repoKey, Path: filepath.Clean(repoPath)}}
-		for i, key := range additionalRepos {
-			repos = append(repos, workerRepo{Key: key, Path: additionalWorkdirs[i]})
-		}
-		kickoff, err := renderWorkerKickoff(ticket.ID, repos, workerCtx)
-		if err != nil {
-			return domain.Session{}, err
-		}
-		return s.repo.CreateSession(ctx, domain.CreateSessionParams{
-			ArchitectKey:       req.ArchitectKey,
-			SessionType:        domain.SessionTypeTicket,
-			ContextID:          req.TicketID,
-			Prompt:             kickoff,
-			Workdir:            repoPath,
-			AdditionalRepos:    additionalRepos,
-			AdditionalWorkdirs: additionalWorkdirs,
-			Workflows:          workerCtx.WorkflowPaths(),
-			Instructions:       instructions,
-			CreatedBy:          domain.SessionCreatedByDesktop,
-		})
+		params.CreatedBy = domain.SessionCreatedByDesktop
+		return s.repo.CreateSession(ctx, params)
 	default:
 		return domain.Session{}, &domain.ValidationError{Field: "session_type", Message: "must be 'architect' or 'ticket'"}
 	}
+}
+
+// ticketSessionParams resolves the create-time contract of a ticket session
+// against the board and workspace as they are right now: the ticket must be in
+// this architect's backlog, its repo scope configured and present, and the
+// worker context — including the explicit workflow selection — launchable.
+// It is the one definition of a launchable ticket session, shared by the
+// desktop's launch and an architect's spawn request (which runs it before the
+// approval is shown and again when it resolves). CreatedBy is the caller's.
+func (s *Service) ticketSessionParams(ctx context.Context, architectKey string, architect config.ArchitectConfig, ticketID string, workflows []string) (domain.CreateSessionParams, error) {
+	if strings.TrimSpace(ticketID) == "" {
+		return domain.CreateSessionParams{}, &domain.ValidationError{Field: "ticket_id", Message: "is required"}
+	}
+	ticket, err := s.tickets.GetTicket(ctx, architect.Path, ticketID)
+	if err != nil {
+		return domain.CreateSessionParams{}, err
+	}
+	if ticket.Status != domain.TicketStatusBacklog {
+		return domain.CreateSessionParams{}, &domain.ValidationError{Field: "ticket_id", Message: "ticket must be in backlog to create a ticket session"}
+	}
+	repoKey := ticket.Repo
+	if repoKey == "" {
+		return domain.CreateSessionParams{}, &domain.ValidationError{Field: "repo", Message: "ticket has no repo key in frontmatter"}
+	}
+	repoPath, ok := architect.Repos[repoKey]
+	if !ok {
+		return domain.CreateSessionParams{}, &domain.ValidationError{Field: "repo", Message: "repo key " + repoKey + " not configured in architect repos"}
+	}
+	if err := validateRepoPath(repoPath); err != nil {
+		return domain.CreateSessionParams{}, err
+	}
+	additionalRepos, additionalWorkdirs, err := resolveAdditionalRepos(architect.Repos, repoKey, repoPath, ticket.AdditionalRepos)
+	if err != nil {
+		return domain.CreateSessionParams{}, err
+	}
+
+	// The selection is explicit — the user's from the desktop, or the one an
+	// approved spawnTicketWorker request showed them. It is validated as
+	// given — never widened from repo matches, never pruned of broken
+	// entries — and the same validation reruns at every launch and resume
+	// against the live workspace.
+	workerCtx, err := workspacefs.ValidateWorkerContext(architect.Path, architectKey, workflows)
+	if err != nil {
+		return domain.CreateSessionParams{}, err
+	}
+	instructions, err := workerInstructions()
+	if err != nil {
+		return domain.CreateSessionParams{}, err
+	}
+	repos := []workerRepo{{Key: repoKey, Path: filepath.Clean(repoPath)}}
+	for i, key := range additionalRepos {
+		repos = append(repos, workerRepo{Key: key, Path: additionalWorkdirs[i]})
+	}
+	kickoff, err := renderWorkerKickoff(ticket.ID, repos, workerCtx)
+	if err != nil {
+		return domain.CreateSessionParams{}, err
+	}
+	return domain.CreateSessionParams{
+		ArchitectKey:       architectKey,
+		SessionType:        domain.SessionTypeTicket,
+		ContextID:          ticketID,
+		Prompt:             kickoff,
+		Workdir:            repoPath,
+		AdditionalRepos:    additionalRepos,
+		AdditionalWorkdirs: additionalWorkdirs,
+		Workflows:          workerCtx.WorkflowPaths(),
+		Instructions:       instructions,
+	}, nil
 }
 
 func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.CreateSessionRunRequest) (domain.CreateSessionRunResult, error) {
@@ -411,7 +427,7 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 	// Announce the session on the architect stream. This is the single point in
 	// the daemon where a run becomes genuinely live — it has a running run and a
 	// main terminal — and every caller reaches it: the desktop's
-	// POST /api/sessions/{id}/runs and the architect-MCP spawn intent alike.
+	// POST /api/sessions/{id}/runs and an approved spawnTicketWorker alike.
 	//
 	// It is also the only event anywhere that names a session id, so it is the
 	// only way a client can discover a session it did not create itself. Emitting
