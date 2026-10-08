@@ -7,7 +7,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/hinshun/vt10x v0.0.0-20220301184237-5011da428d02
-	github.com/hiveryn/agentruntime v0.9.1-0.20261006015732-1e48a93985df
+	github.com/hiveryn/agentruntime v0.9.1-0.20261008083940-60cc1810ce1a
 	github.com/hiveryn/shared v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.2.0
 	gopkg.in/yaml.v3 v3.0.1

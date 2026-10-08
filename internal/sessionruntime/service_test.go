@@ -91,6 +91,83 @@ func TestCreateRunMarksRunFailedWhenTerminalStartFails(t *testing.T) {
 	if !adapter.launchRequest.DisableNativeQuestions {
 		t.Fatal("new launch keeps the provider's native question tool")
 	}
+	if adapter.launchRequest.ClaudeAutoMemory {
+		t.Fatal("variant without claude_auto_memory launched with auto-memory enabled")
+	}
+}
+
+func TestCreateRunFreezesClaudeAutoMemoryOptIn(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeSessionRepository()
+	repo.createdSession = domain.Session{
+		ID:           "session-1",
+		ArchitectKey: "hiveryn",
+		SessionType:  domain.SessionTypeArchitect,
+		ContextID:    "2026-05-13-1500",
+		Prompt:       "kickoff",
+		Workdir:      t.TempDir(),
+		Instructions: "system",
+	}
+	cfg := testRuntimeConfig(t)
+	cfg.Variants["claude-memory"] = config.VariantConfig{Agent: "claude", ClaudeAutoMemory: true, Env: map[string]string{"KEEP": "1"}}
+	adapter := &fakeAdapter{}
+	service := &Service{
+		intents:  newIntentStore(),
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:      cfg,
+		repo:     repo,
+		receiver: ingest.NewReceiver(adapter),
+		adapters: map[agentruntime.AgentKind]agentruntime.Adapter{
+			agentruntime.AgentClaude: adapter,
+		},
+		terminal:      &fakeTerminalManager{startErr: errors.New("stop after launch request")},
+		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels: map[string]func(){},
+		baseURL:       "http://127.0.0.1:4999",
+	}
+
+	_, _ = service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{ProfileName: "claude-memory"})
+
+	if !adapter.launchRequest.ClaudeAutoMemory {
+		t.Fatal("claude_auto_memory variant launched with auto-memory disabled")
+	}
+	if _, ok := adapter.launchRequest.Env[config.ClaudeAutoMemoryEnv]; ok {
+		t.Fatalf("launch env must leave %s to agentruntime: %#v", config.ClaudeAutoMemoryEnv, adapter.launchRequest.Env)
+	}
+	snapshot := repo.createdRun.ProfileSnapshot
+	if snapshot == nil || snapshot.Env[config.ClaudeAutoMemoryEnv] != "0" || snapshot.Env["KEEP"] != "1" {
+		t.Fatalf("expected opt-in frozen in the run snapshot, got %#v", snapshot)
+	}
+}
+
+func TestRestoreClaudeAutoMemory(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		env  map[string]string
+		want bool
+	}{
+		{map[string]string{}, false},
+		{map[string]string{config.ClaudeAutoMemoryEnv: "0", "KEEP": "1"}, true},
+		{map[string]string{config.ClaudeAutoMemoryEnv: "1"}, false},
+		{map[string]string{config.ClaudeAutoMemoryEnv: "true"}, false},
+	} {
+		got := restoreClaudeAutoMemory(tc.env)
+		if got != tc.want {
+			t.Fatalf("restoreClaudeAutoMemory(%v) = %v, want %v", tc.env, got, tc.want)
+		}
+		if _, ok := tc.env[config.ClaudeAutoMemoryEnv]; ok {
+			t.Fatalf("switch left in resumed env: %#v", tc.env)
+		}
+	}
+	snapshot := snapshotVariant(config.VariantConfig{Agent: "claude", ClaudeAutoMemory: true})
+	if !restoreClaudeAutoMemory(snapshot.Env) {
+		t.Fatal("snapshot round trip lost the opt-in")
+	}
+	if snapshot := snapshotVariant(config.VariantConfig{Agent: "claude"}); len(snapshot.Env) != 0 {
+		t.Fatalf("default snapshot must stay unchanged, got %#v", snapshot.Env)
+	}
 }
 
 func TestCreateRunTicketReferencesStayInPromptAndOutOfLaunchScope(t *testing.T) {
@@ -1374,6 +1451,9 @@ func TestHandleTerminalExitResumesMainTerminal(t *testing.T) {
 	}
 	if !adapter.launchRequest.DisableNativeQuestions {
 		t.Fatal("resumed launch keeps the provider's native question tool")
+	}
+	if adapter.launchRequest.ClaudeAutoMemory {
+		t.Fatal("resumed launch without a frozen opt-in enabled auto-memory")
 	}
 	if len(adapter.launchRequest.MCPServers) == 0 || adapter.launchRequest.MCPServers[0].ToolTimeout != 65*time.Minute {
 		t.Fatalf("resumed launch lost the hiveryn MCP tool timeout: %#v", adapter.launchRequest.MCPServers)

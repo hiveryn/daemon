@@ -101,7 +101,14 @@ type VariantConfig struct {
 	Args  []string                   `yaml:"args"`
 	Env   map[string]string          `yaml:"env"`
 	MCP   map[string]MCPServerConfig `yaml:"mcp_servers"`
+	// ClaudeAutoMemory opts a claude variant into Claude Code's automatic
+	// memory. Omitted (false) disables it on every launch and resume.
+	ClaudeAutoMemory bool `yaml:"claude_auto_memory"`
 }
+
+// ClaudeAutoMemoryEnv is Claude Code's auto-memory switch. The launch sets it
+// from VariantConfig.ClaudeAutoMemory, so variants must not set it in env.
+const ClaudeAutoMemoryEnv = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
 
 type MCPServerConfig struct {
 	Command           string            `yaml:"command"`
@@ -617,6 +624,12 @@ func (c Config) Validate() error {
 				return fmt.Errorf("variants.%s.env keys must not be blank", name)
 			}
 		}
+		if _, ok := variant.Env[ClaudeAutoMemoryEnv]; ok {
+			return fmt.Errorf("variants.%s.env.%s is managed by the daemon; use claude_auto_memory: true to enable auto-memory (omitted disables it)", name, ClaudeAutoMemoryEnv)
+		}
+		if variant.ClaudeAutoMemory && variant.Agent != "claude" {
+			return fmt.Errorf("variants.%s.claude_auto_memory is only supported by agent claude, got %q", name, variant.Agent)
+		}
 		for _, serverName := range sortedKeys(variant.MCP) {
 			if strings.TrimSpace(serverName) == "" {
 				return fmt.Errorf("variants.%s.mcp_servers keys must not be blank", name)
@@ -794,6 +807,8 @@ func cloneVariantConfigs(src map[string]VariantConfig) map[string]VariantConfig 
 			Args:  append([]string(nil), variant.Args...),
 			Env:   cloneStringMap(variant.Env),
 			MCP:   cloneMCPServerConfigs(variant.MCP),
+
+			ClaudeAutoMemory: variant.ClaudeAutoMemory,
 		}
 	}
 	return dst

@@ -132,6 +132,15 @@ claude-sonnet-plan:
       args: [--mcp]
 ```
 
+Claude Code's automatic memory is **disabled by default** on every Claude launch and resume — architect, ticket worker and Action sessions alike. A `claude` variant opts in with `claude_auto_memory: true`. The daemon passes the choice to agentruntime, which always sets `CLAUDE_CODE_DISABLE_AUTO_MEMORY` (`1`, or `0` when opted in) in the session's launch env. That value overrides one inherited from the daemon's own environment and the user's `autoMemoryEnabled` setting. Setting that variable under a variant's `env`, or `claude_auto_memory` on a non-claude variant, is a config validation error. The setting is frozen with the run, so a resume keeps the setting it was launched with; a run snapshotted before this setting existed resumes with auto-memory disabled unless its frozen `env` already set the variable to `0`. The session's extra terminal tabs share the launch env, so a `claude` started by hand in one gets the same setting. It does not touch global Claude settings, existing memory files, `CLAUDE.md`/project instructions or transcript persistence. Memory content already in a resumed transcript stays in it.
+
+```yaml
+claude-opus-memory:
+  agent: claude
+  model: claude-opus-5-5
+  claude_auto_memory: true   # omit (or false) to keep auto-memory off
+```
+
 For architect sessions using `agent: opencode`, the daemon defines a named OpenCode agent automatically from the built-in architect instructions (plus the workspace's optional `ARCHITECT_SYSTEM.md`), using the architect key as the agent name and passing `--agent <architect_key>` at launch. Do not put `--agent` in OpenCode architect variant args; the daemon treats that as a launch error. Ticket OpenCode sessions do not define a named agent.
 
 Instructions are always additive to the agent's own system prompt: Claude receives them through `--append-system-prompt`, Codex through `developer_instructions`, OpenCode through an instruction file. The kickoff (the first user message) is separate from the instructions on every provider. Repository `AGENTS.md`/`CLAUDE.md` files are picked up natively by each agent and are not touched by the daemon.

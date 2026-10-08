@@ -667,6 +667,9 @@ func (s *Service) prepareLaunchSpec(ctx context.Context, session domain.Session,
 	// launch and resume. Codex's model-catalog request_user_input_async has no
 	// disabling setting and remains.
 	startReq.DisableNativeQuestions = true
+	// Claude auto-memory is off unless the variant opts in; agentruntime sets
+	// CLAUDE_CODE_DISABLE_AUTO_MEMORY explicitly, overriding inherited env.
+	startReq.ClaudeAutoMemory = profile.ClaudeAutoMemory
 
 	adapter := s.adapters[agentKind]
 	if _, err := adapter.EnsureSetup(ctx, setupRequestForAgent(adapter, profile.Env)); err != nil {
@@ -766,14 +769,18 @@ func (s *Service) resolveStoredRunLaunchContext(session domain.Session, run doma
 		return config.VariantConfig{}, "", fmt.Errorf("unsupported agent %q in snapshot: %w", snapshot.Agent, err)
 	}
 
+	env := cloneStringMap(snapshot.Env)
+	autoMemory := restoreClaudeAutoMemory(env)
 	return config.VariantConfig{
 		Agent: snapshot.Agent,
 		Model: snapshot.Model,
 		Yolo:  snapshot.Yolo,
 		Mode:  snapshot.Mode,
 		Args:  append([]string(nil), snapshot.Args...),
-		Env:   cloneStringMap(snapshot.Env),
+		Env:   env,
 		MCP:   mcpServersFromSnapshot(snapshot.MCP),
+
+		ClaudeAutoMemory: autoMemory,
 	}, agentKind, nil
 }
 
@@ -2386,15 +2393,30 @@ func yamlNodeString(node *yaml.Node, key string) string {
 }
 
 func snapshotVariant(profile config.VariantConfig) domain.AgentProfileSnapshot {
+	env := cloneStringMap(profile.Env)
+	if profile.ClaudeAutoMemory {
+		// The shared snapshot has no auto-memory field, so the opt-in is frozen
+		// as Claude's own enable value; restoreClaudeAutoMemory reads it back.
+		env[config.ClaudeAutoMemoryEnv] = "0"
+	}
 	return domain.AgentProfileSnapshot{
 		Agent: profile.Agent,
 		Model: profile.Model,
 		Yolo:  profile.Yolo,
 		Mode:  profile.Mode,
 		Args:  append([]string(nil), profile.Args...),
-		Env:   cloneStringMap(profile.Env),
+		Env:   env,
 		MCP:   snapshotMCPServers(profile.MCP),
 	}
+}
+
+// restoreClaudeAutoMemory removes the auto-memory switch from a snapshot env
+// and reports whether the run opted in ("0" enables). Any other or missing
+// value resumes with auto-memory disabled, the default.
+func restoreClaudeAutoMemory(env map[string]string) bool {
+	value, ok := env[config.ClaudeAutoMemoryEnv]
+	delete(env, config.ClaudeAutoMemoryEnv)
+	return ok && value == "0"
 }
 
 func snapshotMCPServers(src map[string]config.MCPServerConfig) map[string]domain.MCPServerSnapshot {

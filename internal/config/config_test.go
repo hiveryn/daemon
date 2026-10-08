@@ -616,6 +616,55 @@ func TestValidateRejectsReservedMCPServerName(t *testing.T) {
 	}
 }
 
+func TestValidateClaudeAutoMemory(t *testing.T) {
+	t.Parallel()
+
+	cfg := variantConfigWithMCP(nil)
+	cfg.Variants["claude-plan"] = VariantConfig{Agent: "claude", ClaudeAutoMemory: true}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("claude opt-in must validate: %v", err)
+	}
+	cloned := cfg.Clone()
+	if !cloned.Variants["claude-plan"].ClaudeAutoMemory {
+		t.Fatal("clone dropped claude_auto_memory")
+	}
+
+	cfg.Variants["claude-plan"] = VariantConfig{Agent: "codex", ClaudeAutoMemory: true}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "claude_auto_memory") {
+		t.Fatalf("expected non-claude opt-in rejected, got %v", err)
+	}
+
+	for _, value := range []string{"0", "1"} {
+		cfg.Variants["claude-plan"] = VariantConfig{Agent: "claude", Env: map[string]string{ClaudeAutoMemoryEnv: value}}
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), ClaudeAutoMemoryEnv) {
+			t.Fatalf("expected raw %s=%s rejected, got %v", ClaudeAutoMemoryEnv, value, err)
+		}
+	}
+}
+
+func TestLoadParsesClaudeAutoMemory(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, configFileName)
+	writeYAML(t, configPath, map[string]any{
+		"port":         4201,
+		"bind_address": "127.0.0.1",
+		"log_level":    "info",
+	})
+	variantsYAML := "claude-memory:\n  agent: claude\n  claude_auto_memory: true\nclaude-default:\n  agent: claude\n"
+	if err := os.WriteFile(filepath.Join(configDir, variantsFileName), []byte(variantsYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !cfg.Variants["claude-memory"].ClaudeAutoMemory || cfg.Variants["claude-default"].ClaudeAutoMemory {
+		t.Fatalf("unexpected claude_auto_memory: %#v", cfg.Variants)
+	}
+}
+
 func TestValidateRejectsMCPServerWithoutTransport(t *testing.T) {
 	t.Parallel()
 
