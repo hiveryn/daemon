@@ -12,9 +12,10 @@ import (
 // another value on the already-overloaded "status" type (which carries
 // ended/raw agentruntime statuses all at once).
 const (
-	sessionEventTypeIntent    = "intent"
-	sessionEventStatusReqd    = "required"
-	sessionEventStatusResolvd = "resolved"
+	sessionEventTypeIntent      = "intent"
+	sessionEventStatusReqd      = "required"
+	sessionEventStatusResolving = "resolving"
+	sessionEventStatusResolvd   = "resolved"
 )
 
 // intentOrigin derives an intent's origin from the session record. Origin is
@@ -60,6 +61,32 @@ func (s *Service) publishIntentRequired(ctx context.Context, in domain.Intent) e
 		Raw:       raw,
 		At:        in.CreatedAt,
 	})
+}
+
+// publishIntentResolving records that an intent was claimed and its approved
+// operation is running (by "user" approval or "policy" expiry). The intent is
+// still open — only resolved closes it — so a client can show it as resolving
+// instead of answerable, including after it reconnects mid-operation. Best
+// effort: losing this event costs only that display, never the outcome.
+func (s *Service) publishIntentResolving(ctx context.Context, in domain.Intent, by string) {
+	ctx, cancel := intentFinalizeContext(ctx)
+	defer cancel()
+	err := s.appendAndPublishSessionEvent(ctx, domain.AppendSessionEventParams{
+		SessionID: in.Origin.SessionID,
+		Type:      sessionEventTypeIntent,
+		Status:    sessionEventStatusResolving,
+		Tool:      string(in.Type),
+		Message:   in.Summary,
+		Raw: map[string]any{
+			"intent_id":   in.ID,
+			"intent_type": string(in.Type),
+			"by":          by,
+		},
+		At: time.Now().UTC(),
+	})
+	if err != nil {
+		s.logger.Error("publish intent resolving", "intent_id", in.ID, "error", err)
+	}
 }
 
 // publishIntentResolved is the durable counterpart to publishIntentRequired.
@@ -151,6 +178,25 @@ func unresolvedIntents(sessionID string, events []domain.SessionEvent) []domain.
 	return out
 }
 
+// intentInterruptedWhileResolving is the restart reason for an intent whose
+// approved operation was running: unlike one still awaiting an answer, it may
+// have taken effect.
+const intentInterruptedWhileResolving = "daemon restarted while this approved intent was running; it may or may not have taken effect"
+
+// resolvingIntentIDs lists the intents whose approved operation started.
+func resolvingIntentIDs(events []domain.SessionEvent) map[string]bool {
+	out := map[string]bool{}
+	for _, event := range events {
+		if event.Type != sessionEventTypeIntent || event.Status != sessionEventStatusResolving {
+			continue
+		}
+		if id, _ := event.Raw["intent_id"].(string); id != "" {
+			out[id] = true
+		}
+	}
+	return out
+}
+
 // intentFromEventRaw rebuilds just enough of an Intent from a replayed event to
 // emit its resolution. Fields absent from the log stay zero; the reconciler only
 // needs id, type, summary, and origin.
@@ -207,10 +253,14 @@ func (s *Service) ReconcileIntents(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		resolving := resolvingIntentIDs(events)
 		for _, orphan := range unresolvedIntents(session.ID, events) {
 			res := intentResult{
 				Outcome: domain.IntentOutcomeError,
 				Reason:  "daemon restarted before this intent resolved",
+			}
+			if resolving[orphan.ID] {
+				res.Reason = intentInterruptedWhileResolving
 			}
 			if orphan.Policy == domain.IntentPolicyManual {
 				res.Reason = deferredFailedOnRestartPending

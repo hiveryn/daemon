@@ -115,6 +115,22 @@ removed when the session ends. Closing a terminal drops its record once removal
 is confirmed. Remote working-tree and commit diffs are bounded at 60 seconds and
 read all untracked files in one SSH round trip.
 
+Approvals and session ends follow the same rule: once accepted, the operation
+belongs to the daemon. An approved intent (a remote conclusion, a worker launch)
+runs detached from both the approving request and the requesting agent, bounded
+at three minutes, and its outcome is recorded on a context of its own, so a
+client that stops waiting never strands it or suppresses its resolved event.
+While it runs the intent is published as `resolving`; answering it again is a
+conflict. Conclusion, discard and stop confirm remote termination within a
+two-minute daemon bound, one at a time per session (a retry meanwhile is a
+conflict). A failed approval resolves as `error` with its original cause and is
+not replayed: the worker's retry is a fresh request the user approves again,
+while an approved outcome is replayed so a retry never repeats it. A worker
+killed by its own approved conclusion loses only the reply, never the outcome.
+Agent-facing tool calls keep the 65-minute provider deadline; the agent's own
+waits (approval window, one-hour questions, the 30-second Action wait) are
+unchanged.
+
 A reverse SSH tunnel maps a session's stable remote loopback port to a dedicated
 local worker gateway. Only authenticated worker MCP tools and session-scoped
 hooks are exposed, never the general daemon API or architect tools. The random

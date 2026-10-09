@@ -180,8 +180,11 @@ func (s *Service) approveDeferred(ctx context.Context, pending *pendingIntent, i
 		return fmt.Errorf("record approval of intent %s: %w", intentID, err)
 	}
 
-	execCtx := context.WithoutCancel(ctx)
+	execCtx, cancel := intentExecContext(ctx)
 	v, execErr := pending.exec(execCtx, inputs)
+	cancel()
+	finalCtx, cancelFinal := intentFinalizeContext(ctx)
+	defer cancelFinal()
 
 	endedAt := time.Now().UTC()
 	final := running
@@ -195,13 +198,13 @@ func (s *Service) approveDeferred(ctx context.Context, pending *pendingIntent, i
 		final.Status = domain.DeferredIntentCompleted
 		final.Result = v
 	}
-	if err := repo.TransitionDeferredIntent(execCtx, domain.DeferredIntentRunning, final); err != nil {
+	if err := repo.TransitionDeferredIntent(finalCtx, domain.DeferredIntentRunning, final); err != nil {
 		// The record stays running until the next startup fails it as
 		// interrupted; say so loudly rather than pretend it was recorded.
 		s.logger.Error("record deferred intent outcome", "intent_id", intentID, "status", final.Status, "error", err)
 	}
 	s.intents.Finish(intentID, res)
-	if err := s.publishIntentResolved(execCtx, pending.intent, res); err != nil {
+	if err := s.publishIntentResolved(finalCtx, pending.intent, res); err != nil {
 		s.logger.Error("publish intent resolved after deferred approve", "intent_id", intentID, "error", err)
 	}
 	if execErr != nil {

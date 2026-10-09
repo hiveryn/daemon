@@ -2,6 +2,7 @@ package sessionruntime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -229,12 +230,13 @@ func (s *Service) runIntentPolicy(ctx context.Context, intent domain.Intent, pol
 		return
 	}
 
-	res := s.resolveByPolicy(ctx, pending, policy)
-	s.intents.Finish(intentID, res)
-	if err := s.publishIntentResolved(ctx, pending.intent, res); err != nil {
-		s.logger.Error("publish intent resolved after policy fire",
-			"intent_id", intentID, "policy", policy, "error", err)
+	if policy == domain.IntentPolicyWaitThenAllow {
+		s.publishIntentResolving(ctx, pending.intent, "policy")
 	}
+	execCtx, cancel := intentExecContext(ctx)
+	res := s.resolveByPolicy(execCtx, pending, policy)
+	cancel()
+	s.finishIntent(ctx, pending.intent, res, "policy fire")
 }
 
 // resolveByPolicy applies the tool's expiry behavior. "No desktop connected" is
@@ -274,12 +276,11 @@ func (s *Service) resolveByPolicy(ctx context.Context, pending *pendingIntent, p
 // ValidationError and leaves the intent pending and unclaimed, so the user can
 // correct it and approve again. The schema is immutable, so validating against
 // a pre-claim read is sound; if the policy or another client claims in
-// between, the claim below loses and this reports not-found like any other
-// already-resolved intent.
+// between, the claim below loses and this reports the intent as resolving.
 func (s *Service) ApproveIntent(ctx context.Context, sessionID, intentID string, submitted domain.IntentInputValues) (domain.Intent, error) {
 	intent, ok := s.intents.GetForSession(sessionID, intentID)
 	if !ok {
-		return domain.Intent{}, &domain.NotFoundError{Resource: "intent", ID: intentID}
+		return domain.Intent{}, s.unanswerableIntent(sessionID, intentID)
 	}
 	inputs, issues := resolveIntentInputs(intent.Inputs, submitted)
 	if len(issues) > 0 {
@@ -288,23 +289,25 @@ func (s *Service) ApproveIntent(ctx context.Context, sessionID, intentID string,
 
 	pending, ok := s.intents.ClaimForSession(sessionID, intentID)
 	if !ok {
-		return domain.Intent{}, &domain.NotFoundError{Resource: "intent", ID: intentID}
+		return domain.Intent{}, s.unanswerableIntent(sessionID, intentID)
 	}
 	if pending.intent.Policy == domain.IntentPolicyManual {
 		return pending.intent, s.approveDeferred(ctx, pending, inputs)
 	}
 
-	v, execErr := pending.exec(ctx, inputs)
+	// From here on the operation is the daemon's, not the request's: the
+	// user's approval was accepted, so the desktop giving up on the response
+	// (its own timeout, a reload) must neither abort the side effect halfway
+	// — killing an SSH teardown mid-command — nor suppress the outcome.
+	s.publishIntentResolving(ctx, pending.intent, "user")
+	execCtx, cancel := intentExecContext(ctx)
+	v, execErr := pending.exec(execCtx, inputs)
+	cancel()
 	res := intentResult{Outcome: domain.IntentOutcomeApproved, Result: v, Inputs: inputs}
 	if execErr != nil {
 		res = intentResult{Outcome: domain.IntentOutcomeError, Err: execErr, Reason: execErr.Error()}
 	}
-	s.intents.Finish(intentID, res)
-
-	if err := s.publishIntentResolved(ctx, pending.intent, res); err != nil {
-		s.logger.Error("publish intent resolved after approve",
-			"intent_id", intentID, "error", err)
-	}
+	s.finishIntent(ctx, pending.intent, res, "approve")
 	if execErr != nil {
 		// The user clicked approve and it failed. Surface it to them too —
 		// telling the agent while silently returning 200 to the desktop would
@@ -315,11 +318,16 @@ func (s *Service) ApproveIntent(ctx context.Context, sessionID, intentID string,
 }
 
 // DenyIntent resolves an intent as denied. The side effect never runs.
+//
+// Once claimed, the denial is recorded on a daemon-owned context: a desktop that
+// stops waiting must not leave the intent denied in memory but unrecorded.
 func (s *Service) DenyIntent(ctx context.Context, sessionID, intentID, reason string) error {
 	pending, ok := s.intents.ClaimForSession(sessionID, intentID)
 	if !ok {
-		return &domain.NotFoundError{Resource: "intent", ID: intentID}
+		return s.unanswerableIntent(sessionID, intentID)
 	}
+	ctx, cancel := intentFinalizeContext(ctx)
+	defer cancel()
 	if pending.intent.Policy == domain.IntentPolicyManual {
 		return s.denyDeferred(ctx, pending, reason)
 	}
@@ -332,6 +340,61 @@ func (s *Service) DenyIntent(ctx context.Context, sessionID, intentID, reason st
 	return s.publishIntentResolved(ctx, pending.intent, res)
 }
 
+// unanswerableIntent is the error an answering client sees for an intent it
+// could not claim. One still resolving is a conflict, not "not found": its
+// outcome is on the way, and a client that read 404 as "already resolved"
+// would drop the card of an operation that is still running — or may yet fail.
+func (s *Service) unanswerableIntent(sessionID, intentID string) error {
+	if s.intents.ResolvingForSession(sessionID, intentID) {
+		return &domain.ConflictError{Resource: "intent", Field: "status", Message: fmt.Sprintf("intent %s is already resolving; its outcome is published when it finishes", intentID)}
+	}
+	return &domain.NotFoundError{Resource: "intent", ID: intentID}
+}
+
+// intentExecTimeout bounds an approved intent's side effect, which runs on a
+// daemon-owned context once approval is accepted. It sits above the two-minute
+// worker launch bound (launchTimeout), so an approved spawnTicketWorker reports
+// the launch's own error, and leaves room for a remote conclusion: commit
+// resolution and confirmed termination are several SSH round trips, each of
+// which may meet a slow link. Exceeding it fails the operation honestly — a
+// remote teardown cut off here is reported as not confirmed, never as done.
+const intentExecTimeout = 3 * time.Minute
+
+// intentFinalizeTimeout bounds recording an intent's outcome (its tool record,
+// the in-memory resolution and the durable resolved event), on a context the
+// approving request cannot cancel: losing the response must never suppress the
+// outcome. These are local SQLite writes; the bound only stops a wedged store
+// from holding a goroutine forever.
+const intentFinalizeTimeout = 30 * time.Second
+
+func intentExecContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), intentExecTimeout)
+}
+
+func intentFinalizeContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), intentFinalizeTimeout)
+}
+
+// finishIntent resolves a claimed blocking intent: waiters and the replay
+// cache learn res, then the durable resolved event is appended, on a
+// finalization context of its own.
+func (s *Service) finishIntent(ctx context.Context, in domain.Intent, res intentResult, via string) {
+	ctx, cancel := intentFinalizeContext(ctx)
+	defer cancel()
+	s.intents.Finish(in.ID, res)
+	err := s.publishIntentResolved(ctx, in, res)
+	switch {
+	case err == nil:
+	case errors.As(err, new(*domain.NotFoundError)) && res.Outcome.Approved():
+		// The approved operation ended and removed its own session (a
+		// conclusion): its session_ended event, published before removal, is
+		// the terminal record, and no log remains to append to.
+		s.logger.Info("intent resolved after its session ended", "intent_id", in.ID, "via", via)
+	default:
+		s.logger.Error("publish intent resolved after "+via, "intent_id", in.ID, "outcome", res.Outcome, "error", err)
+	}
+}
+
 // failPendingIntents resolves every intent still open on a session that is
 // ending. Without it an intent would outlive its session and fire its side
 // effect into a dead session when the policy expires — a gap that could not
@@ -341,6 +404,8 @@ func (s *Service) DenyIntent(ctx context.Context, sessionID, intentID, reason st
 // Claimed intents are skipped: they are already resolving, and a deferred
 // one that is running finishes and records its own outcome.
 func (s *Service) failPendingIntents(ctx context.Context, sessionID, reason string) {
+	ctx, cancel := intentFinalizeContext(ctx)
+	defer cancel()
 	for _, id := range s.intents.PendingForSession(sessionID) {
 		pending, ok := s.intents.Claim(id)
 		if !ok {

@@ -56,6 +56,9 @@ type Service struct {
 	launchMu      sync.Mutex
 	launching     map[string]struct{}
 	launchTimeout time.Duration
+	// ending holds the sessions with a conclusion, discard or termination in
+	// flight (guarded by launchMu); see beginTeardown.
+	ending map[string]struct{}
 
 	// creatingTerminal holds the sessions with an auxiliary terminal creation
 	// in flight (guarded by launchMu); terminalCreateTimeout bounds each one
@@ -413,6 +416,37 @@ func (s *Service) endLaunch(sessionID string) {
 	s.launchMu.Lock()
 	defer s.launchMu.Unlock()
 	delete(s.launching, sessionID)
+}
+
+// sessionTeardownTimeout bounds ending a session: for a remote session that is
+// commit resolution and confirmed termination of its tmux servers over SSH,
+// several round trips that each may meet a slow link. It stays under
+// intentExecTimeout so an approved conclusion reports this bound's own error.
+const sessionTeardownTimeout = 2 * time.Minute
+
+// beginTeardown detaches ending a session from its requester and admits one at
+// a time per session. Once accepted, the requester giving up (the desktop's
+// request bound, a reload, a worker killed by its own conclusion) must not cut
+// remote termination off between "killed" and "recorded", nor leave the local
+// record half-written; and a retry that arrives meanwhile is a conflict, never
+// a second teardown racing the first.
+func (s *Service) beginTeardown(ctx context.Context, sessionID string) (context.Context, func(), error) {
+	s.launchMu.Lock()
+	defer s.launchMu.Unlock()
+	if _, busy := s.ending[sessionID]; busy {
+		return nil, nil, &domain.ConflictError{Resource: "session", Field: "id", Message: "this session is already being ended; its outcome is published when it finishes"}
+	}
+	if s.ending == nil {
+		s.ending = map[string]struct{}{}
+	}
+	s.ending[sessionID] = struct{}{}
+	teardownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionTeardownTimeout)
+	return teardownCtx, func() {
+		cancel()
+		s.launchMu.Lock()
+		delete(s.ending, sessionID)
+		s.launchMu.Unlock()
+	}, nil
 }
 
 func (s *Service) createRun(ctx context.Context, sessionID string, req domain.CreateSessionRunRequest) (domain.CreateSessionRunResult, error) {
@@ -987,6 +1021,11 @@ func (s *Service) resumeSessionMainTerminal(ctx context.Context, session domain.
 }
 
 func (s *Service) ConcludeSession(ctx context.Context, id string, params domain.ConcludeSessionParams) (domain.ConcludeSessionResult, error) {
+	ctx, done, err := s.beginTeardown(ctx, id)
+	if err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+	defer done()
 	session, err := s.repo.GetSession(ctx, id)
 	if err != nil {
 		return domain.ConcludeSessionResult{}, err
@@ -1007,6 +1046,11 @@ func (s *Service) ConcludeSession(ctx context.Context, id string, params domain.
 }
 
 func (s *Service) UnspawnTicketSession(ctx context.Context, id string) (domain.ConcludeSessionResult, error) {
+	ctx, done, err := s.beginTeardown(ctx, id)
+	if err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
+	defer done()
 	session, err := s.repo.GetSession(ctx, id)
 	if err != nil {
 		return domain.ConcludeSessionResult{}, err
@@ -1654,6 +1698,11 @@ func writeConclusionFile(path string, doc architectfs.MarkdownDocument) error {
 }
 
 func (s *Service) TerminateSession(ctx context.Context, id string) error {
+	ctx, done, err := s.beginTeardown(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer done()
 	session, err := s.repo.GetSession(ctx, id)
 	if err != nil {
 		return err
@@ -2022,6 +2071,10 @@ func (s *Service) KillTerminal(ctx context.Context, sessionID, terminalID string
 	if s.mainTerminalID(sessionID) == terminalID {
 		return &domain.ValidationError{Field: "terminal_id", Message: "cannot kill the main terminal"}
 	}
+	// Detached for the same reason as a session teardown: a confirmed remote
+	// kill must reach the local close even if the requester stopped waiting.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), remoteCleanupTimeout)
+	defer cancel()
 	if err := s.stopRemoteAux(ctx, sessionID, terminalID); err != nil {
 		return err
 	}

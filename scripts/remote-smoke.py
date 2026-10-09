@@ -63,9 +63,14 @@ async function rpc(method,params){
 setInterval(async()=>{
  try {await rpc('tools/list',{});fs.writeFileSync('/home/worker/ping-'+id,String(Date.now()));}catch{}
  if(fs.existsSync('/home/worker/conclude-'+id)){
+  const kind=fs.readFileSync('/home/worker/conclude-'+id,'utf8').trim();
   fs.unlinkSync('/home/worker/conclude-'+id);
   const sha=require('child_process').execSync('git rev-parse HEAD').toString().trim();
-  try{await rpc('tools/call',{name:'concludeTicketSession',arguments:{summary:'Remote fixture complete',outcome:'completed',implementation:'SSH fixture',verification:'Remote fixture checks passed',commits:[{repo:'remote',sha}]}});}catch{}
+  const args=kind==='exploratory'
+   ?{summary:'Remote fixture findings',outcome:'exploratory',implementation:'Read-only SSH fixture findings'}
+   :{summary:'Remote fixture complete',outcome:'completed',implementation:'SSH fixture',verification:'Remote fixture checks passed',commits:[{repo:'remote',sha}]};
+  try{const r=await rpc('tools/call',{name:'concludeTicketSession',arguments:args});fs.appendFileSync('/home/worker/concluded-'+id,JSON.stringify(r)+'\n');}
+  catch(e){fs.appendFileSync('/home/worker/concluded-'+id,'ERR '+String(e)+'\n');}
  }
 },1000);
 '''
@@ -309,6 +314,76 @@ with tempfile.TemporaryDirectory(prefix='hiveryn-remote-smoke-') as tmp:
         api(f'/sessions/{sid}/discard',{})
         assert remote(f'tmux -L hiveryn-aux-{late} has-session 2>/dev/null || echo gone')=='gone'
         print('remote diffs/terminals: >5 s diffs with one SSH call for untracked files, terminal survives requester timeout, retry 409, waiting requester succeeds, close drops ownership, unconfirmed cleanup retained then discarded PASS',flush=True)
+        # Conclusion approval with slow SSH: the approved operation (commit
+        # resolution, confirmed termination) outlasts a 5 s requester and still
+        # resolves, durably; an unreachable machine is an honest error that the
+        # worker's retry turns into a fresh approval, applied exactly once.
+        daemon.terminate();daemon.wait(timeout=15);daemon=None
+        (home/'config.yaml').write_text(f'port: {daemonport}\nbind_address: 127.0.0.1\nintent_wait_timeout: 120\nshell: /bin/sh\n')
+        start()
+        def intent_events(sid,iid=None):
+            with sqlite3.connect(home/'daemon.db') as db:
+                rows=db.execute("select status,raw from session_events where session_id=? and type='intent' order by seq",(sid,)).fetchall()
+            return [(st,json.loads(raw)) for st,raw in rows if iid is None or json.loads(raw).get('intent_id')==iid]
+        def open_intent(sid,kind):
+            done={raw['intent_id'] for st,raw in intent_events(sid) if st=='resolved'}
+            ids=[raw['intent_id'] for st,raw in intent_events(sid) if st=='required' and raw.get('intent_type')==kind and raw['intent_id'] not in done]
+            return ids[-1] if ids else None
+        def launch(title):
+            ticket,sid=fresh(title)
+            api(f'/sessions/{sid}/runs',{'profile_name':'fixture'})
+            iid=wait(lambda:open_intent(sid,'createWorkTicket'),timeout=60)
+            api(f'/sessions/{sid}/intents/{iid}/approve',{})
+            wait(lambda:remote(f'cat /home/worker/result-{sid}'),timeout=60)
+            return ticket,sid
+        ticket,sid=launch('slow conclusion approval')
+        remote(f'printf completed > /home/worker/conclude-{sid}')
+        iid=wait(lambda:open_intent(sid,'concludeSession'),timeout=30)
+        (tmp/'ssh_delay').write_text('4')
+        began=time.monotonic()
+        try:post(f'/sessions/{sid}/intents/{iid}/approve',{},5)
+        except (TimeoutError,socket.timeout,urllib.error.URLError):pass
+        else:raise AssertionError('conclusion approval answered within 5 s; latency injection ineffective')
+        status,body=post(f'/sessions/{sid}/intents/{iid}/approve',{},30)
+        assert status==409 and 'already resolving' in body['error']['message'],(status,body)
+        status,body=post(f'/sessions/{sid}/discard',{},30)
+        assert status==409 and 'already being ended' in body['error']['message'],(status,body)
+        assert [st for st,_ in intent_events(sid,iid)]==['required','resolving'],intent_events(sid,iid)
+        wait(lambda:api(f'/architects/fixture/tickets/{ticket["id"]}')['status']=='done',timeout=120)
+        assert time.monotonic()-began>5
+        (tmp/'ssh_delay').write_text('0')
+        assert remote(f'tmux -L hiveryn-{sid} has-session 2>/dev/null || echo gone')=='gone'
+        assert remote(f'test ! -d /home/worker/.local/state/hiveryn-workers/{sid} && echo cleaned')=='cleaned'
+        assert launched(sid)=='1'
+        conclusion=api(f'/architects/fixture/tickets/{ticket["id"]}')['conclusion']
+        assert conclusion and conclusion['outcome']=='completed',conclusion
+        log=(home/'logs/daemon.jsonl').read_text()
+        assert 'publish intent resolved after' not in log,'an intent outcome was not recorded'
+        assert 'intent resolved after its session ended' in log
+        # Unreachable machine during an exploratory conclusion: no false success.
+        ticket,sid=launch('unreachable conclusion then retry')
+        remote(f'printf exploratory > /home/worker/conclude-{sid}')
+        iid=wait(lambda:open_intent(sid,'concludeSession'),timeout=30)
+        run('docker','pause',container)
+        try:
+            status,body=post(f'/sessions/{sid}/intents/{iid}/approve',{},200)
+            assert status==500 and 'termination not confirmed' in body['error']['message'],(status,body)
+            resolved=[raw for st,raw in intent_events(sid,iid) if st=='resolved']
+            assert len(resolved)==1 and resolved[0]['outcome']=='error' and 'termination not confirmed' in resolved[0]['reason'],resolved
+            assert api(f'/sessions/{sid}')['current_run']['status']=='running'
+            assert api(f'/architects/fixture/tickets/{ticket["id"]}')['status']=='progress'
+        finally:run('docker','unpause',container)
+        # The worker's held call receives the error (or loses its transport).
+        wait(lambda:remote(f'cat /home/worker/concluded-{sid}'),timeout=90)
+        remote(f'printf exploratory > /home/worker/conclude-{sid}')
+        retry=wait(lambda:open_intent(sid,'concludeSession'),timeout=30)
+        assert retry!=iid,'the failed approval was replayed instead of asking again'
+        api(f'/sessions/{sid}/intents/{retry}/approve',{})
+        ticket_view=wait(lambda:(lambda t:t if t['status']=='done' else None)(api(f'/architects/fixture/tickets/{ticket["id"]}')),timeout=60)
+        assert ticket_view['conclusion']['outcome']=='exploratory' and not ticket_view['conclusion'].get('commits'),ticket_view['conclusion']
+        assert remote(f'tmux -L hiveryn-{sid} has-session 2>/dev/null || echo gone')=='gone'
+        assert launched(sid)=='1'
+        print('conclusion approval: >5 s approval survives requester timeout, retry 409 while resolving, durable resolving/outcome, unreachable cleanup reported (no false success), worker retry re-approved and applied once, exploratory without commits PASS',flush=True)
         assert 'DATA RACE' not in (tmp/'daemon.log').read_text()
         print('REMOTE FIXTURE PASS (race-instrumented daemon)',flush=True)
     except Exception:

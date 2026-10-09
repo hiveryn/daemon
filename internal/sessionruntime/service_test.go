@@ -3,6 +3,7 @@ package sessionruntime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -2106,7 +2107,11 @@ func (f *fakeSessionRepository) ListSessionEvents(_ context.Context, sessionID s
 	return f.sessionEvents[sessionID], nil
 }
 
-func (f *fakeSessionRepository) AppendSessionEvent(_ context.Context, params domain.AppendSessionEventParams) (domain.SessionEvent, error) {
+func (f *fakeSessionRepository) AppendSessionEvent(ctx context.Context, params domain.AppendSessionEventParams) (domain.SessionEvent, error) {
+	// Like SQLite's BeginTx: a cancelled request context cannot write.
+	if err := ctx.Err(); err != nil {
+		return domain.SessionEvent{}, fmt.Errorf("begin session event tx: %w", err)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.operations != nil {

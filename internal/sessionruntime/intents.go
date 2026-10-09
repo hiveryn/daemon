@@ -363,7 +363,16 @@ func (s *intentStore) Finish(intentID string, res intentResult) {
 	}
 	p.waiters = nil
 
-	s.replay[p.dedupKey] = replayEntry{result: res, expires: s.now().Add(replayTTLFor(p.intent.Type))}
+	// An error is not replayed: the agent is told a single retry is reasonable,
+	// and replaying the failure would make that retry a no-op for the whole
+	// window. The retry is a new request that the user approves afresh — a
+	// failed approval is never carried over as authorization. Every
+	// mutation re-checks its own state on execution (a concluded run, a
+	// ticket no longer in backlog, the single-run rule), so an error that did
+	// take effect is refused rather than repeated.
+	if res.Outcome != domain.IntentOutcomeError {
+		s.replay[p.dedupKey] = replayEntry{result: res, expires: s.now().Add(replayTTLFor(p.intent.Type))}
+	}
 	s.unregisterLocked(p)
 }
 
@@ -406,6 +415,15 @@ func (s *intentStore) GetForSession(sessionID, intentID string) (domain.Intent, 
 		return domain.Intent{}, false
 	}
 	return p.intent, true
+}
+
+// ResolvingForSession reports whether the session's intent is claimed and its
+// resolution still running: no longer answerable, but not resolved either.
+func (s *intentStore) ResolvingForSession(sessionID, intentID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.pending[intentID]
+	return ok && p.claimed && p.intent.Origin.SessionID == sessionID
 }
 
 // PendingForSession lists the session's unresolved intent ids, sorted for

@@ -458,7 +458,8 @@ func TestDeferredConcurrentResolutionIsSingleWinner(t *testing.T) {
 	for _, err := range errs {
 		if err == nil {
 			winners++
-		} else if !errors.As(err, new(*domain.NotFoundError)) {
+		} else if !errors.As(err, new(*domain.NotFoundError)) && !errors.As(err, new(*domain.ConflictError)) {
+			// A loser sees the intent either still resolving (409) or resolved.
 			t.Fatalf("unexpected resolution error: %v", err)
 		}
 	}
