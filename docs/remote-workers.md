@@ -43,6 +43,29 @@ Prepare the remote account with:
   and network access to the provider. Install/authenticate `gh` when a workflow
   uses GitHub; install `rtk` or other tools only when repo guidance requires them.
 
+Variants are machine-scoped. Give each remote variant the machine key; a
+variant without `machine` is local only and is never offered or launched
+remotely. Settings are not copied between machines, so define a separate
+variant per machine:
+
+```yaml
+# ~/.hiveryn/variants.yaml
+codex-buildbox:
+  agent: codex
+  model: gpt-5
+  machine: buildbox
+  env:
+    CODEX_HOME: /home/kareem/.codex   # a path on buildbox
+```
+
+A worker's variant must match its repositories' machine: the desktop spawn
+picker lists only those, and the daemon refuses others for desktop launches and
+`spawnTicketWorker` requests (again when an approved request launches), naming
+the target machine and eligible variants. Architects and Actions are local and
+use local variants, including Actions requested by a remote worker. Existing
+workers keep the variant frozen at launch; editing `variants.yaml` never
+switches or migrates a running worker or its reattachment.
+
 Variant environment values, config directories, executable arguments and MCP
 server configuration are interpreted on the remote account. Laptop credentials
 are not copied and inherited SSH `SendEnv` variables are suppressed. Provider

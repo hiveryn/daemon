@@ -105,6 +105,10 @@ type VariantConfig struct {
 	// ClaudeAutoMemory opts a claude variant into Claude Code's automatic
 	// memory. Omitted (false) disables it on every launch and resume.
 	ClaudeAutoMemory bool `yaml:"claude_auto_memory"`
+	// Machine is the machines.yaml key whose executables, config directories
+	// and environment this variant describes. Omitted means local only; a
+	// variant runs nowhere else.
+	Machine string `yaml:"machine"`
 }
 
 // ClaudeAutoMemoryEnv is Claude Code's auto-memory switch. The launch sets it
@@ -831,6 +835,7 @@ func cloneVariantConfigs(src map[string]VariantConfig) map[string]VariantConfig 
 			MCP:   cloneMCPServerConfigs(variant.MCP),
 
 			ClaudeAutoMemory: variant.ClaudeAutoMemory,
+			Machine:          variant.Machine,
 		}
 	}
 	return dst

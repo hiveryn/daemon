@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
 	"github.com/hiveryn/daemon/internal/workspacefs"
 )
@@ -53,11 +54,6 @@ func (s *Service) RequestSpawnTicketWorker(ctx context.Context, sessionID string
 	if ticketID == "" {
 		return zero, &domain.ValidationError{Field: "ticket_id", Message: "is required"}
 	}
-	variant, err := s.requestedVariant(req.Variant, "worker")
-	if err != nil {
-		return zero, err
-	}
-
 	// The board is always the calling architect's own, from the stored
 	// session; GetTicket against its path cannot reach another project.
 	architect, err := s.currentArchitect(session.ArchitectKey)
@@ -65,6 +61,16 @@ func (s *Service) RequestSpawnTicketWorker(ctx context.Context, sessionID string
 		return zero, err
 	}
 	ticket, err := s.tickets.GetTicket(ctx, architect.Path, ticketID)
+	if err != nil {
+		return zero, err
+	}
+	// The worker runs where its writable repositories are, so only variants
+	// for that machine are eligible.
+	machine, err := s.ticketMachine(architect, ticket)
+	if err != nil {
+		return zero, err
+	}
+	variant, err := s.requestedVariant(req.Variant, "worker", machine)
 	if err != nil {
 		return zero, err
 	}
@@ -127,9 +133,6 @@ func (s *Service) RequestSpawnTicketWorker(ctx context.Context, sessionID string
 // is launched through the same CreateRun the desktop uses, which announces it
 // on the architect stream. Returning means launched and running.
 func (s *Service) launchRequestedWorker(ctx context.Context, architectKey, ticketID, variant string, names []string) (domain.SpawnedTicketWorker, error) {
-	if _, err := s.requestedVariant(variant, "worker"); err != nil {
-		return domain.SpawnedTicketWorker{}, err
-	}
 	architect, err := s.currentArchitect(architectKey)
 	if err != nil {
 		return domain.SpawnedTicketWorker{}, err
@@ -140,6 +143,11 @@ func (s *Service) launchRequestedWorker(ctx context.Context, architectKey, ticke
 	}
 	params, err := s.ticketSessionParams(ctx, architectKey, architect, ticketID, workflowPaths(workflows))
 	if err != nil {
+		return domain.SpawnedTicketWorker{}, err
+	}
+	// The scope's machine may have moved, or the variant been reassigned,
+	// while the request was pending.
+	if _, err := s.requestedVariant(variant, "worker", params.Machine); err != nil {
 		return domain.SpawnedTicketWorker{}, err
 	}
 	params.CreatedBy = domain.SessionCreatedByArchitect
@@ -170,6 +178,20 @@ func (s *Service) launchRequestedWorker(ctx context.Context, architectKey, ticke
 		Workflows:      workflowNames(workflows),
 		WorkflowPaths:  recorded,
 	}, nil
+}
+
+// ticketMachine is the execution machine of a ticket's writable scope (empty
+// means local), from the current configuration.
+func (s *Service) ticketMachine(architect config.ArchitectConfig, ticket domain.Ticket) (string, error) {
+	cfg, err := s.currentConfig()
+	if err != nil {
+		return "", err
+	}
+	machine, err := cfg.ScopeMachine(architect, ticket.Repo, ticket.AdditionalRepos)
+	if err != nil {
+		return "", &domain.ValidationError{Field: "repos", Message: err.Error()}
+	}
+	return machine, nil
 }
 
 func workflowPaths(workflows []workspacefs.NamedWorkflow) []string {

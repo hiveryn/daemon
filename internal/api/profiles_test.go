@@ -323,3 +323,18 @@ func decodeEnvelopeError(t *testing.T, body []byte) domain.ErrorBody {
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
+
+func TestAgentProfilesReportMachine(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{Variants: map[string]config.VariantConfig{
+		"local":  {Agent: "claude"},
+		"remote": {Agent: "codex", Machine: "bk"},
+	}}
+	listed := listAgentProfiles(cfg)
+	if len(listed) != 2 || listed[0].Machine != "" || listed[1].Machine != "bk" {
+		t.Fatalf("profiles = %+v", listed)
+	}
+	if got, ok := getAgentProfile(cfg, "remote"); !ok || got.Machine != "bk" {
+		t.Fatalf("profile = %+v", got)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 
 	sd "github.com/hiveryn/shared/domain"
@@ -62,6 +63,14 @@ func (c Config) validateMachines() error {
 			return fmt.Errorf("machines.%s: key and ssh must be nonblank SSH aliases (letters, digits, '.', '_' or '-')", key)
 		}
 	}
+	for name, v := range c.Variants {
+		if v.Machine == "" {
+			continue
+		}
+		if _, ok := c.Machines[v.Machine]; !ok {
+			return fmt.Errorf("variants.%s.machine: unknown machine %q (omit machine for a local variant)", name, v.Machine)
+		}
+	}
 	for key, a := range c.Architects {
 		for repo, machine := range a.RepoMachines {
 			if machine == "" {
@@ -73,6 +82,62 @@ func (c Config) validateMachines() error {
 		}
 	}
 	return nil
+}
+
+// MachineLabel names an execution location in messages: "local" or
+// "machine <key>".
+func MachineLabel(machine string) string {
+	if machine == "" {
+		return "local"
+	}
+	return "machine " + machine
+}
+
+// VariantsForMachine lists, sorted, the variants that may run on machine
+// (empty means local): exactly those assigned to it. An unassigned variant is
+// local only and is never reused on a remote machine.
+func (c Config) VariantsForMachine(machine string) []string {
+	names := []string{}
+	for name, v := range c.Variants {
+		if v.Machine == machine {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// VariantForMachine resolves a launch's variant for its execution location.
+// A missing, unknown or other-machine variant is a ValidationError naming the
+// target location and the eligible choices; subject names what runs ("worker",
+// "Action", "session").
+func (c Config) VariantForMachine(name, machine, subject string) (VariantConfig, error) {
+	target := MachineLabel(machine)
+	eligible := c.VariantsForMachine(machine)
+	choices := make([]string, 0, len(eligible))
+	for _, n := range eligible {
+		choices = append(choices, fmt.Sprintf("%s (%s)", n, c.Variants[n].Agent))
+	}
+	available := "Eligible variants for " + target + ": " + strings.Join(choices, ", ")
+	if len(eligible) == 0 {
+		hint := "add a variant without machine to variants.yaml"
+		if machine != "" {
+			hint = fmt.Sprintf("add a variant with machine: %s to variants.yaml", machine)
+		}
+		available = fmt.Sprintf("No agent variant is configured for %s; %s", target, hint)
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return VariantConfig{}, &sd.ValidationError{Field: "variant", Message: fmt.Sprintf("is required and has no default; choose the variant that runs this %s on %s. %s", subject, target, available)}
+	}
+	v, ok := c.Variants[name]
+	if !ok {
+		return VariantConfig{}, &sd.ValidationError{Field: "variant", Message: fmt.Sprintf("%q is not a configured agent variant. This %s runs on %s. %s", name, subject, target, available)}
+	}
+	if v.Machine != machine {
+		return VariantConfig{}, &sd.ValidationError{Field: "variant", Message: fmt.Sprintf("%q is configured for %s, but this %s runs on %s. %s", name, MachineLabel(v.Machine), subject, target, available)}
+	}
+	return v, nil
 }
 
 func cloneMachines(src map[string]MachineConfig) map[string]MachineConfig { return maps.Clone(src) }

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -302,41 +301,52 @@ func actionRequestTrigger(session domain.Session) domain.ActionRunTrigger {
 }
 
 // requestedActionVariant checks the requester's variant for an Action.
+// Actions always run locally, whoever requests them — a remote worker's
+// request included — so only local (unassigned) variants are eligible.
 func (s *Service) requestedActionVariant(raw string) (string, error) {
-	return s.requestedVariant(raw, "Action")
+	return s.requestedVariant(raw, "Action", "")
 }
 
 // requestedVariant checks an agent's variant choice against the current
-// configuration; subject names what the variant runs ("Action", "worker").
-// There is no default: a missing or unknown variant is an error that lists
-// every configured variant and tells the agent to ask the user which one to
-// use.
-func (s *Service) requestedVariant(raw, subject string) (string, error) {
+// configuration; subject names what the variant runs ("Action", "worker") and
+// machine where it runs (empty means local). Only variants assigned to that
+// location are eligible. There is no default: a missing, unknown or
+// other-machine variant is an error that names the target location, lists
+// the eligible variants and tells the agent to ask the user which one to use.
+func (s *Service) requestedVariant(raw, subject, machine string) (string, error) {
 	cfg, err := s.currentConfig()
 	if err != nil {
 		return "", err
 	}
-	names := make([]string, 0, len(cfg.Variants))
-	for name := range cfg.Variants {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	if len(names) == 0 {
+	if len(cfg.Variants) == 0 {
 		return "", &domain.ValidationError{Field: "variant", Message: fmt.Sprintf("no agent variants are configured (variants.yaml), so no %s can run; tell the user, who must configure one first", subject)}
+	}
+	target := config.MachineLabel(machine)
+	names := cfg.VariantsForMachine(machine)
+	if len(names) == 0 {
+		hint := "a variant without machine"
+		if machine != "" {
+			hint = "a variant with machine: " + machine
+		}
+		return "", &domain.ValidationError{Field: "variant", Message: fmt.Sprintf("no agent variant is configured for %s, where this %s runs, so it cannot run; tell the user, who must add %s to variants.yaml first", target, subject, hint)}
 	}
 	choices := make([]string, 0, len(names))
 	for _, name := range names {
 		choices = append(choices, fmt.Sprintf("%s (%s)", name, cfg.Variants[name].Agent))
 	}
-	available := strings.Join(choices, ", ")
+	available := fmt.Sprintf("Variants configured for %s: %s", target, strings.Join(choices, ", "))
 	variant := strings.TrimSpace(raw)
 	if variant == "" {
-		return "", &domain.ValidationError{Field: "variant", Message: fmt.Sprintf("is required and has no default. Ask the user which agent variant should run this %s, then request it again with that variant. Configured variants: %s", subject, available)}
+		return "", &domain.ValidationError{Field: "variant", Message: fmt.Sprintf("is required and has no default. Ask the user which agent variant should run this %s, then request it again with that variant. %s", subject, available)}
 	}
-	if _, ok := cfg.Variants[variant]; !ok {
-		return "", &domain.ValidationError{Field: "variant", Message: fmt.Sprintf("%q is not a configured agent variant. Ask the user which one should run this %s. Configured variants: %s", variant, subject, available)}
+	profile, ok := cfg.Variants[variant]
+	if !ok {
+		return "", &domain.ValidationError{Field: "variant", Message: fmt.Sprintf("%q is not a configured agent variant. Ask the user which one should run this %s. %s", variant, subject, available)}
 	}
-	if err := s.checkActionVariant(variant); err != nil {
+	if profile.Machine != machine {
+		return "", &domain.ValidationError{Field: "variant", Message: fmt.Sprintf("%q is configured for %s, but this %s runs on %s. Ask the user which one should run it. %s", variant, config.MachineLabel(profile.Machine), subject, target, available)}
+	}
+	if _, err := parseAgentKind(profile.Agent); err != nil {
 		return "", err
 	}
 	return variant, nil

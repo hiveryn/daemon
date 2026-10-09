@@ -161,11 +161,11 @@ func TestRestoreClaudeAutoMemory(t *testing.T) {
 			t.Fatalf("switch left in resumed env: %#v", tc.env)
 		}
 	}
-	snapshot := snapshotVariant(config.VariantConfig{Agent: "claude", ClaudeAutoMemory: true})
+	snapshot := snapshotVariant(config.VariantConfig{Agent: "claude", ClaudeAutoMemory: true}, "")
 	if !restoreClaudeAutoMemory(snapshot.Env) {
 		t.Fatal("snapshot round trip lost the opt-in")
 	}
-	if snapshot := snapshotVariant(config.VariantConfig{Agent: "claude"}); len(snapshot.Env) != 0 {
+	if snapshot := snapshotVariant(config.VariantConfig{Agent: "claude"}, ""); len(snapshot.Env) != 0 {
 		t.Fatalf("default snapshot must stay unchanged, got %#v", snapshot.Env)
 	}
 }
@@ -1556,7 +1556,7 @@ func TestSnapshotVariantRoundTripsMCP(t *testing.T) {
 		},
 	}
 
-	snap := snapshotVariant(profile)
+	snap := snapshotVariant(profile, "")
 	got, ok := snap.MCP["sentrux"]
 	if !ok {
 		t.Fatalf("expected snapshot to carry sentrux mcp, got %#v", snap.MCP)

@@ -141,6 +141,16 @@ claude-opus-memory:
   claude_auto_memory: true   # omit (or false) to keep auto-memory off
 ```
 
+A variant belongs to one execution location, because its executable, config directories, environment and MCP servers describe that machine. `machine` is optional: omitted means **local only**; `machine: <key>` (a `machines.yaml` key, else a config load error) means only on that machine. An unassigned variant is never reused remotely and nothing is copied between machines — define a separate variant per machine. Architects and Actions (including an Action a remote worker requests) run locally and take only local variants; a ticket worker runs on its repositories' machine and takes only that machine's variants. The daemon enforces this for desktop launches, `spawnTicketWorker` (before the approval and again when the approved request launches) and `executeAction`; a refused variant's error names the target location and its eligible variants. `GET /api/agent-profiles` reports each variant's `machine`. The run's frozen snapshot records the machine; resume and reattachment use the snapshot, so editing `variants.yaml` never switches or migrates a running worker.
+
+```yaml
+codex-bk:
+  agent: codex
+  machine: bk          # runs only on machine bk; its CODEX_HOME is a path on bk
+  env:
+    CODEX_HOME: /Users/me/.codex
+```
+
 For architect sessions using `agent: opencode`, the daemon defines a named OpenCode agent automatically from the built-in architect instructions (plus the workspace's optional `ARCHITECT_SYSTEM.md`), using the architect key as the agent name and passing `--agent <architect_key>` at launch. Do not put `--agent` in OpenCode architect variant args; the daemon treats that as a launch error. Ticket OpenCode sessions do not define a named agent.
 
 Instructions are always additive to the agent's own system prompt: Claude receives them through `--append-system-prompt`, Codex through `developer_instructions`, OpenCode through an instruction file. The kickoff (the first user message) is separate from the instructions on every provider. Repository `AGENTS.md`/`CLAUDE.md` files are picked up natively by each agent and are not touched by the daemon.
@@ -414,7 +424,7 @@ Direct `/conclude` request:
 
 ### Agent-requested Actions
 
-An architect's or ticket worker's `executeAction(name, prompt, variant)` is a **blocking** intent (`intent_type: executeAction`, policy `wait-then-allow`, like `createWorkTicket`). The variant is the requester's explicit choice: it is required, never defaulted, and checked against `variants.yaml` before anything is shown — a missing or unknown variant is a `VALIDATION` error listing every configured variant and telling the agent to ask the user (or saying none are configured). The MCP input schema deliberately leaves `variant` optional so a missing argument reaches that diagnostic instead of a bare schema error. The request is recorded `pending_approval` with its variant and shown with the Action, prompt and variant and the usual countdown, without approval inputs; the call waits for the resolution. The intent id *is* the execution id, so the requester uses one id from request to result.
+An architect's or ticket worker's `executeAction(name, prompt, variant)` is a **blocking** intent (`intent_type: executeAction`, policy `wait-then-allow`, like `createWorkTicket`). The variant is the requester's explicit choice: it is required, never defaulted, and checked against `variants.yaml` before anything is shown — a missing, unknown or non-local variant is a `VALIDATION` error listing every local variant (Actions always run locally) and telling the agent to ask the user (or saying none are configured). The MCP input schema deliberately leaves `variant` optional so a missing argument reaches that diagnostic instead of a bare schema error. The request is recorded `pending_approval` with its variant and shown with the Action, prompt and variant and the usual countdown, without approval inputs; the call waits for the resolution. The intent id *is* the execution id, so the requester uses one id from request to result.
 
 - **Deny** — the execution becomes `denied` with the user's reason; it never ran. The call returns `denied_by_user`.
 - **Approve, or no answer within the approval window (auto-approve)** — the project's `availableActions`, the variant, the definition and the single-run rule are rechecked. If another execution won meanwhile, or anything else prevents the start, the execution is `failed` ("could not start: …") without having started and the call returns `error`. Otherwise it moves `pending_approval → running` and launches like a manual run, and the call returns `approved`/`auto_approved` with the running execution; it never waits for the Action to deliver. From then on the Action lifecycle owns the record, independent of the requesting session, and it stays `running` until the agent concludes, the user cancels or it fails.

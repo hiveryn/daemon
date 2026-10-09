@@ -63,3 +63,54 @@ func TestMachineValidationAndClone(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestVariantMachines(t *testing.T) {
+	t.Parallel()
+	c := Config{
+		Machines: map[string]MachineConfig{"bk": {SSH: "bk"}},
+		Variants: map[string]VariantConfig{
+			"local-claude": {Agent: "claude"},
+			"bk-codex":     {Agent: "codex", Machine: "bk"},
+			"bk-claude":    {Agent: "claude", Machine: "bk"},
+		},
+	}
+	if err := c.validateMachines(); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(c.VariantsForMachine("bk"), ","); got != "bk-claude,bk-codex" {
+		t.Fatal(got)
+	}
+	if got := strings.Join(c.VariantsForMachine(""), ","); got != "local-claude" {
+		t.Fatalf("unassigned variants must be local only: %s", got)
+	}
+	if v, err := c.VariantForMachine("bk-codex", "bk", "worker"); err != nil || v.Machine != "bk" {
+		t.Fatal(v, err)
+	}
+	for _, tc := range []struct {
+		name, machine string
+		want          []string
+	}{
+		{"local-claude", "bk", []string{`"local-claude" is configured for local`, "runs on machine bk", "bk-claude (claude), bk-codex (codex)"}},
+		{"bk-codex", "", []string{"configured for machine bk", "runs on local", "local-claude (claude)"}},
+		{"nope", "bk", []string{"not a configured agent variant", "machine bk"}},
+		{"", "", []string{"is required", "local"}},
+		{"bk-codex", "other", []string{"No agent variant is configured for machine other", "machine: other"}},
+	} {
+		_, err := c.VariantForMachine(tc.name, tc.machine, "worker")
+		if err == nil {
+			t.Fatalf("%s on %q accepted", tc.name, tc.machine)
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("%s on %q: %v lacks %q", tc.name, tc.machine, err, want)
+			}
+		}
+	}
+	if c.Clone().Variants["bk-codex"].Machine != "bk" {
+		t.Fatal("clone drops variant machine")
+	}
+	c.Variants["ghost"] = VariantConfig{Agent: "codex", Machine: "missing"}
+	if err := c.validateMachines(); err == nil || !strings.Contains(err.Error(), "variants.ghost.machine") {
+		t.Fatal(err)
+	}
+}

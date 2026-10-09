@@ -193,15 +193,15 @@ func (s *Service) LaunchAction(ctx context.Context, name string, req domain.Laun
 }
 
 // checkActionVariant reports whether profileName names a launchable variant in
-// the current config.
+// the current config. Actions run locally, so the variant must be local.
 func (s *Service) checkActionVariant(profileName string) error {
 	cfg, err := s.currentConfig()
 	if err != nil {
 		return err
 	}
-	profile, ok := cfg.Variants[profileName]
-	if !ok {
-		return &domain.NotFoundError{Resource: "agent_profile", ID: profileName}
+	profile, err := cfg.VariantForMachine(profileName, "", "Action")
+	if err != nil {
+		return err
 	}
 	if _, err := parseAgentKind(profile.Agent); err != nil {
 		return err

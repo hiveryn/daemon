@@ -373,9 +373,15 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 		}
 	}
 
+	// A variant describes one machine's executables, config directories and
+	// environment, so it runs only where the session executes: architect and
+	// Action sessions locally, a ticket session on its repositories' machine.
 	profile, ok := cfg.Variants[req.ProfileName]
 	if !ok {
 		return domain.CreateSessionRunResult{}, &domain.NotFoundError{Resource: "agent_profile", ID: req.ProfileName}
+	}
+	if _, err := cfg.VariantForMachine(req.ProfileName, session.Machine, string(session.SessionType)+" session"); err != nil {
+		return domain.CreateSessionRunResult{}, err
 	}
 
 	agentKind, err := parseAgentKind(profile.Agent)
@@ -413,7 +419,7 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 	run, err := s.repo.CreateRun(ctx, domain.CreateSessionRunParams{
 		SessionID:          session.ID,
 		ProfileName:        req.ProfileName,
-		ProfileSnapshot:    snapshotVariant(profile),
+		ProfileSnapshot:    snapshotVariant(profile, session.Machine),
 		Workdir:            session.Workdir,
 		AdditionalRepos:    session.AdditionalRepos,
 		AdditionalWorkdirs: session.AdditionalWorkdirs,
@@ -849,6 +855,11 @@ func (s *Service) resolveStoredRunLaunchContext(session domain.Session, run doma
 	}
 
 	snapshot := *run.ProfileSnapshot
+	// A relaunch uses the frozen variant, never a variants.yaml edit; one frozen
+	// for another location must not start here.
+	if snapshot.Machine != "" && snapshot.Machine != session.Machine {
+		return config.VariantConfig{}, "", fmt.Errorf("session run %s was launched with a variant for %s, but the session runs on %s", run.ID, config.MachineLabel(snapshot.Machine), config.MachineLabel(session.Machine))
+	}
 	agentKind, err := parseAgentKind(snapshot.Agent)
 	if err != nil {
 		return config.VariantConfig{}, "", fmt.Errorf("unsupported agent %q in snapshot: %w", snapshot.Agent, err)
@@ -2518,7 +2529,10 @@ func yamlNodeString(node *yaml.Node, key string) string {
 	return ""
 }
 
-func snapshotVariant(profile config.VariantConfig) domain.AgentProfileSnapshot {
+// snapshotVariant freezes the launch's variant, recording the machine it ran
+// for. Snapshots taken before variants had machines carry none; they are never
+// read as "local" — the session's own machine stays authoritative.
+func snapshotVariant(profile config.VariantConfig, machine string) domain.AgentProfileSnapshot {
 	env := cloneStringMap(profile.Env)
 	if profile.ClaudeAutoMemory {
 		// The shared snapshot has no auto-memory field, so the opt-in is frozen
@@ -2526,13 +2540,14 @@ func snapshotVariant(profile config.VariantConfig) domain.AgentProfileSnapshot {
 		env[config.ClaudeAutoMemoryEnv] = "0"
 	}
 	return domain.AgentProfileSnapshot{
-		Agent: profile.Agent,
-		Model: profile.Model,
-		Yolo:  profile.Yolo,
-		Mode:  profile.Mode,
-		Args:  append([]string(nil), profile.Args...),
-		Env:   env,
-		MCP:   snapshotMCPServers(profile.MCP),
+		Machine: machine,
+		Agent:   profile.Agent,
+		Model:   profile.Model,
+		Yolo:    profile.Yolo,
+		Mode:    profile.Mode,
+		Args:    append([]string(nil), profile.Args...),
+		Env:     env,
+		MCP:     snapshotMCPServers(profile.MCP),
 	}
 }
 

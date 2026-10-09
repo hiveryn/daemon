@@ -159,7 +159,7 @@ func TestAgentActionToolsCallSessionScopedEndpoints(t *testing.T) {
 	}
 }
 
-const missingVariantMessage = "variant is required and has no default. Ask the user which agent variant should run this Action, then request it again with that variant. Configured variants: codex (codex)"
+const missingVariantMessage = "variant is required and has no default. Ask the user which agent variant should run this Action, then request it again with that variant. Variants configured for local: codex (codex)"
 
 // Over a real MCP connection, an executeAction call without a variant must
 // reach the daemon's diagnostic instead of failing input-schema validation.

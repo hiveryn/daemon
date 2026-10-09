@@ -75,13 +75,15 @@ type ticketsHandler struct {
 }
 
 type agentProfileResponse struct {
-	Name  string            `json:"name"`
-	Agent string            `json:"agent"`
-	Model string            `json:"model,omitempty"`
-	Yolo  bool              `json:"yolo,omitempty"`
-	Mode  string            `json:"mode,omitempty"`
-	Args  []string          `json:"args"`
-	Env   map[string]string `json:"env"`
+	// Machine is where the variant may run; omitted means local only.
+	Machine string            `json:"machine,omitempty"`
+	Name    string            `json:"name"`
+	Agent   string            `json:"agent"`
+	Model   string            `json:"model,omitempty"`
+	Yolo    bool              `json:"yolo,omitempty"`
+	Mode    string            `json:"mode,omitempty"`
+	Args    []string          `json:"args"`
+	Env     map[string]string `json:"env"`
 }
 
 type architectResponse struct {
@@ -211,13 +213,14 @@ func listAgentProfiles(cfg config.Config) []agentProfileResponse {
 	for _, name := range names {
 		profile := cfg.Variants[name]
 		profiles = append(profiles, agentProfileResponse{
-			Name:  name,
-			Agent: profile.Agent,
-			Model: profile.Model,
-			Yolo:  profile.Yolo,
-			Mode:  profile.Mode,
-			Args:  append([]string(nil), profile.Args...),
-			Env:   cloneStringMap(profile.Env),
+			Machine: profile.Machine,
+			Name:    name,
+			Agent:   profile.Agent,
+			Model:   profile.Model,
+			Yolo:    profile.Yolo,
+			Mode:    profile.Mode,
+			Args:    append([]string(nil), profile.Args...),
+			Env:     cloneStringMap(profile.Env),
 		})
 	}
 	return profiles
@@ -236,13 +239,14 @@ func getAgentProfile(cfg config.Config, name string) (agentProfileResponse, bool
 		return agentProfileResponse{}, false
 	}
 	return agentProfileResponse{
-		Name:  name,
-		Agent: profile.Agent,
-		Model: profile.Model,
-		Yolo:  profile.Yolo,
-		Mode:  profile.Mode,
-		Args:  append([]string(nil), profile.Args...),
-		Env:   cloneStringMap(profile.Env),
+		Machine: profile.Machine,
+		Name:    name,
+		Agent:   profile.Agent,
+		Model:   profile.Model,
+		Yolo:    profile.Yolo,
+		Mode:    profile.Mode,
+		Args:    append([]string(nil), profile.Args...),
+		Env:     cloneStringMap(profile.Env),
 	}, true
 }
 
