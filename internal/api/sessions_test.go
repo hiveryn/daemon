@@ -222,7 +222,7 @@ func TestSessionTabsEndpoint(t *testing.T) {
 	service := &fakeSessionService{
 		sessionTabs: []domain.SessionTab{
 			{Type: "kanban"},
-			{Type: "terminal", ID: "term-1", Command: "yazi", Status: "running", Placement: domain.TerminalPlacementSplit, BaseTabID: "kanban"},
+			{Type: "terminal", ID: "term-1", Command: "yazi", Status: "running"},
 		},
 	}
 	handler := newSessionTestHandler(t, service)
@@ -237,12 +237,12 @@ func TestSessionTabsEndpoint(t *testing.T) {
 	if len(tabs) != 2 {
 		t.Fatalf("expected 2 tabs, got %#v", tabs)
 	}
-	if tabs[1]["id"] != "term-1" || tabs[1]["command"] != "yazi" || tabs[1]["status"] != "running" || tabs[1]["placement"] != "split" || tabs[1]["base_tab_id"] != "kanban" {
+	if tabs[1]["id"] != "term-1" || tabs[1]["command"] != "yazi" || tabs[1]["status"] != "running" {
 		t.Fatalf("unexpected terminal tab payload %#v", tabs[1])
 	}
 }
 
-func TestCreateTerminalEndpointPassesPlacement(t *testing.T) {
+func TestCreateTerminalEndpointPassesWorkdir(t *testing.T) {
 	t.Parallel()
 
 	service := &fakeSessionService{
@@ -250,24 +250,35 @@ func TestCreateTerminalEndpointPassesPlacement(t *testing.T) {
 	}
 	handler := newSessionTestHandler(t, service)
 
-	status, body := request(t, handler, http.MethodPost, "/api/sessions/session-1/terminals", strings.NewReader(`{"placement":"split","base_tab_id":"kanban"}`))
+	status, body := request(t, handler, http.MethodPost, "/api/sessions/session-1/terminals", strings.NewReader(`{"workdir_id":"session-primary"}`))
 	if status != http.StatusCreated {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, status, string(body))
 	}
 	if service.lastCreateTerminalID != "session-1" {
 		t.Fatalf("unexpected session id %q", service.lastCreateTerminalID)
 	}
-	if service.lastCreateTerminalParams.Placement != domain.TerminalPlacementSplit {
-		t.Fatalf("expected split placement, got %#v", service.lastCreateTerminalParams)
-	}
-	if service.lastCreateTerminalParams.BaseTabID != "kanban" {
-		t.Fatalf("expected split base tab id kanban, got %#v", service.lastCreateTerminalParams)
+	if service.lastCreateTerminalParams.WorkdirID != "session-primary" {
+		t.Fatalf("expected workdir session-primary, got %#v", service.lastCreateTerminalParams)
 	}
 
 	var terminal domain.TerminalInfo
 	decodeEnvelopeData(t, body, &terminal)
 	if terminal.TerminalID != "term-1" || terminal.Command != "/bin/zsh" {
 		t.Fatalf("unexpected terminal payload %#v", terminal)
+	}
+}
+
+func TestCreateTerminalEndpointRejectsRemovedSplitFields(t *testing.T) {
+	t.Parallel()
+
+	handler := newSessionTestHandler(t, &fakeSessionService{})
+
+	status, body := request(t, handler, http.MethodPost, "/api/sessions/session-1/terminals", strings.NewReader(`{"placement":"split","base_tab_id":"kanban","workdir_id":"session-primary"}`))
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, status, string(body))
+	}
+	if !strings.Contains(string(body), "unknown field") {
+		t.Fatalf("expected unknown field error, got %s", string(body))
 	}
 }
 

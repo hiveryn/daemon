@@ -62,7 +62,7 @@ machine, including when opened from a local architect session.
 SSH disconnect, laptop sleep and daemon restart leave remote processes alive.
 Hiveryn reattaches existing workers and auxiliary shells; reconnect never
 launches another provider. Recovered auxiliary terminals return as ordinary
-tabs; previous split placement is not persisted. The session banner separates
+tabs. The session banner separates
 connection state from worker activity. Lost connections clear stale activity.
 A missing or exited managed worker is reported as unavailable without starting
 a replacement; inspect its retained tmux pane, then discard/recreate as needed.

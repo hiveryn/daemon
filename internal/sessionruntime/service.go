@@ -1678,29 +1678,6 @@ func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params d
 	if session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
 		return domain.TerminalInfo{}, &domain.ValidationError{Field: "session_id", Message: "session is not running"}
 	}
-	if params.Placement != domain.TerminalPlacementTab && params.Placement != domain.TerminalPlacementSplit {
-		return domain.TerminalInfo{}, &domain.ValidationError{Field: "placement", Message: "must be one of: tab, split"}
-	}
-	if params.Placement == domain.TerminalPlacementTab && strings.TrimSpace(params.BaseTabID) != "" {
-		return domain.TerminalInfo{}, &domain.ValidationError{Field: "base_tab_id", Message: "is only allowed when placement is split"}
-	}
-	if params.Placement == domain.TerminalPlacementSplit {
-		if strings.TrimSpace(params.BaseTabID) == "" {
-			return domain.TerminalInfo{}, &domain.ValidationError{Field: "base_tab_id", Message: "is required when placement is split"}
-		}
-		foundBaseTab := false
-		for _, tab := range s.sessionTabs(sessionID) {
-			if sessionTabID(tab) == params.BaseTabID && tab.Placement != domain.TerminalPlacementSplit {
-				foundBaseTab = true
-			}
-			if tab.Type == "terminal" && tab.Placement == domain.TerminalPlacementSplit && tab.BaseTabID == params.BaseTabID {
-				return domain.TerminalInfo{}, &domain.ConflictError{Resource: "terminal", Field: "base_tab_id", Message: "split terminal already exists for base tab"}
-			}
-		}
-		if !foundBaseTab {
-			return domain.TerminalInfo{}, &domain.ValidationError{Field: "base_tab_id", Message: "must reference an existing primary right-pane tab"}
-		}
-	}
 	if strings.TrimSpace(params.WorkdirID) == "" {
 		return domain.TerminalInfo{}, &domain.ValidationError{Field: "workdir_id", Message: "is required; choose a terminal working directory"}
 	}
@@ -1752,8 +1729,6 @@ func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params d
 			ID:        terminalID,
 			Command:   command,
 			Status:    "running",
-			Placement: params.Placement,
-			BaseTabID: params.BaseTabID,
 			WorkdirID: selected.ID, WorkdirTitle: selected.Title, WorkdirPath: selected.Path, WorkdirDisplayPath: selected.DisplayPath,
 		},
 		removeOnExit: true,
@@ -2665,7 +2640,7 @@ func (s *Service) startAutoTerminals(ctx context.Context, cfg config.Config, ses
 				"error", err,
 			)
 		}
-		layout = append(layout, sessionTabState{tab: domain.SessionTab{Type: tab.Type, ID: terminalID, Command: cmd, Status: status, Placement: domain.TerminalPlacementTab}})
+		layout = append(layout, sessionTabState{tab: domain.SessionTab{Type: tab.Type, ID: terminalID, Command: cmd, Status: status}})
 	}
 	return layout
 }
@@ -2770,13 +2745,6 @@ func cloneSessionTabStates(tabs []sessionTabState) []sessionTabState {
 
 func cloneSessionTabState(tab sessionTabState) sessionTabState {
 	return sessionTabState{tab: tab.tab, removeOnExit: tab.removeOnExit}
-}
-
-func sessionTabID(tab domain.SessionTab) string {
-	if tab.ID != "" {
-		return tab.ID
-	}
-	return tab.Type
 }
 
 func (s *Service) hydrateSession(session domain.Session) domain.Session {

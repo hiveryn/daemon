@@ -191,7 +191,7 @@ func (s *Service) restoreRemoteAux(ctx context.Context, session domain.Session) 
 			id := strings.TrimPrefix(socket, "hiveryn-aux-")
 			spec := terminalStartSpec{SessionID: session.ID, TerminalID: id, Size: terminalSize{Cols: defaultPTYCols, Rows: defaultPTYRows}}
 			s.configureRemoteAuxAttachment(session, alias, socket, &spec)
-			s.appendSessionTab(session.ID, sessionTabState{tab: domain.SessionTab{Type: "terminal", ID: id, Command: "ssh", Status: "running", Placement: domain.TerminalPlacementTab, WorkdirTitle: alias}, removeOnExit: true})
+			s.appendSessionTab(session.ID, sessionTabState{tab: domain.SessionTab{Type: "terminal", ID: id, Command: "ssh", Status: "running", WorkdirTitle: alias}, removeOnExit: true})
 			if err := s.terminal.Start(ctx, spec); err != nil {
 				s.logger.Error("restore remote repository terminal", "terminal_id", id, "error", err)
 				spec.OnExit(terminalExit{SessionID: session.ID, TerminalID: id})

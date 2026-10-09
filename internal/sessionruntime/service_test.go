@@ -1141,7 +1141,7 @@ func TestCreateTerminalUsesCurrentRunWorkdirAndConfiguredShell(t *testing.T) {
 		terminalStates: map[string]sessionTerminalState{},
 	}
 
-	info, err := service.CreateTerminal(context.Background(), "session-1", domain.CreateTerminalParams{Placement: domain.TerminalPlacementTab, WorkdirID: "session-primary"})
+	info, err := service.CreateTerminal(context.Background(), "session-1", domain.CreateTerminalParams{WorkdirID: "session-primary"})
 	if err != nil {
 		t.Fatalf("CreateTerminal failed: %v", err)
 	}
@@ -1151,12 +1151,12 @@ func TestCreateTerminalUsesCurrentRunWorkdirAndConfiguredShell(t *testing.T) {
 	if got := terminal.firstStartSpec(); got.Command != "/bin/zsh" || got.Workdir != repoPath {
 		t.Fatalf("unexpected terminal start spec %#v", got)
 	}
-	if tabs := service.terminalStates["session-1"].tabs; len(tabs) != 1 || tabs[0].tab.Placement != domain.TerminalPlacementTab {
-		t.Fatalf("expected created tab placement to be stored, got %#v", tabs)
+	if tabs := service.terminalStates["session-1"].tabs; len(tabs) != 1 || tabs[0].tab.Type != "terminal" || tabs[0].tab.ID != info.TerminalID {
+		t.Fatalf("expected the created terminal tab to be stored, got %#v", tabs)
 	}
 }
 
-func TestCreateTerminalRejectsMissingPlacement(t *testing.T) {
+func TestCreateTerminalRejectsMissingWorkdir(t *testing.T) {
 	t.Parallel()
 
 	repoPath := t.TempDir()
@@ -1186,154 +1186,11 @@ func TestCreateTerminalRejectsMissingPlacement(t *testing.T) {
 
 	_, err := service.CreateTerminal(context.Background(), "session-1", domain.CreateTerminalParams{})
 	if err == nil {
-		t.Fatal("expected missing placement to be rejected")
+		t.Fatal("expected missing workdir to be rejected")
 	}
 	vErr, ok := err.(*domain.ValidationError)
-	if !ok || vErr.Field != "placement" {
-		t.Fatalf("expected placement validation error, got %T %#v", err, err)
-	}
-}
-
-func TestCreateTerminalRejectsSecondSplit(t *testing.T) {
-	t.Parallel()
-
-	repoPath := t.TempDir()
-	repo := newFakeSessionRepository()
-	repo.createdSession = domain.Session{
-		ID:           "session-1",
-		ArchitectKey: "hiveryn",
-		SessionType:  domain.SessionTypeTicket,
-		ContextID:    "ticket-1",
-		Prompt:       "kickoff",
-		Workdir:      repoPath,
-		CurrentRun: &domain.SessionRun{
-			ID:      "run-1",
-			Status:  domain.SessionRunStatusRunning,
-			Workdir: repoPath,
-		},
-	}
-	service := &Service{
-		intents:       newIntentStore(),
-		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg:           config.Config{Architects: map[string]config.ArchitectConfig{"hiveryn": {Path: t.TempDir(), Repos: map[string]string{"desktop": repoPath}}}},
-		repo:          repo,
-		terminal:      &fakeTerminalManager{},
-		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
-		bridgeCancels: map[string]func(){},
-		terminalStates: map[string]sessionTerminalState{
-			"session-1": {
-				tabs: []sessionTabState{
-					{tab: domain.SessionTab{Type: "kanban"}},
-					{tab: domain.SessionTab{Type: "terminal", ID: "term-split", Placement: domain.TerminalPlacementSplit, BaseTabID: "kanban"}},
-				},
-			},
-		},
-	}
-
-	_, err := service.CreateTerminal(context.Background(), "session-1", domain.CreateTerminalParams{Placement: domain.TerminalPlacementSplit, BaseTabID: "kanban"})
-	if err == nil {
-		t.Fatal("expected duplicate split terminal to be rejected")
-	}
-	cErr, ok := err.(*domain.ConflictError)
-	if !ok || cErr.Field != "base_tab_id" {
-		t.Fatalf("expected placement conflict error, got %T %#v", err, err)
-	}
-}
-
-func TestCreateTerminalAllowsSplitOnDifferentBaseTab(t *testing.T) {
-	t.Parallel()
-
-	repoPath := t.TempDir()
-	repo := newFakeSessionRepository()
-	repo.createdSession = domain.Session{
-		ID:           "session-1",
-		ArchitectKey: "hiveryn",
-		SessionType:  domain.SessionTypeTicket,
-		ContextID:    "ticket-1",
-		Prompt:       "kickoff",
-		Workdir:      repoPath,
-		CurrentRun: &domain.SessionRun{
-			ID:      "run-1",
-			Status:  domain.SessionRunStatusRunning,
-			Workdir: repoPath,
-		},
-	}
-	terminal := &fakeTerminalManager{}
-	service := &Service{
-		intents:       newIntentStore(),
-		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg:           config.Config{Architects: map[string]config.ArchitectConfig{"hiveryn": {Path: t.TempDir(), Repos: map[string]string{"desktop": repoPath}}}},
-		repo:          repo,
-		terminal:      terminal,
-		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
-		bridgeCancels: map[string]func(){},
-		terminalStates: map[string]sessionTerminalState{
-			"session-1": {
-				tabs: []sessionTabState{
-					{tab: domain.SessionTab{Type: "kanban"}},
-					{tab: domain.SessionTab{Type: "event-log"}},
-					{tab: domain.SessionTab{Type: "terminal", ID: "term-split", Placement: domain.TerminalPlacementSplit, BaseTabID: "kanban"}},
-				},
-			},
-		},
-	}
-
-	info, err := service.CreateTerminal(context.Background(), "session-1", domain.CreateTerminalParams{Placement: domain.TerminalPlacementSplit, BaseTabID: "event-log", WorkdirID: "session-primary"})
-	if err != nil {
-		t.Fatalf("CreateTerminal failed: %v", err)
-	}
-	if info.TerminalID == "" {
-		t.Fatalf("expected created terminal info, got %#v", info)
-	}
-	tabs := service.terminalStates["session-1"].tabs
-	created := tabs[len(tabs)-1].tab
-	if created.Placement != domain.TerminalPlacementSplit || created.BaseTabID != "event-log" {
-		t.Fatalf("expected event-log split placement, got %#v", created)
-	}
-	if terminal.firstStartSpec().TerminalID != info.TerminalID {
-		t.Fatalf("expected started terminal %q, got %#v", info.TerminalID, terminal.firstStartSpec())
-	}
-}
-
-func TestCreateTerminalRejectsSplitWithoutBaseTabID(t *testing.T) {
-	t.Parallel()
-
-	repoPath := t.TempDir()
-	repo := newFakeSessionRepository()
-	repo.createdSession = domain.Session{
-		ID:           "session-1",
-		ArchitectKey: "hiveryn",
-		SessionType:  domain.SessionTypeTicket,
-		ContextID:    "ticket-1",
-		Prompt:       "kickoff",
-		Workdir:      repoPath,
-		CurrentRun: &domain.SessionRun{
-			ID:      "run-1",
-			Status:  domain.SessionRunStatusRunning,
-			Workdir: repoPath,
-		},
-	}
-	service := &Service{
-		intents:       newIntentStore(),
-		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-		repo:          repo,
-		terminal:      &fakeTerminalManager{},
-		eventStreams:  map[string]map[uint64]chan domain.SessionEvent{},
-		bridgeCancels: map[string]func(){},
-		terminalStates: map[string]sessionTerminalState{
-			"session-1": {
-				tabs: []sessionTabState{{tab: domain.SessionTab{Type: "kanban"}}},
-			},
-		},
-	}
-
-	_, err := service.CreateTerminal(context.Background(), "session-1", domain.CreateTerminalParams{Placement: domain.TerminalPlacementSplit})
-	if err == nil {
-		t.Fatal("expected split without base tab id to be rejected")
-	}
-	vErr, ok := err.(*domain.ValidationError)
-	if !ok || vErr.Field != "base_tab_id" {
-		t.Fatalf("expected base_tab_id validation error, got %T %#v", err, err)
+	if !ok || vErr.Field != "workdir_id" {
+		t.Fatalf("expected workdir_id validation error, got %T %#v", err, err)
 	}
 }
 
