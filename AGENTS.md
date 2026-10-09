@@ -25,7 +25,7 @@ internal/
   architectfs/        architect folder filesystem operations (ticket CRUD, frontmatter, body edits)
   config/             bootstrap config (~/.hiveryn/{config,variants,architects,tabs,shortcuts}.yaml) — port, bind_address, log_level, shell, intent_wait_timeout, archive_agent_events, notifications (ntfy; startup-read like the rest of config.yaml), variants, architects, tabs, shortcuts; the reloading `Source` keeps serving the last valid config when an on-disk edit fails to load and reports it through `LoadStatus`
   domain/             re-exports shared data types (github.com/hiveryn/shared/domain, including the ArchitectEvent stream contract) + local interfaces, Envelope, AgentStatus consts — zero imports of store/api
-  gitdiff/            git working-tree + single-commit diff computation (git shell-out, file-level diff parsing), plus the shell-out helpers the fs browse API reuses: batch gitignore checks (`CheckIgnore`), file listing (`ListFiles`/`IsInsideWorkTree`), changed-path status (`Status`/`RepoRoot`, porcelain columns kept verbatim), and streaming content search (`GrepContent`, one `git grep` killed at the match cap) — no session dependency
+  gitdiff/            git working-tree + single-commit diff computation (git shell-out, file-level diff parsing) for the desktop's Git review — no session dependency
   logging/            structured JSONL app/request logging to ~/.hiveryn/logs/*.jsonl
   ntfy/               phone-notification publisher for config.yaml `notifications.ntfy` (JSON publish, optional token or basic auth; errors keep the server's reason and never carry credentials)
   mcp/                stdio MCP server; registers role-scoped tools and translates tool calls into daemon HTTP API requests

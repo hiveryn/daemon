@@ -107,7 +107,6 @@ func NewHandler(deps Dependencies) http.Handler {
 	sh := &sessionsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
 	th := &ticketsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
 	eh := &architectEventsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, hub: deps.ArchitectEvents}
-	fh := &fsHandler{logger: deps.Logger}
 	wh := &workspaceHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, workspaces: deps.Workspaces}
 	ach := &actionsHandler{logger: deps.Logger, actions: deps.Actions}
 	qh := &questionsHandler{logger: deps.Logger, questions: deps.Questions}
@@ -139,7 +138,6 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/architects/{key}/repos", rh.list)
 	mux.HandleFunc("GET /api/architects/{key}/repos/{repoKey}", rh.get)
 	mux.HandleFunc("GET /api/architects/{key}/repos/{repoKey}/diff", rh.diff)
-	mux.HandleFunc("GET /api/architects/{key}/repos/{repoKey}/status", rh.status)
 	mux.HandleFunc("GET /api/architects/{key}/repos/{repoKey}/commits/{sha}/diff", rh.commitDiff)
 	mux.HandleFunc("GET /api/architects/{key}/workspace/check", wh.check)
 	mux.HandleFunc("GET /api/architects/{key}/workspace/worker-preflight", wh.workerPreflight)
@@ -147,11 +145,6 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/architects/{key}/workflows", wh.listWorkflows)
 	mux.HandleFunc("GET /api/config/shortcuts", sch.get)
 	mux.HandleFunc("GET /api/config/desktop", dch.get)
-	mux.HandleFunc("GET /api/fs/tree", fh.tree)
-	mux.HandleFunc("GET /api/fs/file", fh.file)
-	mux.HandleFunc("PUT /api/fs/file", fh.writeFile)
-	mux.HandleFunc("GET /api/fs/search", fh.search)
-	mux.HandleFunc("GET /api/fs/search-content", fh.searchContent)
 	mux.HandleFunc("GET /api/architects/{key}/events", eh.events)
 	mux.HandleFunc("POST /api/sessions", sh.createSession)
 	mux.HandleFunc("GET /api/sessions", sh.list)

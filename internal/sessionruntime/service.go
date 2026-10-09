@@ -38,8 +38,8 @@ const (
 var defaultTabsBySessionType = map[string][]config.TabEntry{
 	"ticket": {{Type: "ticket"}},
 	// The action tab shows the execution (prompt, status, output directory,
-	// conclusion); files browses the output directory and the repository.
-	"action": {{Type: "action"}, {Type: "files"}, {Type: "event-log"}},
+	// conclusion).
+	"action": {{Type: "action"}, {Type: "event-log"}},
 }
 
 type Service struct {

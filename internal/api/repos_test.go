@@ -152,3 +152,25 @@ func newTestRuntime(t *testing.T) config.Runtime {
 	}
 	return runtime
 }
+
+// The file explorer and its generic filesystem API are gone: no route serves
+// directory listings, file reads/writes, searches or tree-decoration status.
+func TestFileBrowsingRoutesAreNotServed(t *testing.T) {
+	t.Parallel()
+
+	handler := newGitDiffTestHandler(t)
+	dir := t.TempDir()
+	for _, route := range []struct{ method, path string }{
+		{http.MethodGet, "/api/fs/tree?path=" + dir},
+		{http.MethodGet, "/api/fs/file?path=" + dir},
+		{http.MethodPut, "/api/fs/file?path=" + dir},
+		{http.MethodGet, "/api/fs/search?path=" + dir + "&q=a"},
+		{http.MethodGet, "/api/fs/search-content?path=" + dir + "&q=a"},
+		{http.MethodGet, "/api/architects/hiveryn/repos/daemon/status"},
+	} {
+		status, body := request(t, handler, route.method, route.path, nil)
+		if status != http.StatusNotFound {
+			t.Fatalf("%s %s: expected 404, got %d: %s", route.method, route.path, status, string(body))
+		}
+	}
+}
