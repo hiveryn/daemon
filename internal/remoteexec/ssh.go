@@ -36,6 +36,11 @@ func Run(ctx context.Context, alias, script string, input io.Reader) ([]byte, er
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		// A killed ssh says only "signal: killed"; name the cancellation that
+		// killed it so a deadline is not mistaken for a remote failure.
+		if ctxErr := context.Cause(ctx); ctxErr != nil {
+			return nil, fmt.Errorf("SSH %s: %w (ssh %v): %s", alias, ctxErr, err, strings.TrimSpace(stderr.String()))
+		}
 		return nil, fmt.Errorf("SSH %s: %w: %s", alias, err, strings.TrimSpace(stderr.String()))
 	}
 	return out.Bytes(), nil

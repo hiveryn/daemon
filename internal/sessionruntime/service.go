@@ -51,6 +51,12 @@ type Service struct {
 	remoteMu sync.Mutex
 	remotes  map[string]*remoteWorker
 
+	// launching holds the sessions with a run launch in flight; launchTimeout
+	// bounds each launch (zero means defaultRunLaunchTimeout).
+	launchMu      sync.Mutex
+	launching     map[string]struct{}
+	launchTimeout time.Duration
+
 	logger         *slog.Logger
 	cfg            config.Config
 	configSource   config.Source
@@ -349,7 +355,61 @@ func (s *Service) ticketSessionParams(ctx context.Context, architectKey string, 
 	}, nil
 }
 
+// defaultRunLaunchTimeout bounds one run launch. A remote launch validates and
+// prepares the worker over many SSH round trips, so it routinely takes longer
+// than an ordinary API call.
+const defaultRunLaunchTimeout = 2 * time.Minute
+
+// CreateRun launches a new run of the session. The launch is detached from the
+// requester's cancellation and bounded by its own timeout instead: a client
+// that stops waiting (a closed dialog, a transport timeout) must not interrupt
+// a half-prepared launch, which then finishes or fails on its own and is
+// announced on the architect stream either way. Only one launch per session is
+// in flight at a time; a concurrent one is a conflict, never a second worker.
 func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.CreateSessionRunRequest) (domain.CreateSessionRunResult, error) {
+	if !s.beginLaunch(sessionID) {
+		return domain.CreateSessionRunResult{}, &domain.ConflictError{Resource: "session", Field: "id", Message: "a launch of this session is already in progress; it appears when it starts, or reports its own error"}
+	}
+	defer s.endLaunch(sessionID)
+
+	timeout := s.launchTimeout
+	if timeout <= 0 {
+		timeout = defaultRunLaunchTimeout
+	}
+	launchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	defer cancel()
+	started := time.Now()
+	result, err := s.createRun(launchCtx, sessionID, req)
+	if err != nil && errors.Is(launchCtx.Err(), context.DeadlineExceeded) {
+		err = fmt.Errorf("launch did not complete within %s: %w", timeout, err)
+	}
+	if ctx.Err() != nil {
+		s.logger.Warn("[spawn] requester stopped waiting; launch continued to its own outcome",
+			"session_id", sessionID, "duration", time.Since(started).String(), "error", err)
+	}
+	return result, err
+}
+
+func (s *Service) beginLaunch(sessionID string) bool {
+	s.launchMu.Lock()
+	defer s.launchMu.Unlock()
+	if _, busy := s.launching[sessionID]; busy {
+		return false
+	}
+	if s.launching == nil {
+		s.launching = map[string]struct{}{}
+	}
+	s.launching[sessionID] = struct{}{}
+	return true
+}
+
+func (s *Service) endLaunch(sessionID string) {
+	s.launchMu.Lock()
+	defer s.launchMu.Unlock()
+	delete(s.launching, sessionID)
+}
+
+func (s *Service) createRun(ctx context.Context, sessionID string, req domain.CreateSessionRunRequest) (domain.CreateSessionRunResult, error) {
 	session, err := s.repo.GetSession(ctx, sessionID)
 	if err != nil {
 		return domain.CreateSessionRunResult{}, err

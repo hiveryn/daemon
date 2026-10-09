@@ -2,7 +2,7 @@
 """Disposable real SSH/tmux + daemon smoke. Uses fixture CLIs, not model providers.
 Requires Docker, Go, Python 3 with websocket-client, OpenSSH. Never reads live Hiveryn or SSH config.
 """
-import json, os, pathlib, shlex, socket, sqlite3, subprocess, tempfile, time, urllib.request
+import json, os, pathlib, shlex, socket, sqlite3, subprocess, tempfile, threading, time, urllib.request
 import websocket
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -96,7 +96,9 @@ with tempfile.TemporaryDirectory(prefix='hiveryn-remote-smoke-') as tmp:
         hostkey=run('docker','exec',container,'cat','/etc/ssh/ssh_host_ed25519_key.pub').split()
         (tmp/'known_hosts').write_text(f'[127.0.0.1]:{sshport} {hostkey[0]} {hostkey[1]}\n')
         (tmp/'ssh_config').write_text(f'Host fixture\n HostName 127.0.0.1\n Port {sshport}\n User worker\n IdentityFile {tmp}/key\n UserKnownHostsFile {tmp}/known_hosts\n StrictHostKeyChecking yes\n IdentitiesOnly yes\n')
-        (bindir/'ssh').write_text('#!/bin/sh\nexec /usr/bin/ssh -F '+shlex.quote(str(tmp/'ssh_config'))+' "$@"\n');(bindir/'ssh').chmod(0o700)
+        # ssh_delay injects per-connection latency for the launch-lifetime phase.
+        (tmp/'ssh_delay').write_text('0')
+        (bindir/'ssh').write_text('#!/bin/sh\nsleep "$(cat '+shlex.quote(str(tmp/'ssh_delay'))+')"\nexec /usr/bin/ssh -F '+shlex.quote(str(tmp/'ssh_config'))+' "$@"\n');(bindir/'ssh').chmod(0o700)
         wait(lambda:remote('true')=='')
         (tmp/'provider').write_text(provider)
         run('docker','cp',str(tmp/'provider'),container+':/usr/local/bin/claude')
@@ -108,12 +110,12 @@ with tempfile.TemporaryDirectory(prefix='hiveryn-remote-smoke-') as tmp:
         (workspace/'hiveryn.yaml').write_text('name: Fixture\nrepos:\n  remote:\n    path: /home/worker/repo\n    machine: box\n')
         for name in ['PROJECT_OVERVIEW.md','PROJECT_STATE.md']:(workspace/name).write_text('---\nlastUpdatedAt: 2026-10-09T00:00:00Z\n---\nFixture project context.\n')
         env=dict(os.environ,HIVERYN_HOME=str(home),PATH=str(bindir)+os.pathsep+os.environ['PATH'],TZ='UTC')
-        (home/'variants.yaml').write_text('fixture:\n  agent: claude\n  yolo: true\n')
+        (home/'variants.yaml').write_text('fixture:\n  agent: claude\n  machine: box\n  yolo: true\n')
         run('go','build','-race','-o',str(tmp/'hiverynd'),'./cmd/hiverynd',cwd=ROOT)
         start()
         for agent in ['claude','codex','opencode']:
             ticket=api('/architects/fixture/tickets',{'title':f'{agent} remote smoke','repo':'remote','body':'Fixture'})
-            (home/'variants.yaml').write_text(f'fixture:\n  agent: {agent}\n  yolo: true\n  env:\n    SMOKE_TICKET_ID: {ticket["id"]}\n    SMOKE_AGENT: {agent}\n')
+            (home/'variants.yaml').write_text(f'fixture:\n  agent: {agent}\n  machine: box\n  yolo: true\n  env:\n    SMOKE_TICKET_ID: {ticket["id"]}\n    SMOKE_AGENT: {agent}\n')
             session=api('/sessions',{'session_type':'ticket','architect_key':'fixture','ticket_id':ticket['id']})
             sid=session['id']
             api(f'/sessions/{sid}/runs',{'profile_name':'fixture'})
@@ -129,7 +131,7 @@ with tempfile.TemporaryDirectory(prefix='hiveryn-remote-smoke-') as tmp:
             assert 'remote_token' not in current and 'ssh' not in current
             with sqlite3.connect(home/'daemon.db') as db:token=db.execute('select remote_token from sessions where id=?',(sid,)).fetchone()[0]
             for log in (home/'logs').glob('*.jsonl'):assert token not in log.read_text(), 'credential leaked to logs'
-            aux=api(f'/sessions/{sid}/terminals',{'workdir_id':'session-primary','placement':'tab'})
+            aux=api(f'/sessions/{sid}/terminals',{'workdir_id':'session-primary'})
             auxid=aux['terminal_id']
             ws=websocket.create_connection(f'ws://127.0.0.1:{daemonport}/ws/session/{sid}/terminal/{auxid}?cols=100&rows=30',timeout=10)
             ws.send('pwd > /home/worker/terminal-cwd; stty size > /home/worker/terminal-size\n')
@@ -174,6 +176,74 @@ with tempfile.TemporaryDirectory(prefix='hiveryn-remote-smoke-') as tmp:
                 api(f'/sessions/{sid}/discard',{})
             assert remote(f'test ! -d /home/worker/.local/state/hiveryn-workers/{sid} && echo cleaned')=='cleaned'
             print(f'{agent}: authenticated tools/mutation/hooks, remote diffs, terminal input/resize/restore, detach/reattach, daemon restart, one launch and cleanup PASS',flush=True)
+        # Launch lifetime: with slow SSH, preparing a worker takes well over the
+        # desktop's former 5 s request bound.
+        def post(path,body,timeout):
+            req=urllib.request.Request(f'http://127.0.0.1:{daemonport}/api'+path,data=json.dumps(body).encode(),headers={'Content-Type':'application/json'})
+            try:
+                with urllib.request.urlopen(req,timeout=timeout) as response:return response.status,json.load(response)
+            except urllib.error.HTTPError as e:return e.code,json.loads(e.read())
+        def fresh(title):
+            ticket=api('/architects/fixture/tickets',{'title':title,'repo':'remote','body':'Fixture'})
+            (home/'variants.yaml').write_text(f'fixture:\n  agent: claude\n  machine: box\n  yolo: true\n  env:\n    SMOKE_TICKET_ID: {ticket["id"]}\n    SMOKE_AGENT: claude\n')
+            return ticket,api('/sessions',{'session_type':'ticket','architect_key':'fixture','ticket_id':ticket['id']})['id']
+        def launched(sid):return remote(f"grep -c {shlex.quote(sid)} /home/worker/launches || true")
+        (tmp/'ssh_delay').write_text('0.7')
+        # A requester that gives up at 5 s no longer interrupts the launch.
+        ticket,sid=fresh('slow launch, requester leaves')
+        started=time.monotonic()
+        try:post(f'/sessions/{sid}/runs',{'profile_name':'fixture'},5)
+        except (TimeoutError,socket.timeout,urllib.error.URLError):pass
+        else:raise AssertionError('launch answered within 5 s; latency injection ineffective')
+        wait(lambda:api(f'/sessions/{sid}').get('connection')=='connected',timeout=120)
+        assert time.monotonic()-started>5
+        wait(lambda:remote(f'cat /home/worker/result-{sid}'),timeout=60)
+        assert launched(sid)=='1'
+        assert api(f'/architects/fixture/tickets/{ticket["id"]}')['status']=='progress'
+        assert 'requester stopped waiting' in (home/'logs/daemon.jsonl').read_text()
+        api(f'/sessions/{sid}/discard',{})
+        # A waiting requester gets the result after >5 s; a concurrent launch
+        # of the same session is a conflict, not a second worker.
+        ticket,sid=fresh('slow launch, requester waits')
+        outcome={}
+        def first():
+            began=time.monotonic();outcome['result']=post(f'/sessions/{sid}/runs',{'profile_name':'fixture'},150);outcome['seconds']=time.monotonic()-began
+        thread=threading.Thread(target=first);thread.start();time.sleep(1.5)
+        status,body=post(f'/sessions/{sid}/runs',{'profile_name':'fixture'},150)
+        assert status==409 and 'already in progress' in body['error']['message'],(status,body)
+        thread.join()
+        assert outcome['result'][0]==201 or outcome['result'][0]==200,outcome
+        assert outcome['seconds']>5,outcome
+        wait(lambda:remote(f'cat /home/worker/result-{sid}'),timeout=60)
+        assert launched(sid)=='1'
+        api(f'/sessions/{sid}/discard',{})
+        (tmp/'ssh_delay').write_text('0')
+        # A launch failing mid-preparation removes its never-started worker, so
+        # the retry of the same session is clean and launches exactly once.
+        ticket,sid=fresh('failed preparation then retry')
+        remote('mv /home/worker/.claude /home/worker/.claude-saved && touch /home/worker/.claude')
+        try:
+            status,body=post(f'/sessions/{sid}/runs',{'profile_name':'fixture'},150)
+            assert status==500 and 'prepare remote worker on box' in body['error']['message'],(status,body)
+        finally:remote('rm /home/worker/.claude && mv /home/worker/.claude-saved /home/worker/.claude')
+        assert remote(f'test ! -d /home/worker/.local/state/hiveryn-workers/{sid} && echo cleaned')=='cleaned'
+        assert api(f'/sessions/{sid}')['current_run']['status']=='failed'
+        assert api(f'/architects/fixture/tickets/{ticket["id"]}')['status']=='backlog'
+        status,body=post(f'/sessions/{sid}/runs',{'profile_name':'fixture'},150)
+        assert status in (200,201),(status,body)
+        wait(lambda:remote(f'cat /home/worker/result-{sid}'),timeout=60)
+        assert launched(sid)=='1'
+        api(f'/sessions/{sid}/discard',{})
+        # A managed server this launch did not create is reported, never killed.
+        ticket,sid=fresh('pre-existing owned server')
+        remote(f'tmux -L hiveryn-{sid} new-session -d -s worker sleep 600')
+        status,body=post(f'/sessions/{sid}/runs',{'profile_name':'fixture'},150)
+        assert status==500 and 'discard the session' in body['error']['message'],(status,body)
+        assert remote(f'tmux -L hiveryn-{sid} has-session -t worker && echo alive')=='alive'
+        assert launched(sid)=='0'
+        api(f'/sessions/{sid}/discard',{})
+        assert remote(f'tmux -L hiveryn-{sid} has-session 2>/dev/null || echo gone')=='gone'
+        print('launch lifetime: >5 s launch survives requester timeout, waiting requester succeeds, concurrent launch 409, failed prep cleaned and retried once, foreign server untouched PASS',flush=True)
         assert 'DATA RACE' not in (tmp/'daemon.log').read_text()
         print('REMOTE FIXTURE PASS (race-instrumented daemon)',flush=True)
     except Exception:

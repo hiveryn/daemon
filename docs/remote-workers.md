@@ -93,6 +93,18 @@ Stop, discard and conclusion first confirm owned remote resources are stopped.
 If a host is unreachable, the local session remains and the error explains that
 termination was not confirmed. Retry after restoring connectivity.
 
+Launching a worker validates the repositories and prepares the worker over many
+SSH round trips, so it can take tens of seconds. A launch is bounded by the
+daemon (two minutes) rather than by the requester: a client that stops waiting
+does not interrupt it, and the session appears once it starts. A second launch
+of a session already launching is rejected as a conflict. If preparation fails,
+the provider has not started (it waits behind its launch gate), so the owned
+tmux server and runtime directory are removed and the same session can be
+launched again; if that cleanup cannot be confirmed, or an owned server from an
+earlier attempt already exists, the error says so and the session must be
+discarded before spawning again. An exceeded bound is reported as such, with the
+interrupted SSH step.
+
 A reverse SSH tunnel maps a session's stable remote loopback port to a dedicated
 local worker gateway. Only authenticated worker MCP tools and session-scoped
 hooks are exposed, never the general daemon API or architect tools. The random
@@ -119,6 +131,8 @@ scopes, file browsing and offline MCP delivery are not supported.
 keys and known-hosts, a disposable daemon/database and fixture provider CLIs.
 It requires Docker, Go, Python 3, `websocket-client` and OpenSSH. It does not read
 live Hiveryn/SSH configuration or model credentials. The daemon is race-enabled.
+A final phase injects SSH latency to check launches longer than five seconds,
+requesters that stop waiting, concurrent launches, and failed-preparation cleanup.
 
 The fixture uses Alpine Linux 3.22, OpenSSH 10 and tmux 3.5a, with a macOS client.
 Unit tests cover provider target filesystems, scope validation, shell quoting

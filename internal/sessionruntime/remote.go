@@ -64,7 +64,7 @@ func (s *Service) startRemoteTerminal(ctx context.Context, session domain.Sessio
 			s.remoteMu.Lock()
 			delete(s.remotes, session.ID)
 			s.remoteMu.Unlock()
-			return "", agentruntime.LaunchSpec{}, err
+			return "", agentruntime.LaunchSpec{}, s.cleanupFailedRemoteLaunch(session, fmt.Errorf("prepare remote worker on %s: %w", session.Machine, err))
 		}
 	}
 	s.cancelReceiverBridge(session.ID)
@@ -78,6 +78,36 @@ func (s *Service) startRemoteTerminal(ctx context.Context, session domain.Sessio
 		id = uuid.NewString()
 	}
 	return id, agentruntime.LaunchSpec{Command: "ssh", Workdir: session.Workdir}, nil
+}
+
+// remoteServerExistsMessage is printed by the tmux creation command when the
+// session's owned server already exists; errRemoteServerExists carries it.
+const remoteServerExistsMessage = "owned tmux server already exists"
+
+var errRemoteServerExists = errors.New("a managed tmux server from an earlier launch attempt of this session still exists; it was left untouched — discard the session to confirm its remote cleanup, then spawn the ticket again")
+
+// remoteCleanupTimeout bounds cleanup after a failed launch, which runs on a
+// fresh context: the launch's own may already be exhausted.
+const remoteCleanupTimeout = 30 * time.Second
+
+// cleanupFailedRemoteLaunch removes what a failed fresh launch prepared, so a
+// retry starts clean. It is safe because the provider never started: the tmux
+// pane waits on its launch gate, which only a successful attachment releases,
+// and a launch whose attachment ran does not fail here. A launch only gets
+// this far while the session has no running run, so whatever cleanup reaches
+// never started a provider. A server found already existing at creation is
+// still left alone and reported: its origin is unknown to this attempt.
+func (s *Service) cleanupFailedRemoteLaunch(session domain.Session, launchErr error) error {
+	if errors.Is(launchErr, errRemoteServerExists) {
+		return launchErr
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), remoteCleanupTimeout)
+	defer cancel()
+	if err := s.stopRemoteResources(ctx, session); err != nil {
+		s.logger.Error("cleanup after failed remote launch not confirmed", "session_id", session.ID, "error", err)
+		return fmt.Errorf("%w; cleanup of the never-started remote worker was not confirmed (%v) — discard the session to retry cleanup before spawning again", launchErr, err)
+	}
+	return launchErr
 }
 
 func (s *Service) prepareRemoteWorker(ctx context.Context, w *remoteWorker, profile config.VariantConfig, kind agentruntime.AgentKind, req agentruntime.StartRequest) error {
@@ -154,10 +184,13 @@ func (s *Service) prepareRemoteWorker(ctx context.Context, w *remoteWorker, prof
 	}
 	// No existing server is ever reused for a new launch. All subsequent paths
 	// attach only; an SSH error can never cause a duplicate provider invocation.
-	command := tmux(session.ID, "has-session") + " 2>/dev/null && { echo 'owned tmux server already exists' >&2; exit 1; }; "
+	command := tmux(session.ID, "has-session") + " 2>/dev/null && { echo '" + remoteServerExistsMessage + "' >&2; exit 1; }; "
 	command += tmux(session.ID, "-f", "/dev/null", "new-session", "-d", "-s", "worker", "-c", session.Workdir, "sh -c "+remoteexec.Quote(tmux(session.ID, "wait-for", "launch")+"; sh "+remoteexec.Quote(launchPath)+"; code=$?; rm -f "+remoteexec.Quote(launchPath)+"; exit $code")) + " && " + tmux(session.ID, "set-option", "-t", "worker", "remain-on-exit", "on") + " && " + tmux(session.ID, "set-option", "-t", "worker", "status", "off")
 	if _, err := remoteexec.Run(ctx, session.SSH, command, nil); err != nil {
-		return fmt.Errorf("create remote worker tmux (launch may require reconciliation): %w", err)
+		if strings.Contains(err.Error(), remoteServerExistsMessage) {
+			return fmt.Errorf("create remote worker tmux on %s: %w", session.SSH, errRemoteServerExists)
+		}
+		return fmt.Errorf("create remote worker tmux: %w", err)
 	}
 	return nil
 }
