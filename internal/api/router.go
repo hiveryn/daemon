@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/hiveryn/daemon/internal/archevents"
 	"github.com/hiveryn/daemon/internal/config"
@@ -48,6 +49,8 @@ type reposHandler struct {
 	config       config.Config
 	configSource config.Source
 	logger       *slog.Logger
+	// diffTimeout bounds one diff computation; zero means defaultDiffTimeout.
+	diffTimeout time.Duration
 }
 
 type shortcutsHandler struct {

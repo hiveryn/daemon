@@ -57,6 +57,12 @@ type Service struct {
 	launching     map[string]struct{}
 	launchTimeout time.Duration
 
+	// creatingTerminal holds the sessions with an auxiliary terminal creation
+	// in flight (guarded by launchMu); terminalCreateTimeout bounds each one
+	// (zero means defaultTerminalCreateTimeout).
+	creatingTerminal      map[string]struct{}
+	terminalCreateTimeout time.Duration
+
 	logger         *slog.Logger
 	cfg            config.Config
 	configSource   config.Source
@@ -1741,7 +1747,61 @@ func (s *Service) AttachTerminal(ctx context.Context, sessionID, terminalID stri
 	return s.terminal.Attach(ctx, sessionID, terminalID)
 }
 
+// defaultTerminalCreateTimeout bounds one auxiliary terminal creation. A remote
+// one creates its tmux server over SSH, which routinely outlasts an ordinary
+// API call but must not hang indefinitely.
+const defaultTerminalCreateTimeout = 45 * time.Second
+
+// CreateTerminal opens an auxiliary terminal tab. Like a run launch, creation
+// is detached from the requester and bounded by its own timeout: once a remote
+// tmux server may exist, a client that stops waiting must not cut creation off
+// halfway. A completed terminal appears in the session's tabs either way; a
+// failed one is cleaned up before the error returns. One creation per session
+// is in flight at a time, so an impatient retry is a conflict, not a duplicate.
 func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params domain.CreateTerminalParams) (domain.TerminalInfo, error) {
+	if !s.beginTerminalCreate(sessionID) {
+		return domain.TerminalInfo{}, &domain.ConflictError{Resource: "session", Field: "id", Message: "a terminal for this session is still being opened; it appears as a tab when it starts, or reports its own error"}
+	}
+	defer s.endTerminalCreate(sessionID)
+
+	timeout := s.terminalCreateTimeout
+	if timeout <= 0 {
+		timeout = defaultTerminalCreateTimeout
+	}
+	createCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	defer cancel()
+	started := time.Now()
+	info, err := s.createTerminal(createCtx, sessionID, params)
+	if err != nil && errors.Is(createCtx.Err(), context.DeadlineExceeded) {
+		err = fmt.Errorf("terminal creation did not complete within %s: %w", timeout, err)
+	}
+	if ctx.Err() != nil {
+		s.logger.Warn("terminal requester stopped waiting; creation continued to its own outcome",
+			"session_id", sessionID, "terminal_id", info.TerminalID, "duration", time.Since(started).String(), "error", err)
+	}
+	return info, err
+}
+
+func (s *Service) beginTerminalCreate(sessionID string) bool {
+	s.launchMu.Lock()
+	defer s.launchMu.Unlock()
+	if _, busy := s.creatingTerminal[sessionID]; busy {
+		return false
+	}
+	if s.creatingTerminal == nil {
+		s.creatingTerminal = map[string]struct{}{}
+	}
+	s.creatingTerminal[sessionID] = struct{}{}
+	return true
+}
+
+func (s *Service) endTerminalCreate(sessionID string) {
+	s.launchMu.Lock()
+	defer s.launchMu.Unlock()
+	delete(s.creatingTerminal, sessionID)
+}
+
+func (s *Service) createTerminal(ctx context.Context, sessionID string, params domain.CreateTerminalParams) (domain.TerminalInfo, error) {
 	session, err := s.repo.GetSession(ctx, sessionID)
 	if err != nil {
 		return domain.TerminalInfo{}, err
@@ -1783,14 +1843,21 @@ func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params d
 		Size:       terminalSize{Cols: defaultPTYCols, Rows: defaultPTYRows},
 		OnExit:     s.handleAuxTerminalExit,
 	}
+	var remote *remoteAuxTerminal
 	if selected.Machine != "" {
 		start.Command = ""
-		if err := s.prepareRemoteAux(ctx, session, *selected, &start); err != nil {
+		remote, err = s.prepareRemoteAux(ctx, session, *selected, &start)
+		if err != nil {
 			return domain.TerminalInfo{}, err
 		}
 		command = "ssh"
 	}
 	if err := s.terminal.Start(ctx, start); err != nil {
+		if remote != nil {
+			// The tmux server exists but nothing attaches to it: remove it rather
+			// than leave a shell no tab shows.
+			return domain.TerminalInfo{}, s.discardRemoteAux(sessionID, *remote, err)
+		}
 		return domain.TerminalInfo{}, err
 	}
 
@@ -2697,14 +2764,18 @@ func (s *Service) startAutoTerminals(ctx context.Context, cfg config.Config, ses
 			OnExit:       s.handleAuxTerminalExit,
 		}
 		var err error
+		var remote *remoteAuxTerminal
 		if session.Machine != "" {
 			start.Env = nil
 			start.CleanupPaths = nil
 			start.Command = tab.Command
-			err = s.prepareRemoteAux(ctx, session, domain.TerminalWorkdir{Machine: session.Machine, Path: workdir}, &start)
+			remote, err = s.prepareRemoteAux(ctx, session, domain.TerminalWorkdir{Machine: session.Machine, Path: workdir}, &start)
 		}
 		if err == nil {
 			err = s.terminal.Start(ctx, start)
+			if err != nil && remote != nil {
+				err = s.discardRemoteAux(session.ID, *remote, err)
+			}
 		}
 		if err != nil {
 			status = "exited"

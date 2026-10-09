@@ -12,40 +12,73 @@ import (
 
 type remoteResourceStore interface {
 	AddRemoteResource(context.Context, string, string, string, string) error
+	RemoveRemoteResource(context.Context, string, string, string) error
 	RemoteDirectories(context.Context, string) (map[string][]string, error)
 	RemoteResources(context.Context, string) (map[string][]string, error)
 }
 
-func (s *Service) prepareRemoteAux(ctx context.Context, session domain.Session, workdir domain.TerminalWorkdir, spec *terminalStartSpec) error {
+// remoteAuxTerminal names the owned tmux server behind one remote terminal.
+type remoteAuxTerminal struct {
+	alias  string
+	socket string
+}
+
+// prepareRemoteAux creates the remote tmux server for an auxiliary terminal and
+// points spec at it. Ownership is recorded before the server is created, so a
+// daemon crash mid-creation still leaves it to session cleanup. If creation
+// fails it is discarded here: an SSH command that failed or was cut off does
+// not prove the server was never created.
+func (s *Service) prepareRemoteAux(ctx context.Context, session domain.Session, workdir domain.TerminalWorkdir, spec *terminalStartSpec) (*remoteAuxTerminal, error) {
 	cfg, err := s.currentConfig()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	machine, ok := cfg.Machines[workdir.Machine]
 	if !ok {
-		return fmt.Errorf("unknown machine %q", workdir.Machine)
+		return nil, fmt.Errorf("unknown machine %q", workdir.Machine)
 	}
 	if session.Machine == workdir.Machine {
 		machine.SSH = session.SSH
 	}
 	resources, ok := s.repo.(remoteResourceStore)
 	if !ok {
-		return fmt.Errorf("remote resource persistence unavailable")
+		return nil, fmt.Errorf("remote resource persistence unavailable")
 	}
-	socket := "hiveryn-aux-" + spec.TerminalID
-	if err := resources.AddRemoteResource(ctx, session.ID, machine.SSH, socket, ""); err != nil {
-		return err
+	remote := remoteAuxTerminal{alias: machine.SSH, socket: "hiveryn-aux-" + spec.TerminalID}
+	if err := resources.AddRemoteResource(ctx, session.ID, remote.alias, remote.socket, ""); err != nil {
+		return nil, err
 	}
-	args := []string{"tmux", "-L", socket, "-f", "/dev/null", "new-session", "-d", "-s", "terminal", "-c", workdir.Path}
+	args := []string{"tmux", "-L", remote.socket, "-f", "/dev/null", "new-session", "-d", "-s", "terminal", "-c", workdir.Path}
 	if spec.Command != "" {
 		args = append(args, spec.Command)
 	}
-	command := remoteexec.Args(args...) + " && " + remoteexec.Args("tmux", "-L", socket, "set-option", "-t", "terminal", "status", "off")
-	if _, err := remoteexec.Run(ctx, machine.SSH, command, nil); err != nil {
-		return fmt.Errorf("create remote repository terminal: %w", err)
+	command := remoteexec.Args(args...) + " && " + remoteexec.Args("tmux", "-L", remote.socket, "set-option", "-t", "terminal", "status", "off")
+	if _, err := remoteexec.Run(ctx, remote.alias, command, nil); err != nil {
+		return nil, s.discardRemoteAux(session.ID, remote, fmt.Errorf("create remote repository terminal on machine %s: %w", workdir.Machine, err))
 	}
-	s.configureRemoteAuxAttachment(session, machine.SSH, socket, spec)
-	return nil
+	s.configureRemoteAuxAttachment(session, remote.alias, remote.socket, spec)
+	return &remote, nil
+}
+
+// discardRemoteAux removes the tmux server of a terminal whose creation failed
+// and returns cause, annotated when that removal is not confirmed. Cleanup runs
+// on a fresh bounded context because the creation's own may be exhausted.
+// Ownership is dropped only after a confirmed kill; otherwise it stays recorded
+// so session teardown retries it, and a daemon restart shows it as a tab rather
+// than leaving a shell nobody can see.
+func (s *Service) discardRemoteAux(sessionID string, remote remoteAuxTerminal, cause error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), remoteCleanupTimeout)
+	defer cancel()
+	if _, err := remoteexec.Run(ctx, remote.alias, killRemoteSocketScript(remote.socket), nil); err != nil {
+		s.logger.Error("cleanup of failed remote terminal not confirmed", "session_id", sessionID, "socket", remote.socket, "error", err)
+		return fmt.Errorf("%w; removal of the possibly created remote terminal was not confirmed (%v) — it stays recorded and is removed when the session ends", cause, err)
+	}
+	if store, ok := s.repo.(remoteResourceStore); ok {
+		if err := store.RemoveRemoteResource(ctx, sessionID, remote.alias, remote.socket); err != nil {
+			s.logger.Error("drop ownership of removed remote terminal", "session_id", sessionID, "socket", remote.socket, "error", err)
+		}
+	}
+	return cause
 }
 
 func (s *Service) configureRemoteAuxAttachment(session domain.Session, alias, socket string, spec *terminalStartSpec) {
@@ -162,6 +195,10 @@ func (s *Service) stopRemoteAux(ctx context.Context, sessionID, terminalID strin
 			if socket == "hiveryn-aux-"+terminalID {
 				if _, err := remoteexec.Run(ctx, alias, killRemoteSocketScript(socket), nil); err != nil {
 					return fmt.Errorf("remote terminal termination not confirmed: %w", err)
+				}
+				// Confirmed gone: a restart must not restore it as a tab.
+				if err := store.RemoveRemoteResource(ctx, sessionID, alias, socket); err != nil {
+					return err
 				}
 			}
 		}

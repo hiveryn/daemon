@@ -8,6 +8,12 @@ func (s *SessionStore) AddRemoteResource(ctx context.Context, id, ssh, socket, d
 	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO remote_resources(session_id,ssh,socket,directory) VALUES(?,?,?,?)`, id, ssh, socket, directory)
 	return err
 }
+
+// RemoveRemoteResource drops one ownership record after its cleanup was confirmed.
+func (s *SessionStore) RemoveRemoteResource(ctx context.Context, id, ssh, socket string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM remote_resources WHERE session_id=? AND ssh=? AND socket=?`, id, ssh, socket)
+	return err
+}
 func (s *SessionStore) RemoteResources(ctx context.Context, id string) (map[string][]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT ssh,socket FROM remote_resources WHERE session_id=?`, id)
 	if err != nil {

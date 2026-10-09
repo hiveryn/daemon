@@ -3,7 +3,9 @@ package gitdiff
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -182,4 +184,48 @@ func TestLoadWorkingTreeDiff_LargeFileTruncation(t *testing.T) {
 
 func writeBinary(path string) error {
 	return writeBinaryContent(path, []byte{0x00, 0x01, 0x02, 0xff, 0xfe, 0x00, 0x01, 0x02, 0xff, 0xfe})
+}
+
+// The remote path reads every untracked file in one shell script; it must
+// produce exactly what the local per-file loop does.
+func TestUntrackedDiffScriptMatchesPerFileDiffs(t *testing.T) {
+	repoPath := initRepo(t)
+	writeFile(t, filepath.Join(repoPath, "tracked.txt"), "a\n")
+	runGitTest(t, repoPath, "add", "tracked.txt")
+	runGitTest(t, repoPath, "commit", "-q", "-m", "init")
+	writeFile(t, filepath.Join(repoPath, "plain.txt"), "one\ntwo\n")
+	writeFile(t, filepath.Join(repoPath, "dir with space/naïve (1).md"), "x\n")
+	writeFile(t, filepath.Join(repoPath, "nested/deeper/'quote'.go"), "package x\n")
+	if err := os.WriteFile(filepath.Join(repoPath, "blob.bin"), []byte{0, 1, 2, 0}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	perFile, err := readUntrackedDiff(context.Background(), repoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := runShell(context.Background(), repoPath, untrackedDiffScript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batched, err := untrackedSectionFiles(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(perFile) != 4 || !reflect.DeepEqual(perFile, batched) {
+		t.Fatalf("batched untracked diff differs:\nper-file %#v\nbatched  %#v", perFile, batched)
+	}
+}
+
+func TestUntrackedDiffScriptCleanAndFailure(t *testing.T) {
+	repoPath := initRepo(t)
+	raw, err := runShell(context.Background(), repoPath, untrackedDiffScript)
+	if err != nil || raw != "" {
+		t.Fatalf("clean repo: %q, %v", raw, err)
+	}
+	// With no input xargs succeeds, so a failed listing must fail the script
+	// rather than read as an empty diff.
+	if _, err := runShell(context.Background(), t.TempDir(), untrackedDiffScript); err == nil || !strings.Contains(err.Error(), "not a git repository") {
+		t.Fatalf("non-repository: %v", err)
+	}
 }

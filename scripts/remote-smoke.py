@@ -98,7 +98,8 @@ with tempfile.TemporaryDirectory(prefix='hiveryn-remote-smoke-') as tmp:
         (tmp/'ssh_config').write_text(f'Host fixture\n HostName 127.0.0.1\n Port {sshport}\n User worker\n IdentityFile {tmp}/key\n UserKnownHostsFile {tmp}/known_hosts\n StrictHostKeyChecking yes\n IdentitiesOnly yes\n')
         # ssh_delay injects per-connection latency for the launch-lifetime phase.
         (tmp/'ssh_delay').write_text('0')
-        (bindir/'ssh').write_text('#!/bin/sh\nsleep "$(cat '+shlex.quote(str(tmp/'ssh_delay'))+')"\nexec /usr/bin/ssh -F '+shlex.quote(str(tmp/'ssh_config'))+' "$@"\n');(bindir/'ssh').chmod(0o700)
+        # ssh_calls counts the daemon's SSH connections (one line each).
+        (bindir/'ssh').write_text('#!/bin/sh\necho x >> '+shlex.quote(str(tmp/'ssh_calls'))+'\nsleep "$(cat '+shlex.quote(str(tmp/'ssh_delay'))+')"\nexec /usr/bin/ssh -F '+shlex.quote(str(tmp/'ssh_config'))+' "$@"\n');(bindir/'ssh').chmod(0o700)
         wait(lambda:remote('true')=='')
         (tmp/'provider').write_text(provider)
         run('docker','cp',str(tmp/'provider'),container+':/usr/local/bin/claude')
@@ -244,6 +245,70 @@ with tempfile.TemporaryDirectory(prefix='hiveryn-remote-smoke-') as tmp:
         api(f'/sessions/{sid}/discard',{})
         assert remote(f'tmux -L hiveryn-{sid} has-session 2>/dev/null || echo gone')=='gone'
         print('launch lifetime: >5 s launch survives requester timeout, waiting requester succeeds, concurrent launch 409, failed prep cleaned and retried once, foreign server untouched PASS',flush=True)
+        # Diffs and repository terminals with slow SSH: both take well over the
+        # desktop's former 5 s request bound and must still succeed.
+        ticket,sid=fresh('slow diffs and terminals')
+        api(f'/sessions/{sid}/runs',{'profile_name':'fixture'})
+        wait(lambda:remote(f'cat /home/worker/result-{sid}'),timeout=60)
+        remote('cd /home/worker/repo && mkdir -p "new dir" && for i in 1 2 3 4 5 6 7 8 9 10; do echo "line $i" > "new dir/untracked $i.txt"; done')
+        def ssh_calls():
+            try:return len((tmp/'ssh_calls').read_text().splitlines())
+            except FileNotFoundError:return 0
+        (tmp/'ssh_delay').write_text('1.5')
+        before=ssh_calls();began=time.monotonic()
+        diff=api('/architects/fixture/repos/remote/diff')
+        seconds=time.monotonic()-began;calls=ssh_calls()-before
+        paths=[f['path'] for f in diff['files']]
+        assert seconds>5 and sum(p.startswith('new dir/untracked ') for p in paths)==10,(seconds,paths)
+        # One connection for all untracked files, not one each (would be >= 14).
+        assert calls<=6,calls
+        sha=remote('git -C /home/worker/repo rev-parse HEAD')
+        assert api(f'/architects/fixture/repos/remote/commits/{sha}/diff')['files']
+        # A remote terminal whose requester gives up still opens, as a tab; a
+        # retry meanwhile is refused instead of opening a second shell.
+        (tmp/'ssh_delay').write_text('8')
+        def tab_ids():return {t.get('id') for t in api(f'/sessions/{sid}/tabs') if t.get('type')=='terminal'}
+        tabs_before=tab_ids()
+        try:post(f'/sessions/{sid}/terminals',{'workdir_id':'session-primary'},5)
+        except (TimeoutError,socket.timeout,urllib.error.URLError):pass
+        else:raise AssertionError('terminal answered within 5 s; latency injection ineffective')
+        status,body=post(f'/sessions/{sid}/terminals',{'workdir_id':'session-primary'},60)
+        assert status==409 and 'still being opened' in body['error']['message'],(status,body)
+        new=wait(lambda:tab_ids()-tabs_before,timeout=60)
+        assert len(new)==1,new
+        late=next(iter(new))
+        assert remote(f'tmux -L hiveryn-aux-{late} has-session -t terminal && echo alive')=='alive'
+        # A waiting requester gets its terminal after >5 s.
+        began=time.monotonic()
+        status,body=post(f'/sessions/{sid}/terminals',{'workdir_id':'session-primary'},90)
+        assert status in (200,201) and time.monotonic()-began>5,(status,body)
+        waited=body['data']['terminal_id']
+        assert remote(f'tmux -L hiveryn-aux-{waited} has-session -t terminal && echo alive')=='alive'
+        (tmp/'ssh_delay').write_text('0')
+        def owned(socket_name):
+            with sqlite3.connect(home/'daemon.db') as db:
+                return db.execute('select count(*) from remote_resources where session_id=? and socket=?',(sid,socket_name)).fetchone()[0]
+        # Closing a terminal removes its server and its ownership record.
+        api_delete=urllib.request.Request(f'http://127.0.0.1:{daemonport}/api/sessions/{sid}/terminals/{waited}',method='DELETE')
+        urllib.request.urlopen(api_delete,timeout=30).close()
+        assert remote(f'tmux -L hiveryn-aux-{waited} has-session 2>/dev/null || echo gone')=='gone'
+        assert owned(f'hiveryn-aux-{waited}')==0
+        # A creation that fails remotely, where removal cannot be confirmed
+        # either (tmux gone), keeps its ownership record for session cleanup.
+        run('docker','exec',container,'mv','/usr/bin/tmux','/usr/bin/tmux-hidden')
+        try:
+            tabs_before=tab_ids()
+            status,body=post(f'/sessions/{sid}/terminals',{'workdir_id':'session-primary'},90)
+            message=body['error']['message']
+            assert status==500 and 'create remote repository terminal on machine box' in message and 'was not confirmed' in message,(status,body)
+            assert tab_ids()==tabs_before
+            with sqlite3.connect(home/'daemon.db') as db:
+                retained=db.execute("select count(*) from remote_resources where session_id=? and socket like 'hiveryn-aux-%'",(sid,)).fetchone()[0]
+            assert retained==2,retained  # the late terminal plus the failed one
+        finally:run('docker','exec',container,'mv','/usr/bin/tmux-hidden','/usr/bin/tmux')
+        api(f'/sessions/{sid}/discard',{})
+        assert remote(f'tmux -L hiveryn-aux-{late} has-session 2>/dev/null || echo gone')=='gone'
+        print('remote diffs/terminals: >5 s diffs with one SSH call for untracked files, terminal survives requester timeout, retry 409, waiting requester succeeds, close drops ownership, unconfirmed cleanup retained then discarded PASS',flush=True)
         assert 'DATA RACE' not in (tmp/'daemon.log').read_text()
         print('REMOTE FIXTURE PASS (race-instrumented daemon)',flush=True)
     except Exception:

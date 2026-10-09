@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -9,8 +11,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hiveryn/daemon/internal/config"
+	"github.com/hiveryn/daemon/internal/gitdiff"
 )
 
 func TestReposDiffEndpoint(t *testing.T) {
@@ -172,5 +176,27 @@ func TestFileBrowsingRoutesAreNotServed(t *testing.T) {
 		if status != http.StatusNotFound {
 			t.Fatalf("%s %s: expected 404, got %d: %s", route.method, route.path, status, string(body))
 		}
+	}
+}
+
+func TestReposDiffErrorNamesExceededBoundAndMachine(t *testing.T) {
+	t.Parallel()
+	h := &reposHandler{diffTimeout: time.Millisecond}
+	ctx, cancel := h.diffContext(context.Background(), config.Config{Machines: map[string]config.MachineConfig{"bk": {SSH: "bk"}}}, "bk")
+	defer cancel()
+	<-ctx.Done()
+	if gitdiff.SSHFromContext(ctx) != "bk" {
+		t.Fatalf("diff context does not route to machine bk")
+	}
+	cause := errors.New("SSH bk: context deadline exceeded (ssh signal: killed): ")
+	err := h.diffError(ctx, "remote", "bk", cause)
+	if !errors.Is(err, cause) || err.Error() != "git diff of repo remote on machine bk did not complete within 1ms: "+cause.Error() {
+		t.Fatalf("timeout error: %v", err)
+	}
+	// Anything but the bound passes through unchanged (e.g. NotFound, Git stderr).
+	live, cancelLive := h.diffContext(context.Background(), config.Config{}, "")
+	defer cancelLive()
+	if got := h.diffError(live, "remote", "", cause); got != cause {
+		t.Fatalf("non-timeout error rewritten: %v", got)
 	}
 }

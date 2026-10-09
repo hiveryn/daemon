@@ -105,6 +105,16 @@ earlier attempt already exists, the error says so and the session must be
 discarded before spawning again. An exceeded bound is reported as such, with the
 interrupted SSH step.
 
+Opening a remote repository terminal creates its tmux server over SSH, likewise
+detached from the requester and bounded by the daemon (45 seconds). A completed
+terminal appears as a tab even if the requester stopped waiting; a second
+creation in the same session while one is in flight is a conflict. A failed or
+timed-out creation removes the possibly created server before reporting; if that
+removal cannot be confirmed, its ownership record is kept and the server is
+removed when the session ends. Closing a terminal drops its record once removal
+is confirmed. Remote working-tree and commit diffs are bounded at 60 seconds and
+read all untracked files in one SSH round trip.
+
 A reverse SSH tunnel maps a session's stable remote loopback port to a dedicated
 local worker gateway. Only authenticated worker MCP tools and session-scoped
 hooks are exposed, never the general daemon API or architect tools. The random
@@ -131,8 +141,9 @@ scopes, file browsing and offline MCP delivery are not supported.
 keys and known-hosts, a disposable daemon/database and fixture provider CLIs.
 It requires Docker, Go, Python 3, `websocket-client` and OpenSSH. It does not read
 live Hiveryn/SSH configuration or model credentials. The daemon is race-enabled.
-A final phase injects SSH latency to check launches longer than five seconds,
-requesters that stop waiting, concurrent launches, and failed-preparation cleanup.
+Final phases inject SSH latency to check launches, diffs and repository
+terminals longer than five seconds, requesters that stop waiting, concurrent
+launches/terminals, failed-preparation cleanup and unconfirmed terminal cleanup.
 
 The fixture uses Alpine Linux 3.22, OpenSSH 10 and tmux 3.5a, with a macOS client.
 Unit tests cover provider target filesystems, scope validation, shell quoting

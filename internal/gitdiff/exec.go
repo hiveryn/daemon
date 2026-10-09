@@ -51,6 +51,23 @@ func runGitCommand(ctx context.Context, repoPath string, allowExitCodeOne bool, 
 	return "", fmt.Errorf("gitdiff: git %s failed in %q: %w (stderr: %s)", strings.Join(args, " "), repoPath, err, stderr.String())
 }
 
+// runShell runs a POSIX shell script in repoPath, locally or on the
+// configured SSH account, treating any non-zero exit as failure.
+func runShell(ctx context.Context, repoPath, script string) (string, error) {
+	cmd := exec.CommandContext(ctx, "sh", "-c", script)
+	cmd.Dir = repoPath
+	if alias := SSHFromContext(ctx); alias != "" {
+		cmd = remoteexec.Command(ctx, alias, "cd "+remoteexec.Quote(repoPath)+" && "+script)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("gitdiff: shell script failed in %q: %w (stderr: %s)", repoPath, err, stderr.String())
+	}
+	return stdout.String(), nil
+}
+
 // WithSSH routes Git operations to the configured account without changing paths.
 func WithSSH(ctx context.Context, alias string) context.Context {
 	return context.WithValue(ctx, sshKey{}, alias)

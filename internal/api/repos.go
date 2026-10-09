@@ -1,8 +1,13 @@
 package api
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"net/http"
+	"time"
 
+	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
 	"github.com/hiveryn/daemon/internal/gitdiff"
 )
@@ -51,6 +56,40 @@ func (h *reposHandler) get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, repo)
 }
 
+// defaultDiffTimeout bounds one diff computation. A remote repository's diff is
+// several SSH round trips, routinely longer than an ordinary API call; the bound
+// keeps a stalled connection from holding the request open indefinitely. The
+// desktop waits longer than this, so the daemon's own error is what it shows.
+const defaultDiffTimeout = 60 * time.Second
+
+func (h *reposHandler) diffBound() time.Duration {
+	if h.diffTimeout > 0 {
+		return h.diffTimeout
+	}
+	return defaultDiffTimeout
+}
+
+// diffContext bounds a diff and routes its Git commands to the repository's
+// machine. The diff is read-only, so it stays tied to the requester too: a
+// client that stops waiting cancels it.
+func (h *reposHandler) diffContext(parent context.Context, cfg config.Config, machine string) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(parent, h.diffBound())
+	return gitdiff.WithSSH(ctx, cfg.Machines[machine].SSH), cancel
+}
+
+// diffError names an exceeded bound and the machine, keeping the original
+// cause (SSH or Git stderr) intact; domain errors pass through unchanged.
+func (h *reposHandler) diffError(ctx context.Context, repoKey, machine string, err error) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		where := ""
+		if machine != "" {
+			where = " on machine " + machine
+		}
+		return fmt.Errorf("git diff of repo %s%s did not complete within %s: %w", repoKey, where, h.diffBound(), err)
+	}
+	return err
+}
+
 type diffResponse struct {
 	Repo     string          `json:"repo"`
 	RepoPath string          `json:"repo_path"`
@@ -86,8 +125,11 @@ func (h *reposHandler) diff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := gitdiff.LoadWorkingTreeDiff(gitdiff.WithSSH(r.Context(), cfg.Machines[repo.Machine].SSH), repo.Path)
+	ctx, cancel := h.diffContext(r.Context(), cfg, repo.Machine)
+	defer cancel()
+	result, err := gitdiff.LoadWorkingTreeDiff(ctx, repo.Path)
 	if err != nil {
+		err = h.diffError(ctx, repoKey, repo.Machine, err)
 		writeDomainError(w, r, err)
 		return
 	}
@@ -118,8 +160,11 @@ func (h *reposHandler) commitDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := gitdiff.LoadCommitDiff(gitdiff.WithSSH(r.Context(), cfg.Machines[repo.Machine].SSH), repo.Path, sha)
+	ctx, cancel := h.diffContext(r.Context(), cfg, repo.Machine)
+	defer cancel()
+	result, err := gitdiff.LoadCommitDiff(ctx, repo.Path, sha)
 	if err != nil {
+		err = h.diffError(ctx, repoKey, repo.Machine, err)
 		writeDomainError(w, r, err)
 		return
 	}

@@ -83,6 +83,16 @@ func readTrackedDiff(ctx context.Context, repoPath, kind string, staged bool) ([
 }
 
 func readUntrackedDiff(ctx context.Context, repoPath string) ([]sectionFile, error) {
+	if SSHFromContext(ctx) != "" {
+		// One SSH round trip for every untracked file, not one per file: each
+		// connection costs a handshake, so a per-file loop scales SSH latency by
+		// the number of new files.
+		raw, err := runShell(ctx, repoPath, untrackedDiffScript)
+		if err != nil {
+			return nil, err
+		}
+		return untrackedSectionFiles(raw)
+	}
 	paths, err := listUntrackedFiles(ctx, repoPath)
 	if err != nil {
 		return nil, err
@@ -93,14 +103,35 @@ func readUntrackedDiff(ctx context.Context, repoPath string) ([]sectionFile, err
 		if err != nil {
 			return nil, err
 		}
-		parsed, err := parseDiffOutput(raw)
+		parsed, err := untrackedSectionFiles(raw)
 		if err != nil {
 			return nil, err
 		}
-		for _, f := range parsed {
-			f.Status = "untracked"
-			files = append(files, sectionFile{parsedFile: f, Kind: sectionKindUnstaged})
-		}
+		files = append(files, parsed...)
+	}
+	return files, nil
+}
+
+// untrackedDiffScript prints `git diff --no-index /dev/null <path>` for every
+// untracked file, in ls-files order. That diff exits 1 when the files differ
+// (always, for a new file), so only an exit above 1 is a failure; xargs then
+// exits non-zero and the script fails with git's stderr. A pipeline's status
+// is xargs', so the repository is checked first: a failed listing must never
+// read as "no untracked files".
+const untrackedDiffScript = `git rev-parse --git-dir >/dev/null && ` +
+	`git -c core.quotepath=false ls-files --others --exclude-standard -z | ` +
+	`xargs -0 -n 1 sh -c '[ -n "$1" ] || exit 0; ` +
+	`git -c core.quotepath=false diff --no-index --no-ext-diff --no-color --no-prefix -- /dev/null "$1"; test $? -le 1' hiveryn-untracked`
+
+func untrackedSectionFiles(raw string) ([]sectionFile, error) {
+	parsed, err := parseDiffOutput(raw)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]sectionFile, 0, len(parsed))
+	for _, f := range parsed {
+		f.Status = "untracked"
+		files = append(files, sectionFile{parsedFile: f, Kind: sectionKindUnstaged})
 	}
 	return files, nil
 }
