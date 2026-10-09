@@ -209,7 +209,8 @@ func TestUnconfirmedCleanupKeepsRemoteTerminalOwnership(t *testing.T) {
 
 // A creation that outlives its bound is killed by its own deadline, and the
 // possibly created server is still removed: a timeout is not proof that no
-// remote shell exists.
+// remote shell exists. The fake's sleep outlives the killed ssh process and
+// holds its output open, as a ProxyCommand child can; the bound still holds.
 func TestTimedOutRemoteTerminalCreationIsCleanedUp(t *testing.T) {
 	ssh := installFakeSSH(t)
 	ssh.set(t, "create-delay", "5")

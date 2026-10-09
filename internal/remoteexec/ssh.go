@@ -9,6 +9,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 func Quote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
@@ -27,8 +28,16 @@ func Options(alias string) []string {
 // alias is configuration, not a hostname assembled from request arguments.
 func Command(ctx context.Context, alias, script string) *exec.Cmd {
 	args := append(Options(alias), "sh -c "+Quote(script))
-	return exec.CommandContext(ctx, "ssh", args...)
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	// A cancelled ssh is killed, but a child it started (a ProxyCommand, a
+	// connection multiplexer) can keep its output pipes open; stop waiting for
+	// them so a deadline actually bounds the call.
+	cmd.WaitDelay = outputWaitDelay
+	return cmd
 }
+
+// outputWaitDelay bounds how long a killed ssh's leftover pipes are drained.
+const outputWaitDelay = 2 * time.Second
 func Run(ctx context.Context, alias, script string, input io.Reader) ([]byte, error) {
 	cmd := Command(ctx, alias, script)
 	cmd.Stdin = input
