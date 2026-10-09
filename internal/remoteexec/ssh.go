@@ -38,6 +38,7 @@ func Command(ctx context.Context, alias, script string) *exec.Cmd {
 
 // outputWaitDelay bounds how long a killed ssh's leftover pipes are drained.
 const outputWaitDelay = 2 * time.Second
+
 func Run(ctx context.Context, alias, script string, input io.Reader) ([]byte, error) {
 	cmd := Command(ctx, alias, script)
 	cmd.Stdin = input
