@@ -86,7 +86,7 @@ func (h *reposHandler) diff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := gitdiff.LoadWorkingTreeDiff(r.Context(), repo.Path)
+	result, err := gitdiff.LoadWorkingTreeDiff(gitdiff.WithSSH(r.Context(), cfg.Machines[repo.Machine].SSH), repo.Path)
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
@@ -118,7 +118,7 @@ func (h *reposHandler) commitDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := gitdiff.LoadCommitDiff(r.Context(), repo.Path, sha)
+	result, err := gitdiff.LoadCommitDiff(gitdiff.WithSSH(r.Context(), cfg.Machines[repo.Machine].SSH), repo.Path, sha)
 	if err != nil {
 		writeDomainError(w, r, err)
 		return

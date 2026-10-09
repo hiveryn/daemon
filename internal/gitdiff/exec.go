@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/hiveryn/daemon/internal/remoteexec"
 	"os/exec"
 	"strings"
 )
@@ -29,6 +30,9 @@ func runGitCommand(ctx context.Context, repoPath string, allowExitCodeOne bool, 
 	commandArgs := append([]string{"-c", "core.quotepath=false"}, args...)
 	cmd := exec.CommandContext(ctx, "git", commandArgs...)
 	cmd.Dir = repoPath
+	if alias := SSHFromContext(ctx); alias != "" {
+		cmd = remoteexec.Command(ctx, alias, "cd "+remoteexec.Quote(repoPath)+" && "+remoteexec.Args(append([]string{"git"}, commandArgs...)...))
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -46,3 +50,12 @@ func runGitCommand(ctx context.Context, repoPath string, allowExitCodeOne bool, 
 
 	return "", fmt.Errorf("gitdiff: git %s failed in %q: %w (stderr: %s)", strings.Join(args, " "), repoPath, err, stderr.String())
 }
+
+// WithSSH routes Git operations to the configured account without changing paths.
+func WithSSH(ctx context.Context, alias string) context.Context {
+	return context.WithValue(ctx, sshKey{}, alias)
+}
+
+type sshKey struct{}
+
+func SSHFromContext(ctx context.Context) string { s, _ := ctx.Value(sshKey{}).(string); return s }

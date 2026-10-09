@@ -35,6 +35,12 @@ func (h *workspaceHandler) check(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, r, err)
 		return
 	}
+	if h.configSource != nil {
+		if problem := h.configSource.LoadStatus().Error; problem != "" {
+			report.Valid = false
+			report.Diagnostics = append(report.Diagnostics, domain.WorkspaceDiagnostic{Code: domain.DiagConfigInvalid, Severity: domain.DiagnosticSeverity("error"), Path: "configuration", Message: problem})
+		}
+	}
 	writeJSON(w, r, http.StatusOK, report)
 }
 
@@ -54,6 +60,12 @@ func (h *workspaceHandler) workerPreflight(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
+	}
+	if h.configSource != nil {
+		if problem := h.configSource.LoadStatus().Error; problem != "" {
+			preflight.Launchable = false
+			preflight.Problems = append(preflight.Problems, problem)
+		}
 	}
 	writeJSON(w, r, http.StatusOK, preflight)
 }

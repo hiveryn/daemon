@@ -2,6 +2,7 @@ package gitdiff
 
 import (
 	"context"
+	"github.com/hiveryn/daemon/internal/remoteexec"
 	"os"
 	"strings"
 
@@ -16,7 +17,7 @@ const (
 // LoadWorkingTreeDiff computes the current staged + unstaged + untracked
 // diff for repoPath. It never mutates the working tree or index.
 func LoadWorkingTreeDiff(ctx context.Context, repoPath string) (WorkingTreeDiff, error) {
-	if err := checkRepoPath(repoPath); err != nil {
+	if err := checkRepoPath(ctx, repoPath); err != nil {
 		return WorkingTreeDiff{}, err
 	}
 
@@ -41,7 +42,11 @@ func LoadWorkingTreeDiff(ctx context.Context, repoPath string) (WorkingTreeDiff,
 	}, nil
 }
 
-func checkRepoPath(repoPath string) error {
+func checkRepoPath(ctx context.Context, repoPath string) error {
+	if alias := SSHFromContext(ctx); alias != "" {
+		_, err := remoteexec.Run(ctx, alias, "test -d "+remoteexec.Quote(repoPath), nil)
+		return err
+	}
 	info, err := os.Stat(repoPath)
 	if err != nil || !info.IsDir() {
 		return &domain.NotFoundError{Resource: "repo_path", ID: repoPath}

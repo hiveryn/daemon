@@ -24,6 +24,8 @@ import (
 	"github.com/hiveryn/daemon/internal/archive"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
+	"github.com/hiveryn/daemon/internal/gitdiff"
+	"github.com/hiveryn/daemon/internal/remoteexec"
 	"github.com/hiveryn/daemon/internal/workspacefs"
 	"gopkg.in/yaml.v3"
 )
@@ -43,6 +45,12 @@ var defaultTabsBySessionType = map[string][]config.TabEntry{
 }
 
 type Service struct {
+	remoteStop     chan struct{}
+	remoteStopOnce sync.Once
+
+	remoteMu sync.Mutex
+	remotes  map[string]*remoteWorker
+
 	logger         *slog.Logger
 	cfg            config.Config
 	configSource   config.Source
@@ -132,6 +140,8 @@ func New(ctx context.Context, cfg config.Config, configSource config.Source, rep
 	mux.Handle("/opencode", receiver.Handler(agentruntime.AgentOpenCode))
 
 	return &Service{
+		remoteStop:     make(chan struct{}),
+		remotes:        map[string]*remoteWorker{},
 		logger:         logger,
 		cfg:            cfg,
 		configSource:   configSource,
@@ -258,6 +268,16 @@ func (s *Service) CreateSession(ctx context.Context, req domain.CreateSessionReq
 // desktop's launch and an architect's spawn request (which runs it before the
 // approval is shown and again when it resolves). CreatedBy is the caller's.
 func (s *Service) ticketSessionParams(ctx context.Context, architectKey string, architect config.ArchitectConfig, ticketID string, workflows []string) (domain.CreateSessionParams, error) {
+	cfg, err := config.WritableConfig(s.cfg, s.configSource)
+	if err != nil {
+		return domain.CreateSessionParams{}, err
+	}
+	if live, ok := cfg.Architects[architectKey]; ok {
+		architect = live
+	} else {
+		return domain.CreateSessionParams{}, &domain.NotFoundError{Resource: "architect", ID: architectKey}
+	}
+
 	if strings.TrimSpace(ticketID) == "" {
 		return domain.CreateSessionParams{}, &domain.ValidationError{Field: "ticket_id", Message: "is required"}
 	}
@@ -276,10 +296,16 @@ func (s *Service) ticketSessionParams(ctx context.Context, architectKey string, 
 	if !ok {
 		return domain.CreateSessionParams{}, &domain.ValidationError{Field: "repo", Message: "repo key " + repoKey + " not configured in architect repos"}
 	}
-	if err := validateRepoPath(repoPath); err != nil {
-		return domain.CreateSessionParams{}, err
+	machine, err := cfg.ScopeMachine(architect, repoKey, ticket.AdditionalRepos)
+	if err != nil {
+		return domain.CreateSessionParams{}, &domain.ValidationError{Field: "repos", Message: err.Error()}
 	}
-	additionalRepos, additionalWorkdirs, err := resolveAdditionalRepos(architect.Repos, repoKey, repoPath, ticket.AdditionalRepos)
+	if machine == "" {
+		if err := validateRepoPath(repoPath); err != nil {
+			return domain.CreateSessionParams{}, err
+		}
+	}
+	additionalRepos, additionalWorkdirs, err := resolveAdditionalRepos(architect.Repos, repoKey, repoPath, ticket.AdditionalRepos, machine != "")
 	if err != nil {
 		return domain.CreateSessionParams{}, err
 	}
@@ -305,7 +331,12 @@ func (s *Service) ticketSessionParams(ctx context.Context, architectKey string, 
 	if err != nil {
 		return domain.CreateSessionParams{}, err
 	}
+	remoteToken, remotePort, err := newRemoteCredentials(machine)
+	if err != nil {
+		return domain.CreateSessionParams{}, err
+	}
 	return domain.CreateSessionParams{
+		Machine: machine, SSH: cfg.Machines[machine].SSH, RemoteToken: remoteToken, RemotePort: remotePort,
 		ArchitectKey:       architectKey,
 		SessionType:        domain.SessionTypeTicket,
 		ContextID:          ticketID,
@@ -325,6 +356,9 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 	}
 
 	cfg, err := s.currentConfig()
+	if session.SessionType == domain.SessionTypeTicket {
+		cfg, err = config.WritableConfig(s.cfg, s.configSource)
+	}
 	if err != nil {
 		return domain.CreateSessionRunResult{}, err
 	}
@@ -352,13 +386,18 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 	if err := validateStoredSession(session); err != nil {
 		return domain.CreateSessionRunResult{}, err
 	}
-	if err := validateExistingDirectory(session.Workdir, "workdir"); err != nil {
-		return domain.CreateSessionRunResult{}, err
-	}
-	for i, workdir := range session.AdditionalWorkdirs {
-		if err := validateExistingDirectory(workdir, "additional_workdirs"); err != nil {
-			return domain.CreateSessionRunResult{}, fmt.Errorf("validate additional repo %q workdir: %w", session.AdditionalRepos[i], err)
+	if session.Machine == "" {
+		if err := validateExistingDirectory(session.Workdir, "workdir"); err != nil {
+			return domain.CreateSessionRunResult{}, err
 		}
+		for i, workdir := range session.AdditionalWorkdirs {
+			if err := validateExistingDirectory(workdir, "additional_workdirs"); err != nil {
+				return domain.CreateSessionRunResult{}, fmt.Errorf("validate additional repo %q workdir: %w", session.AdditionalRepos[i], err)
+			}
+		}
+	}
+	if err := s.validateSessionLocation(ctx, cfg, architect, session); err != nil {
+		return domain.CreateSessionRunResult{}, err
 	}
 	workerCtx, err := validateWorkerLaunchContext(architect, session)
 	if err != nil {
@@ -413,6 +452,9 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 	if session.SessionType == domain.SessionTypeTicket {
 		ticketID = session.ContextID
 		if _, err := s.tickets.MoveTicket(ctx, architect.Path, session.ContextID, domain.MoveTicketParams{To: domain.TicketStatusProgress}); err != nil {
+			if stopErr := s.stopRemote(ctx, session); stopErr != nil {
+				return domain.CreateSessionRunResult{}, fmt.Errorf("move ticket to progress: %w; remote cleanup: %v", err, stopErr)
+			}
 			if killErr := s.terminal.KillBySession(ctx, session.ID); killErr != nil && !errors.Is(killErr, errTerminalNotFound) {
 				return domain.CreateSessionRunResult{}, fmt.Errorf("move ticket %s to progress: %w (also failed to kill terminals: %v)", session.ContextID, err, killErr)
 			}
@@ -469,7 +511,19 @@ func (s *Service) launchSession(ctx context.Context, cfg config.Config, session 
 		return "", err
 	}
 
+	if session.Machine != "" {
+		s.storeSessionTerminalState(session.ID, sessionTerminalState{runID: run.ID, mainTerminalID: mainTerminalID})
+	}
 	tabs := s.startAutoTerminals(ctx, cfg, session, spec.Workdir, spec.Env, size, spec.CleanupPaths)
+	if session.Machine != "" {
+		s.terminalStateMu.Lock()
+		state := s.terminalStates[session.ID]
+		state.tabs = cloneSessionTabStates(tabs)
+		s.terminalStates[session.ID] = state
+		mainTerminalID = state.mainTerminalID
+		s.terminalStateMu.Unlock()
+		return mainTerminalID, nil
+	}
 	s.storeSessionTerminalState(session.ID, sessionTerminalState{
 		runID:          run.ID,
 		mainTerminalID: mainTerminalID,
@@ -497,6 +551,12 @@ func (s *Service) RestoreRunningSessions(ctx context.Context) error {
 		}
 		run := *session.CurrentRun
 		if err := s.restoreSession(ctx, session, run); err != nil {
+			if session.Machine != "" {
+				s.logger.Error("remote attachment restore failed; worker lifecycle retained", "session_id", session.ID, "error", err)
+				s.storeSessionTerminalState(session.ID, sessionTerminalState{runID: run.ID, mainTerminalID: uuid.NewString(), tabs: []sessionTabState{{tab: domain.SessionTab{Type: "ticket"}}}})
+				continue
+			}
+
 			s.logger.Error("failed to restore session run, marking as failed",
 				"session_id", session.ID,
 				"run_id", run.ID,
@@ -552,6 +612,27 @@ func (s *Service) restoreSession(ctx context.Context, session domain.Session, ru
 		return err
 	}
 
+	if session.Machine != "" {
+		id, _, err := s.startRemoteTerminal(ctx, session, run, config.VariantConfig{}, "", agentruntime.StartRequest{Resume: true}, terminalSize{Cols: defaultPTYCols, Rows: defaultPTYRows})
+		if err != nil {
+			return err
+		}
+		tabs := []sessionTabState{}
+		configured := cfg.Tabs[string(session.SessionType)]
+		if len(configured) == 0 {
+			configured = defaultTabsBySessionType[string(session.SessionType)]
+		}
+		for _, tab := range configured {
+			if tab.Type == "terminal" {
+				continue
+			}
+			tabs = append(tabs, sessionTabState{tab: domain.SessionTab{Type: tab.Type}})
+		}
+		s.storeSessionTerminalState(session.ID, sessionTerminalState{runID: run.ID, mainTerminalID: id, tabs: tabs})
+		s.restoreRemoteAux(ctx, session)
+		return nil
+	}
+
 	profile, agentKind, err := s.resolveStoredRunLaunchContext(session, run)
 	if err != nil {
 		return err
@@ -577,6 +658,7 @@ func (s *Service) restoreSession(ctx context.Context, session domain.Session, ru
 		return fmt.Errorf("launch session run: %w", err)
 	}
 
+	s.restoreRemoteAux(ctx, session)
 	return nil
 }
 
@@ -613,6 +695,9 @@ func (s *Service) moveTicketToBacklog(ctx context.Context, session domain.Sessio
 }
 
 func (s *Service) startSessionMainTerminal(ctx context.Context, session domain.Session, run domain.SessionRun, profile config.VariantConfig, agentKind agentruntime.AgentKind, startReq agentruntime.StartRequest, size terminalSize) (string, agentruntime.LaunchSpec, error) {
+	if session.Machine != "" {
+		return s.startRemoteTerminal(ctx, session, run, profile, agentKind, startReq, size)
+	}
 	spec, err := s.prepareLaunchSpec(ctx, session, run, profile, agentKind, startReq)
 	if err != nil {
 		return "", agentruntime.LaunchSpec{}, err
@@ -860,6 +945,9 @@ func (s *Service) UnspawnTicketSession(ctx context.Context, id string) (domain.C
 	}
 	run := *session.CurrentRun
 
+	if err := s.stopRemote(ctx, session); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
 	if err := s.moveTicketToBacklog(ctx, session); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
@@ -1139,6 +1227,9 @@ func (s *Service) concludeArchitectSession(ctx context.Context, session domain.S
 		return domain.ConcludeSessionResult{}, err
 	}
 
+	if err := s.stopRemote(ctx, session); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
 	if strings.TrimSpace(params.Body) != "" {
 		folderName := session.ContextID
 		dir := filepath.Join(architect.Path, "architect-sessions", folderName)
@@ -1238,7 +1329,7 @@ func (s *Service) concludeTicketSession(ctx context.Context, session domain.Sess
 	for i, key := range session.AdditionalRepos {
 		scopedRepos[key] = session.AdditionalWorkdirs[i]
 	}
-	resolvedCommits, err := resolveConclusionCommitRefs(ctx, scopedRepos, params.Commits)
+	resolvedCommits, err := resolveConclusionCommitRefs(gitdiff.WithSSH(ctx, session.SSH), scopedRepos, params.Commits)
 	if err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
@@ -1259,6 +1350,9 @@ func (s *Service) concludeTicketSession(ctx context.Context, session domain.Sess
 		Body:            params.Body,
 	}
 
+	if err := s.stopRemote(ctx, session); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
 	if _, err := s.tickets.ConcludeTicket(ctx, architect.Path, session.ContextID, conclusion); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
@@ -1329,7 +1423,15 @@ func (s *Service) MoveTicketToDone(ctx context.Context, architectKey, ticketID s
 	for _, key := range append([]string{ticket.Repo}, ticket.AdditionalRepos...) {
 		scopedRepos[key] = architect.Repos[key]
 	}
-	resolvedCommits, err := resolveConclusionCommitRefs(ctx, scopedRepos, params.Commits)
+	cfg, err := s.currentConfig()
+	if err != nil {
+		return domain.MoveTicketToDoneResult{}, err
+	}
+	machine, err := cfg.ScopeMachine(architect, ticket.Repo, ticket.AdditionalRepos)
+	if err != nil {
+		return domain.MoveTicketToDoneResult{}, err
+	}
+	resolvedCommits, err := resolveConclusionCommitRefs(gitdiff.WithSSH(ctx, cfg.Machines[machine].SSH), scopedRepos, params.Commits)
 	if err != nil {
 		return domain.MoveTicketToDoneResult{}, err
 	}
@@ -1416,6 +1518,9 @@ func (s *Service) appendAndPublishSessionEvent(ctx context.Context, params domai
 func validateCommitSHA(ctx context.Context, repoPath, sha string) error {
 	cmd := exec.CommandContext(ctx, "git", "cat-file", "-t", sha)
 	cmd.Dir = repoPath
+	if alias := gitdiff.SSHFromContext(ctx); alias != "" {
+		cmd = remoteexec.Command(ctx, alias, "cd "+remoteexec.Quote(repoPath)+" && "+remoteexec.Args("git", "cat-file", "-t", sha))
+	}
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("git cat-file -t %s failed: %w", sha, err)
@@ -1472,7 +1577,11 @@ func writeConclusionFile(path string, doc architectfs.MarkdownDocument) error {
 }
 
 func (s *Service) TerminateSession(ctx context.Context, id string) error {
-	if _, err := s.repo.GetSession(ctx, id); err != nil {
+	session, err := s.repo.GetSession(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.stopRemote(ctx, session); err != nil {
 		return err
 	}
 
@@ -1609,21 +1718,31 @@ func (s *Service) CreateTerminal(ctx context.Context, sessionID string, params d
 	if selected == nil {
 		return domain.TerminalInfo{}, &domain.ValidationError{Field: "workdir_id", Message: "is not available for this session; refresh the choices and select another directory"}
 	}
-	if err := validateExistingDirectory(selected.Path, "workdir_id"); err != nil {
-		return domain.TerminalInfo{}, fmt.Errorf("selected terminal workdir %q (%s): %w", selected.Title, selected.Path, err)
-	}
+	if selected.Machine == "" {
+		if err := validateExistingDirectory(selected.Path, "workdir_id"); err != nil {
+			return domain.TerminalInfo{}, fmt.Errorf("selected terminal workdir %q (%s): %w", selected.Title, selected.Path, err)
+		}
 
+	}
 	command := s.defaultShell()
 
 	terminalID := uuid.NewString()
-	if err := s.terminal.Start(ctx, terminalStartSpec{
+	start := terminalStartSpec{
 		SessionID:  sessionID,
 		TerminalID: terminalID,
 		Command:    command,
 		Workdir:    selected.Path,
 		Size:       terminalSize{Cols: defaultPTYCols, Rows: defaultPTYRows},
 		OnExit:     s.handleAuxTerminalExit,
-	}); err != nil {
+	}
+	if selected.Machine != "" {
+		start.Command = ""
+		if err := s.prepareRemoteAux(ctx, session, *selected, &start); err != nil {
+			return domain.TerminalInfo{}, err
+		}
+		command = "ssh"
+	}
+	if err := s.terminal.Start(ctx, start); err != nil {
 		return domain.TerminalInfo{}, err
 	}
 
@@ -1684,13 +1803,21 @@ func (s *Service) terminalWorkdirs(ctx context.Context, session domain.Session) 
 	}
 	seen := map[string]bool{}
 	result := []domain.TerminalWorkdir{}
-	add := func(id, title, path string, def bool) {
+	add := func(id, title, path string, def bool, machine ...string) {
+		location := ""
+		if len(machine) > 0 {
+			location = machine[0]
+		}
 		path = filepath.Clean(path)
-		if seen[path] {
+		if seen[location+":"+path] {
 			return
 		}
-		seen[path] = true
-		result = append(result, domain.TerminalWorkdir{ID: id, Title: title, Path: path, DisplayPath: display(path), Default: def})
+		seen[location+":"+path] = true
+		shown := display(path)
+		if location != "" {
+			shown = location + ":" + path
+		}
+		result = append(result, domain.TerminalWorkdir{Machine: location, ID: id, Title: title, Path: path, DisplayPath: shown, Default: def})
 	}
 	repoTitle := func(path string) string {
 		for key, repoPath := range architect.Repos {
@@ -1713,13 +1840,13 @@ func (s *Service) terminalWorkdirs(ctx context.Context, session domain.Session) 
 			}
 			primaryTitle = ticket.Repo
 		}
-		add("session-primary", primaryTitle, run.Workdir, true)
+		add("session-primary", primaryTitle, run.Workdir, true, session.Machine)
 		for i, path := range run.AdditionalWorkdirs {
 			title := "Additional repository"
 			if i < len(run.AdditionalRepos) {
 				title = run.AdditionalRepos[i]
 			}
-			add(fmt.Sprintf("session-additional:%d", i), title, path, false)
+			add(fmt.Sprintf("session-additional:%d", i), title, path, false, session.Machine)
 		}
 		add("architect-workspace", "Architect workspace", architect.Path, false)
 	} else {
@@ -1731,7 +1858,7 @@ func (s *Service) terminalWorkdirs(ctx context.Context, session domain.Session) 
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		add("repo:"+key, key, architect.Repos[key], false)
+		add("repo:"+key, key, architect.Repos[key], false, architect.RepoMachines[key])
 	}
 	return result, nil
 }
@@ -1782,6 +1909,9 @@ func (s *Service) KillTerminal(ctx context.Context, sessionID, terminalID string
 	if s.mainTerminalID(sessionID) == terminalID {
 		return &domain.ValidationError{Field: "terminal_id", Message: "cannot kill the main terminal"}
 	}
+	if err := s.stopRemoteAux(ctx, sessionID, terminalID); err != nil {
+		return err
+	}
 	if err := s.terminal.Kill(ctx, sessionID, terminalID); err != nil && !errors.Is(err, errTerminalNotFound) {
 		return err
 	}
@@ -1790,10 +1920,24 @@ func (s *Service) KillTerminal(ctx context.Context, sessionID, terminalID string
 }
 
 func (s *Service) Shutdown(ctx context.Context) error {
+	s.remoteStopOnce.Do(func() {
+		if s.remoteStop != nil {
+			close(s.remoteStop)
+		}
+	})
 	// First, while the event store and the agents' HTTP calls are still up:
 	// a blocked askQuestion gets an honest reply instead of a dropped
 	// connection, and the desktop stops offering an answer nobody would read.
 	s.interruptQuestions(ctx)
+	s.remoteMu.Lock()
+	ids := []string{}
+	for id := range s.remotes {
+		ids = append(ids, id)
+	}
+	s.remoteMu.Unlock()
+	for _, id := range ids {
+		s.closeRemote(id)
+	}
 	terminalErr := s.terminal.Shutdown(ctx)
 	s.cancelReceiverBridges()
 	s.closeEventSubscribers("")
@@ -2158,7 +2302,12 @@ func configKeys[V any](m map[string]V) []string {
 }
 
 func resolveArchitectRepos(architect config.ArchitectConfig) ([]string, []string, error) {
-	keys := configKeys(architect.Repos)
+	keys := []string{}
+	for _, key := range configKeys(architect.Repos) {
+		if architect.RepoMachines[key] == "" {
+			keys = append(keys, key)
+		}
+	}
 	paths := make([]string, 0, len(keys))
 	seenPaths := make(map[string]string, len(keys)+1)
 	seenPaths[filepath.Clean(architect.Path)] = "architect workspace"
@@ -2346,7 +2495,7 @@ func validateRepoPath(path string) error {
 	return nil
 }
 
-func resolveAdditionalRepos(repos map[string]string, primaryKey, primaryPath string, keys []string) ([]string, []string, error) {
+func resolveAdditionalRepos(repos map[string]string, primaryKey, primaryPath string, keys []string, remote ...bool) ([]string, []string, error) {
 	normalizedKeys := append([]string(nil), keys...)
 	for i := range normalizedKeys {
 		normalizedKeys[i] = strings.TrimSpace(normalizedKeys[i])
@@ -2366,8 +2515,10 @@ func resolveAdditionalRepos(repos map[string]string, primaryKey, primaryPath str
 		if !ok {
 			return nil, nil, &domain.ValidationError{Field: "additional_repos", Message: fmt.Sprintf("repo key %q is not configured in architect repos", key)}
 		}
-		if err := validateRepoPath(path); err != nil {
-			return nil, nil, fmt.Errorf("validate additional repo %q: %w", key, err)
+		if len(remote) == 0 || !remote[0] {
+			if err := validateRepoPath(path); err != nil {
+				return nil, nil, fmt.Errorf("validate additional repo %q: %w", key, err)
+			}
 		}
 		cleaned := filepath.Clean(path)
 		if other, exists := seenPaths[cleaned]; exists {
@@ -2485,7 +2636,7 @@ func (s *Service) startAutoTerminals(ctx context.Context, cfg config.Config, ses
 			cmd = s.defaultShell()
 		}
 		status := "running"
-		err := s.terminal.Start(ctx, terminalStartSpec{
+		start := terminalStartSpec{
 			SessionID:    session.ID,
 			TerminalID:   terminalID,
 			Command:      cmd,
@@ -2494,7 +2645,17 @@ func (s *Service) startAutoTerminals(ctx context.Context, cfg config.Config, ses
 			Size:         size,
 			CleanupPaths: append([]string(nil), cleanupPaths...),
 			OnExit:       s.handleAuxTerminalExit,
-		})
+		}
+		var err error
+		if session.Machine != "" {
+			start.Env = nil
+			start.CleanupPaths = nil
+			start.Command = tab.Command
+			err = s.prepareRemoteAux(ctx, session, domain.TerminalWorkdir{Machine: session.Machine, Path: workdir}, &start)
+		}
+		if err == nil {
+			err = s.terminal.Start(ctx, start)
+		}
 		if err != nil {
 			status = "exited"
 			s.logger.Warn("[spawn] auto-create terminal failed",
@@ -2619,6 +2780,20 @@ func sessionTabID(tab domain.SessionTab) string {
 }
 
 func (s *Service) hydrateSession(session domain.Session) domain.Session {
+	if session.Machine != "" {
+		session.Connection = "disconnected"
+		s.remoteMu.Lock()
+		w := s.remotes[session.ID]
+		s.remoteMu.Unlock()
+		if w != nil {
+			w.mu.Lock()
+			session.Connection = w.connection
+			w.mu.Unlock()
+		}
+		if session.Connection != "connected" && session.CurrentRun != nil {
+			session.CurrentRun.AgentStatus = ""
+		}
+	}
 	if session.CurrentRun != nil {
 		session.CurrentRun.MainTerminalID = s.mainTerminalID(session.ID)
 	}

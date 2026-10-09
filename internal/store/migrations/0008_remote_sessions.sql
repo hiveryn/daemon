@@ -1,0 +1,11 @@
+ALTER TABLE sessions ADD COLUMN machine TEXT NOT NULL DEFAULT '';
+ALTER TABLE sessions ADD COLUMN ssh TEXT NOT NULL DEFAULT '';
+ALTER TABLE sessions ADD COLUMN remote_token TEXT NOT NULL DEFAULT '';
+ALTER TABLE sessions ADD COLUMN remote_port INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE remote_resources (
+ session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+ ssh TEXT NOT NULL,
+ socket TEXT NOT NULL,
+ directory TEXT NOT NULL DEFAULT '',
+ PRIMARY KEY (session_id, ssh, socket)
+);

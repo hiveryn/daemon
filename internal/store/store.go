@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/hiveryn/daemon/internal/config"
 	_ "modernc.org/sqlite"
@@ -26,6 +28,22 @@ func Open(ctx context.Context, path string) (*sql.DB, error) {
 		}
 	}
 
+	// Worker tunnel credentials are persisted in sessions. Create/restrict the
+	// database before SQLite opens it, so new journal files inherit private mode.
+	if path != ":memory:" && !strings.HasPrefix(path, "file:") {
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+		if err != nil {
+			return nil, fmt.Errorf("open private database: %w", err)
+		}
+		err = file.Chmod(0600)
+		closeErr := file.Close()
+		if err != nil {
+			return nil, err
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite database: %w", err)

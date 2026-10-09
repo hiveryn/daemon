@@ -92,8 +92,9 @@ type architectResponse struct {
 }
 
 type repoResponse struct {
-	Key  string `json:"key"`
-	Path string `json:"path"`
+	Machine string `json:"machine,omitempty"`
+	Key     string `json:"key"`
+	Path    string `json:"path"`
 }
 
 func NewHandler(deps Dependencies) http.Handler {
@@ -275,7 +276,7 @@ func listRepos(cfg config.Config, architectKey string) ([]repoResponse, bool) {
 	if !ok {
 		return nil, false
 	}
-	return buildRepos(architect.Repos), true
+	return buildRepos(architect.Repos, architect.RepoMachines), true
 }
 
 func getRepo(cfg config.Config, architectKey, repoKey string) (repoResponse, bool, bool) {
@@ -287,7 +288,7 @@ func getRepo(cfg config.Config, architectKey, repoKey string) (repoResponse, boo
 	if !ok {
 		return repoResponse{}, true, false
 	}
-	return repoResponse{Key: repoKey, Path: path}, true, true
+	return repoResponse{Key: repoKey, Path: path, Machine: architect.RepoMachines[repoKey]}, true, true
 }
 
 func buildArchitectResponse(key string, architect config.ArchitectConfig, includeRepos bool) architectResponse {
@@ -297,16 +298,20 @@ func buildArchitectResponse(key string, architect config.ArchitectConfig, includ
 		Path: architect.Path,
 	}
 	if includeRepos {
-		resp.Repos = buildRepos(architect.Repos)
+		resp.Repos = buildRepos(architect.Repos, architect.RepoMachines)
 	}
 	return resp
 }
 
-func buildRepos(repos map[string]string) []repoResponse {
+func buildRepos(repos map[string]string, machines ...map[string]string) []repoResponse {
 	keys := configKeys(repos)
 	items := make([]repoResponse, 0, len(keys))
 	for _, key := range keys {
-		items = append(items, repoResponse{Key: key, Path: repos[key]})
+		machine := ""
+		if len(machines) > 0 {
+			machine = machines[0][key]
+		}
+		items = append(items, repoResponse{Key: key, Path: repos[key], Machine: machine})
 	}
 	return items
 }

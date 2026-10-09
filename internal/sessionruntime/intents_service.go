@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
@@ -443,6 +444,13 @@ func (s *Service) RequestCreateWorkTicket(
 		seen[key] = struct{}{}
 		params.AdditionalRepos[i] = key
 	}
+	cfg, err := config.WritableConfig(s.cfg, s.configSource)
+	if err != nil {
+		return zero, err
+	}
+	if _, err := cfg.ScopeMachine(architect, params.Repo, params.AdditionalRepos); err != nil {
+		return zero, &domain.ValidationError{Field: "repos", Message: err.Error()}
+	}
 	sort.Strings(params.AdditionalRepos)
 
 	payload := map[string]any{
@@ -466,8 +474,19 @@ func (s *Service) RequestCreateWorkTicket(
 			// silently disable dedup — the one bug that would quietly reinstate
 			// duplicate tickets.
 			p.Now = time.Now().UTC()
+			live, err := config.WritableConfig(s.cfg, s.configSource)
+			if err != nil {
+				return domain.Ticket{}, err
+			}
+			a, ok := live.Architects[session.ArchitectKey]
+			if !ok {
+				return domain.Ticket{}, fmt.Errorf("architect no longer configured")
+			}
+			if _, err := live.ScopeMachine(a, p.Repo, p.AdditionalRepos); err != nil {
+				return domain.Ticket{}, &domain.ValidationError{Field: "repos", Message: err.Error()}
+			}
 
-			ticket, err := s.tickets.CreateTicket(ctx, architect.Path, p)
+			ticket, err := s.tickets.CreateTicket(ctx, a.Path, p)
 			if err != nil {
 				return domain.Ticket{}, err
 			}

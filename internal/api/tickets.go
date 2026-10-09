@@ -113,7 +113,7 @@ func (h *ticketsHandler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg, err := currentConfig(h.config, h.configSource)
+	cfg, err := config.WritableConfig(h.config, h.configSource)
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
@@ -208,7 +208,7 @@ func (h *ticketsHandler) updateMetadata(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	cfg, err := currentConfig(h.config, h.configSource)
+	cfg, err := config.WritableConfig(h.config, h.configSource)
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
@@ -399,6 +399,9 @@ func validateRepoScope(cfg config.Config, architectKey, primary string, addition
 		}
 		seen[key] = struct{}{}
 		normalized = append(normalized, key)
+	}
+	if _, err := cfg.ScopeMachine(cfg.Architects[architectKey], primary, normalized); err != nil {
+		return nil, &domain.ValidationError{Field: "additional_repos", Message: err.Error()}
 	}
 	sort.Strings(normalized)
 	return normalized, nil

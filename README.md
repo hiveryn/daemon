@@ -478,3 +478,7 @@ All responses use a standard envelope:
 ```
 
 `data` and `error` are mutually exclusive. Error codes use uppercase snake_case: `VALIDATION`, `CONFLICT`, `NOT_FOUND`, `INTERNAL`.
+
+## Remote ticket workers
+
+See [SSH machine setup and lifecycle](docs/remote-workers.md) for remote repositories, tmux persistence, worker MCP, verification and limitations.

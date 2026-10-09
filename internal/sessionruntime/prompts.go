@@ -75,18 +75,22 @@ func renderArchitectKickoff(architectKey string, architect config.ArchitectConfi
 	return renderBuiltinPrompt(architectKickoffPromptName, architectKickoffData{
 		ArchitectName: architectKey,
 		CurrentDate:   now.UTC().Format(time.RFC3339),
-		Repos:         renderRepos(architect.Repos),
+		Repos:         renderRepos(architect.Repos, architect.RepoMachines),
 	})
 }
 
 // renderRepos formats a repo map as a sorted "- key: path" list.
-func renderRepos(repos map[string]string) string {
+func renderRepos(repos map[string]string, machines ...map[string]string) string {
 	if len(repos) == 0 {
 		return ""
 	}
 	lines := make([]string, 0, len(repos))
 	for _, key := range configKeys(repos) {
-		lines = append(lines, "- "+key+": "+repos[key])
+		label := key
+		if len(machines) > 0 && machines[0][key] != "" {
+			label += " (SSH machine " + machines[0][key] + ")"
+		}
+		lines = append(lines, "- "+label+": "+repos[key])
 	}
 	return strings.Join(lines, "\n")
 }

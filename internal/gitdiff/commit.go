@@ -13,7 +13,7 @@ import (
 // against their first parent (git's `diff-tree -p` prints nothing for
 // merge commits by default, mirroring `git log -p`).
 func LoadCommitDiff(ctx context.Context, repoPath, sha string) (CommitDiff, error) {
-	if err := checkRepoPath(repoPath); err != nil {
+	if err := checkRepoPath(ctx, repoPath); err != nil {
 		return CommitDiff{}, err
 	}
 

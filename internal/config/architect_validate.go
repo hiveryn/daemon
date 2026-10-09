@@ -19,6 +19,9 @@ func validateArchitect(key string, architect ArchitectConfig) error {
 		return fmt.Errorf("architects.%s.path is required", key)
 	}
 	for repoKey, repoPath := range architect.Repos {
+		if machine := architect.RepoMachines[repoKey]; machine != "" && !machineName.MatchString(machine) {
+			return fmt.Errorf("repos.%s.machine is invalid: %q", repoKey, machine)
+		}
 		if strings.TrimSpace(repoKey) == "" {
 			return fmt.Errorf("architects.%s.repos keys must not be blank", key)
 		}

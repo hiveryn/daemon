@@ -96,3 +96,9 @@ func (s *Server) Run() error {
 func (s *Server) SessionType() SessionType {
 	return s.sessionType
 }
+
+// HTTPHandler exposes the same fixed role/session tool registry as stdio.
+// Authentication and listener scoping belong to the caller.
+func (s *Server) HTTPHandler() http.Handler {
+	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s.mcpServer }, &mcp.StreamableHTTPOptions{Stateless: true})
+}

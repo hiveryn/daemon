@@ -40,6 +40,7 @@ type Config struct {
 	IntentWaitTimeout         int                          `yaml:"intent_wait_timeout,omitempty"`
 	ArchiveAgentEvents        bool                         `yaml:"archive_agent_events"`
 	Notifications             *NotificationsConfig         `yaml:"notifications,omitempty"`
+	Machines                  map[string]MachineConfig     `yaml:"-"`
 	Variants                  map[string]VariantConfig     `yaml:"-"`
 	Architects                map[string]ArchitectConfig   `yaml:"-"`
 	Tabs                      map[string][]TabEntry        `yaml:"-"`
@@ -139,6 +140,7 @@ type ArchitectConfig struct {
 	Name             string
 	Path             string
 	Repos            map[string]string
+	RepoMachines     map[string]string
 	AvailableActions []string
 }
 
@@ -147,9 +149,9 @@ type ArchitectConfig struct {
 // error, because a key the daemon silently ignores would look configured while
 // doing nothing.
 type architectFile struct {
-	Name             string            `yaml:"name,omitempty"`
-	Repos            map[string]string `yaml:"repos,omitempty"`
-	AvailableActions []string          `yaml:"availableActions,omitempty"`
+	Name             string              `yaml:"name,omitempty"`
+	Repos            map[string]repoFile `yaml:"repos,omitempty"`
+	AvailableActions []string            `yaml:"availableActions,omitempty"`
 }
 
 type TabEntry struct {
@@ -276,6 +278,7 @@ func Load(path string) (Config, error) {
 
 func (c Config) Clone() Config {
 	cloned := c
+	cloned.Machines = cloneMachines(c.Machines)
 	cloned.Variants = cloneVariantConfigs(c.Variants)
 	cloned.Architects = cloneArchitectConfigs(c.Architects)
 	cloned.Tabs = cloneTabs(c.Tabs)
@@ -364,6 +367,11 @@ func (s *reloadingSource) LoadStatus() LoadStatus {
 }
 
 func loadOptionalConfigFiles(configDir string, cfg *Config) error {
+	machines, err := loadMachines(filepath.Join(configDir, "machines.yaml"))
+	if err != nil {
+		return err
+	}
+	cfg.Machines = machines
 	if err := loadOptionalFile(filepath.Join(configDir, variantsFileName), &cfg.Variants); err != nil {
 		return fmt.Errorf("load variants: %w", err)
 	}
@@ -476,7 +484,18 @@ func decodeArchitectFile(data []byte) (architectFile, error) {
 // ValidateArchitectConfig, guaranteeing they agree.
 func architectConfigFromFile(key, workspacePath string, file architectFile) (ArchitectConfig, error) {
 	repos := make(map[string]string, len(file.Repos))
-	for name, path := range file.Repos {
+	machines := make(map[string]string, len(file.Repos))
+	for name, entry := range file.Repos {
+		path := entry.Path
+		machines[name] = entry.Machine
+		if entry.Machine != "" {
+			resolved, err := remoteRepoPath(path)
+			if err != nil {
+				return ArchitectConfig{}, fmt.Errorf("architect %q repo %q: %w", key, name, err)
+			}
+			repos[name] = resolved
+			continue
+		}
 		if strings.TrimSpace(path) == "" {
 			// filepath.Abs("") would silently resolve to the daemon's working
 			// directory, turning a blank entry into a real, wrong repo path.
@@ -493,6 +512,7 @@ func architectConfigFromFile(key, workspacePath string, file architectFile) (Arc
 		Name:             file.Name,
 		Path:             workspacePath,
 		Repos:            repos,
+		RepoMachines:     machines,
 		AvailableActions: append([]string(nil), file.AvailableActions...),
 	}, nil
 }
@@ -651,6 +671,9 @@ func (c Config) Validate() error {
 		}
 	}
 
+	if err := c.validateMachines(); err != nil {
+		return err
+	}
 	architectKeys := sortedKeys(c.Architects)
 	for _, key := range architectKeys {
 		if strings.TrimSpace(key) == "" {
@@ -842,6 +865,7 @@ func cloneArchitectConfigs(src map[string]ArchitectConfig) map[string]ArchitectC
 			Name:             architect.Name,
 			Path:             architect.Path,
 			Repos:            cloneStringMap(architect.Repos),
+			RepoMachines:     cloneStringMap(architect.RepoMachines),
 			AvailableActions: append([]string(nil), architect.AvailableActions...),
 		}
 	}

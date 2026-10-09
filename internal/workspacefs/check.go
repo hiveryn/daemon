@@ -199,6 +199,9 @@ func checkConfig(workspacePath, architectKey string) (scope repoScope, node doma
 	// directory that moves after being configured must not stop the daemon
 	// loading the config, but the architect does need to be told about it.
 	for _, repoKey := range sortedRepoKeys(resolved.Repos) {
+		if resolved.RepoMachines[repoKey] != "" {
+			continue
+		} // Remote paths cannot be inspected on this machine.
 		repoPath := resolved.Repos[repoKey]
 		repoInfo, statErr := os.Stat(repoPath)
 		switch {

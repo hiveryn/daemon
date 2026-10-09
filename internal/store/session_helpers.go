@@ -42,6 +42,7 @@ func scanSessionWithCurrentRun(scanner interface{ Scan(...any) error }) (domain.
 	var runUpdatedAt sql.NullString
 
 	if err := scanner.Scan(
+		&session.Machine, &session.SSH, &session.RemoteToken, &session.RemotePort,
 		&session.ID,
 		&session.ArchitectKey,
 		&sessionType,
