@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -99,15 +100,15 @@ func TestValidateWorkerContextEmptySelectionIsValid(t *testing.T) {
 	if len(ctx.Workflows) != 0 {
 		t.Fatalf("empty selection yielded workflows %v", ctx.Workflows)
 	}
-	for name, got := range map[string]string{
-		ProjectOverviewFileName: ctx.ProjectOverviewPath,
-		ProjectStateFileName:    ctx.ProjectStatePath,
-		RoadmapCurrentFileName:  ctx.RoadmapCurrentPath,
-	} {
-		want, _ := filepath.EvalSymlinks(joinWorkspace(f.Workspace, name))
-		if got != want {
-			t.Fatalf("%s path = %q, want %q", name, got, want)
-		}
+	// The documents carry their full content, frontmatter included, in a
+	// fixed order, labelled by file name.
+	want := []ProjectDocument{
+		{Name: ProjectOverviewFileName, Content: validOverview},
+		{Name: ProjectStateFileName, Content: validState},
+		{Name: RoadmapCurrentFileName, Content: validRoadmap},
+	}
+	if !reflect.DeepEqual(ctx.Documents, want) {
+		t.Fatalf("documents = %+v, want %+v", ctx.Documents, want)
 	}
 }
 
@@ -144,8 +145,8 @@ func TestValidateWorkerContextCarriesSelectedWorkflowBodies(t *testing.T) {
 		t.Fatalf("workflows = %+v", ctx.Workflows)
 	}
 	got := ctx.Workflows[0]
-	if got.Path != f.workflowPath("deliver.md") {
-		t.Fatalf("path = %q", got.Path)
+	if got.Name != "deliver" || got.Path != f.workflowPath("deliver.md") {
+		t.Fatalf("name = %q, path = %q", got.Name, got.Path)
 	}
 	if got.Body != body {
 		t.Fatalf("body = %q, want %q", got.Body, body)
@@ -178,11 +179,8 @@ func TestValidateWorkerContextRoadmapIsOptional(t *testing.T) {
 	if err != nil {
 		t.Fatalf("absent roadmap must not block a worker: %v", err)
 	}
-	if ctx.RoadmapCurrentPath != "" {
-		t.Fatalf("absent roadmap yielded a path %q", ctx.RoadmapCurrentPath)
-	}
-	if ctx.ProjectOverviewPath == "" || ctx.ProjectStatePath == "" {
-		t.Fatalf("required document paths missing: %+v", ctx)
+	if len(ctx.Documents) != 2 || ctx.Documents[0].Name != ProjectOverviewFileName || ctx.Documents[1].Name != ProjectStateFileName {
+		t.Fatalf("absent roadmap must leave only the required documents: %+v", ctx.Documents)
 	}
 }
 

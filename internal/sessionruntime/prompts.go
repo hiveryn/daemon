@@ -27,7 +27,7 @@ const (
 	architectKickoffPromptName = "prompts/architect/KICKOFF.md"
 	workerSystemPromptName     = "prompts/work/SYSTEM.md"
 	workerKickoffPromptName    = "prompts/work/KICKOFF.md"
-	workerWorkflowsPromptName  = "prompts/work/WORKFLOWS.md"
+	workerContextPromptName    = "prompts/work/CONTEXT.md"
 	actionSystemPromptName     = "prompts/action/SYSTEM.md"
 	actionKickoffPromptName    = "prompts/action/KICKOFF.md"
 )
@@ -157,64 +157,63 @@ type workerRepo struct {
 }
 
 // workerKickoffData is the template data for prompts/work/KICKOFF.md. Every
-// field is a daemon-supplied value: ticket identity, writable repositories and
-// the canonical project documents (RoadmapCurrentPath empty when the optional
-// roadmap is absent).
+// field is a daemon-supplied value: ticket identity and writable repositories.
 type workerKickoffData struct {
-	TicketID            string
-	Repos               []workerRepo
-	ProjectOverviewPath string
-	ProjectStatePath    string
-	RoadmapCurrentPath  string
+	TicketID string
+	Repos    []workerRepo
 }
 
 // renderWorkerKickoff renders the fixed worker startup message that a ticket
-// session stores as its prompt. It carries only the task and its context; role,
+// session stores as its prompt. It carries only the task and its scope; role,
 // scope rules and tool guidance live in the built-in worker instructions, not
 // here.
 //
-// The project documents are canonical paths the worker reads live. The
-// selected workflows are not part of the stored kickoff: their bodies are read
-// at each launch and attached by workerLaunchPrompt.
-func renderWorkerKickoff(ticketID string, repos []workerRepo, ctx workspacefs.WorkerContext) (string, error) {
+// The project documents and selected workflows are not part of the stored
+// kickoff: their content is read at each launch and attached by
+// workerLaunchPrompt.
+func renderWorkerKickoff(ticketID string, repos []workerRepo) (string, error) {
 	return renderBuiltinPrompt(workerKickoffPromptName, workerKickoffData{
-		TicketID:            ticketID,
-		Repos:               repos,
-		ProjectOverviewPath: ctx.ProjectOverviewPath,
-		ProjectStatePath:    ctx.ProjectStatePath,
-		RoadmapCurrentPath:  ctx.RoadmapCurrentPath,
+		TicketID: ticketID,
+		Repos:    repos,
 	})
 }
 
-// workerWorkflowsData is the template data for prompts/work/WORKFLOWS.md: the
-// selected workflows with their current bodies.
-type workerWorkflowsData struct {
-	Workflows []workspacefs.SelectedWorkflow
-}
-
-// renderWorkerWorkflows renders the selected workflows' full bodies, each in a
-// block labelled with its canonical path. Bodies are given verbatim apart from
-// leading and trailing blank lines; nothing is summarized or rewritten.
-func renderWorkerWorkflows(workflows []workspacefs.SelectedWorkflow) (string, error) {
-	blocks := make([]workspacefs.SelectedWorkflow, 0, len(workflows))
-	for _, workflow := range workflows {
-		blocks = append(blocks, workspacefs.SelectedWorkflow{
-			Path: workflow.Path,
+// renderWorkerContext renders the project documents and the selected
+// workflows in full, each in a block labelled with its name — never with an
+// architect-workspace path, which a worker may be unable to reach. Content is
+// given verbatim apart from leading and trailing blank lines; nothing is
+// summarized or rewritten.
+func renderWorkerContext(ctx workspacefs.WorkerContext) (string, error) {
+	documents := make([]workspacefs.ProjectDocument, 0, len(ctx.Documents))
+	for _, document := range ctx.Documents {
+		documents = append(documents, workspacefs.ProjectDocument{
+			Name:    document.Name,
+			Content: strings.Trim(document.Content, "\r\n"),
+		})
+	}
+	workflows := make([]workspacefs.SelectedWorkflow, 0, len(ctx.Workflows))
+	for _, workflow := range ctx.Workflows {
+		workflows = append(workflows, workspacefs.SelectedWorkflow{
+			Name: workflow.Name,
 			Body: strings.Trim(workflow.Body, "\r\n"),
 		})
 	}
-	return renderBuiltinPrompt(workerWorkflowsPromptName, workerWorkflowsData{Workflows: blocks})
+	return renderBuiltinPrompt(workerContextPromptName, workspacefs.WorkerContext{
+		Documents: documents,
+		Workflows: workflows,
+	})
 }
 
 // workerLaunchPrompt is the first message of a ticket run: the stored kickoff
-// followed by the selected workflows' bodies as just read and validated by the
-// launch check (or "none"). Workers follow workflows more consistently when the
-// text is in the prompt than when they are pointed at a path, and reading at
-// launch means a run never starts from a copy older than its launch. The bodies
-// go only in this first message, never in the instructions (system prompt), and
-// a resumed agent continues its conversation as it is: nothing is re-sent.
-func workerLaunchPrompt(kickoff string, workflows []workspacefs.SelectedWorkflow) (string, error) {
-	section, err := renderWorkerWorkflows(workflows)
+// followed by the project documents and the selected workflows (or "none") as
+// just read and validated by the launch check. Delivering the text rather than
+// workspace paths means a worker needs no access to the architect workspace,
+// and reading at launch means a run never starts from a copy older than its
+// launch. The content goes only in this first message, never in the
+// instructions (system prompt), and a resumed agent continues its conversation
+// as it is: nothing is re-sent.
+func workerLaunchPrompt(kickoff string, ctx workspacefs.WorkerContext) (string, error) {
+	section, err := renderWorkerContext(ctx)
 	if err != nil {
 		return "", err
 	}

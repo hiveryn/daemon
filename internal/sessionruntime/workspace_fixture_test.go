@@ -34,12 +34,30 @@ func testWorkspace(t *testing.T, repos map[string]string) string {
 	writeWorkspaceFile(t, workspace, workspacefs.ConfigFileName, b.String())
 
 	for _, name := range []string{workspacefs.ProjectOverviewFileName, workspacefs.ProjectStateFileName, workspacefs.RoadmapCurrentFileName} {
-		writeWorkspaceFile(t, workspace, name, "---\nlastUpdatedAt: \"2026-01-15T09:30:00Z\"\n---\n\n# "+name+"\n\nBody.\n")
+		writeWorkspaceFile(t, workspace, name, testProjectDocument(name))
 	}
 	if err := os.MkdirAll(filepath.Join(workspace, workspacefs.WorkflowsDirName), 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", workspacefs.WorkflowsDirName, err)
 	}
 	return workspace
+}
+
+// testProjectDocument is the content testWorkspace writes for one project
+// document.
+func testProjectDocument(name string) string {
+	return "---\nlastUpdatedAt: \"2026-01-15T09:30:00Z\"\n---\n\n# " + name + "\n\nBody.\n"
+}
+
+// testProjectDocumentsSection is the project-documents part of a worker's
+// first message for a testWorkspace whose documents are unchanged: every
+// document embedded in full, labelled by name.
+func testProjectDocumentsSection() string {
+	var b strings.Builder
+	b.WriteString("The project documents follow in full, one block per document, labelled with its name. They are read-only context, current as of this launch.")
+	for _, name := range []string{workspacefs.ProjectOverviewFileName, workspacefs.ProjectStateFileName, workspacefs.RoadmapCurrentFileName} {
+		b.WriteString("\n\n<document name=\"" + name + "\">\n" + strings.TrimSuffix(testProjectDocument(name), "\n") + "\n</document>")
+	}
+	return b.String()
 }
 
 // writeWorkflow writes a workflow file into the workspace and returns its path

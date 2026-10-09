@@ -301,7 +301,7 @@ func (s *Service) ticketSessionParams(ctx context.Context, architectKey string, 
 	for i, key := range additionalRepos {
 		repos = append(repos, workerRepo{Key: key, Path: additionalWorkdirs[i]})
 	}
-	kickoff, err := renderWorkerKickoff(ticket.ID, repos, workerCtx)
+	kickoff, err := renderWorkerKickoff(ticket.ID, repos)
 	if err != nil {
 		return domain.CreateSessionParams{}, err
 	}
@@ -366,7 +366,7 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 	}
 	prompt := session.Prompt
 	if session.SessionType == domain.SessionTypeTicket {
-		if prompt, err = workerLaunchPrompt(session.Prompt, workerCtx.Workflows); err != nil {
+		if prompt, err = workerLaunchPrompt(session.Prompt, workerCtx); err != nil {
 			return domain.CreateSessionRunResult{}, err
 		}
 	}

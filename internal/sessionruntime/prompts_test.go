@@ -92,14 +92,9 @@ func TestBuildArchitectInstructionsSurfacesUnloadableCustomFile(t *testing.T) {
 
 func TestRenderWorkerKickoff(t *testing.T) {
 	t.Parallel()
-	ctx := workspacefs.WorkerContext{
-		ProjectOverviewPath: "/ws/PROJECT_OVERVIEW.md",
-		ProjectStatePath:    "/ws/PROJECT_STATE.md",
-		RoadmapCurrentPath:  "/ws/ROADMAP_CURRENT.md",
-	}
 	repos := []workerRepo{{Key: "daemon", Path: "/repos/daemon"}, {Key: "shared", Path: "/repos/shared"}}
 
-	got, err := renderWorkerKickoff("ticket-1", repos, ctx)
+	got, err := renderWorkerKickoff("ticket-1", repos)
 	if err != nil {
 		t.Fatalf("renderWorkerKickoff: %v", err)
 	}
@@ -107,49 +102,53 @@ func TestRenderWorkerKickoff(t *testing.T) {
 
 Writable repositories:
 - daemon: /repos/daemon
-- shared: /repos/shared
-
-Read these project documents:
-/ws/PROJECT_OVERVIEW.md
-/ws/PROJECT_STATE.md
-/ws/ROADMAP_CURRENT.md`)
+- shared: /repos/shared`)
 	if got != want {
-		t.Fatalf("kickoff without workflows:\n%s\nwant:\n%s", got, want)
-	}
-
-	ctx.RoadmapCurrentPath = ""
-	got, err = renderWorkerKickoff("ticket-1", repos, ctx)
-	if err != nil {
-		t.Fatalf("renderWorkerKickoff: %v", err)
-	}
-	if strings.Contains(got, "ROADMAP") || !strings.HasSuffix(got, "/ws/PROJECT_STATE.md") {
-		t.Fatalf("kickoff without a roadmap must list only the two documents:\n%s", got)
+		t.Fatalf("kickoff:\n%s\nwant:\n%s", got, want)
 	}
 }
 
-func TestWorkerLaunchPromptEmbedsSelectedWorkflowBodies(t *testing.T) {
+// The first message embeds every project document and selected workflow in
+// full, labelled by name: no architect-workspace path appears, so a worker
+// never has to open a file there.
+func TestWorkerLaunchPromptEmbedsProjectDocumentsAndWorkflows(t *testing.T) {
 	t.Parallel()
-	got, err := workerLaunchPrompt("kickoff\n", nil)
+	overview := "---\nlastUpdatedAt: \"2026-01-15T09:30:00Z\"\n---\n\n# Overview\n\nSee /ws/notes.md.\n"
+	documents := []workspacefs.ProjectDocument{
+		{Name: "PROJECT_OVERVIEW.md", Content: overview},
+		{Name: "PROJECT_STATE.md", Content: "\nState.\n\n"},
+	}
+	documentsWant := "The project documents follow in full, one block per document, labelled with its name. They are read-only context, current as of this launch.\n\n" +
+		"<document name=\"PROJECT_OVERVIEW.md\">\n" + strings.TrimSuffix(overview, "\n") + "\n</document>\n\n" +
+		"<document name=\"PROJECT_STATE.md\">\nState.\n</document>"
+
+	got, err := workerLaunchPrompt("kickoff\n", workspacefs.WorkerContext{Documents: documents})
 	if err != nil {
 		t.Fatalf("workerLaunchPrompt: %v", err)
 	}
-	if got != "kickoff\n\nWorkflows selected for this session: none" {
-		t.Fatalf("launch prompt without workflows:\n%s", got)
+	if want := "kickoff\n\n" + documentsWant + "\n\nWorkflows selected for this session: none"; got != want {
+		t.Fatalf("launch prompt without workflows:\n%s\nwant:\n%s", got, want)
 	}
 
 	body := "# B\n\nStep {{one}}.\n\n---\n\n```sh\nmake test\n```\n"
-	got, err = workerLaunchPrompt("kickoff", []workspacefs.SelectedWorkflow{
-		{Path: "/ws/workflows/B.md", Body: body},
-		{Path: "/ws/workflows/A.md", Body: "\nA body.\n\n"},
+	got, err = workerLaunchPrompt("kickoff", workspacefs.WorkerContext{
+		Documents: documents,
+		Workflows: []workspacefs.SelectedWorkflow{
+			{Name: "B", Path: "/ws/workflows/B.md", Body: body},
+			{Name: "A", Path: "/ws/workflows/A.md", Body: "\nA body.\n\n"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("workerLaunchPrompt: %v", err)
 	}
-	want := "kickoff\n\nFollow the workflows selected for this session. Their full text follows, one block per workflow, labelled with its canonical path.\n\n" +
-		"<workflow path=\"/ws/workflows/B.md\">\n" + strings.TrimSuffix(body, "\n") + "\n</workflow>\n\n" +
-		"<workflow path=\"/ws/workflows/A.md\">\nA body.\n</workflow>"
+	want := "kickoff\n\n" + documentsWant + "\n\nFollow the workflows selected for this session. Their full text follows, one block per workflow, labelled with its name.\n\n" +
+		"<workflow name=\"B\">\n" + strings.TrimSuffix(body, "\n") + "\n</workflow>\n\n" +
+		"<workflow name=\"A\">\nA body.\n</workflow>"
 	if got != want {
 		t.Fatalf("launch prompt with workflows:\n%s\nwant:\n%s", got, want)
+	}
+	if strings.Contains(got, "/ws/workflows") {
+		t.Fatalf("launch prompt names a workspace path:\n%s", got)
 	}
 }
 
@@ -216,15 +215,16 @@ func TestCreateSessionTicketPersistsSelectionAndRendersFixedKickoff(t *testing.T
 		`readTicket(id: "ticket-1")`,
 		"- daemon: " + repoPath,
 		"- shared: " + sharedPath,
-		"/PROJECT_OVERVIEW.md", "/PROJECT_STATE.md", "/ROADMAP_CURRENT.md",
 	} {
 		if !strings.Contains(session.Prompt, fragment) {
 			t.Fatalf("kickoff missing %q:\n%s", fragment, session.Prompt)
 		}
 	}
-	// Workflow bodies are attached at each launch from a fresh read, so the
-	// stored kickoff carries none of them; nor does it embed the ticket body.
-	if strings.Contains(session.Prompt, "workflow") || strings.Contains(session.Prompt, "A.\n") || strings.Contains(session.Prompt, "body") {
+	// Project documents and workflow bodies are attached at each launch from
+	// a fresh read, so the stored kickoff carries none of them, nor any
+	// workspace path; nor does it embed the ticket body.
+	if strings.Contains(session.Prompt, "workflow") || strings.Contains(session.Prompt, "A.\n") || strings.Contains(session.Prompt, "body") ||
+		strings.Contains(session.Prompt, "PROJECT_") || strings.Contains(session.Prompt, workspace) {
 		t.Fatalf("stored kickoff embeds workflow or ticket content:\n%s", session.Prompt)
 	}
 	if session.CreatedBy != domain.SessionCreatedByDesktop {
@@ -347,12 +347,55 @@ func TestCreateRunEmbedsWorkflowBodiesReadAtLaunch(t *testing.T) {
 	if _, err := service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{ProfileName: "codex"}); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	want := "kickoff\n\nFollow the workflows selected for this session. Their full text follows, one block per workflow, labelled with its canonical path.\n\n<workflow path=\"" + a + "\">\nCurrent A.\n</workflow>"
+	want := "kickoff\n\n" + testProjectDocumentsSection() + "\n\nFollow the workflows selected for this session. Their full text follows, one block per workflow, labelled with its name.\n\n<workflow name=\"A\">\nCurrent A.\n</workflow>"
 	if adapter.launchRequest.Prompt != want {
 		t.Fatalf("launch prompt:\n%s\nwant:\n%s", adapter.launchRequest.Prompt, want)
 	}
 	if adapter.launchRequest.Instructions != "worker" {
 		t.Fatalf("first launch must use the stored instructions, got:\n%s", adapter.launchRequest.Instructions)
+	}
+}
+
+// Project documents are read at each launch too: an edit made after the
+// session was created is what the agent receives, an absent optional roadmap
+// is simply not embedded, and no architect-workspace path is named.
+func TestCreateRunEmbedsProjectDocumentsReadAtLaunch(t *testing.T) {
+	t.Parallel()
+	repoPath := gitRepoDir(t)
+	workspace := testWorkspace(t, map[string]string{"daemon": repoPath})
+
+	repo := newFakeSessionRepository()
+	repo.createdSession = domain.Session{
+		ID: "session-1", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeTicket, ContextID: "ticket-1",
+		Prompt: "kickoff", Workdir: repoPath, Instructions: "worker",
+	}
+	adapter := &fakeAdapter{}
+	service := &Service{
+		intents: newIntentStore(), logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:  testRuntimeConfigWithPaths(workspace, repoPath),
+		repo: repo, tickets: &fakeTicketService{}, receiver: ingest.NewReceiver(adapter),
+		adapters: map[agentruntime.AgentKind]agentruntime.Adapter{agentruntime.AgentCodex: adapter},
+		terminal: &fakeTerminalManager{}, eventStreams: map[string]map[uint64]chan domain.SessionEvent{}, bridgeCancels: map[string]func(){},
+		terminalStates: map[string]sessionTerminalState{},
+	}
+
+	state := "---\nlastUpdatedAt: \"2026-02-01T00:00:00Z\"\n---\n\n# State\n\nCurrent state.\n"
+	writeWorkspaceFile(t, workspace, workspacefs.ProjectStateFileName, state)
+	if err := os.Remove(filepath.Join(workspace, workspacefs.RoadmapCurrentFileName)); err != nil {
+		t.Fatalf("remove roadmap: %v", err)
+	}
+	if _, err := service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{ProfileName: "codex"}); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	want := "kickoff\n\nThe project documents follow in full, one block per document, labelled with its name. They are read-only context, current as of this launch.\n\n" +
+		"<document name=\"PROJECT_OVERVIEW.md\">\n" + strings.TrimSuffix(testProjectDocument(workspacefs.ProjectOverviewFileName), "\n") + "\n</document>\n\n" +
+		"<document name=\"PROJECT_STATE.md\">\n" + strings.TrimSuffix(state, "\n") + "\n</document>\n\n" +
+		"Workflows selected for this session: none"
+	if got := adapter.launchRequest.Prompt; got != want {
+		t.Fatalf("launch prompt:\n%s\nwant:\n%s", got, want)
+	}
+	if strings.Contains(adapter.launchRequest.Prompt, workspace) {
+		t.Fatalf("launch prompt names the architect workspace:\n%s", adapter.launchRequest.Prompt)
 	}
 }
 

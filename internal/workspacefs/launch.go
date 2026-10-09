@@ -52,25 +52,34 @@ func ReadArchitectSystem(workspacePath string) ArchitectSystemDocument {
 }
 
 // WorkerContext is the validated read-only context a ticket session is
-// launched with: the canonical paths of the required project documents, of the
-// optional roadmap when present (empty otherwise), and the explicitly selected
-// workflows, in selection order.
+// launched with: the project documents (the required overview and state, then
+// the optional roadmap when present) and the explicitly selected workflows, in
+// selection order.
 //
-// The project documents are paths the worker reads live. Each selected
-// workflow also carries its body as read and validated by this check, so the
-// daemon can hand the worker the current text at this launch or resume; the
-// body is never stored, and every launch and resume validates and reads again.
-// The worker is granted no write scope in the workspace.
+// Every document and workflow carries the text read and validated by this
+// check, so the daemon hands the worker the current content in the first
+// message of the run, labelled by name: a worker never needs filesystem access
+// to the architect workspace. The content is never stored, and every launch and
+// resume validates and reads again. The worker is granted no write scope in
+// the workspace.
 type WorkerContext struct {
-	ProjectOverviewPath string
-	ProjectStatePath    string
-	RoadmapCurrentPath  string
-	Workflows           []SelectedWorkflow
+	Documents []ProjectDocument
+	Workflows []SelectedWorkflow
 }
 
-// SelectedWorkflow is one valid selected workflow: its canonical path and its
-// markdown body below the frontmatter, verbatim.
+// ProjectDocument is one valid project document: its file name (the label a
+// worker sees) and its full content, verbatim.
+type ProjectDocument struct {
+	Name    string
+	Content string
+}
+
+// SelectedWorkflow is one valid selected workflow: its name (the file name
+// without .md, the label a worker sees), its canonical path (what a session
+// records as its selection) and its markdown body below the frontmatter,
+// verbatim.
 type SelectedWorkflow struct {
+	Name string
 	Path string
 	Body string
 }
@@ -86,8 +95,8 @@ func (c WorkerContext) WorkflowPaths() []string {
 }
 
 // ValidateWorkerContext checks that a ticket session can be launched (or
-// resumed) against the workspace as it is on disk right now, and resolves the
-// paths the kickoff names.
+// resumed) against the workspace as it is on disk right now, and returns the
+// content the worker's first message carries.
 //
 // It enforces the worker-launch column of VALIDATORS_RULES: hiveryn.yaml must
 // load; PROJECT_OVERVIEW.md and PROJECT_STATE.md must be valid; ROADMAP_CURRENT.md
@@ -140,8 +149,9 @@ func PreflightWorkerContext(workspacePath, architectKey string) []string {
 // validateWorkerProjectContext enforces the project-context half of the
 // worker-launch column of VALIDATORS_RULES: hiveryn.yaml must load;
 // PROJECT_OVERVIEW.md and PROJECT_STATE.md must be valid; ROADMAP_CURRENT.md is
-// optional but must be valid when present. It resolves the canonical paths the
-// kickoff names and the repo scope selected workflows are checked against.
+// optional but must be valid when present. It returns the documents' content
+// from the validated read and the repo scope selected workflows are checked
+// against.
 //
 // The architect-only ARCHITECT_SYSTEM.md is never
 // consulted, so their problems never stop a worker.
@@ -163,18 +173,10 @@ func validateWorkerProjectContext(workspacePath, architectKey string) (WorkerCon
 		scope = scopeFromRepos(resolved.Repos)
 	}
 
-	ctx := WorkerContext{Workflows: []SelectedWorkflow{}}
-	documents := []struct {
-		kind   domain.ArtifactKind
-		target *string
-	}{
-		{domain.ArtifactProjectOverview, &ctx.ProjectOverviewPath},
-		{domain.ArtifactProjectState, &ctx.ProjectStatePath},
-		{domain.ArtifactRoadmapCurrent, &ctx.RoadmapCurrentPath},
-	}
-	for _, document := range documents {
-		def := definitions[document.kind]
-		name := rootDocumentFileName(document.kind)
+	ctx := WorkerContext{Documents: []ProjectDocument{}, Workflows: []SelectedWorkflow{}}
+	for _, kind := range []domain.ArtifactKind{domain.ArtifactProjectOverview, domain.ArtifactProjectState, domain.ArtifactRoadmapCurrent} {
+		def := definitions[kind]
+		name := rootDocumentFileName(kind)
 		diags := newDiagnostics(name)
 		absPath := joinWorkspace(workspacePath, name)
 		result := validateMarkdownArtifact(def, absPath, def.Required, diags)
@@ -184,12 +186,15 @@ func validateWorkerProjectContext(workspacePath, architectKey string) (WorkerCon
 			continue
 		}
 
-		canonical, err := canonicalInsideWorkspace(workspacePath, absPath)
-		if err != nil {
+		// The document must be a real file inside the workspace, not a
+		// symlink to content elsewhere.
+		if _, err := canonicalInsideWorkspace(workspacePath, absPath); err != nil {
 			findings = append(findings, fmt.Sprintf("%s: %v", name, err))
 			continue
 		}
-		*document.target = canonical
+		if !diags.hasErrors() {
+			ctx.Documents = append(ctx.Documents, ProjectDocument{Name: name, Content: result.Data})
+		}
 	}
 	return ctx, scope, findings
 }
@@ -274,7 +279,7 @@ func validateSelectedWorkflows(workspacePath string, scope repoScope, selected [
 			}
 			continue
 		}
-		workflows = append(workflows, SelectedWorkflow{Path: workflow.Path, Body: body})
+		workflows = append(workflows, SelectedWorkflow{Name: workflow.Name, Path: workflow.Path, Body: body})
 	}
 
 	if len(findings) > 0 {

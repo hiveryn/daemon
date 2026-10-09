@@ -94,8 +94,9 @@ func validateWorkflowDocument(workspace, dir, name string, scope repoScope) (dom
 		Repos:   []string{},
 	}
 
-	// The canonical path is what a session records and a worker later reads, so
-	// a symlink out of the workspace is refused here rather than followed.
+	// The canonical path is what a session records and the daemon later reads
+	// for the worker, so a symlink out of the workspace is refused here rather
+	// than followed.
 	canonical, err := canonicalInsideWorkspace(workspace, absPath)
 	if err != nil {
 		var outside *errOutsideWorkspace

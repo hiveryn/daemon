@@ -52,7 +52,7 @@ func (e *errOutsideWorkspace) Error() string {
 //
 // This is the path boundary for every workspace artifact. A selected workflow
 // is recorded and later read by its canonical path, so a symlink pointing out
-// of the workspace would silently widen what a worker session loads. Such a
+// of the workspace would silently widen what a worker session is given. Such a
 // path is reported as an error and excluded rather than followed.
 //
 // A path that does not exist yet has nothing to resolve, so it is returned

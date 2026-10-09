@@ -171,7 +171,7 @@ is known to be broken.
 			Fields:   []fieldSpec{lastUpdatedAtField},
 		},
 		Rules: append([]string{
-			"Optional. A workspace without it is valid, and a worker is launched without a roadmap to read.",
+			"Optional. A workspace without it is valid, and a worker is launched without a roadmap in its context.",
 			"When present it must be readable UTF-8 markdown with a nonempty body and lastUpdatedAt as an RFC3339 UTC datetime. Other frontmatter keys are allowed.",
 			"No headings, sections or body schema are required, and there is no line limit.",
 			"lastUpdatedAt is an edit time. It records when the document was changed and is not a claim that its contents were re-verified.",
