@@ -24,7 +24,7 @@ func (s *Server) registerActionTools() {
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "concludeSession",
-		Description: "Propose ending this Action execution. outcome=completed means the requested artifact package is delivered in the output directory and verified (findings such as failed checks inside the package still count as completed); outcome=failed means the Action could not be executed or delivered. summary is a concise, at-a-glance account: what was delivered, key findings, recoveries, repository changes you committed, and anything a later execution should know. completed is refused while the output directory is empty. The user is asked to approve; this call blocks until they answer, and it is auto-approved if they do not answer in time. Check `outcome`: approved/auto_approved ended the execution and the session (your terminal is killed); denied_by_user/auto_denied means nothing ended and the execution is still running — read `reason`, do not retry the same conclusion, and ask the user what they want next.",
+		Description: "Propose ending this Action execution. outcome=completed means the requested artifact package is delivered and verified (findings such as failed checks inside the package still count as completed): pass delivery_dir, the absolute path on this machine of the folder holding the package — usually the output directory you were given. It must be an existing directory of regular files and directories only (no symbolic links or special files) within the package limits; a folder that breaks these rules is refused with the reason, so fix it and conclude again. On approval Hiveryn freezes a snapshot of that folder as the execution's package; later changes to the folder do not reach it. outcome=failed means the Action could not be executed or delivered; it takes no delivery_dir. summary is a concise, at-a-glance account: what was delivered, key findings, recoveries, repository changes you committed, and anything a later execution should know. The user is asked to approve; this call blocks until they answer, and it is auto-approved if they do not answer in time. Check `outcome`: approved/auto_approved ended the execution and the session (your terminal is killed); denied_by_user/auto_denied means nothing ended and the execution is still running — read `reason`, do not retry the same conclusion, and ask the user what they want next; error means it was not applied (read `reason`) and the execution is still running.",
 	}, s.handleConcludeAction)
 }
 
@@ -34,16 +34,19 @@ type ReadRecentActionConclusionsOutput struct {
 	Conclusions []domain.ActionConclusion `json:"conclusions"`
 }
 
+// DeliveryDir is omitempty: it is required for completed only, and the
+// daemon names what is wrong with a missing or unusable folder.
 type ConcludeActionInput struct {
-	Outcome string `json:"outcome" jsonschema:"One of: completed, failed (required)."`
-	Summary string `json:"summary" jsonschema:"Concise summary of the execution (required, at most 2000 characters)."`
+	Outcome     string `json:"outcome" jsonschema:"One of: completed, failed (required)."`
+	Summary     string `json:"summary" jsonschema:"Concise summary of the execution (required, at most 2000 characters)."`
+	DeliveryDir string `json:"delivery_dir,omitempty" jsonschema:"For completed (required): absolute path, on this machine, of the folder holding the delivered package — usually the output directory you were given. Omit it for failed."`
 }
 
 type ConcludeActionOutput struct {
 	IntentEnvelopeFields
 	ExecutionID string `json:"execution_id,omitempty" jsonschema:"The concluded execution; set only when the conclusion was applied."`
 	Status      string `json:"status,omitempty" jsonschema:"The execution's final status (completed or failed); set only when the conclusion was applied."`
-	OutputDir   string `json:"output_dir,omitempty" jsonschema:"The execution's output directory; set only when the conclusion was applied."`
+	PackageDir  string `json:"package_dir,omitempty" jsonschema:"The frozen package of a completed execution; set only when the conclusion was applied."`
 }
 
 func (s *Server) handleReadRecentActionConclusions(
@@ -74,8 +77,9 @@ func (s *Server) handleConcludeAction(
 		return nil, ConcludeActionOutput{}, newValidationError("summary", "is required")
 	}
 	res, err := s.requestIntent(ctx, "conclude-action", domain.ConcludeActionRequest{
-		Outcome: domain.ActionConclusionOutcome(outcome),
-		Summary: input.Summary,
+		Outcome:     domain.ActionConclusionOutcome(outcome),
+		Summary:     input.Summary,
+		DeliveryDir: input.DeliveryDir,
 	})
 	if err != nil {
 		return nil, ConcludeActionOutput{}, err
@@ -95,7 +99,10 @@ func (s *Server) handleConcludeAction(
 	if err := json.Unmarshal(res.Result, &run); err != nil {
 		return nil, ConcludeActionOutput{}, newInternalError(fmt.Sprintf("decode conclude payload: %v", err))
 	}
-	out.ExecutionID, out.Status, out.OutputDir = run.ID, string(run.Status), run.OutputDir
+	out.ExecutionID, out.Status = run.ID, string(run.Status)
+	if run.Package != nil {
+		out.PackageDir = run.Package.Path
+	}
 	return nil, out, nil
 }
 

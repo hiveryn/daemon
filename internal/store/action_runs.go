@@ -24,7 +24,7 @@ const actionRunColumns = `id, action, trigger, status, prompt, profile_name, rep
 	COALESCE(session_id, ''), COALESCE(summary, ''), COALESCE(error, ''),
 	created_at, COALESCE(started_at, ''), COALESCE(ended_at, ''),
 	COALESCE(architect_key, ''), COALESCE(requester_session_id, ''), COALESCE(reason, ''),
-	COALESCE(requester_ticket_id, '')`
+	COALESCE(requester_ticket_id, ''), machine, COALESCE(delivery_dir, '')`
 
 func (s *ActionRunStore) CreateActionRun(ctx context.Context, run domain.ActionRun) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -47,12 +47,13 @@ func (s *ActionRunStore) CreateActionRun(ctx context.Context, run domain.ActionR
 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO action_runs (id, action, trigger, status, prompt, profile_name, repo_path, output_dir, session_id, summary, error, created_at, started_at, ended_at,
-		                         architect_key, requester_session_id, reason, requester_ticket_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                         architect_key, requester_session_id, reason, requester_ticket_id, machine)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, run.ID, run.Action, string(run.Trigger), string(run.Status), run.Prompt, run.ProfileName, run.RepoPath, run.OutputDir,
 		nullIfEmpty(run.SessionID), nullIfEmpty(run.Summary), nullIfEmpty(run.Error),
 		formatPreciseTime(run.CreatedAt), nullableTime(run.StartedAt), nullableTime(run.EndedAt),
-		nullIfEmpty(run.ArchitectKey), nullIfEmpty(run.RequesterSessionID), nullIfEmpty(run.Reason), nullIfEmpty(run.RequesterTicketID))
+		nullIfEmpty(run.ArchitectKey), nullIfEmpty(run.RequesterSessionID), nullIfEmpty(run.Reason), nullIfEmpty(run.RequesterTicketID),
+		run.Machine)
 	if err != nil {
 		// The partial unique index is the backstop for the check above.
 		if strings.Contains(err.Error(), "UNIQUE constraint failed: action_runs.action") {
@@ -157,7 +158,7 @@ func (s *ActionRunStore) FinishActionRun(ctx context.Context, id string, status 
 	}
 }
 
-func (s *ActionRunStore) StartActionRun(ctx context.Context, id, profileName string, at time.Time) error {
+func (s *ActionRunStore) StartActionRun(ctx context.Context, id string, start domain.ActionRunStart) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin start action run tx: %w", err)
@@ -184,9 +185,10 @@ func (s *ActionRunStore) StartActionRun(ctx context.Context, id, profileName str
 		return fmt.Errorf("check running execution of action %s: %w", action, err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE action_runs SET status = ?, profile_name = ?, started_at = ?
+		UPDATE action_runs SET status = ?, profile_name = ?, started_at = ?, machine = ?, repo_path = ?, output_dir = ?
 		WHERE id = ? AND status = ?
-	`, string(domain.ActionRunRunning), profileName, formatPreciseTime(at), id, string(domain.ActionRunPendingApproval)); err != nil {
+	`, string(domain.ActionRunRunning), start.ProfileName, formatPreciseTime(start.At), start.Machine, start.RepoPath, start.OutputDir,
+		id, string(domain.ActionRunPendingApproval)); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed: action_runs.action") {
 			return busyActionError(action, "")
 		}
@@ -320,7 +322,7 @@ func scanActionRun(row rowScanner) (domain.ActionRun, error) {
 	)
 	if err := row.Scan(&run.ID, &run.Action, &trigger, &status, &run.Prompt, &run.ProfileName, &run.RepoPath, &run.OutputDir,
 		&run.SessionID, &run.Summary, &run.Error, &createdAt, &startedAt, &endedAt,
-		&run.ArchitectKey, &run.RequesterSessionID, &run.Reason, &run.RequesterTicketID); err != nil {
+		&run.ArchitectKey, &run.RequesterSessionID, &run.Reason, &run.RequesterTicketID, &run.Machine, &run.DeliveryDir); err != nil {
 		return domain.ActionRun{}, err
 	}
 	run.Trigger = domain.ActionRunTrigger(trigger)
@@ -336,4 +338,121 @@ func scanActionRun(row rowScanner) (domain.ActionRun, error) {
 		return domain.ActionRun{}, fmt.Errorf("parse action run %s ended_at: %w", run.ID, err)
 	}
 	return run, nil
+}
+
+func (s *ActionRunStore) CompleteActionRun(ctx context.Context, id, summary, deliveryDir string, pkg domain.ActionArtifactRecord, at time.Time) error {
+	if pkg.ExecutionID != id || pkg.Kind != domain.ActionArtifactPackage || pkg.State != domain.ActionArtifactsReady {
+		return fmt.Errorf("complete action run %s: package record must be the execution's ready package", id)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin complete action run tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, `
+		UPDATE action_runs SET status = ?, summary = ?, delivery_dir = ?, ended_at = ?
+		WHERE id = ? AND status = ?
+	`, string(domain.ActionRunCompleted), nullIfEmpty(summary), nullIfEmpty(deliveryDir), formatPreciseTime(at), id, string(domain.ActionRunRunning))
+	if err != nil {
+		return fmt.Errorf("complete action run %s: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("complete action run %s: rows affected: %w", id, err)
+	}
+	if n != 1 {
+		var status string
+		if err := tx.QueryRowContext(ctx, `SELECT status FROM action_runs WHERE id = ?`, id).Scan(&status); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return &domain.NotFoundError{Resource: "action_run", ID: id}
+			}
+			return fmt.Errorf("read action run %s: %w", id, err)
+		}
+		return &domain.ConflictError{Resource: "action_run", Field: "status", Message: fmt.Sprintf("action execution %s is %s, not running", id, status)}
+	}
+	if err := putActionArtifact(ctx, tx, pkg); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit complete action run tx: %w", err)
+	}
+	return nil
+}
+
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func (s *ActionRunStore) PutActionArtifact(ctx context.Context, rec domain.ActionArtifactRecord) error {
+	return putActionArtifact(ctx, s.db, rec)
+}
+
+func putActionArtifact(ctx context.Context, db execer, rec domain.ActionArtifactRecord) error {
+	if rec.ExecutionID == "" || rec.Path == "" || (rec.Kind != domain.ActionArtifactPackage && rec.Kind != domain.ActionArtifactDelivery) {
+		return fmt.Errorf("put action artifact: incomplete record %+v", rec)
+	}
+	_, err := db.ExecContext(ctx, `
+		INSERT OR REPLACE INTO action_artifacts (execution_id, kind, machine, ssh, path, managed_root, state, error, cleanup_error, files, bytes, created_at, ready_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, rec.ExecutionID, string(rec.Kind), rec.Machine, rec.SSH, rec.Path, rec.ManagedRoot, string(rec.State),
+		nullIfEmpty(rec.Error), nullIfEmpty(rec.CleanupError), rec.Files, rec.Bytes,
+		formatPreciseTime(rec.CreatedAt), nullableTime(rec.ReadyAt), nullableTime(rec.ExpiresAt))
+	if err != nil {
+		return fmt.Errorf("put %s artifact of action run %s on %q: %w", rec.Kind, rec.ExecutionID, rec.Machine, err)
+	}
+	return nil
+}
+
+const actionArtifactColumns = `execution_id, kind, machine, ssh, path, managed_root, state, COALESCE(error, ''), COALESCE(cleanup_error, ''),
+	files, bytes, created_at, COALESCE(ready_at, ''), COALESCE(expires_at, '')`
+
+func (s *ActionRunStore) ActionArtifacts(ctx context.Context, executionID string) ([]domain.ActionArtifactRecord, error) {
+	return s.queryActionArtifacts(ctx, `SELECT `+actionArtifactColumns+` FROM action_artifacts WHERE execution_id = ? ORDER BY kind DESC, machine`, executionID)
+}
+
+func (s *ActionRunStore) ActionArtifactsToClean(ctx context.Context, now time.Time) ([]domain.ActionArtifactRecord, error) {
+	// expires_at is stored in formatPreciseTime's fixed-width UTC form, so the
+	// string comparison is chronological.
+	return s.queryActionArtifacts(ctx, `SELECT `+actionArtifactColumns+` FROM action_artifacts
+		WHERE managed_root != '' AND (
+			state = ? OR (cleanup_error IS NOT NULL AND cleanup_error != '' AND state != ?)
+			OR (state IN (?, ?) AND expires_at IS NOT NULL AND expires_at <= ?))
+		ORDER BY machine, execution_id, kind`,
+		string(domain.ActionArtifactsCopying), string(domain.ActionArtifactsExpired),
+		string(domain.ActionArtifactsReady), string(domain.ActionArtifactsFailed), formatPreciseTime(now.UTC()))
+}
+
+func (s *ActionRunStore) queryActionArtifacts(ctx context.Context, query string, args ...any) ([]domain.ActionArtifactRecord, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query action artifacts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []domain.ActionArtifactRecord{}
+	for rows.Next() {
+		var (
+			rec                     domain.ActionArtifactRecord
+			kind, state             string
+			created, ready, expires string
+		)
+		if err := rows.Scan(&rec.ExecutionID, &kind, &rec.Machine, &rec.SSH, &rec.Path, &rec.ManagedRoot, &state, &rec.Error, &rec.CleanupError,
+			&rec.Files, &rec.Bytes, &created, &ready, &expires); err != nil {
+			return nil, fmt.Errorf("scan action artifact: %w", err)
+		}
+		rec.Kind, rec.State = domain.ActionArtifactKind(kind), domain.ActionArtifactState(state)
+		if rec.CreatedAt, err = parseSQLiteTime(created); err != nil {
+			return nil, fmt.Errorf("parse action artifact %s created_at: %w", rec.ExecutionID, err)
+		}
+		if rec.ReadyAt, err = parseSQLiteMaybeTime(ready); err != nil {
+			return nil, fmt.Errorf("parse action artifact %s ready_at: %w", rec.ExecutionID, err)
+		}
+		if rec.ExpiresAt, err = parseSQLiteMaybeTime(expires); err != nil {
+			return nil, fmt.Errorf("parse action artifact %s expires_at: %w", rec.ExecutionID, err)
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate action artifacts: %w", err)
+	}
+	return out, nil
 }

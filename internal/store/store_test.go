@@ -892,3 +892,113 @@ func TestActionRunStoreSingleRunningAndCompareAndSet(t *testing.T) {
 		t.Fatalf("missing err = %v", err)
 	}
 }
+
+// Executions completed before frozen packages keep their output folder as
+// their package, in place and never expiring; nothing else gains one.
+func TestActionArtifactMigrationKeepsLegacyPackagesInPlace(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "daemon.db")
+	all := migrationFiles
+	migrationFiles = all[:8]
+	db, err := Open(ctx, path)
+	migrationFiles = all
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`INSERT INTO action_runs (id, action, trigger, status, prompt, profile_name, repo_path, output_dir, created_at, ended_at) VALUES ('done', 'demo', 'manual', 'completed', 'p', 'codex', '/repo', '/home/me/.hiveryn/action-runs/demo/done', '2026-09-24T08:00:00.000000000Z', '2026-09-24T09:00:00.000000000Z')`,
+		`INSERT INTO action_runs (id, action, trigger, status, prompt, profile_name, repo_path, output_dir, created_at) VALUES ('failed', 'demo', 'manual', 'failed', 'p', 'codex', '/repo', '/out/failed', '2026-09-24T08:00:00.000000000Z')`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	_ = db.Close()
+
+	db, err = Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	runs := NewActionRunStore(db)
+	recs, err := runs.ActionArtifacts(ctx, "done")
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("legacy package = %+v, %v", recs, err)
+	}
+	pkg := recs[0]
+	if pkg.Kind != domain.ActionArtifactPackage || pkg.Path != "/home/me/.hiveryn/action-runs/demo/done" || pkg.Machine != "" ||
+		pkg.State != domain.ActionArtifactsReady || pkg.ManagedRoot != "" || pkg.ExpiresAt != nil || pkg.ReadyAt == nil {
+		t.Fatalf("legacy package = %+v", pkg)
+	}
+	if recs, _ := runs.ActionArtifacts(ctx, "failed"); len(recs) != 0 {
+		t.Fatalf("failed execution gained a package: %+v", recs)
+	}
+	// Never removable: cleanup does not select it however far in the future.
+	if clean, err := runs.ActionArtifactsToClean(ctx, time.Now().AddDate(10, 0, 0)); err != nil || len(clean) != 0 {
+		t.Fatalf("cleanup selects %+v, %v", clean, err)
+	}
+	run, err := runs.GetActionRun(ctx, "done")
+	if err != nil || run.Machine != "" || run.DeliveryDir != "" {
+		t.Fatalf("legacy run = %+v, %v", run, err)
+	}
+}
+
+func TestCompleteActionRunRecordsItsPackageAtomically(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "daemon.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	runs := NewActionRunStore(db)
+	now := time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)
+	run := domain.ActionRun{ID: "r1", Action: "demo", Trigger: domain.ActionRunTriggerManual, Status: domain.ActionRunRunning,
+		Prompt: "p", ProfileName: "box-codex", RepoPath: "/srv/demo", OutputDir: "/srv/out", Machine: "box", CreatedAt: now, StartedAt: &now}
+	if err := runs.CreateActionRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	expires := now.Add(30 * 24 * time.Hour)
+	pkg := domain.ActionArtifactRecord{ExecutionID: "r1", Kind: domain.ActionArtifactPackage, Machine: "box", SSH: "box", Path: "/home/x/.local/state/hiveryn-actions/artifacts/packages/r1",
+		ManagedRoot: "/home/x/.local/state/hiveryn-actions/artifacts", State: domain.ActionArtifactsReady, Files: 3, Bytes: 42, CreatedAt: now, ReadyAt: &now, ExpiresAt: &expires}
+	if err := runs.CompleteActionRun(ctx, "r1", "done", "/srv/out", domain.ActionArtifactRecord{ExecutionID: "r1", Kind: domain.ActionArtifactPackage, State: domain.ActionArtifactsCopying, Path: "/p"}, now); err == nil {
+		t.Fatal("completed with a package that is not ready")
+	}
+	if err := runs.CompleteActionRun(ctx, "r1", "done", "/srv/out", pkg, now); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := runs.GetActionRun(ctx, "r1")
+	if got.Status != domain.ActionRunCompleted || got.Machine != "box" || got.DeliveryDir != "/srv/out" || got.Summary != "done" {
+		t.Fatalf("run = %+v", got)
+	}
+	recs, _ := runs.ActionArtifacts(ctx, "r1")
+	if len(recs) != 1 || recs[0].Files != 3 || recs[0].ExpiresAt == nil || !recs[0].ExpiresAt.Equal(expires) {
+		t.Fatalf("package = %+v", recs)
+	}
+	// Completing again conflicts and leaves everything as it was.
+	if err := runs.CompleteActionRun(ctx, "r1", "again", "/x", pkg, now); !errors.As(err, new(*domain.ConflictError)) {
+		t.Fatalf("second completion err = %v", err)
+	}
+
+	// Cleanup selects copies left copying, failed removals and expired ones.
+	copying := domain.ActionArtifactRecord{ExecutionID: "r1", Kind: domain.ActionArtifactDelivery, Machine: "", Path: "/h/.hiveryn/action-artifacts/deliveries/r1",
+		ManagedRoot: "/h/.hiveryn/action-artifacts", State: domain.ActionArtifactsCopying, CreatedAt: now, ExpiresAt: &expires}
+	if err := runs.PutActionArtifact(ctx, copying); err != nil {
+		t.Fatal(err)
+	}
+	clean, _ := runs.ActionArtifactsToClean(ctx, now)
+	if len(clean) != 1 || clean[0].Kind != domain.ActionArtifactDelivery {
+		t.Fatalf("before expiry = %+v", clean)
+	}
+	clean, _ = runs.ActionArtifactsToClean(ctx, expires)
+	if len(clean) != 2 {
+		t.Fatalf("at expiry = %+v", clean)
+	}
+	pkg.State = domain.ActionArtifactsExpired
+	if err := runs.PutActionArtifact(ctx, pkg); err != nil {
+		t.Fatal(err)
+	}
+	if clean, _ = runs.ActionArtifactsToClean(ctx, expires); len(clean) != 1 {
+		t.Fatalf("an expired, removed package is selected again: %+v", clean)
+	}
+}

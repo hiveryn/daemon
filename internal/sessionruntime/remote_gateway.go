@@ -17,10 +17,20 @@ import (
 // The reverse tunnel terminates at this dedicated listener, never the daemon's
 // API port. Each listener has one fixed worker identity and tool registry.
 func (s *Service) remoteGateway(session domain.Session) (*http.Server, int, error) {
-	if len(session.RemoteToken) != 64 || session.SessionType != domain.SessionTypeTicket {
-		return nil, 0, fmt.Errorf("remote gateway requires a ticket session and a 256-bit token")
+	// Each remote session type gets exactly its own role's tools: a ticket
+	// worker the worker tools of its project, an Action agent the Action
+	// tools and no architect scope.
+	var role daemonmcp.SessionType
+	switch session.SessionType {
+	case domain.SessionTypeTicket:
+		role = daemonmcp.SessionTypeTicket
+	case domain.SessionTypeAction:
+		role = daemonmcp.SessionTypeAction
 	}
-	server, err := daemonmcp.NewServer(daemonmcp.Config{DaemonURL: s.baseURL, ArchitectKey: session.ArchitectKey, SessionType: daemonmcp.SessionTypeTicket, SessionID: session.ID, Logger: s.logger})
+	if len(session.RemoteToken) != 64 || role == "" {
+		return nil, 0, fmt.Errorf("remote gateway requires a ticket or action session and a 256-bit token")
+	}
+	server, err := daemonmcp.NewServer(daemonmcp.Config{DaemonURL: s.baseURL, ArchitectKey: session.ArchitectKey, SessionType: role, SessionID: session.ID, Logger: s.logger})
 	if err != nil {
 		return nil, 0, err
 	}

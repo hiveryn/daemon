@@ -32,6 +32,10 @@ type (
 	ActionAttentionSource     = sd.ActionAttentionSource
 	ActionResult              = sd.ActionResult
 	ActionWaitResult          = sd.ActionWaitResult
+	ActionArtifactState       = sd.ActionArtifactState
+	ActionArtifactCopy        = sd.ActionArtifactCopy
+	ActionArtifactLocation    = sd.ActionArtifactLocation
+	ActionArtifacts           = sd.ActionArtifacts
 )
 
 const (
@@ -58,6 +62,12 @@ const (
 	ActionAttentionSourceHook     = sd.ActionAttentionSourceHook
 	ActionAttentionSourceTerminal = sd.ActionAttentionSourceTerminal
 
+	ActionArtifactsNone    = sd.ActionArtifactsNone
+	ActionArtifactsCopying = sd.ActionArtifactsCopying
+	ActionArtifactsReady   = sd.ActionArtifactsReady
+	ActionArtifactsFailed  = sd.ActionArtifactsFailed
+	ActionArtifactsExpired = sd.ActionArtifactsExpired
+
 	MaxActionSummaryLength    = sd.MaxActionSummaryLength
 	MaxActionWaitSeconds      = sd.MaxActionWaitSeconds
 	MaxActionSuggestions      = sd.MaxActionSuggestions
@@ -66,6 +76,49 @@ const (
 
 // ValidActionName reports whether name is a well-formed action name.
 func ValidActionName(name string) bool { return sd.ValidActionName(name) }
+
+// ActionArtifactKind distinguishes the frozen package on the execution
+// machine from the copies made for callers on other machines.
+type ActionArtifactKind string
+
+const (
+	ActionArtifactPackage  ActionArtifactKind = "package"
+	ActionArtifactDelivery ActionArtifactKind = "delivery"
+)
+
+// ActionArtifactRecord is the durable ownership record of one Hiveryn-managed
+// artifact directory, written before the directory is created so that
+// interrupted copies and expired directories can always be found and removed.
+// It is keyed by (ExecutionID, Kind, Machine): one package per execution, one
+// delivery per caller machine. SSH is the alias used to reach Machine when
+// the record was written. ManagedRoot is the managed directory Path lives in;
+// empty means Path is not Hiveryn's to remove (a package delivered before
+// frozen packages existed, kept at its original folder). A nil ExpiresAt
+// never expires.
+type ActionArtifactRecord struct {
+	ExecutionID  string
+	Kind         ActionArtifactKind
+	Machine      string
+	SSH          string
+	Path         string
+	ManagedRoot  string
+	State        ActionArtifactState
+	Error        string
+	CleanupError string
+	Files        int
+	Bytes        int64
+	CreatedAt    time.Time
+	ReadyAt      *time.Time
+	ExpiresAt    *time.Time
+}
+
+// Copy is the record's wire view.
+func (r ActionArtifactRecord) Copy() ActionArtifactCopy {
+	return ActionArtifactCopy{
+		Machine: r.Machine, Path: r.Path, State: r.State, Error: r.Error, CleanupError: r.CleanupError,
+		Files: r.Files, Bytes: r.Bytes, ReadyAt: r.ReadyAt, ExpiresAt: r.ExpiresAt,
+	}
+}
 
 // ActionRunRepository persists action executions. The record is the durable
 // history of an action: it is never pruned and outlives the agent session.
@@ -89,7 +142,11 @@ type ActionRunRepository interface {
 	// approved variant. It is a ConflictError when another execution of the
 	// action is running (the single-run rule) or the request is no longer
 	// pending.
-	StartActionRun(ctx context.Context, id, profileName string, at time.Time) error
+	StartActionRun(ctx context.Context, id string, start ActionRunStart) error
+	// CompleteActionRun moves a running execution to completed together with
+	// its ready package record, in one step: an execution is never completed
+	// without its package. It is a ConflictError when it is no longer running.
+	CompleteActionRun(ctx context.Context, id, summary, deliveryDir string, pkg ActionArtifactRecord, at time.Time) error
 	// EndPendingActionRun moves a pending_approval request to denied (reason:
 	// the user's) or failed (errText: why it never started). It is a
 	// ConflictError when the request is no longer pending.
@@ -100,6 +157,25 @@ type ActionRunRepository interface {
 	// RecentActionConclusions returns up to limit concluded executions of the
 	// action that carry an agent summary, newest first.
 	RecentActionConclusions(ctx context.Context, action string, limit int) ([]ActionConclusion, error)
+
+	// PutActionArtifact writes (inserts or replaces) one artifact record.
+	PutActionArtifact(ctx context.Context, rec ActionArtifactRecord) error
+	// ActionArtifacts returns an execution's artifact records.
+	ActionArtifacts(ctx context.Context, executionID string) ([]ActionArtifactRecord, error)
+	// ActionArtifactsToClean returns the records whose directories need
+	// removal: copies left copying (interrupted), failed removals awaiting a
+	// retry, and ready directories expired at now.
+	ActionArtifactsToClean(ctx context.Context, now time.Time) ([]ActionArtifactRecord, error)
+}
+
+// ActionRunStart is what an approved request becomes when it starts: the
+// variant and the execution location resolved at approval.
+type ActionRunStart struct {
+	ProfileName string
+	Machine     string
+	RepoPath    string
+	OutputDir   string
+	At          time.Time
 }
 
 type ActionEventSubscription interface {

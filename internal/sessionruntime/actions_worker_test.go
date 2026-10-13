@@ -89,7 +89,7 @@ func TestWorkerRequestsActionsOfItsProject(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(run.OutputDir, "summary.md"), []byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.conclude(t, run.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "delivered"}); err != nil {
+	if _, err := f.conclude(t, run.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: run.OutputDir, Summary: "delivered"}); err != nil {
 		t.Fatal(err)
 	}
 	later := f.worker(t, "alpha", "ticket-2")

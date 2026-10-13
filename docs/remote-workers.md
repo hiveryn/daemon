@@ -1,6 +1,7 @@
-# Ticket workers over SSH
+# Ticket workers and Actions over SSH
 
-Hiveryn runs ticket workers in existing remote repositories. Tickets, approvals,
+Hiveryn runs ticket workers in existing remote repositories, and Actions in
+remote checkouts (see [actions.md](actions.md)). Tickets, approvals,
 questions, Actions and conclusions stay on the laptop. No remote Hiveryn binary,
 daemon, architect workspace copy or checkout synchronization is needed.
 
@@ -61,8 +62,9 @@ codex-buildbox:
 A worker's variant must match its repositories' machine: the desktop spawn
 picker lists only those, and the daemon refuses others for desktop launches and
 `spawnTicketWorker` requests (again when an approved request launches), naming
-the target machine and eligible variants. Architects and Actions are local and
-use local variants, including Actions requested by a remote worker. Existing
+the target machine and eligible variants. Architects are local and use local
+variants. An Action runs on the machine actions.yaml registers it on, with a
+variant of that machine, whoever requests it. Existing
 workers keep the variant frozen at launch; editing `variants.yaml` never
 switches or migrates a running worker or its reattachment.
 
@@ -147,9 +149,12 @@ one-hour questions retain their usual semantics. Remote Git working-tree,
 commit-diff and conclusion-commit checks run in the actual remote checkout.
 
 Project documents and selected workflows arrive as embedded text. Laptop path
-references and local Action output folders are not automatically accessible to
-remote workers. Remote architects, remote Actions, cross-machine writable
-scopes, file browsing and offline MCP delivery are not supported.
+references are not automatically accessible to remote workers; Action results
+are, because the result tools copy each completed package to the caller's
+machine. A remote Action session is launched, reattached and stopped like a
+remote worker and its gateway serves only the Action tools. Remote architects,
+cross-machine writable scopes, file browsing and offline MCP delivery are not
+supported.
 
 ## Verification
 
@@ -163,7 +168,10 @@ launches/terminals, failed-preparation cleanup and unconfirmed terminal cleanup.
 
 The fixture uses Alpine Linux 3.22, OpenSSH 10 and tmux 3.5a, with a macOS client.
 Unit tests cover provider target filesystems, scope validation, shell quoting
-and gateway authorization. Fixture evidence does not establish real provider
+and gateway authorization. Remote Action inspection, package snapshots, copies
+between machines and cleanup are covered by unit tests against
+`internal/remoteexec/sshtest`, a fake `ssh` that runs each command locally in a
+per-machine home directory; the Docker smoke test does not exercise Actions. Fixture evidence does not establish real provider
 CLI behavior, interactive Electron acceptance, other remote operating systems,
 or a minimum supported version for those tools. Run the selected authenticated
 CLI on the intended host before using it for work.

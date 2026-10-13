@@ -27,12 +27,18 @@ type actionFixture struct {
 	terminal *fakeTerminalManager
 	root     string
 	outRoot  string
+	artRoot  string
 	dbPath   string
+	// registry is actions.yaml as the fixture's config holds it.
+	registry map[string]config.ActionRegistration
 }
 
 func newActionFixture(t *testing.T) *actionFixture {
 	t.Helper()
-	f := &actionFixture{root: t.TempDir(), outRoot: filepath.Join(t.TempDir(), "action-runs"), dbPath: filepath.Join(t.TempDir(), "daemon.db")}
+	f := &actionFixture{
+		root: t.TempDir(), outRoot: filepath.Join(t.TempDir(), "action-runs"), artRoot: filepath.Join(t.TempDir(), "action-artifacts"),
+		dbPath: filepath.Join(t.TempDir(), "daemon.db"), registry: map[string]config.ActionRegistration{},
+	}
 	f.open(t)
 	return f
 }
@@ -53,7 +59,7 @@ func (f *actionFixture) open(t *testing.T) {
 	f.service = &Service{
 		intents:  newIntentStore(),
 		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg:      config.Config{Variants: map[string]config.VariantConfig{"codex": {Agent: "codex"}}},
+		cfg:      config.Config{Variants: map[string]config.VariantConfig{"codex": {Agent: "codex"}}, Actions: f.registry},
 		repo:     f.sessions,
 		receiver: ingest.NewReceiver(f.adapter),
 		adapters: map[agentruntime.AgentKind]agentruntime.Adapter{
@@ -66,7 +72,7 @@ func (f *actionFixture) open(t *testing.T) {
 		baseURL:        "http://127.0.0.1:4200",
 		executablePath: func() (string, error) { return "/tmp/hiverynd", nil },
 	}
-	f.service.SetActions(f.runs, f.root, f.outRoot)
+	f.service.SetActions(f.runs, ActionPaths{Registry: filepath.Join(f.root, "actions.yaml"), Runs: f.outRoot, Artifacts: f.artRoot})
 	f.service.SetDeferredIntentRepository(store.NewDeferredIntentStore(db))
 }
 
@@ -76,6 +82,7 @@ func (f *actionFixture) writeAction(t *testing.T, name, manifest, kickoff string
 	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	f.registry[name] = config.ActionRegistration{Path: dir}
 	if manifest != "" {
 		if err := os.WriteFile(filepath.Join(dir, "action.yaml"), []byte(manifest), 0o644); err != nil {
 			t.Fatal(err)
@@ -225,7 +232,7 @@ func TestLaunchActionRejectsInvalidDefinitionWithProblems(t *testing.T) {
 	if !errors.As(err, &validation) {
 		t.Fatalf("err = %v, want validation error", err)
 	}
-	for _, want := range []string{"must equal the directory name", "artifacts is required", "{{prompt}}", "{{output_dir}}", "unknown placeholder {{nope}}"} {
+	for _, want := range []string{"must equal the registered name", "artifacts is required", "{{prompt}}", "{{output_dir}}", "unknown placeholder {{nope}}"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q missing %q", err, want)
 		}
@@ -263,7 +270,7 @@ func TestConcludeActionCompletesAndRetainsHistory(t *testing.T) {
 	result := f.launch(t, "demo", "go")
 
 	// completed is refused while nothing was delivered.
-	_, err := f.conclude(t, result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "done"})
+	_, err := f.conclude(t, result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: result.Run.OutputDir, Summary: "done"})
 	if err == nil || !strings.Contains(err.Error(), "is empty") {
 		t.Fatalf("empty-output conclusion err = %v", err)
 	}
@@ -277,12 +284,13 @@ func TestConcludeActionCompletesAndRetainsHistory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(result.Run.OutputDir, "summary.md"), []byte("# synthetic\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	run, err := f.conclude(t, result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "AMS 19.7% vs LDN 8.5%; LDN run 2 recovered."})
+	run, err := f.conclude(t, result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: result.Run.OutputDir, Summary: "AMS 19.7% vs LDN 8.5%; LDN run 2 recovered."})
 	if err != nil {
 		t.Fatalf("conclude: %v", err)
 	}
-	if run.Status != domain.ActionRunCompleted || run.Summary == "" || run.EndedAt == nil || run.OutputDir != result.Run.OutputDir {
-		t.Fatalf("concluded run = %+v", run)
+	if run.Status != domain.ActionRunCompleted || run.Summary == "" || run.EndedAt == nil || run.OutputDir != result.Run.OutputDir ||
+		run.DeliveryDir != result.Run.OutputDir || run.Package == nil || run.Package.State != domain.ActionArtifactsReady || run.Package.Files != 1 {
+		t.Fatalf("concluded run = %+v (package %+v)", run, run.Package)
 	}
 	if _, err := f.sessions.GetSession(ctx, result.Session.ID); !errors.As(err, new(*domain.NotFoundError)) {
 		t.Fatalf("action session still exists after conclusion: %v", err)
@@ -382,7 +390,7 @@ func TestRestartKeepsRestoredExecutionRunningAndFailsOrphans(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(live.Run.OutputDir, "results.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	done, err := f.conclude(t, live.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "ok"})
+	done, err := f.conclude(t, live.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: live.Run.OutputDir, Summary: "ok"})
 	if err != nil || done.ID != live.Run.ID || done.Status != domain.ActionRunCompleted {
 		t.Fatalf("conclude after restart = %+v, %v", done, err)
 	}
@@ -454,7 +462,7 @@ func TestConcludeActionSurvivesCallerCancellationDuringTeardown(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(result.Run.OutputDir, "summary.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	done := f.startConclude(result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "ok"})
+	done := f.startConclude(result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: result.Run.OutputDir, Summary: "ok"})
 	id, _ := f.pendingConclusion(t, result.Session.ID, done)
 	ctx, cancel := context.WithCancel(context.Background())
 	f.terminal.onKill = cancel

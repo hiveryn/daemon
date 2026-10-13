@@ -54,7 +54,7 @@ func TestActionToolsCallSessionScopedEndpoints(t *testing.T) {
 				writeEnvelope(t, w, http.StatusOK, map[string]any{"intent_id": "intent-1", "outcome": "denied_by_user", "reason": "add FRA"})
 				return
 			}
-			writeEnvelope(t, w, http.StatusOK, map[string]any{"intent_id": "intent-2", "outcome": "auto_approved", "result": domain.ActionRun{ID: "run-2", Status: domain.ActionRunCompleted, OutputDir: "/out/run-2"}})
+			writeEnvelope(t, w, http.StatusOK, map[string]any{"intent_id": "intent-2", "outcome": "auto_approved", "result": domain.ActionRun{ID: "run-2", Status: domain.ActionRunCompleted, OutputDir: "/out/run-2", Package: &domain.ActionArtifactCopy{Path: "/pkg/run-2", State: domain.ActionArtifactsReady}}})
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
@@ -77,11 +77,11 @@ func TestActionToolsCallSessionScopedEndpoints(t *testing.T) {
 	if err != nil || denied.Outcome != "denied_by_user" || denied.Reason != "add FRA" || denied.Guidance == "" || denied.ExecutionID != "" {
 		t.Fatalf("denied conclude = %+v, %v", denied, err)
 	}
-	_, out, err := server.handleConcludeAction(context.Background(), nil, ConcludeActionInput{Outcome: "completed", Summary: "delivered"})
-	if err != nil || out.Outcome != "auto_approved" || out.ExecutionID != "run-2" || out.Status != "completed" || out.OutputDir != "/out/run-2" {
+	_, out, err := server.handleConcludeAction(context.Background(), nil, ConcludeActionInput{Outcome: "completed", Summary: "delivered", DeliveryDir: "/out/run-2"})
+	if err != nil || out.Outcome != "auto_approved" || out.ExecutionID != "run-2" || out.Status != "completed" || out.PackageDir != "/pkg/run-2" {
 		t.Fatalf("conclude = %+v, %v", out, err)
 	}
-	if concluded.Outcome != domain.ActionConclusionCompleted || concluded.Summary != "delivered" {
+	if concluded.Outcome != domain.ActionConclusionCompleted || concluded.Summary != "delivered" || concluded.DeliveryDir != "/out/run-2" {
 		t.Fatalf("daemon received %+v", concluded)
 	}
 }

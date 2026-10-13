@@ -1,10 +1,13 @@
 package actionfs
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/hiveryn/daemon/internal/remoteexec/sshtest"
 )
 
 func writeAction(t *testing.T, root, name string, git bool, files map[string]string) string {
@@ -34,7 +37,7 @@ func problemText(def Definition) string {
 	return strings.Join(parts, "\n")
 }
 
-func TestListReportsValidAndInvalidDefinitions(t *testing.T) {
+func TestInspectReportsValidAndInvalidCheckouts(t *testing.T) {
 	root := t.TempDir()
 	writeAction(t, root, "demo", true, map[string]string{
 		"action.yaml": "name: demo\ndescription: |\n  Compare AMS and LDN; say how many runs.\nartifacts: summary.md, results.json\n",
@@ -44,31 +47,13 @@ func TestListReportsValidAndInvalidDefinitions(t *testing.T) {
 		"action.yaml": "name: nogit\ndescription: d\nartifacts: a\nextra: nope\n",
 	})
 	writeAction(t, root, "Bad Name", true, nil)
-	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("not an action"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(root, ".cache"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 
-	defs, err := List(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(defs) != 3 {
-		t.Fatalf("listed %d definitions, want 3 directories: %+v", len(defs), defs)
-	}
-	byName := map[string]Definition{}
-	for _, def := range defs {
-		byName[def.Name] = def
-	}
-
-	demo := byName["demo"]
+	demo := InspectLocal(filepath.Join(root, "demo"), "demo")
 	if !demo.Valid || demo.Description != "Compare AMS and LDN; say how many runs." || demo.Artifacts != "summary.md, results.json" {
 		t.Fatalf("demo = %+v problems:\n%s", demo.ActionDefinition, problemText(demo))
 	}
 
-	nogit := byName["nogit"]
+	nogit := InspectLocal(filepath.Join(root, "nogit"), "nogit")
 	text := problemText(nogit)
 	for _, want := range []string{"not a Git repository", "invalid YAML", "KICKOFF.md: file is missing"} {
 		if nogit.Valid || !strings.Contains(text, want) {
@@ -76,25 +61,67 @@ func TestListReportsValidAndInvalidDefinitions(t *testing.T) {
 		}
 	}
 
-	bad := byName["Bad Name"]
+	bad := InspectLocal(filepath.Join(root, "Bad Name"), "Bad Name")
 	if bad.Valid || !strings.Contains(problemText(bad), "not a valid action name") || !strings.Contains(problemText(bad), "action.yaml: file is missing") {
 		t.Fatalf("bad name problems:\n%s", problemText(bad))
 	}
 }
 
-func TestListMissingRootIsEmpty(t *testing.T) {
-	defs, err := List(filepath.Join(t.TempDir(), "absent"))
-	if err != nil || len(defs) != 0 {
-		t.Fatalf("defs = %+v, err = %v", defs, err)
+func TestTheRegisteredNameNotTheDirectoryNameMustMatch(t *testing.T) {
+	root := t.TempDir()
+	dir := writeAction(t, root, "checkout-dir", true, map[string]string{
+		"action.yaml": "name: demo\ndescription: d\nartifacts: a\nsuggestions: [x]\n",
+		"KICKOFF.md":  "Do {{prompt}} into {{output_dir}}.",
+	})
+	if def := InspectLocal(dir, "demo"); !def.Valid {
+		t.Fatalf("registered as demo: %s", problemText(def))
+	}
+	if def := InspectLocal(dir, "other"); def.Valid || !strings.Contains(problemText(def), `must equal the registered name "other"`) {
+		t.Fatalf("registered as other: %s", problemText(def))
 	}
 }
 
-func TestGetUnknownActionIsNotFound(t *testing.T) {
-	root := t.TempDir()
-	for _, name := range []string{"missing", "../escape", ""} {
-		if _, err := Get(root, name); err == nil {
-			t.Fatalf("Get(%q) succeeded", name)
+func TestMissingCheckoutIsAnInvalidDefinition(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent")
+	def := InspectLocal(missing, "absent")
+	if def.Valid || def.Name != "absent" || def.Path != missing || len(def.Diagnostics) != 1 || def.Diagnostics[0].Code != CodeCheckoutMissing {
+		t.Fatalf("missing checkout = %+v", def)
+	}
+}
+
+func TestRemoteInspectionAppliesTheSameRules(t *testing.T) {
+	fake := sshtest.Install(t)
+	home := fake.Home("box")
+	files := map[string]string{
+		"action.yaml": "name: demo\ndescription: d\nartifacts: a\nsuggestions: [\"x\"]\n",
+		"KICKOFF.md":  "Do {{prompt}} into {{output_dir}}.\n\n\n",
+	}
+	dir := writeAction(t, home, "demo", true, files)
+	local := InspectLocal(dir, "demo")
+	remote := InspectRemote(context.Background(), "box", "buildbox", dir, "demo")
+	if !remote.Valid || remote.Machine != "buildbox" || remote.Kickoff != local.Kickoff || remote.Description != "d" || strings.Join(remote.Suggestions, ",") != "x" {
+		t.Fatalf("remote = %+v (%s)", remote.ActionDefinition, problemText(remote))
+	}
+
+	broken := writeAction(t, home, "broken", false, map[string]string{"action.yaml": "name: broken\n"})
+	if err := os.Mkdir(filepath.Join(broken, "KICKOFF.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	def := InspectRemote(context.Background(), "box", "buildbox", broken, "broken")
+	text := problemText(def)
+	for _, want := range []string{"not a Git repository", "description is required", "KICKOFF.md: not a regular file"} {
+		if def.Valid || !strings.Contains(text, want) {
+			t.Fatalf("remote problems missing %q:\n%s", want, text)
 		}
+	}
+
+	if def := InspectRemote(context.Background(), "box", "buildbox", filepath.Join(home, "absent"), "absent"); def.Valid || def.Diagnostics[0].Code != CodeCheckoutMissing {
+		t.Fatalf("absent remote checkout = %+v", def.Diagnostics)
+	}
+	fake.SetDown(t, "box", true)
+	def = InspectRemote(context.Background(), "box", "buildbox", dir, "demo")
+	if def.Valid || def.Diagnostics[0].Code != CodeCheckoutUnreachable || !strings.Contains(problemText(def), "machine buildbox") {
+		t.Fatalf("unreachable = %+v", def.Diagnostics)
 	}
 }
 
@@ -165,11 +192,7 @@ func TestSuggestionsAreOptionalTrimmedAndBounded(t *testing.T) {
 
 	get := func(name string) Definition {
 		t.Helper()
-		def, err := Get(root, name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return def
+		return InspectLocal(filepath.Join(root, name), name)
 	}
 
 	if def := get("none"); !def.Valid || def.Suggestions != nil {

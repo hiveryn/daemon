@@ -21,7 +21,9 @@ const (
 const actionUsage = `usage: hiverynd action validate [--json] [--strict] [path]
 
 Validate an Action repository (action.yaml, KICKOFF.md, .git) offline with the
-daemon's own definition rules. path defaults to the current directory.
+daemon's own definition rules. path defaults to the current directory; the
+directory's name stands for the registered name (actions.yaml), which
+action.yaml's name must equal.
 
   --json    print a JSON report with coded diagnostics
   --strict  fail on warnings as well as errors (for CI)

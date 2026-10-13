@@ -108,7 +108,7 @@ func TestActionConclusionWaitsForApprovalAndShowsItsProposal(t *testing.T) {
 	result := f.launch(t, "demo", "go")
 	f.deliver(t, result.Run)
 
-	done := f.startConclude(result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "  AMS 19.7% vs LDN 8.5%  "})
+	done := f.startConclude(result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: result.Run.OutputDir, Summary: "  AMS 19.7% vs LDN 8.5%  "})
 	id, returned := f.pendingConclusion(t, result.Session.ID, done)
 	if returned != nil {
 		t.Fatalf("conclude returned before approval: %+v", returned)
@@ -184,7 +184,7 @@ func TestActionConclusionDenialKeepsExecutionRunningForFollowUp(t *testing.T) {
 	result := f.launch(t, "demo", "go")
 	f.deliver(t, result.Run)
 
-	done := f.startConclude(result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "first pass"})
+	done := f.startConclude(result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: result.Run.OutputDir, Summary: "first pass"})
 	id, _ := f.pendingConclusion(t, result.Session.ID, done)
 	if err := f.service.DenyIntent(ctx, result.Session.ID, id, "also compare FRA"); err != nil {
 		t.Fatalf("deny: %v", err)
@@ -196,7 +196,7 @@ func TestActionConclusionDenialKeepsExecutionRunningForFollowUp(t *testing.T) {
 	f.requireRunning(t, result)
 
 	// The agent follows up and proposes a new conclusion, which applies.
-	run, err := f.conclude(t, result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "AMS, LDN and FRA compared"})
+	run, err := f.conclude(t, result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: result.Run.OutputDir, Summary: "AMS, LDN and FRA compared"})
 	if err != nil || run.Status != domain.ActionRunCompleted || run.Summary != "AMS, LDN and FRA compared" {
 		t.Fatalf("follow-up conclusion = %+v, %v", run, err)
 	}
@@ -209,7 +209,7 @@ func TestActionConclusionRechecksDeliveryWhenApplied(t *testing.T) {
 	result := f.launch(t, "demo", "go")
 	f.deliver(t, result.Run)
 
-	done := f.startConclude(result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "done"})
+	done := f.startConclude(result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: result.Run.OutputDir, Summary: "done"})
 	id, _ := f.pendingConclusion(t, result.Session.ID, done)
 	if err := os.Remove(filepath.Join(result.Run.OutputDir, "summary.md")); err != nil {
 		t.Fatal(err)
@@ -262,7 +262,7 @@ func TestArchitectSeesNoFinalResultWhileActionConclusionIsPending(t *testing.T) 
 	run, _ := f.service.GetActionRun(ctx, pending.ExecutionID)
 	f.deliver(t, run)
 
-	done := f.startConclude(run.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "delivered"})
+	done := f.startConclude(run.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: run.OutputDir, Summary: "delivered"})
 	id, _ := f.pendingConclusion(t, run.SessionID, done)
 
 	if got := f.result(t, arch.ID, pending.ExecutionID); got.Status != domain.ActionRunRunning || got.Summary != "" || got.EndedAt != nil {

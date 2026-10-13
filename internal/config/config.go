@@ -32,19 +32,21 @@ const (
 )
 
 type Config struct {
-	Port                      int                          `yaml:"port"`
-	BindAddress               string                       `yaml:"bind_address"`
-	LogLevel                  string                       `yaml:"log_level"`
-	Shell                     string                       `yaml:"shell,omitempty"`
-	DesktopHealthPollInterval string                       `yaml:"desktop_health_poll_interval,omitempty"`
-	IntentWaitTimeout         int                          `yaml:"intent_wait_timeout,omitempty"`
-	ArchiveAgentEvents        bool                         `yaml:"archive_agent_events"`
-	Notifications             *NotificationsConfig         `yaml:"notifications,omitempty"`
-	Machines                  map[string]MachineConfig     `yaml:"-"`
-	Variants                  map[string]VariantConfig     `yaml:"-"`
-	Architects                map[string]ArchitectConfig   `yaml:"-"`
-	Tabs                      map[string][]TabEntry        `yaml:"-"`
-	Shortcuts                 map[string]map[string]string `yaml:"-"`
+	Port                      int                           `yaml:"port"`
+	BindAddress               string                        `yaml:"bind_address"`
+	LogLevel                  string                        `yaml:"log_level"`
+	Shell                     string                        `yaml:"shell,omitempty"`
+	DesktopHealthPollInterval string                        `yaml:"desktop_health_poll_interval,omitempty"`
+	IntentWaitTimeout         int                           `yaml:"intent_wait_timeout,omitempty"`
+	ArchiveAgentEvents        bool                          `yaml:"archive_agent_events"`
+	Notifications             *NotificationsConfig          `yaml:"notifications,omitempty"`
+	ActionPackages            *ActionPackagesConfig         `yaml:"action_packages,omitempty"`
+	Machines                  map[string]MachineConfig      `yaml:"-"`
+	Actions                   map[string]ActionRegistration `yaml:"-"`
+	Variants                  map[string]VariantConfig      `yaml:"-"`
+	Architects                map[string]ArchitectConfig    `yaml:"-"`
+	Tabs                      map[string][]TabEntry         `yaml:"-"`
+	Shortcuts                 map[string]map[string]string  `yaml:"-"`
 }
 
 // Source is the daemon's view of the current configuration. Current never
@@ -282,6 +284,8 @@ func Load(path string) (Config, error) {
 func (c Config) Clone() Config {
 	cloned := c
 	cloned.Machines = cloneMachines(c.Machines)
+	cloned.Actions = cloneActions(c.Actions)
+	cloned.ActionPackages = c.ActionPackages.clone()
 	cloned.Variants = cloneVariantConfigs(c.Variants)
 	cloned.Architects = cloneArchitectConfigs(c.Architects)
 	cloned.Tabs = cloneTabs(c.Tabs)
@@ -375,6 +379,11 @@ func loadOptionalConfigFiles(configDir string, cfg *Config) error {
 		return err
 	}
 	cfg.Machines = machines
+	actions, err := loadActions(ActionsRegistryPath(configDir))
+	if err != nil {
+		return fmt.Errorf("load actions: %w", err)
+	}
+	cfg.Actions = actions
 	if err := loadOptionalFile(filepath.Join(configDir, variantsFileName), &cfg.Variants); err != nil {
 		return fmt.Errorf("load variants: %w", err)
 	}
@@ -542,13 +551,14 @@ func expandHomePath(p string) (string, error) {
 }
 
 type coreConfig struct {
-	Port                      int                  `yaml:"port"`
-	BindAddress               string               `yaml:"bind_address"`
-	LogLevel                  string               `yaml:"log_level"`
-	Shell                     string               `yaml:"shell,omitempty"`
-	DesktopHealthPollInterval string               `yaml:"desktop_health_poll_interval,omitempty"`
-	IntentWaitTimeout         int                  `yaml:"intent_wait_timeout,omitempty"`
-	Notifications             *NotificationsConfig `yaml:"notifications,omitempty"`
+	Port                      int                   `yaml:"port"`
+	BindAddress               string                `yaml:"bind_address"`
+	LogLevel                  string                `yaml:"log_level"`
+	Shell                     string                `yaml:"shell,omitempty"`
+	DesktopHealthPollInterval string                `yaml:"desktop_health_poll_interval,omitempty"`
+	IntentWaitTimeout         int                   `yaml:"intent_wait_timeout,omitempty"`
+	Notifications             *NotificationsConfig  `yaml:"notifications,omitempty"`
+	ActionPackages            *ActionPackagesConfig `yaml:"action_packages,omitempty"`
 }
 
 func (c Config) Save(path string) error {
@@ -577,6 +587,7 @@ func (c Config) Save(path string) error {
 		DesktopHealthPollInterval: c.DesktopHealthPollInterval,
 		IntentWaitTimeout:         c.IntentWaitTimeout,
 		Notifications:             c.Notifications,
+		ActionPackages:            c.ActionPackages,
 	}
 
 	data, err := yaml.Marshal(core)
@@ -675,6 +686,12 @@ func (c Config) Validate() error {
 	}
 
 	if err := c.validateMachines(); err != nil {
+		return err
+	}
+	if err := c.validateActions(); err != nil {
+		return err
+	}
+	if err := c.ActionPackages.validate(); err != nil {
 		return err
 	}
 	architectKeys := sortedKeys(c.Architects)

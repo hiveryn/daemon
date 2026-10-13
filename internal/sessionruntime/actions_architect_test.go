@@ -170,7 +170,7 @@ func TestAvailableActionsListsConfiguredActionsAndReportsMissing(t *testing.T) {
 		t.Fatalf("available = %+v, want exactly the three configured names", list.Actions)
 	}
 	missing, demo, broken := list.Actions[0], list.Actions[1], list.Actions[2]
-	if missing.Name != "missing" || missing.Valid || len(missing.Problems) != 1 || !strings.Contains(missing.Problems[0].Message, "not found") {
+	if missing.Name != "missing" || missing.Valid || len(missing.Problems) != 1 || !strings.Contains(missing.Problems[0].Message, "not registered") {
 		t.Fatalf("missing = %+v, want invalid with a not-found problem", missing)
 	}
 	if demo.Name != "demo" || !demo.Valid || demo.Description == "" || demo.Artifacts == "" {
@@ -230,7 +230,7 @@ func TestExecuteActionEnforcesAvailabilityAndValidity(t *testing.T) {
 		want                  []string
 	}{
 		{"other", "x", "codex", []string{"not available"}},
-		{"gone", "x", "codex", []string{"not found"}},
+		{"gone", "x", "codex", []string{"not registered"}},
 		{"broken", "x", "codex", []string{"invalid definition"}},
 		{"demo", "  ", "codex", []string{"prompt"}},
 		{"", "x", "codex", []string{"name"}},
@@ -313,8 +313,9 @@ func TestExecuteActionWaitsForApprovalThenLaunchesUnderSameID(t *testing.T) {
 		t.Fatalf("resolution = %+v, %v; want approved and running under the execution id", res, err)
 	}
 	running := f.result(t, arch.ID, pending.ExecutionID)
-	if running.Status != domain.ActionRunRunning || running.ProfileName != "codex" || running.StartedAt == nil || running.ElapsedSeconds == nil || running.OutputDir == "" {
-		t.Fatalf("after approve = %+v, want running codex with start and output", running)
+	if running.Status != domain.ActionRunRunning || running.ProfileName != "codex" || running.StartedAt == nil || running.ElapsedSeconds == nil ||
+		running.OutputDir != "" || running.Artifacts.State != domain.ActionArtifactsNone {
+		t.Fatalf("after approve = %+v, want running codex with a start and no artifacts yet", running)
 	}
 	run, _ := f.service.GetActionRun(context.Background(), pending.ExecutionID)
 	if run.Trigger != domain.ActionRunTriggerArchitect || run.ArchitectKey != "alpha" || run.RequesterSessionID != arch.ID || run.SessionID == "" || run.ProfileName != "codex" {
@@ -341,15 +342,21 @@ func TestExecuteActionWaitsForApprovalThenLaunchesUnderSameID(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(run.OutputDir, "summary.md"), []byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.conclude(t, run.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "delivered"}); err != nil {
+	if _, err := f.conclude(t, run.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: run.OutputDir, Summary: "delivered"}); err != nil {
 		t.Fatal(err)
 	}
 
 	// A later session of the same architect still reads it; another cannot.
 	later := f.architect(t, "alpha", "demo")
 	done := f.result(t, later.ID, pending.ExecutionID)
-	if done.Status != domain.ActionRunCompleted || done.Summary != "delivered" || done.OutputDir != run.OutputDir || done.EndedAt == nil || done.Activity.Available {
+	// A local caller reads the frozen package itself, not the agent's folder.
+	pkg := filepath.Join(f.artRoot, "packages", pending.ExecutionID)
+	if done.Status != domain.ActionRunCompleted || done.Summary != "delivered" || done.OutputDir != pkg || done.EndedAt == nil || done.Activity.Available ||
+		done.Artifacts.State != domain.ActionArtifactsReady || done.Artifacts.ExpiresAt == nil || done.Artifacts.Source == nil || done.Artifacts.Source.Path != pkg {
 		t.Fatalf("completed = %+v", done)
+	}
+	if data, err := os.ReadFile(filepath.Join(done.OutputDir, "summary.md")); err != nil || string(data) != "ok" {
+		t.Fatalf("package content = %q, %v", data, err)
 	}
 	stranger := f.architect(t, "beta", "demo")
 	if _, err := f.service.GetActionResult(context.Background(), stranger.ID, pending.ExecutionID); !errors.As(err, new(*domain.NotFoundError)) {
@@ -657,7 +664,7 @@ func TestExecuteActionTeardownAndRestartFailPendingRequests(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(liveRun.OutputDir, "summary.md"), []byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.conclude(t, liveRun.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "ok"}); err != nil {
+	if _, err := f.conclude(t, liveRun.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: liveRun.OutputDir, Summary: "ok"}); err != nil {
 		t.Fatal(err)
 	}
 }

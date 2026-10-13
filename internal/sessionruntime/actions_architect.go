@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hiveryn/daemon/internal/actionfs"
@@ -100,8 +100,10 @@ func (s *Service) AddAvailableAction(ctx context.Context, sessionID string, req 
 }
 
 // AvailableActions lists the project's configured Actions in config order,
-// each enriched from the library. A configured name without a definition is
-// listed invalid with a problem, never dropped.
+// each enriched from its registered checkout, with where it runs and the
+// variants eligible there. A configured name that is not registered is listed
+// invalid with a problem, never dropped. Remote checkouts are inspected
+// concurrently, each bounded.
 func (s *Service) AvailableActions(ctx context.Context, sessionID string) (domain.AvailableActionList, error) {
 	rt, err := s.actionRuntime()
 	if err != nil {
@@ -119,41 +121,52 @@ func (s *Service) AvailableActions(ctx context.Context, sessionID string) (domai
 	if err != nil {
 		return domain.AvailableActionList{}, err
 	}
-	out := domain.AvailableActionList{Actions: make([]domain.ActionDefinition, 0, len(architect.AvailableActions))}
-	for _, name := range architect.AvailableActions {
-		def, err := rt.availableDefinition(name)
-		if err != nil {
-			return domain.AvailableActionList{}, err
-		}
-		item := def.ActionDefinition
-		// Suggestions prefill the user's manual launch form; they are not
-		// guidance for an agent composing a request.
-		item.Suggestions = nil
-		if run, ok := running[item.Name]; ok {
-			item.RunningExecutionID = run.ID
-		}
-		out.Actions = append(out.Actions, item)
+	out := domain.AvailableActionList{Actions: make([]domain.ActionDefinition, len(architect.AvailableActions))}
+	errs := make([]error, len(architect.AvailableActions))
+	var wg sync.WaitGroup
+	for i, name := range architect.AvailableActions {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			def, _, err := s.availableDefinition(ctx, name, actionListInspectTimeout)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			item := def.ActionDefinition
+			// Suggestions prefill the user's manual launch form; they are not
+			// guidance for an agent composing a request.
+			item.Suggestions = nil
+			if run, ok := running[item.Name]; ok {
+				item.RunningExecutionID = run.ID
+			}
+			out.Actions[i] = item
+		}()
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		return domain.AvailableActionList{}, err
 	}
 	return out, nil
 }
 
-// availableDefinition inspects a configured action; a missing directory is an
-// invalid definition that says so.
-func (rt *actionRuntime) availableDefinition(name string) (actionfs.Definition, error) {
-	def, err := actionfs.Get(rt.root, name)
+// availableDefinition inspects a configured action where it is registered; an
+// unregistered name is an invalid definition that says so.
+func (s *Service) availableDefinition(ctx context.Context, name string, timeout time.Duration) (actionfs.Definition, actionLocation, error) {
+	def, loc, err := s.actionDefinition(ctx, name, timeout)
 	if err == nil {
-		return def, nil
+		return def, loc, nil
 	}
 	if !errors.As(err, new(*domain.NotFoundError)) {
-		return actionfs.Definition{}, err
+		return actionfs.Definition{}, actionLocation{}, err
 	}
-	path := filepath.Join(rt.root, name)
+	registry := s.actions.registry
 	return actionfs.Definition{ActionDefinition: domain.ActionDefinition{
 		Name:     name,
-		Path:     path,
+		Variants: []string{},
 		Valid:    false,
-		Problems: []domain.ActionProblem{{Path: path, Message: "listed in availableActions but not found in the Actions library (" + rt.root + ")"}},
-	}}, nil
+		Problems: []domain.ActionProblem{{Path: registry, Message: "listed in availableActions but not registered in " + registry}},
+	}}, actionLocation{}, nil
 }
 
 // architectAllows reports whether the architect's current config lists name
@@ -197,10 +210,6 @@ func (s *Service) RequestExecuteAction(ctx context.Context, sessionID string, re
 	if prompt == "" {
 		return zero, &domain.ValidationError{Field: "prompt", Message: "is required"}
 	}
-	variant, err := s.requestedActionVariant(req.Variant)
-	if err != nil {
-		return zero, err
-	}
 	allowed, err := s.architectAllows(session.ArchitectKey, name)
 	if err != nil {
 		return zero, err
@@ -208,12 +217,17 @@ func (s *Service) RequestExecuteAction(ctx context.Context, sessionID string, re
 	if !allowed {
 		return zero, notAvailableError(session.ArchitectKey, name)
 	}
-	def, err := rt.availableDefinition(name)
+	def, loc, err := s.availableDefinition(ctx, name, actionInspectTimeout)
 	if err != nil {
 		return zero, err
 	}
 	if !def.Valid {
 		return zero, actionfs.InvalidError(def)
+	}
+	// The variant must run where the Action does, wherever the requester is.
+	variant, err := s.requestedActionVariant(req.Variant, loc.machine)
+	if err != nil {
+		return zero, err
 	}
 	running, err := rt.runs.RunningActionRuns(ctx)
 	if err != nil {
@@ -237,6 +251,7 @@ func (s *Service) RequestExecuteAction(ctx context.Context, sessionID string, re
 			"action":  name,
 			"prompt":  prompt,
 			"variant": variant,
+			"machine": loc.machine,
 		},
 		Origin: intentOrigin(session),
 		Hooks: intentHooks{
@@ -249,8 +264,8 @@ func (s *Service) RequestExecuteAction(ctx context.Context, sessionID string, re
 					Status:             domain.ActionRunPendingApproval,
 					Prompt:             prompt,
 					ProfileName:        variant,
-					RepoPath:           filepath.Clean(def.Path),
-					OutputDir:          rt.outputDir(name, in.ID),
+					RepoPath:           loc.path,
+					Machine:            loc.machine,
 					CreatedAt:          in.CreatedAt,
 					ArchitectKey:       session.ArchitectKey,
 					RequesterSessionID: session.ID,
@@ -300,11 +315,11 @@ func actionRequestTrigger(session domain.Session) domain.ActionRunTrigger {
 	return domain.ActionRunTriggerArchitect
 }
 
-// requestedActionVariant checks the requester's variant for an Action.
-// Actions always run locally, whoever requests them — a remote worker's
-// request included — so only local (unassigned) variants are eligible.
-func (s *Service) requestedActionVariant(raw string) (string, error) {
-	return s.requestedVariant(raw, "Action", "")
+// requestedActionVariant checks the requester's variant for an Action. The
+// Action runs on its registered machine whoever requests it, so only the
+// variants assigned to that machine are eligible.
+func (s *Service) requestedActionVariant(raw, machine string) (string, error) {
+	return s.requestedVariant(raw, "Action", machine)
 }
 
 // requestedVariant checks an agent's variant choice against the current
@@ -379,33 +394,39 @@ func (s *Service) startRequestedAction(ctx context.Context, executionID, archite
 	if !allowed {
 		return fail(notAvailableError(architectKey, run.Action))
 	}
-	if _, err := s.requestedActionVariant(variant); err != nil {
-		return fail(err)
-	}
 
-	rt.launchMu.Lock()
-	defer rt.launchMu.Unlock()
+	defer rt.lockLaunch(run.Action)()
 
-	def, err := rt.availableDefinition(run.Action)
+	// The registration is read again: the Action may have moved while the
+	// request waited, and the variant must suit where it runs now.
+	def, loc, err := s.availableDefinition(ctx, run.Action, actionInspectTimeout)
 	if err != nil {
 		return fail(err)
 	}
 	if !def.Valid {
 		return fail(actionfs.InvalidError(def))
 	}
+	if _, err := s.requestedActionVariant(variant, loc.machine); err != nil {
+		return fail(err)
+	}
+	outputDir, err := s.actionOutputDir(ctx, loc, run.Action, executionID)
+	if err != nil {
+		return fail(err)
+	}
 	now := time.Now().UTC()
-	if err := rt.runs.StartActionRun(ctx, executionID, variant, now); err != nil {
+	start := domain.ActionRunStart{ProfileName: variant, Machine: loc.machine, RepoPath: loc.path, OutputDir: outputDir, At: now}
+	if err := rt.runs.StartActionRun(ctx, executionID, start); err != nil {
 		return fail(err)
 	}
 	run.Status = domain.ActionRunRunning
 	run.ProfileName = variant
 	run.StartedAt = &now
-	run.RepoPath = filepath.Clean(def.Path)
-	if _, err := s.launchActionSession(ctx, def, run, 0, 0); err != nil {
+	run.RepoPath, run.Machine, run.OutputDir = loc.path, loc.machine, outputDir
+	if _, err := s.launchActionSession(ctx, def, loc, run, 0, 0); err != nil {
 		// launchActionSession already failed the running execution.
 		return domain.ActionRun{}, err
 	}
-	return rt.runs.GetActionRun(ctx, executionID)
+	return s.GetActionRun(ctx, executionID)
 }
 
 // endActionRequest ends a pending request as denied or failed. A request that
@@ -433,8 +454,16 @@ func (s *Service) endActionRequest(executionID string, status domain.ActionRunSt
 
 // GetActionResult returns one execution requested within the calling
 // session's project, by its architect or any of its workers. Any other
-// execution — another project's, or a manual launch — reads as not found.
+// execution — another project's, or a manual launch — reads as not found. A
+// completed execution's package is made available on the caller's machine
+// (callerArtifacts), waiting briefly for a copy in progress.
 func (s *Service) GetActionResult(ctx context.Context, sessionID, executionID string) (domain.ActionResult, error) {
+	return s.actionResult(ctx, sessionID, executionID, actionResultDeliveryWait)
+}
+
+// actionResult is GetActionResult waiting up to deliveryWait for the caller's
+// copy of a completed package.
+func (s *Service) actionResult(ctx context.Context, sessionID, executionID string, deliveryWait time.Duration) (domain.ActionResult, error) {
 	rt, err := s.actionRuntime()
 	if err != nil {
 		return domain.ActionResult{}, err
@@ -453,7 +482,9 @@ func (s *Service) GetActionResult(ctx context.Context, sessionID, executionID st
 	if run.ArchitectKey == "" || run.ArchitectKey != session.ArchitectKey {
 		return domain.ActionResult{}, &domain.NotFoundError{Resource: "action_execution", ID: executionID}
 	}
-	return s.actionResultOf(ctx, run, time.Now().UTC()), nil
+	out := s.actionResultOf(ctx, run, time.Now().UTC())
+	out.Artifacts, out.OutputDir = s.callerArtifacts(ctx, session, run, deliveryWait)
+	return out, nil
 }
 
 func (s *Service) actionResultOf(ctx context.Context, run domain.ActionRun, now time.Time) domain.ActionResult {
@@ -469,6 +500,8 @@ func (s *Service) actionResultOf(ctx context.Context, run domain.ActionRun, now 
 		Reason:      run.Reason,
 		Error:       run.Error,
 		Summary:     run.Summary,
+		Machine:     run.Machine,
+		Artifacts:   domain.ActionArtifacts{State: domain.ActionArtifactsNone},
 	}
 	if run.StartedAt != nil {
 		end := now
@@ -477,7 +510,6 @@ func (s *Service) actionResultOf(ctx context.Context, run domain.ActionRun, now 
 		}
 		elapsed := max(int64(end.Sub(*run.StartedAt).Seconds()), 0)
 		out.ElapsedSeconds = &elapsed
-		out.OutputDir = run.OutputDir
 	}
 	// Activity is the agent's last reported status while it runs, attention
 	// whether it is known to wait for the user; anything else is reported
@@ -501,7 +533,9 @@ func (s *Service) actionResultOf(ctx context.Context, run domain.ActionRun, now 
 
 // WaitForActionResult waits up to timeout for the execution to change status
 // or its agent's attention to change (attentionKey), and returns the result
-// then. A final execution returns at once. Both are measured against the
+// then. A final execution returns at once, unless its package is still being
+// copied to the caller's machine: then the wait lasts until that copy ends or
+// the timeout. Both are measured against the
 // result when the wait began, so a wait on an unchanged condition — an agent
 // already reported waiting for input — blocks until its timeout instead of
 // returning at once. The subscription is taken before the first read, so a
@@ -512,15 +546,25 @@ func (s *Service) WaitForActionResult(ctx context.Context, sessionID, executionI
 	if timeout <= 0 || timeout > domain.MaxActionWaitSeconds*time.Second {
 		return domain.ActionWaitResult{}, &domain.ValidationError{Field: "timeout_seconds", Message: fmt.Sprintf("must be between 1 and %d", domain.MaxActionWaitSeconds)}
 	}
+	deadline := time.Now().Add(timeout)
 	sub := s.SubscribeActionEvents()
 	defer func() { sub.Close() }()
 
-	initial, err := s.GetActionResult(ctx, sessionID, executionID)
+	initial, err := s.actionResult(ctx, sessionID, executionID, 0)
 	if err != nil {
 		return domain.ActionWaitResult{}, err
 	}
 	if initial.Status.Terminal() {
-		return domain.ActionWaitResult{Result: initial}, nil
+		// Final: only the caller's copy of the package can still change.
+		if initial.Artifacts.State != domain.ActionArtifactsCopying {
+			return domain.ActionWaitResult{Result: initial}, nil
+		}
+		current, err := s.actionResult(ctx, sessionID, executionID, time.Until(deadline))
+		if err != nil {
+			return domain.ActionWaitResult{}, err
+		}
+		changed := current.Artifacts.State != initial.Artifacts.State
+		return domain.ActionWaitResult{Result: current, Changed: changed, TimedOut: !changed}, nil
 	}
 
 	timer := time.NewTimer(timeout)
@@ -530,7 +574,7 @@ func (s *Service) WaitForActionResult(ctx context.Context, sessionID, executionI
 		case <-ctx.Done():
 			return domain.ActionWaitResult{}, ctx.Err()
 		case <-timer.C:
-			current, err := s.GetActionResult(ctx, sessionID, executionID)
+			current, err := s.actionResult(ctx, sessionID, executionID, 0)
 			if err != nil {
 				return domain.ActionWaitResult{}, err
 			}
@@ -544,7 +588,9 @@ func (s *Service) WaitForActionResult(ctx context.Context, sessionID, executionI
 			} else if event.ExecutionID != initial.ExecutionID {
 				continue
 			}
-			current, err := s.GetActionResult(ctx, sessionID, executionID)
+			// A completed execution's package copy may use what is left of
+			// the wait.
+			current, err := s.actionResult(ctx, sessionID, executionID, max(time.Until(deadline), 0))
 			if err != nil {
 				return domain.ActionWaitResult{}, err
 			}

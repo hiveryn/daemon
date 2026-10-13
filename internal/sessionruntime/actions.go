@@ -5,40 +5,52 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/hiveryn/daemon/internal/actionfs"
+	"github.com/hiveryn/daemon/internal/actionpkg"
+	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
 // Actions run as sessions of type action: one agent session per execution, in
-// the action's own repository, with a daemon-created output directory outside
-// it. The execution itself is an ActionRun record, addressed by its stable id,
+// the action's registered checkout on its machine (actions.yaml; local or an
+// SSH machine), with a daemon-created working output directory outside it.
+// The execution itself is an ActionRun record, addressed by its stable id,
 // that outlives the session:
 //
 //	launch        record inserted running (the single-run rule), output
-//	              directory created, session created and its run launched;
-//	              an architect's approved request (actions_architect.go)
-//	              moves its pending_approval record to running and launches
-//	              the same way
+//	              directory created on the execution machine, session created
+//	              and its run launched (a remote one over SSH/tmux like a
+//	              remote worker); an architect's approved request
+//	              (actions_architect.go) moves its pending_approval record to
+//	              running and launches the same way
 //	conclude      the agent's concludeSession is a concludeSession intent;
-//	              approval (or the wait window expiring) finishes the record
-//	              (completed or failed) and ends the session like any other
-//	              conclusion, a denial leaves both running
+//	              a completed one names the folder it delivered, checked on the
+//	              execution machine before the request is shown. Approval (or
+//	              the wait window expiring) freezes that folder into a managed
+//	              package (actions_artifacts.go), confirms a remote agent
+//	              stopped, finishes the record (completed only together with
+//	              its ready package, or failed) and ends the session; a denial
+//	              leaves everything running
 //	cancel        the user stops a running execution: failed, session ended
 //	launch error  failed with the launch error; the session is removed
 //	PTY exit      the agent is resumed like every session; a failed resume
-//	              fails the execution
+//	              fails the execution (a remote one reattaches instead)
 //	restart       running action sessions are restored like every session; a
-//	              failed restore fails the execution, and ReconcileActionRuns
-//	              fails any execution left running without a live session
+//	              failed local restore fails the execution, and
+//	              ReconcileActionRuns fails any execution left running without
+//	              a live session
 //
 // Unlike deferred intents, execution history is never pruned and a restart
-// does not fail executions whose agent session resumes.
+// does not fail executions whose agent session resumes. Artifact packages
+// expire (actions_artifacts.go); the records stay.
 
 const (
 	// actionConclusionHistory is how many earlier summaries an action agent
@@ -47,22 +59,65 @@ const (
 	// actionOutputAdditionalRepoKey labels the output directory in the
 	// session's additional workdir scope.
 	actionOutputAdditionalRepoKey = "output"
+	// actionListInspectTimeout bounds inspecting one remote checkout for a
+	// listing, which must answer within the desktop's request bound even
+	// when a machine is unreachable; the definition then says so.
+	actionListInspectTimeout = 4 * time.Second
+	// actionInspectTimeout bounds inspecting a remote checkout before a
+	// launch or a request.
+	actionInspectTimeout = 30 * time.Second
+	// remoteActionsStateDir is the managed directory in a remote account's
+	// home: runs/<action>/<id> working directories and artifacts/.
+	remoteActionsStateDir = ".local/state/hiveryn-actions"
 )
 
 type actionRuntime struct {
-	runs       domain.ActionRunRepository
-	root       string
-	outputRoot string
-	// launchMu serializes launches, so the busy check, the output directory
-	// and the session are created as one step per action.
-	launchMu sync.Mutex
+	runs     domain.ActionRunRepository
+	registry string
+	// runsRoot holds local working output directories; artifactsRoot the
+	// local managed artifact directories (actions_artifacts.go).
+	runsRoot      string
+	artifactsRoot string
+	// launches serializes the launches of each action, so the busy check, the
+	// output directory and the session are created as one step per action; a
+	// slow remote launch never holds up another action's. The store's
+	// single-running rule stays the backstop.
+	launchesMu sync.Mutex
+	launches   map[string]*sync.Mutex
+
+	artifacts artifactState
 }
 
-// SetActions enables the Actions runtime: executions are persisted in runs,
-// definitions are read from root and output directories are created under
-// outputRoot/<action>/<execution id>.
-func (s *Service) SetActions(runs domain.ActionRunRepository, root, outputRoot string) {
-	s.actions = &actionRuntime{runs: runs, root: root, outputRoot: outputRoot}
+// ActionPaths are the local files and directories the Actions runtime uses.
+type ActionPaths struct {
+	// Registry is actions.yaml.
+	Registry string
+	// Runs holds local working output directories, <Runs>/<action>/<id>.
+	Runs string
+	// Artifacts holds local managed packages and deliveries.
+	Artifacts string
+}
+
+// SetActions enables the Actions runtime: executions are persisted in runs
+// and the registry, working directories and managed artifacts are at paths.
+func (s *Service) SetActions(runs domain.ActionRunRepository, paths ActionPaths) {
+	s.actions = &actionRuntime{runs: runs, registry: paths.Registry, runsRoot: paths.Runs, artifactsRoot: paths.Artifacts}
+}
+
+// lockLaunch takes the launch lock of one action and returns its release.
+func (rt *actionRuntime) lockLaunch(action string) func() {
+	rt.launchesMu.Lock()
+	if rt.launches == nil {
+		rt.launches = map[string]*sync.Mutex{}
+	}
+	mu, ok := rt.launches[action]
+	if !ok {
+		mu = &sync.Mutex{}
+		rt.launches[action] = mu
+	}
+	rt.launchesMu.Unlock()
+	mu.Lock()
+	return mu.Unlock
 }
 
 func (s *Service) actionRuntime() (*actionRuntime, error) {
@@ -72,12 +127,58 @@ func (s *Service) actionRuntime() (*actionRuntime, error) {
 	return s.actions, nil
 }
 
+// actionLocation is where a registered Action lives and runs.
+type actionLocation struct {
+	machine string
+	ssh     string
+	path    string
+}
+
+// registeredAction resolves name in the current actions.yaml. An unknown name
+// is a NotFoundError; a machine missing from machines.yaml cannot occur, the
+// config loader refuses it.
+func (s *Service) registeredAction(name string) (actionLocation, config.Config, error) {
+	cfg, err := s.currentConfig()
+	if err != nil {
+		return actionLocation{}, config.Config{}, err
+	}
+	reg, ok := cfg.Actions[name]
+	if !ok {
+		return actionLocation{}, cfg, &domain.NotFoundError{Resource: "action", ID: name}
+	}
+	return actionLocation{machine: reg.Machine, ssh: cfg.Machines[reg.Machine].SSH, path: reg.Path}, cfg, nil
+}
+
+// inspectAction reads the registered checkout's definition where it lives,
+// with its eligible variants.
+func inspectAction(ctx context.Context, cfg config.Config, name string, loc actionLocation, timeout time.Duration) actionfs.Definition {
+	var def actionfs.Definition
+	if loc.machine == "" {
+		def = actionfs.InspectLocal(loc.path, name)
+	} else {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		def = actionfs.InspectRemote(ctx, loc.ssh, loc.machine, loc.path, name)
+		cancel()
+	}
+	def.Variants = cfg.VariantsForMachine(loc.machine)
+	return def
+}
+
+// actionDefinition resolves and inspects one registered Action.
+func (s *Service) actionDefinition(ctx context.Context, name string, timeout time.Duration) (actionfs.Definition, actionLocation, error) {
+	loc, cfg, err := s.registeredAction(name)
+	if err != nil {
+		return actionfs.Definition{}, actionLocation{}, err
+	}
+	return inspectAction(ctx, cfg, name, loc, timeout), loc, nil
+}
+
 func (s *Service) ListActions(ctx context.Context) (domain.ActionList, error) {
 	rt, err := s.actionRuntime()
 	if err != nil {
 		return domain.ActionList{}, err
 	}
-	defs, err := actionfs.List(rt.root)
+	cfg, err := s.currentConfig()
 	if err != nil {
 		return domain.ActionList{}, err
 	}
@@ -85,15 +186,30 @@ func (s *Service) ListActions(ctx context.Context) (domain.ActionList, error) {
 	if err != nil {
 		return domain.ActionList{}, err
 	}
-	out := domain.ActionList{Root: rt.root, Actions: make([]domain.ActionDefinition, 0, len(defs))}
-	for _, def := range defs {
-		item := def.ActionDefinition
-		if run, ok := running[item.Name]; ok {
-			item.RunningExecutionID = run.ID
-		}
-		out.Actions = append(out.Actions, item)
+	names := make([]string, 0, len(cfg.Actions))
+	for name := range cfg.Actions {
+		names = append(names, name)
 	}
-	return out, nil
+	sort.Strings(names)
+	// Remote checkouts are inspected concurrently, each bounded, so one
+	// unreachable machine costs one timeout, not one per Action.
+	defs := make([]domain.ActionDefinition, len(names))
+	var wg sync.WaitGroup
+	for i, name := range names {
+		reg := cfg.Actions[name]
+		loc := actionLocation{machine: reg.Machine, ssh: cfg.Machines[reg.Machine].SSH, path: reg.Path}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			item := inspectAction(ctx, cfg, name, loc, actionListInspectTimeout).ActionDefinition
+			if run, ok := running[name]; ok {
+				item.RunningExecutionID = run.ID
+			}
+			defs[i] = item
+		}()
+	}
+	wg.Wait()
+	return domain.ActionList{Registry: rt.registry, Actions: defs}, nil
 }
 
 func (s *Service) GetAction(ctx context.Context, name string) (domain.ActionDefinition, error) {
@@ -101,7 +217,7 @@ func (s *Service) GetAction(ctx context.Context, name string) (domain.ActionDefi
 	if err != nil {
 		return domain.ActionDefinition{}, err
 	}
-	def, err := actionfs.Get(rt.root, name)
+	def, _, err := s.actionDefinition(ctx, name, actionListInspectTimeout)
 	if err != nil {
 		return domain.ActionDefinition{}, err
 	}
@@ -125,7 +241,11 @@ func (s *Service) ListActionRuns(ctx context.Context, action string, limit int) 
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now().UTC()
 	for i := range runs {
+		if runs[i], err = s.withArtifacts(ctx, runs[i], now); err != nil {
+			return nil, err
+		}
 		runs[i] = s.withAttention(runs[i])
 	}
 	return runs, nil
@@ -138,6 +258,9 @@ func (s *Service) GetActionRun(ctx context.Context, id string) (domain.ActionRun
 	}
 	run, err := rt.runs.GetActionRun(ctx, id)
 	if err != nil {
+		return domain.ActionRun{}, err
+	}
+	if run, err = s.withArtifacts(ctx, run, time.Now().UTC()); err != nil {
 		return domain.ActionRun{}, err
 	}
 	return s.withAttention(run), nil
@@ -158,48 +281,57 @@ func (s *Service) LaunchAction(ctx context.Context, name string, req domain.Laun
 	if strings.TrimSpace(req.ProfileName) == "" {
 		return domain.LaunchActionResult{}, &domain.ValidationError{Field: "profile_name", Message: "is required"}
 	}
-	if err := s.checkActionVariant(req.ProfileName); err != nil {
+	loc, _, err := s.registeredAction(name)
+	if err != nil {
+		return domain.LaunchActionResult{}, err
+	}
+	if err := s.checkActionVariant(req.ProfileName, loc.machine); err != nil {
 		return domain.LaunchActionResult{}, err
 	}
 
-	rt.launchMu.Lock()
-	defer rt.launchMu.Unlock()
+	defer rt.lockLaunch(name)()
 
-	def, err := actionfs.Get(rt.root, name)
+	def, loc, err := s.actionDefinition(ctx, name, actionInspectTimeout)
 	if err != nil {
 		return domain.LaunchActionResult{}, err
 	}
 	if !def.Valid {
 		return domain.LaunchActionResult{}, actionfs.InvalidError(def)
 	}
+	id := uuid.NewString()
+	outputDir, err := s.actionOutputDir(ctx, loc, def.Name, id)
+	if err != nil {
+		return domain.LaunchActionResult{}, err
+	}
 
 	now := time.Now().UTC()
 	run := domain.ActionRun{
-		ID:          uuid.NewString(),
+		ID:          id,
 		Action:      def.Name,
 		Trigger:     domain.ActionRunTriggerManual,
 		Status:      domain.ActionRunRunning,
 		Prompt:      prompt,
 		ProfileName: req.ProfileName,
-		RepoPath:    filepath.Clean(def.Path),
+		RepoPath:    loc.path,
+		OutputDir:   outputDir,
+		Machine:     loc.machine,
 		CreatedAt:   now,
 		StartedAt:   &now,
 	}
-	run.OutputDir = rt.outputDir(def.Name, run.ID)
 	if err := rt.runs.CreateActionRun(ctx, run); err != nil {
 		return domain.LaunchActionResult{}, err
 	}
-	return s.launchActionSession(ctx, def, run, req.Cols, req.Rows)
+	return s.launchActionSession(ctx, def, loc, run, req.Cols, req.Rows)
 }
 
-// checkActionVariant reports whether profileName names a launchable variant in
-// the current config. Actions run locally, so the variant must be local.
-func (s *Service) checkActionVariant(profileName string) error {
+// checkActionVariant reports whether profileName names a launchable variant
+// for machine, where the Action runs, in the current config.
+func (s *Service) checkActionVariant(profileName, machine string) error {
 	cfg, err := s.currentConfig()
 	if err != nil {
 		return err
 	}
-	profile, err := cfg.VariantForMachine(profileName, "", "Action")
+	profile, err := cfg.VariantForMachine(profileName, machine, "Action")
 	if err != nil {
 		return err
 	}
@@ -209,15 +341,25 @@ func (s *Service) checkActionVariant(profileName string) error {
 	return nil
 }
 
-func (rt *actionRuntime) outputDir(action, executionID string) string {
-	return filepath.Join(rt.outputRoot, action, executionID)
+// actionOutputDir is the execution's working output directory on its
+// machine: under the local runs root, or in the remote account's managed
+// state directory (its home is asked over SSH).
+func (s *Service) actionOutputDir(ctx context.Context, loc actionLocation, action, executionID string) (string, error) {
+	if loc.machine == "" {
+		return filepath.Join(s.actions.runsRoot, action, executionID), nil
+	}
+	home, err := s.remoteHome(ctx, loc.ssh)
+	if err != nil {
+		return "", fmt.Errorf("resolve the output directory on %s: %w", config.MachineLabel(loc.machine), err)
+	}
+	return path.Join(home, remoteActionsStateDir, "runs", action, executionID), nil
 }
 
 // launchActionSession starts the agent session of an execution already
 // recorded running: the output directory, the session and its run. It is
 // shared by manual launches and approved architect requests, and must be
-// called with launchMu held.
-func (s *Service) launchActionSession(ctx context.Context, def actionfs.Definition, run domain.ActionRun, cols, rows uint16) (domain.LaunchActionResult, error) {
+// called with the action's launch lock held.
+func (s *Service) launchActionSession(ctx context.Context, def actionfs.Definition, loc actionLocation, run domain.ActionRun, cols, rows uint16) (domain.LaunchActionResult, error) {
 	rt := s.actions
 
 	// From here on every failure finishes the record as failed, so a broken
@@ -227,7 +369,7 @@ func (s *Service) launchActionSession(ctx context.Context, def actionfs.Definiti
 		return domain.LaunchActionResult{}, cause
 	}
 
-	if err := createEmptyOutputDir(run.OutputDir); err != nil {
+	if err := actionpkg.MkdirEmpty(ctx, actionpkg.Location{Alias: loc.ssh, Path: run.OutputDir}); err != nil {
 		return fail("create output directory", err)
 	}
 	instructions, err := builtinPrompt(actionSystemPromptName)
@@ -238,7 +380,12 @@ func (s *Service) launchActionSession(ctx context.Context, def actionfs.Definiti
 	if err != nil {
 		return fail("kickoff", err)
 	}
+	remoteToken, remotePort, err := newRemoteCredentials(loc.machine)
+	if err != nil {
+		return fail("remote credentials", err)
+	}
 	session, err := s.repo.CreateSession(ctx, domain.CreateSessionParams{
+		Machine: loc.machine, SSH: loc.ssh, RemoteToken: remoteToken, RemotePort: remotePort,
 		SessionType:        domain.SessionTypeAction,
 		ContextID:          run.ID,
 		Prompt:             kickoff,
@@ -273,22 +420,11 @@ func (s *Service) launchActionSession(ctx context.Context, def actionfs.Definiti
 		"session_id", session.ID,
 		"profile", run.ProfileName,
 		"output_dir", run.OutputDir,
+		"machine", run.Machine,
 		"trigger", run.Trigger,
 		"architect", run.ArchitectKey,
 	)
 	return domain.LaunchActionResult{Run: run, Session: session, MainTerminalID: result.MainTerminalID}, nil
-}
-
-// createEmptyOutputDir creates the execution's output directory. The leaf must
-// not exist yet: the agent is promised an empty folder of its own.
-func createEmptyOutputDir(dir string) error {
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
-		return fmt.Errorf("create output parent %s: %w", filepath.Dir(dir), err)
-	}
-	if err := os.Mkdir(dir, 0o755); err != nil {
-		return fmt.Errorf("create output directory %s: %w", dir, err)
-	}
-	return nil
 }
 
 func renderActionKickoff(def actionfs.Definition, run domain.ActionRun) (string, error) {
@@ -296,21 +432,35 @@ func renderActionKickoff(def actionfs.Definition, run domain.ActionRun) (string,
 	if err != nil {
 		return "", err
 	}
+	join := filepath.Join
+	if run.Machine != "" {
+		join = path.Join
+	}
 	return renderBuiltinPrompt(actionKickoffPromptName, actionKickoffData{
 		Action:         def.Name,
 		ExecutionID:    run.ID,
+		Machine:        runsWhere(run.Machine),
 		RepoPath:       run.RepoPath,
 		OutputDir:      run.OutputDir,
-		DefinitionPath: filepath.Join(def.Path, actionfs.DefinitionFileName),
+		DefinitionPath: join(def.Path, actionfs.DefinitionFileName),
 		Artifacts:      def.Artifacts,
 		KickoffName:    actionfs.KickoffFileName,
 		Kickoff:        kickoff,
 	})
 }
 
+// runsWhere says where an execution runs, for its kickoff.
+func runsWhere(machine string) string {
+	if machine == "" {
+		return "locally"
+	}
+	return "on machine " + machine
+}
+
 type actionKickoffData struct {
 	Action         string
 	ExecutionID    string
+	Machine        string
 	RepoPath       string
 	OutputDir      string
 	DefinitionPath string
@@ -326,8 +476,14 @@ type actionKickoffData struct {
 // execution and its session stay running, so architect result/wait callers see
 // no final result early. Only the intent's Exec finishes the execution and ends
 // the session; a denial leaves both running for follow-up and is returned to
-// the agent as the outcome. completed requires a non-empty output directory,
-// checked before the request is shown and again when it is applied.
+// the agent as the outcome.
+//
+// completed names the delivered folder (delivery_dir, absolute, on the
+// execution machine). It is checked there before the request is shown — an
+// existing directory of regular files and directories within the package
+// limits — so a doomed conclusion goes straight back to the agent; the
+// snapshot taken on approval enforces the same rules again. failed takes no
+// folder.
 func (s *Service) ConcludeAction(ctx context.Context, sessionID string, req domain.ConcludeActionRequest) (domain.IntentResolution[domain.ActionRun], error) {
 	var zero domain.IntentResolution[domain.ActionRun]
 	if _, err := s.actionRuntime(); err != nil {
@@ -356,8 +512,12 @@ func (s *Service) ConcludeAction(ctx context.Context, sessionID string, req doma
 	}
 	// Validate before the popup, as RequestConclusion does: a doomed
 	// conclusion goes straight back to the agent and is never shown.
-	if status == domain.ActionRunCompleted {
-		if err := checkActionOutputDelivered(run.OutputDir); err != nil {
+	deliveryDir := strings.TrimSpace(req.DeliveryDir)
+	switch {
+	case status == domain.ActionRunFailed && deliveryDir != "":
+		return zero, &domain.ValidationError{Field: "delivery_dir", Message: "applies to completed only; a failed execution delivers no package — omit it"}
+	case status == domain.ActionRunCompleted:
+		if deliveryDir, err = s.checkDeliveryDir(ctx, session, deliveryDir); err != nil {
 			return zero, err
 		}
 	}
@@ -365,73 +525,132 @@ func (s *Service) ConcludeAction(ctx context.Context, sessionID string, req doma
 		return zero, err
 	}
 
+	// body/outcome are what every conclusion card renders; the rest names
+	// the execution the conclusion finishes and the folder it delivers.
+	payload := map[string]any{
+		"body":         summary,
+		"outcome":      string(req.Outcome),
+		"action":       run.Action,
+		"execution_id": run.ID,
+		"output_dir":   run.OutputDir,
+	}
+	if deliveryDir != "" {
+		payload["delivery_dir"] = deliveryDir
+	}
+	if run.Machine != "" {
+		payload["machine"] = run.Machine
+	}
 	return awaitIntent(ctx, s, intentSpec[domain.ActionRun]{
 		SessionID: sessionID,
 		Type:      domain.IntentTypeConcludeSession,
 		Summary:   summary,
-		// body/outcome are what every conclusion card renders; the rest names
-		// the execution the conclusion finishes.
-		Payload: map[string]any{
-			"body":         summary,
-			"outcome":      string(req.Outcome),
-			"action":       run.Action,
-			"execution_id": run.ID,
-			"output_dir":   run.OutputDir,
-		},
-		Origin: intentOrigin(session),
+		Payload:   payload,
+		Origin:    intentOrigin(session),
 		Exec: func(ctx context.Context, _ domain.IntentInputValues) (domain.ActionRun, error) {
 			// Ending the session kills the agent and with it the MCP client
 			// whose call this is; the teardown must run to completion anyway.
-			return s.applyActionConclusion(context.WithoutCancel(ctx), sessionID, req.Outcome, status, summary)
+			return s.applyActionConclusion(context.WithoutCancel(ctx), sessionID, req.Outcome, status, summary, deliveryDir)
 		},
 	})
 }
 
+// checkDeliveryDir validates a completed conclusion's folder on the execution
+// machine and returns it cleaned. Content problems are ValidationErrors the
+// agent can fix; failing to reach the machine is an ordinary error.
+func (s *Service) checkDeliveryDir(ctx context.Context, session domain.Session, dir string) (string, error) {
+	if dir == "" {
+		return "", &domain.ValidationError{Field: "delivery_dir", Message: "is required for completed: the absolute path of the folder holding the delivered package (usually the output directory this execution was given)"}
+	}
+	if session.Machine != "" {
+		if !path.IsAbs(dir) || strings.ContainsAny(dir, "\x00\r\n") {
+			return "", &domain.ValidationError{Field: "delivery_dir", Message: fmt.Sprintf("%q must be an absolute path on %s", dir, config.MachineLabel(session.Machine))}
+		}
+		dir = path.Clean(dir)
+	} else {
+		if !filepath.IsAbs(dir) {
+			return "", &domain.ValidationError{Field: "delivery_dir", Message: fmt.Sprintf("%q must be an absolute path", dir)}
+		}
+		dir = filepath.Clean(dir)
+	}
+	stats, err := actionpkg.Preflight(ctx, actionpkg.Location{Alias: session.SSH, Path: dir}, s.actionPackageLimits())
+	if err != nil {
+		return "", packageError("delivery_dir", err)
+	}
+	if stats.Files == 0 {
+		return "", emptyPackageError(dir)
+	}
+	return dir, nil
+}
+
+// emptyPackageError refuses a completed conclusion whose folder holds no file.
+func emptyPackageError(dir string) error {
+	return &domain.ValidationError{Field: "delivery_dir", Message: dir + " is empty; deliver the artifact package there before concluding completed, or conclude failed"}
+}
+
+// packageError turns a package content problem into a ValidationError on
+// field, so the agent corrects the folder and concludes again; anything else
+// keeps its cause.
+func packageError(field string, err error) error {
+	var content *actionpkg.Error
+	if errors.As(err, &content) {
+		return &domain.ValidationError{Field: field, Message: content.Message}
+	}
+	return err
+}
+
 // applyActionConclusion finishes an execution with its approved conclusion
-// and ends its session. The execution and its output are rechecked: the
-// agent kept running while the conclusion waited for approval.
-func (s *Service) applyActionConclusion(ctx context.Context, sessionID string, outcome domain.ActionConclusionOutcome, status domain.ActionRunStatus, summary string) (domain.ActionRun, error) {
+// and ends its session. The execution and the delivered folder are rechecked:
+// the agent kept running while the conclusion waited for approval. A completed
+// conclusion first freezes the folder into the managed package — a snapshot
+// later edits of the folder cannot reach — and is recorded completed only
+// together with that ready package. A remote agent is confirmed stopped before
+// anything is recorded, so an unconfirmed stop leaves the execution running
+// and the conclusion can be retried.
+func (s *Service) applyActionConclusion(ctx context.Context, sessionID string, outcome domain.ActionConclusionOutcome, status domain.ActionRunStatus, summary, deliveryDir string) (domain.ActionRun, error) {
 	rt := s.actions
 	session, run, err := s.runningActionSession(ctx, sessionID)
 	if err != nil {
 		return domain.ActionRun{}, err
 	}
+	now := time.Now().UTC()
+	var pkg domain.ActionArtifactRecord
 	if status == domain.ActionRunCompleted {
-		if err := checkActionOutputDelivered(run.OutputDir); err != nil {
+		if pkg, err = s.snapshotPackage(ctx, session, run, deliveryDir, now); err != nil {
 			return domain.ActionRun{}, err
 		}
 	}
-	if err := rt.runs.FinishActionRun(ctx, run.ID, status, summary, "", time.Now().UTC()); err != nil {
-		return domain.ActionRun{}, err
+	if session.Machine != "" {
+		if err := s.stopRemote(ctx, session); err != nil {
+			return domain.ActionRun{}, fmt.Errorf("conclusion not applied: %w", err)
+		}
 	}
-	finished, err := rt.runs.GetActionRun(ctx, run.ID)
+	if status == domain.ActionRunCompleted {
+		err = rt.runs.CompleteActionRun(ctx, run.ID, summary, deliveryDir, pkg, now)
+	} else {
+		err = rt.runs.FinishActionRun(ctx, run.ID, status, summary, "", now)
+	}
 	if err != nil {
 		return domain.ActionRun{}, err
 	}
-	if err := s.endActionSession(ctx, session, "session concluded", "concluded", map[string]any{
+	raw := map[string]any{
 		"execution_id": run.ID,
 		"outcome":      string(outcome),
 		"summary":      summary,
 		"output_dir":   run.OutputDir,
-	}); err != nil {
+	}
+	if pkg.Path != "" {
+		raw["package_dir"] = pkg.Path
+	}
+	if err := s.endActionSession(ctx, session, "session concluded", "concluded", raw); err != nil {
+		return domain.ActionRun{}, err
+	}
+	finished, err := s.GetActionRun(ctx, run.ID)
+	if err != nil {
 		return domain.ActionRun{}, err
 	}
 	s.publishActionEvent(run, status)
-	s.logger.Info("action execution concluded", "action", run.Action, "execution_id", run.ID, "status", status)
+	s.logger.Info("action execution concluded", "action", run.Action, "execution_id", run.ID, "status", status, "package", pkg.Path, "machine", run.Machine)
 	return finished, nil
-}
-
-// checkActionOutputDelivered refuses a completed conclusion while the output
-// directory is empty.
-func checkActionOutputDelivered(outputDir string) error {
-	entries, err := os.ReadDir(outputDir)
-	if err != nil {
-		return &domain.ValidationError{Field: "outcome", Message: fmt.Sprintf("cannot read output directory %s: %v", outputDir, err)}
-	}
-	if len(entries) == 0 {
-		return &domain.ValidationError{Field: "outcome", Message: "output directory " + outputDir + " is empty; deliver the artifact package before concluding completed, or conclude failed"}
-	}
-	return nil
 }
 
 // RecentActionConclusions returns the latest concluded summaries of the action
@@ -468,24 +687,39 @@ func (s *Service) CancelActionRun(ctx context.Context, id string) (domain.Action
 	if run.Status != domain.ActionRunRunning {
 		return domain.ActionRun{}, &domain.ConflictError{Resource: "action_run", Field: "status", Message: fmt.Sprintf("action execution %s is %s, not running", id, run.Status)}
 	}
-	if err := rt.runs.FinishActionRun(ctx, id, domain.ActionRunFailed, "", "cancelled by user", time.Now().UTC()); err != nil {
-		return domain.ActionRun{}, err
-	}
+	var session *domain.Session
 	if run.SessionID != "" {
-		session, err := s.repo.GetSession(ctx, run.SessionID)
+		live, err := s.repo.GetSession(ctx, run.SessionID)
 		switch {
 		case err == nil:
-			if err := s.endActionSession(context.WithoutCancel(ctx), session, "session cancelled", "cancelled", map[string]any{"execution_id": id}); err != nil {
-				return domain.ActionRun{}, err
-			}
+			session = &live
 		case errors.As(err, new(*domain.NotFoundError)):
 		default:
 			return domain.ActionRun{}, err
 		}
 	}
+	// A remote agent must be confirmed stopped before the execution reads as
+	// ended; otherwise it stays running and the user can stop it again.
+	teardownCtx := context.WithoutCancel(ctx)
+	if session != nil && session.Machine != "" {
+		stopCtx, cancel := context.WithTimeout(teardownCtx, sessionTeardownTimeout)
+		err := s.stopRemote(stopCtx, *session)
+		cancel()
+		if err != nil {
+			return domain.ActionRun{}, fmt.Errorf("execution not stopped: %w", err)
+		}
+	}
+	if err := rt.runs.FinishActionRun(ctx, id, domain.ActionRunFailed, "", "cancelled by user", time.Now().UTC()); err != nil {
+		return domain.ActionRun{}, err
+	}
+	if session != nil {
+		if err := s.endActionSession(teardownCtx, *session, "session cancelled", "cancelled", map[string]any{"execution_id": id}); err != nil {
+			return domain.ActionRun{}, err
+		}
+	}
 	s.publishActionEvent(run, domain.ActionRunFailed)
 	s.logger.Info("action execution cancelled", "action", run.Action, "execution_id", id)
-	return rt.runs.GetActionRun(ctx, id)
+	return s.GetActionRun(ctx, id)
 }
 
 // ReconcileActionRuns runs at startup, after RestoreRunningSessions: an
@@ -569,9 +803,21 @@ func (s *Service) finishActionRunFailed(id, reason string) {
 }
 
 // removeActionSession kills an action session's terminals and deletes it. The
-// execution record keeps the history, so nothing is lost with the session.
+// execution record keeps the history, so nothing is lost with the session. A
+// remote session is deleted only once its remote resources are confirmed
+// stopped; otherwise it is kept, with its ownership records, and the failure
+// logged.
 func (s *Service) removeActionSession(sessionID string) {
 	ctx := context.Background()
+	if session, err := s.repo.GetSession(ctx, sessionID); err == nil && session.Machine != "" {
+		stopCtx, cancel := context.WithTimeout(ctx, remoteCleanupTimeout)
+		err := s.stopRemote(stopCtx, session)
+		cancel()
+		if err != nil {
+			s.logger.Error("remote action session kept: remote stop not confirmed", "session_id", sessionID, "error", err)
+			return
+		}
+	}
 	if err := s.terminal.KillBySession(ctx, sessionID); err != nil && !errors.Is(err, errTerminalNotFound) {
 		s.logger.Error("failed to kill action session terminals", "session_id", sessionID, "error", err)
 	}
@@ -583,7 +829,7 @@ func (s *Service) removeActionSession(sessionID string) {
 
 // endActionSession ends a live action session like a conclusion: the run is
 // completed, the ended event published, the terminals killed and the session
-// deleted.
+// deleted. A remote session's agent must already be confirmed stopped.
 func (s *Service) endActionSession(ctx context.Context, session domain.Session, message, lifecycle string, raw map[string]any) error {
 	runID := ""
 	if session.CurrentRun != nil {
@@ -637,18 +883,21 @@ func actionTerminalWorkdirs(session domain.Session) ([]domain.TerminalWorkdir, e
 	}
 	home, _ := os.UserHomeDir()
 	display := func(p string) string {
+		if session.Machine != "" {
+			return session.Machine + ":" + p
+		}
 		if home != "" && (p == home || strings.HasPrefix(p, home+string(filepath.Separator))) {
 			return "~" + strings.TrimPrefix(p, home)
 		}
 		return p
 	}
-	out := []domain.TerminalWorkdir{{ID: "session-primary", Title: "Action repository", Path: run.Workdir, DisplayPath: display(run.Workdir), Default: true}}
+	out := []domain.TerminalWorkdir{{ID: "session-primary", Title: "Action repository", Path: run.Workdir, DisplayPath: display(run.Workdir), Default: true, Machine: session.Machine}}
 	for i, path := range run.AdditionalWorkdirs {
 		title := "Output directory"
 		if i < len(run.AdditionalRepos) && run.AdditionalRepos[i] != actionOutputAdditionalRepoKey {
 			title = run.AdditionalRepos[i]
 		}
-		out = append(out, domain.TerminalWorkdir{ID: fmt.Sprintf("session-additional:%d", i), Title: title, Path: path, DisplayPath: display(path)})
+		out = append(out, domain.TerminalWorkdir{ID: fmt.Sprintf("session-additional:%d", i), Title: title, Path: path, DisplayPath: display(path), Machine: session.Machine})
 	}
 	return out, nil
 }
