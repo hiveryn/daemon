@@ -57,7 +57,7 @@ func (h *reposHandler) get(w http.ResponseWriter, r *http.Request) {
 }
 
 // defaultDiffTimeout bounds one diff computation. A remote repository's diff is
-// several SSH round trips, routinely longer than an ordinary API call; the bound
+// an SSH round trip, routinely longer than an ordinary API call; the bound
 // keeps a stalled connection from holding the request open indefinitely. The
 // desktop waits longer than this, so the daemon's own error is what it shows.
 const defaultDiffTimeout = 60 * time.Second

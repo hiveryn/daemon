@@ -259,16 +259,18 @@ with tempfile.TemporaryDirectory(prefix='hiveryn-remote-smoke-') as tmp:
         def ssh_calls():
             try:return len((tmp/'ssh_calls').read_text().splitlines())
             except FileNotFoundError:return 0
-        (tmp/'ssh_delay').write_text('1.5')
+        (tmp/'ssh_delay').write_text('6')
         before=ssh_calls();began=time.monotonic()
         diff=api('/architects/fixture/repos/remote/diff')
         seconds=time.monotonic()-began;calls=ssh_calls()-before
         paths=[f['path'] for f in diff['files']]
         assert seconds>5 and sum(p.startswith('new dir/untracked ') for p in paths)==10,(seconds,paths)
-        # One connection for all untracked files, not one each (would be >= 14).
-        assert calls<=6,calls
+        # Each diff is one SSH invocation, untracked files included.
+        assert calls==1,calls
         sha=remote('git -C /home/worker/repo rev-parse HEAD')
+        before=ssh_calls()
         assert api(f'/architects/fixture/repos/remote/commits/{sha}/diff')['files']
+        assert ssh_calls()-before==1
         # A remote terminal whose requester gives up still opens, as a tab; a
         # retry meanwhile is refused instead of opening a second shell.
         (tmp/'ssh_delay').write_text('8')
@@ -313,7 +315,7 @@ with tempfile.TemporaryDirectory(prefix='hiveryn-remote-smoke-') as tmp:
         finally:run('docker','exec',container,'mv','/usr/bin/tmux-hidden','/usr/bin/tmux')
         api(f'/sessions/{sid}/discard',{})
         assert remote(f'tmux -L hiveryn-aux-{late} has-session 2>/dev/null || echo gone')=='gone'
-        print('remote diffs/terminals: >5 s diffs with one SSH call for untracked files, terminal survives requester timeout, retry 409, waiting requester succeeds, close drops ownership, unconfirmed cleanup retained then discarded PASS',flush=True)
+        print('remote diffs/terminals: >5 s diffs in one SSH call each, terminal survives requester timeout, retry 409, waiting requester succeeds, close drops ownership, unconfirmed cleanup retained then discarded PASS',flush=True)
         # Conclusion approval with slow SSH: the approved operation (commit
         # resolution, confirmed termination) outlasts a 5 s requester and still
         # resolves, durably; an unreachable machine is an honest error that the

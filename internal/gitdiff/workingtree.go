@@ -2,7 +2,6 @@ package gitdiff
 
 import (
 	"context"
-	"github.com/hiveryn/daemon/internal/remoteexec"
 	"os"
 	"strings"
 
@@ -15,17 +14,21 @@ const (
 )
 
 // LoadWorkingTreeDiff computes the current staged + unstaged + untracked
-// diff for repoPath. It never mutates the working tree or index.
+// diff for repoPath. It never mutates the working tree or index. A remote
+// repository is read in one SSH invocation.
 func LoadWorkingTreeDiff(ctx context.Context, repoPath string) (WorkingTreeDiff, error) {
-	if err := checkRepoPath(ctx, repoPath); err != nil {
+	if alias := SSHFromContext(ctx); alias != "" {
+		return loadRemoteWorkingTreeDiff(ctx, alias, repoPath)
+	}
+	if err := checkRepoPath(repoPath); err != nil {
 		return WorkingTreeDiff{}, err
 	}
 
-	staged, err := readTrackedDiff(ctx, repoPath, sectionKindStaged, true)
+	staged, err := runGit(ctx, repoPath, trackedDiffArgs(true)...)
 	if err != nil {
 		return WorkingTreeDiff{}, err
 	}
-	unstaged, err := readTrackedDiff(ctx, repoPath, sectionKindUnstaged, false)
+	unstaged, err := runGit(ctx, repoPath, trackedDiffArgs(false)...)
 	if err != nil {
 		return WorkingTreeDiff{}, err
 	}
@@ -33,7 +36,43 @@ func LoadWorkingTreeDiff(ctx context.Context, repoPath string) (WorkingTreeDiff,
 	if err != nil {
 		return WorkingTreeDiff{}, err
 	}
+	return buildWorkingTreeDiff(repoPath, staged, unstaged, untracked)
+}
 
+// loadRemoteWorkingTreeDiff runs the same operations as the local path, in
+// the same order, as one batch.
+func loadRemoteWorkingTreeDiff(ctx context.Context, alias, repoPath string) (WorkingTreeDiff, error) {
+	const first = stepRepoCd + 1
+	batch, err := runRemoteBatch(ctx, alias, repoPath,
+		gitStep(trackedDiffArgs(true)...),
+		gitStep(trackedDiffArgs(false)...),
+		batchStep{name: "untracked file diff", script: untrackedDiffScript},
+	)
+	if err != nil {
+		return WorkingTreeDiff{}, err
+	}
+	outputs := make([]string, 3)
+	for i := range outputs {
+		if outputs[i], err = batch.output(first + i); err != nil {
+			return WorkingTreeDiff{}, err
+		}
+	}
+	return buildWorkingTreeDiff(repoPath, outputs[0], outputs[1], outputs[2])
+}
+
+func buildWorkingTreeDiff(repoPath, stagedRaw, unstagedRaw, untrackedRaw string) (WorkingTreeDiff, error) {
+	staged, err := trackedSectionFiles(stagedRaw, sectionKindStaged)
+	if err != nil {
+		return WorkingTreeDiff{}, err
+	}
+	unstaged, err := trackedSectionFiles(unstagedRaw, sectionKindUnstaged)
+	if err != nil {
+		return WorkingTreeDiff{}, err
+	}
+	untracked, err := untrackedSectionFiles(untrackedRaw)
+	if err != nil {
+		return WorkingTreeDiff{}, err
+	}
 	files := mergeSectionFiles(staged, unstaged, untracked)
 	return WorkingTreeDiff{
 		RepoPath: repoPath,
@@ -42,11 +81,7 @@ func LoadWorkingTreeDiff(ctx context.Context, repoPath string) (WorkingTreeDiff,
 	}, nil
 }
 
-func checkRepoPath(ctx context.Context, repoPath string) error {
-	if alias := SSHFromContext(ctx); alias != "" {
-		_, err := remoteexec.Run(ctx, alias, "test -d "+remoteexec.Quote(repoPath), nil)
-		return err
-	}
+func checkRepoPath(repoPath string) error {
 	info, err := os.Stat(repoPath)
 	if err != nil || !info.IsDir() {
 		return &domain.NotFoundError{Resource: "repo_path", ID: repoPath}
@@ -61,16 +96,15 @@ type sectionFile struct {
 	Kind string
 }
 
-func readTrackedDiff(ctx context.Context, repoPath, kind string, staged bool) ([]sectionFile, error) {
+func trackedDiffArgs(staged bool) []string {
 	args := []string{"diff"}
 	if staged {
 		args = append(args, "--cached")
 	}
-	args = append(args, "--no-ext-diff", "--no-color", "--find-renames", "--no-prefix")
-	raw, err := runGit(ctx, repoPath, args...)
-	if err != nil {
-		return nil, err
-	}
+	return append(args, "--no-ext-diff", "--no-color", "--find-renames", "--no-prefix")
+}
+
+func trackedSectionFiles(raw, kind string) ([]sectionFile, error) {
 	parsed, err := parseDiffOutput(raw)
 	if err != nil {
 		return nil, err
@@ -82,42 +116,30 @@ func readTrackedDiff(ctx context.Context, repoPath, kind string, staged bool) ([
 	return files, nil
 }
 
-func readUntrackedDiff(ctx context.Context, repoPath string) ([]sectionFile, error) {
-	if SSHFromContext(ctx) != "" {
-		// One SSH round trip for every untracked file, not one per file: each
-		// connection costs a handshake, so a per-file loop scales SSH latency by
-		// the number of new files.
-		raw, err := runShell(ctx, repoPath, untrackedDiffScript)
-		if err != nil {
-			return nil, err
-		}
-		return untrackedSectionFiles(raw)
-	}
+// readUntrackedDiff returns `git diff --no-index /dev/null <path>` for every
+// untracked file, concatenated in ls-files order.
+func readUntrackedDiff(ctx context.Context, repoPath string) (string, error) {
 	paths, err := listUntrackedFiles(ctx, repoPath)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	files := make([]sectionFile, 0, len(paths))
+	var raw strings.Builder
 	for _, path := range paths {
-		raw, err := runGitAllowChanges(ctx, repoPath, "diff", "--no-index", "--no-ext-diff", "--no-color", "--no-prefix", "--", "/dev/null", path)
+		diff, err := runGitAllowChanges(ctx, repoPath, "diff", "--no-index", "--no-ext-diff", "--no-color", "--no-prefix", "--", "/dev/null", path)
 		if err != nil {
-			return nil, err
+			return "", err
 		}
-		parsed, err := untrackedSectionFiles(raw)
-		if err != nil {
-			return nil, err
-		}
-		files = append(files, parsed...)
+		raw.WriteString(diff)
 	}
-	return files, nil
+	return raw.String(), nil
 }
 
-// untrackedDiffScript prints `git diff --no-index /dev/null <path>` for every
-// untracked file, in ls-files order. That diff exits 1 when the files differ
-// (always, for a new file), so only an exit above 1 is a failure; xargs then
-// exits non-zero and the script fails with git's stderr. A pipeline's status
-// is xargs', so the repository is checked first: a failed listing must never
-// read as "no untracked files".
+// untrackedDiffScript is the remote equivalent of readUntrackedDiff: one
+// shell script for every untracked file, never one SSH call per file. That
+// diff exits 1 when the files differ (always, for a new file), so only an exit
+// above 1 is a failure; xargs then exits non-zero and the script fails with
+// git's stderr. A pipeline's status is xargs', so the repository is checked
+// first: a failed listing must never read as "no untracked files".
 const untrackedDiffScript = `git rev-parse --git-dir >/dev/null && ` +
 	`git -c core.quotepath=false ls-files --others --exclude-standard -z | ` +
 	`xargs -0 -n 1 sh -c '[ -n "$1" ] || exit 0; ` +

@@ -115,7 +115,12 @@ timed-out creation removes the possibly created server before reporting; if that
 removal cannot be confirmed, its ownership record is kept and the server is
 removed when the session ends. Closing a terminal drops its record once removal
 is confirmed. Remote working-tree and commit diffs are bounded at 60 seconds and
-read all untracked files in one SSH round trip.
+each run as one SSH invocation (`internal/gitdiff/batch.go`): the operations a
+local diff runs separately — directory check, staged/unstaged/untracked diffs,
+or commit resolution and its diff — run in one remote script that reports
+each one as a length-prefixed record and stops at the first failure, which is
+reported by operation with its stderr, never as an empty diff. A missing
+remote repository directory is a not-found, as it is locally.
 
 Approvals and session ends follow the same rule: once accepted, the operation
 belongs to the daemon. An approved intent (a remote conclusion, a worker launch)
