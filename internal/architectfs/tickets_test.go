@@ -25,7 +25,7 @@ func TestTicketServiceListAndGet(t *testing.T) {
 	writeTicketFile(t, root, domain.TicketStatusProgress, "2026-05-12-1200-progress-ticket", "---\ntitle: Progress ticket\nrepo: daemon\n---\n\nProgress body\n")
 	writeConclusionFile(t, root, domain.TicketStatusProgress, "2026-05-12-1200-progress-ticket", "---\nstarted_at: 2026-05-12T12:00:00Z\nconcluded_at: 2026-05-12T12:10:00Z\nrejected: false\n---\n\nUnexpected conclusion\n")
 
-	service := NewTicketService()
+	service := newLocalTicketService()
 	board, err := service.ListTickets(context.Background(), root)
 	if err != nil {
 		t.Fatalf("ListTickets: %v", err)
@@ -55,7 +55,7 @@ func TestTicketServiceListAndGet(t *testing.T) {
 func TestTicketServiceAdditionalReposRoundTripCanonicalOrder(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	ticket, err := NewTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{
+	ticket, err := newLocalTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{
 		Title: "Cross repo", Repo: "daemon", AdditionalRepos: []string{" shared ", "desktop"}, Now: time.Now(),
 	})
 	if err != nil {
@@ -77,7 +77,7 @@ func TestTicketServiceConcludeTicketWritesStructuredCommitRefs(t *testing.T) {
 	root := t.TempDir()
 	writeTicketFile(t, root, domain.TicketStatusProgress, "2026-05-12-1300-structured-write", "---\ntitle: Structured write\nrepo: daemon\n---\n\nbody\n")
 
-	service := NewTicketService()
+	service := newLocalTicketService()
 	_, err := service.ConcludeTicket(context.Background(), root, "2026-05-12-1300-structured-write", domain.TicketConclusion{
 		StartedAt:   time.Date(2026, 5, 12, 13, 0, 0, 0, time.UTC),
 		ConcludedAt: time.Date(2026, 5, 12, 13, 30, 0, 0, time.UTC),
@@ -151,7 +151,7 @@ func TestTicketServiceConcludeTicketOutcomeRoundTrip(t *testing.T) {
 			id := "2026-05-12-1400-outcome-" + tc.name
 			writeTicketFile(t, root, domain.TicketStatusProgress, id, "---\ntitle: Outcome round trip\nrepo: daemon\n---\n\nbody\n")
 
-			service := NewTicketService()
+			service := newLocalTicketService()
 			if _, err := service.ConcludeTicket(context.Background(), root, id, tc.conclusion); err != nil {
 				t.Fatalf("ConcludeTicket: %v", err)
 			}
@@ -182,7 +182,7 @@ func TestTicketServiceReadConclusionInfersOutcomeForLegacyFileWithNoOutcomeOrRej
 	writeTicketFile(t, root, domain.TicketStatusDone, "2026-05-12-1500-legacy", "---\ntitle: Legacy conclusion\nrepo: daemon\n---\n\nbody\n")
 	writeConclusionFile(t, root, domain.TicketStatusDone, "2026-05-12-1500-legacy", "---\nstarted_at: 2026-05-12T15:00:00Z\nconcluded_at: 2026-05-12T15:30:00Z\nagent: codex\ncommits:\n  - abc1234\n---\n\nDone before the outcome field existed.\n")
 
-	service := NewTicketService()
+	service := newLocalTicketService()
 	ticket, err := service.GetTicket(context.Background(), root, "2026-05-12-1500-legacy")
 	if err != nil {
 		t.Fatalf("GetTicket: %v", err)
@@ -199,7 +199,7 @@ func TestTicketServiceCreateCollisionAndEditPreservesUnknownFrontmatter(t *testi
 	now := time.Date(2026, 5, 12, 9, 15, 0, 0, time.UTC)
 	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0915-same-title", "---\ntitle: Same title\nrepo: daemon\ncreated: 2026-05-12T09:15:00Z\nupdated: 2026-05-12T09:15:00Z\ncustom_field: keep-me\n---\n\nalpha\nrepeat\nrepeat\n")
 
-	service := NewTicketService()
+	service := newLocalTicketService()
 	created, err := service.CreateTicket(context.Background(), root, domain.CreateTicketParams{
 		Title:      "Same title",
 		Repo:       "daemon",
@@ -261,7 +261,7 @@ func TestTicketServiceUpdateMetadata(t *testing.T) {
 	writeTicketFile(t, root, domain.TicketStatusBacklog, "target-ticket", "---\ntitle: Target\n---\n\nbody\n")
 	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0915-update-me", "---\ntitle: Update me\nrepo: daemon\ncustom_field: keep-me\nreferences: []\n---\n\nbody\n")
 
-	service := NewTicketService()
+	service := newLocalTicketService()
 	newTitle := "Renamed ticket"
 	newRepo := "desktop"
 	newReferences := []string{"target-ticket"}
@@ -307,7 +307,7 @@ func TestTicketServiceMoveAndDelete(t *testing.T) {
 	root := t.TempDir()
 	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-move-me", "---\ntitle: Move me\n---\n\nbody\n")
 
-	service := NewTicketService()
+	service := newLocalTicketService()
 	moved, err := service.MoveTicket(context.Background(), root, "2026-05-12-0900-move-me", domain.MoveTicketParams{To: domain.TicketStatusProgress})
 	if err != nil {
 		t.Fatalf("MoveTicket: %v", err)
@@ -343,7 +343,7 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-duplicate", "---\ntitle: One\n---\n\nbody\n")
 		writeTicketFile(t, root, domain.TicketStatusDone, "2026-05-12-0900-duplicate", "---\ntitle: Two\n---\n\nbody\n")
 
-		_, err := NewTicketService().ListTickets(context.Background(), root)
+		_, err := newLocalTicketService().ListTickets(context.Background(), root)
 		var conflictErr *domain.ConflictError
 		if !errors.As(err, &conflictErr) {
 			t.Fatalf("expected conflict error, got %v", err)
@@ -356,7 +356,7 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 			t.Fatalf("mkdir: %v", err)
 		}
 
-		_, err := NewTicketService().ListTickets(context.Background(), root)
+		_, err := newLocalTicketService().ListTickets(context.Background(), root)
 		var validationErr *domain.ValidationError
 		if !errors.As(err, &validationErr) || validationErr.Field != "ticket.md" {
 			t.Fatalf("expected ticket.md validation error, got %v", err)
@@ -368,7 +368,7 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		writeTicketFile(t, root, domain.TicketStatusDone, "2026-05-12-0900-rejected", "---\ntitle: Rejected\n---\n\nbody\n")
 		writeConclusionFile(t, root, domain.TicketStatusDone, "2026-05-12-0900-rejected", "---\nstarted_at: 2026-05-12T09:00:00Z\nconcluded_at: 2026-05-12T09:05:00Z\nrejected: true\nrejection_reason: \"\"\n---\n\nnope\n")
 
-		_, err := NewTicketService().GetTicket(context.Background(), root, "2026-05-12-0900-rejected")
+		_, err := newLocalTicketService().GetTicket(context.Background(), root, "2026-05-12-0900-rejected")
 		var validationErr *domain.ValidationError
 		if !errors.As(err, &validationErr) || validationErr.Field != "rejection_reason" {
 			t.Fatalf("expected rejection_reason validation error, got %v", err)
@@ -379,7 +379,7 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		root := t.TempDir()
 		writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-refs", "---\ntitle: Refs\nreferences:\n  - missing-ticket\n---\n\nbody\n")
 
-		board, err := NewTicketService().ListTickets(context.Background(), root)
+		board, err := newLocalTicketService().ListTickets(context.Background(), root)
 		if err != nil {
 			t.Fatalf("expected ListTickets to succeed, got: %v", err)
 		}
@@ -397,7 +397,7 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 
 	t.Run("broken references on create", func(t *testing.T) {
 		root := t.TempDir()
-		ticket, err := NewTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{
+		ticket, err := newLocalTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{
 			Title:      "Bad refs",
 			References: []string{"missing-ticket"},
 		})
@@ -420,7 +420,7 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-update", "---\ntitle: Update\n---\n\nbody\n")
 		references := []string{"missing-ticket"}
 
-		ticket, err := NewTicketService().UpdateTicketMetadata(context.Background(), root, "2026-05-12-0900-update", domain.UpdateTicketMetadataParams{References: &references})
+		ticket, err := newLocalTicketService().UpdateTicketMetadata(context.Background(), root, "2026-05-12-0900-update", domain.UpdateTicketMetadataParams{References: &references})
 		if err != nil {
 			t.Fatalf("expected UpdateTicketMetadata to succeed, got: %v", err)
 		}
@@ -436,7 +436,7 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		root := t.TempDir()
 		writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-edit-refs", "---\ntitle: Edit refs\nreferences:\n  - missing-ticket\n---\n\nalpha\n")
 
-		ticket, err := NewTicketService().EditTicket(context.Background(), root, "2026-05-12-0900-edit-refs", domain.EditTicketParams{OldString: "alpha", NewString: "beta"})
+		ticket, err := newLocalTicketService().EditTicket(context.Background(), root, "2026-05-12-0900-edit-refs", domain.EditTicketParams{OldString: "alpha", NewString: "beta"})
 		if err != nil {
 			t.Fatalf("expected EditTicket to succeed, got: %v", err)
 		}
@@ -449,7 +449,7 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		root := t.TempDir()
 		writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-move-refs", "---\ntitle: Move refs\nreferences:\n  - missing-ticket\n---\n\nbody\n")
 
-		ticket, err := NewTicketService().MoveTicket(context.Background(), root, "2026-05-12-0900-move-refs", domain.MoveTicketParams{To: domain.TicketStatusProgress})
+		ticket, err := newLocalTicketService().MoveTicket(context.Background(), root, "2026-05-12-0900-move-refs", domain.MoveTicketParams{To: domain.TicketStatusProgress})
 		if err != nil {
 			t.Fatalf("expected MoveTicket to succeed, got: %v", err)
 		}
@@ -462,7 +462,7 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		root := t.TempDir()
 		writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-edit", "---\ntitle: Edit\n---\n\nalpha\nbeta\n")
 
-		_, err := NewTicketService().EditTicket(context.Background(), root, "2026-05-12-0900-edit", domain.EditTicketParams{OldString: "missing", NewString: "delta"})
+		_, err := newLocalTicketService().EditTicket(context.Background(), root, "2026-05-12-0900-edit", domain.EditTicketParams{OldString: "missing", NewString: "delta"})
 		var validationErr *domain.ValidationError
 		if !errors.As(err, &validationErr) || validationErr.Field != "oldString" {
 			t.Fatalf("expected oldString validation error, got %v", err)
@@ -476,7 +476,7 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		writeConclusionFile(t, root, domain.TicketStatusDone, "2026-05-12-0900-done-edit", "---\nstarted_at: 2026-05-12T09:00:00Z\nconcluded_at: 2026-05-12T09:05:00Z\nrejected: false\n---\n\ndone\n")
 
 		for _, id := range []string{"2026-05-12-0900-progress-edit", "2026-05-12-0900-done-edit"} {
-			_, err := NewTicketService().EditTicket(context.Background(), root, id, domain.EditTicketParams{OldString: "alpha", NewString: "beta"})
+			_, err := newLocalTicketService().EditTicket(context.Background(), root, id, domain.EditTicketParams{OldString: "alpha", NewString: "beta"})
 			var validationErr *domain.ValidationError
 			if !errors.As(err, &validationErr) || validationErr.Field != "ticket_id" {
 				t.Fatalf("expected ticket_id validation error for %s, got %v", id, err)
@@ -492,7 +492,7 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		newTitle := "Updated"
 
 		for _, id := range []string{"2026-05-12-0900-progress-update", "2026-05-12-0900-done-update"} {
-			_, err := NewTicketService().UpdateTicketMetadata(context.Background(), root, id, domain.UpdateTicketMetadataParams{Title: &newTitle})
+			_, err := newLocalTicketService().UpdateTicketMetadata(context.Background(), root, id, domain.UpdateTicketMetadataParams{Title: &newTitle})
 			var validationErr *domain.ValidationError
 			if !errors.As(err, &validationErr) || validationErr.Field != "ticket_id" {
 				t.Fatalf("expected ticket_id validation error for %s, got %v", id, err)
@@ -507,7 +507,7 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		writeConclusionFile(t, root, domain.TicketStatusDone, "2026-05-12-0900-done-delete", "---\nstarted_at: 2026-05-12T09:00:00Z\nconcluded_at: 2026-05-12T09:05:00Z\nrejected: false\n---\n\ndone\n")
 
 		for _, id := range []string{"2026-05-12-0900-progress-delete", "2026-05-12-0900-done-delete"} {
-			err := NewTicketService().DeleteTicket(context.Background(), root, id)
+			err := newLocalTicketService().DeleteTicket(context.Background(), root, id)
 			var validationErr *domain.ValidationError
 			if !errors.As(err, &validationErr) || validationErr.Field != "ticket_id" {
 				t.Fatalf("expected ticket_id validation error for %s, got %v", id, err)
@@ -525,7 +525,7 @@ func TestMixedTicketAndPathReferences(t *testing.T) {
 	}
 	missing := filepath.Join(pathDir, "missing")
 	writeTicketFile(t, root, domain.TicketStatusBacklog, "target", "---\ntitle: Target\n---\n")
-	ticket, err := NewTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{Title: "Mixed", References: []string{"target", pathDir + "/.", pathFile, missing}})
+	ticket, err := newLocalTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{Title: "Mixed", References: []string{"target", pathDir + "/.", pathFile, missing}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -547,7 +547,7 @@ func TestMixedTicketAndPathReferences(t *testing.T) {
 	if len(ticket.Warnings) != 1 || ticket.Warnings[0].Code != warningMissingPathReference {
 		t.Fatalf("warnings = %#v", ticket.Warnings)
 	}
-	_, err = NewTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{Title: "Duplicate", References: []string{pathDir, pathDir + "/."}})
+	_, err = newLocalTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{Title: "Duplicate", References: []string{pathDir, pathDir + "/."}})
 	if err == nil {
 		t.Fatal("expected normalized duplicate rejection")
 	}
@@ -561,7 +561,7 @@ func TestTicketServiceEmptySlicesAreNonNull(t *testing.T) {
 	writeTicketFile(t, root, domain.TicketStatusDone, "2026-05-12-1000-done-empty", "---\ntitle: Done empty\n---\n\ndone\n")
 	writeConclusionFile(t, root, domain.TicketStatusDone, "2026-05-12-1000-done-empty", "---\nstarted_at: 2026-05-12T10:00:00Z\nconcluded_at: 2026-05-12T10:30:00Z\nrejected: false\n---\n\nok\n")
 
-	service := NewTicketService()
+	service := newLocalTicketService()
 
 	board, err := service.ListTickets(context.Background(), root)
 	if err != nil {
@@ -631,4 +631,10 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("read file %s: %v", path, err)
 	}
 	return string(data)
+}
+
+// newLocalTicketService locates every repo on this machine, for tests about
+// ticket files rather than reference location.
+func newLocalTicketService() *TicketService {
+	return NewTicketService(func(string, string) (PathLocation, error) { return PathLocation{}, nil })
 }

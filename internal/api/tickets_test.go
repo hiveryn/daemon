@@ -245,7 +245,7 @@ func TestTicketCreateReloadsRepoMappingsFromArchitectsFile(t *testing.T) {
 			Repos: map[string]string{"daemon": "/tmp/daemon"},
 		},
 	})
-	handler := newReloadingTestHandler(t, cfgPath, architectfs.NewTicketService())
+	handler := newReloadingTestHandler(t, cfgPath, architectfs.NewTicketService(nil))
 
 	status, body := requestJSON(t, handler, http.MethodPost, "/api/architects/hiveryn/tickets", map[string]any{
 		"title": "Needs desktop repo",
@@ -374,7 +374,7 @@ func newTicketTestHandler(t *testing.T, architectPath string) http.Handler {
 	return NewHandler(Dependencies{
 		Config:  cfg,
 		Logger:  logger,
-		Tickets: architectfs.NewTicketService(),
+		Tickets: architectfs.NewTicketService(nil),
 	})
 }
 
@@ -554,7 +554,7 @@ func newTicketWithEventsHandler(t *testing.T, architectPath string) http.Handler
 	return NewHandler(Dependencies{
 		Config:          cfg,
 		Logger:          logger,
-		Tickets:         architectfs.NewTicketService(),
+		Tickets:         architectfs.NewTicketService(nil),
 		ArchitectEvents: hub,
 	})
 }

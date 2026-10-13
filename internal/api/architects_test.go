@@ -212,7 +212,7 @@ func TestArchitectsStatusAPI(t *testing.T) {
 		t.Fatalf("create config source: %v", err)
 	}
 
-	ticketService := architectfs.NewTicketService()
+	ticketService := architectfs.NewTicketService(nil)
 	ticket, err := ticketService.CreateTicket(context.Background(), hiverynPath, domain.CreateTicketParams{
 		Title: "Add status endpoint",
 		Body:  "Describe the endpoint.",
@@ -431,7 +431,7 @@ func TestArchitectsStatusAPIFailsWhenRunningTicketIsMissing(t *testing.T) {
 				StartedAt: &startedAt,
 			},
 		}}},
-		Tickets: architectfs.NewTicketService(),
+		Tickets: architectfs.NewTicketService(nil),
 	})
 
 	status, body := request(t, handler, http.MethodGet, "/api/architects/status", nil)

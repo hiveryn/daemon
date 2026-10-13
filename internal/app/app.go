@@ -88,7 +88,7 @@ func Run(configPath, databasePath string, portOverride int) error {
 	resolvedBaseURL := baseURL(cfg)
 
 	sessionStore := store.NewSessionStore(db)
-	ticketService := architectfs.NewTicketService()
+	ticketService := architectfs.NewTicketService(architectfs.ConfigLocator(configSource))
 	workspaceService := workspacefs.NewService(ticketService)
 	service, err := sessionruntime.New(ctx, cfg, configSource, sessionStore, ticketService, logger, resolvedBaseURL)
 	if err != nil {

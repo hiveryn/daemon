@@ -30,7 +30,7 @@ type spawnFixture struct {
 
 func newSpawnFixture(t *testing.T) *spawnFixture {
 	t.Helper()
-	f := &spawnFixture{actionFixture: newActionFixture(t), tickets: architectfs.NewTicketService()}
+	f := &spawnFixture{actionFixture: newActionFixture(t), tickets: architectfs.NewTicketService(nil)}
 	f.service.tickets = f.tickets
 	f.service.cfg.IntentWaitTimeout = 600
 	// A second variant name on the fixture's only (codex) adapter.

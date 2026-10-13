@@ -39,7 +39,7 @@ func newCreateTicketService(t *testing.T) (*Service, *fakeSessionRepository, str
 				"hiveryn": {Path: architectPath, Repos: map[string]string{"daemon": t.TempDir()}},
 			},
 		},
-		tickets:      architectfs.NewTicketService(),
+		tickets:      architectfs.NewTicketService(nil),
 		intents:      newIntentStore(),
 		eventStreams: map[string]map[uint64]chan domain.SessionEvent{},
 	}

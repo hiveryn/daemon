@@ -21,20 +21,40 @@ const (
 	warningDoneWithoutConclusion = "DONE_WITHOUT_CONCLUSION"
 	warningConclusionOutsideDone = "CONCLUSION_OUTSIDE_DONE"
 	warningBrokenReference       = "BROKEN_REFERENCE"
-	warningMissingPathReference  = "MISSING_PATH_REFERENCE"
+	// warningMissingPathReference is confirmed absence on the ticket's
+	// primary-repo machine; warningUnverifiedPathReference is a path that
+	// could not be inspected there (unlocatable repo, unreachable machine,
+	// permission), whose existence is unknown.
+	warningMissingPathReference    = "MISSING_PATH_REFERENCE"
+	warningUnverifiedPathReference = "UNVERIFIED_PATH_REFERENCE"
 )
 
-type TicketService struct{}
-
-func NewTicketService() *TicketService {
-	return &TicketService{}
+// TicketService owns ticket files in an architect workspace. Absolute path
+// references are resolved on the machine of each ticket's primary repo, as
+// located by locate.
+type TicketService struct {
+	locate        RepoLocator
+	inspectRemote remoteInspector
+	now           func() time.Time
+	cache         remoteCache
 }
 
-func (s *TicketService) ListTickets(_ context.Context, architectPath string) (domain.TicketBoard, error) {
+func NewTicketService(locate RepoLocator) *TicketService {
+	return &TicketService{locate: locate, inspectRemote: inspectRemotePaths, now: time.Now}
+}
+
+func (s *TicketService) ListTickets(ctx context.Context, architectPath string) (domain.TicketBoard, error) {
 	entries, err := scanTickets(architectPath)
 	if err != nil {
 		return domain.TicketBoard{}, err
 	}
+	var targets []*ticketEntry
+	for _, status := range []domain.TicketStatus{domain.TicketStatusBacklog, domain.TicketStatusProgress, domain.TicketStatusDone} {
+		for i := range entries[status] {
+			targets = append(targets, &entries[status][i])
+		}
+	}
+	s.resolveReferences(ctx, architectPath, entries, targets)
 
 	board := domain.TicketBoard{
 		Backlog:  make([]domain.TicketSummary, 0, len(entries[domain.TicketStatusBacklog])),
@@ -56,15 +76,26 @@ func (s *TicketService) ListTickets(_ context.Context, architectPath string) (do
 
 }
 
-func (s *TicketService) GetTicket(_ context.Context, architectPath, id string) (domain.Ticket, error) {
-	entry, err := getTicketEntry(architectPath, id)
+func (s *TicketService) GetTicket(ctx context.Context, architectPath, id string) (domain.Ticket, error) {
+	return s.loadTicket(ctx, architectPath, id)
+}
+
+// loadTicket reads one ticket with its references resolved. Only this
+// ticket's paths are inspected; the rest of the board supplies ticket IDs.
+func (s *TicketService) loadTicket(ctx context.Context, architectPath, id string) (domain.Ticket, error) {
+	entries, err := scanTickets(architectPath)
 	if err != nil {
 		return domain.Ticket{}, err
 	}
+	entry, err := findTicketEntry(entries, id)
+	if err != nil {
+		return domain.Ticket{}, err
+	}
+	s.resolveReferences(ctx, architectPath, entries, []*ticketEntry{&entry})
 	return entry.ticket(), nil
 }
 
-func (s *TicketService) CreateTicket(_ context.Context, architectPath string, params domain.CreateTicketParams) (domain.Ticket, error) {
+func (s *TicketService) CreateTicket(ctx context.Context, architectPath string, params domain.CreateTicketParams) (domain.Ticket, error) {
 	if strings.TrimSpace(params.Title) == "" {
 		return domain.Ticket{}, &domain.ValidationError{Field: "title", Message: "is required"}
 	}
@@ -101,14 +132,10 @@ func (s *TicketService) CreateTicket(_ context.Context, architectPath string, pa
 		return domain.Ticket{}, err
 	}
 
-	entry, err := getTicketEntry(architectPath, id)
-	if err != nil {
-		return domain.Ticket{}, err
-	}
-	return entry.ticket(), nil
+	return s.loadTicket(ctx, architectPath, id)
 }
 
-func (s *TicketService) EditTicket(_ context.Context, architectPath, id string, params domain.EditTicketParams) (domain.Ticket, error) {
+func (s *TicketService) EditTicket(ctx context.Context, architectPath, id string, params domain.EditTicketParams) (domain.Ticket, error) {
 	if params.OldString == "" {
 		return domain.Ticket{}, &domain.ValidationError{Field: "oldString", Message: "cannot be empty"}
 	}
@@ -143,14 +170,10 @@ func (s *TicketService) EditTicket(_ context.Context, architectPath, id string, 
 		return domain.Ticket{}, err
 	}
 
-	updated, err := getTicketEntry(architectPath, id)
-	if err != nil {
-		return domain.Ticket{}, err
-	}
-	return updated.ticket(), nil
+	return s.loadTicket(ctx, architectPath, id)
 }
 
-func (s *TicketService) UpdateTicketMetadata(_ context.Context, architectPath, id string, params domain.UpdateTicketMetadataParams) (domain.Ticket, error) {
+func (s *TicketService) UpdateTicketMetadata(ctx context.Context, architectPath, id string, params domain.UpdateTicketMetadataParams) (domain.Ticket, error) {
 	entry, err := getTicketEntry(architectPath, id)
 	if err != nil {
 		return domain.Ticket{}, err
@@ -197,11 +220,7 @@ func (s *TicketService) UpdateTicketMetadata(_ context.Context, architectPath, i
 		return domain.Ticket{}, err
 	}
 
-	updated, err := getTicketEntry(architectPath, id)
-	if err != nil {
-		return domain.Ticket{}, err
-	}
-	return updated.ticket(), nil
+	return s.loadTicket(ctx, architectPath, id)
 }
 
 func (s *TicketService) DeleteTicket(_ context.Context, architectPath, id string) error {
@@ -218,7 +237,7 @@ func (s *TicketService) DeleteTicket(_ context.Context, architectPath, id string
 	return nil
 }
 
-func (s *TicketService) ConcludeTicket(_ context.Context, architectPath, id string, conclusion domain.TicketConclusion) (domain.Ticket, error) {
+func (s *TicketService) ConcludeTicket(ctx context.Context, architectPath, id string, conclusion domain.TicketConclusion) (domain.Ticket, error) {
 	entry, err := getTicketEntry(architectPath, id)
 	if err != nil {
 		return domain.Ticket{}, err
@@ -238,7 +257,7 @@ func (s *TicketService) ConcludeTicket(_ context.Context, architectPath, id stri
 		return domain.Ticket{}, err
 	}
 
-	moved, err := s.MoveTicket(context.Background(), architectPath, id, domain.MoveTicketParams{To: domain.TicketStatusDone})
+	moved, err := s.MoveTicket(ctx, architectPath, id, domain.MoveTicketParams{To: domain.TicketStatusDone})
 	if err != nil {
 		return domain.Ticket{}, err
 	}
@@ -276,7 +295,7 @@ func setNodeCommitRefs(node *yaml.Node, key string, commits []domain.CommitRef) 
 	setMappingValue(node, key, sequence)
 }
 
-func (s *TicketService) MoveTicket(_ context.Context, architectPath, id string, params domain.MoveTicketParams) (domain.Ticket, error) {
+func (s *TicketService) MoveTicket(ctx context.Context, architectPath, id string, params domain.MoveTicketParams) (domain.Ticket, error) {
 	if !params.To.Valid() {
 		return domain.Ticket{}, &domain.ValidationError{Field: "to", Message: "must be backlog, progress, or done"}
 	}
@@ -286,7 +305,7 @@ func (s *TicketService) MoveTicket(_ context.Context, architectPath, id string, 
 		return domain.Ticket{}, err
 	}
 	if entry.status == params.To {
-		return entry.ticket(), nil
+		return s.loadTicket(ctx, architectPath, id)
 	}
 
 	targetDir := ticketDir(architectPath, params.To, id)
@@ -303,11 +322,7 @@ func (s *TicketService) MoveTicket(_ context.Context, architectPath, id string, 
 		return domain.Ticket{}, fmt.Errorf("move ticket directory: %w", err)
 	}
 
-	moved, err := getTicketEntry(architectPath, id)
-	if err != nil {
-		return domain.Ticket{}, err
-	}
-	return moved.ticket(), nil
+	return s.loadTicket(ctx, architectPath, id)
 }
 
 type ticketEntry struct {
@@ -365,7 +380,6 @@ func scanTickets(architectPath string) (map[domain.TicketStatus][]ticketEntry, e
 		}
 		entries[status] = statusEntries
 	}
-	validateAllTicketReferences(entries)
 	return entries, nil
 }
 
@@ -414,6 +428,10 @@ func getTicketEntry(architectPath, id string) (ticketEntry, error) {
 	if err != nil {
 		return ticketEntry{}, err
 	}
+	return findTicketEntry(entries, id)
+}
+
+func findTicketEntry(entries map[domain.TicketStatus][]ticketEntry, id string) (ticketEntry, error) {
 	for _, status := range []domain.TicketStatus{domain.TicketStatusBacklog, domain.TicketStatusProgress, domain.TicketStatusDone} {
 		for _, entry := range entries[status] {
 			if entry.id == id {
@@ -517,10 +535,11 @@ func ticketSortTime(created *time.Time, id string) time.Time {
 }
 
 func parseTicketIDTime(id string) (time.Time, bool) {
-	if len(id) < len("2006-01-02-1504") {
+	const layout = "2006-01-02-1504"
+	if len(id) < len(layout) {
 		return time.Time{}, false
 	}
-	parsed, err := time.ParseInLocation("2006-01-02-1504", id[:16], time.Local)
+	parsed, err := time.ParseInLocation(layout, id[:len(layout)], time.Local)
 	if err != nil {
 		return time.Time{}, false
 	}
@@ -755,46 +774,6 @@ func mappingValue(node *yaml.Node, key string) *yaml.Node {
 		}
 	}
 	return nil
-}
-
-func validateAllTicketReferences(entries map[domain.TicketStatus][]ticketEntry) {
-	ids := ticketIDs(entries)
-	for _, status := range []domain.TicketStatus{domain.TicketStatusBacklog, domain.TicketStatusProgress, domain.TicketStatusDone} {
-		for i := range entries[status] {
-			entry := &entries[status][i]
-			for _, ref := range entry.metadata.References {
-				if filepath.IsAbs(ref) {
-					resolved := domain.TicketReference{Value: ref, Type: domain.TicketReferencePath}
-					info, err := os.Stat(ref)
-					switch {
-					case err == nil:
-						resolved.Exists = true
-						if info.IsDir() {
-							resolved.Kind = domain.PathReferenceDirectory
-						} else {
-							resolved.Kind = domain.PathReferenceFile
-						}
-					case os.IsNotExist(err):
-						entry.warnings = append(entry.warnings, domain.TicketWarning{Code: warningMissingPathReference, Message: "referenced path does not exist: " + ref})
-					default:
-						entry.warnings = append(entry.warnings, domain.TicketWarning{Code: warningMissingPathReference, Message: "cannot inspect referenced path " + ref + ": " + err.Error()})
-					}
-					entry.resolvedReferences = append(entry.resolvedReferences, resolved)
-					continue
-				}
-				resolved := domain.TicketReference{Value: ref, Type: domain.TicketReferenceTicket}
-				if _, ok := ids[ref]; !ok {
-					entry.warnings = append(entry.warnings, domain.TicketWarning{
-						Code:    warningBrokenReference,
-						Message: "references unknown ticket " + ref,
-					})
-				} else {
-					resolved.Exists = true
-				}
-				entry.resolvedReferences = append(entry.resolvedReferences, resolved)
-			}
-		}
-	}
 }
 
 func ticketIDs(entries map[domain.TicketStatus][]ticketEntry) map[string]struct{} {

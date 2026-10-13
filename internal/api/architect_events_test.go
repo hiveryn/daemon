@@ -31,7 +31,7 @@ func newArchitectEventsHandlerWithHub(t *testing.T) (http.Handler, *archevents.H
 	handler := NewHandler(Dependencies{
 		Config:          cfg,
 		Logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Tickets:         architectfs.NewTicketService(),
+		Tickets:         architectfs.NewTicketService(nil),
 		ArchitectEvents: hub,
 	})
 	return handler, hub
