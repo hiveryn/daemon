@@ -287,21 +287,29 @@ func (s *TicketService) resolveReferences(ctx context.Context, architectPath str
 			switch {
 			case l.err != nil:
 				state.err = l.err
+				resolved.Location = domain.PathReferenceUnknown
 			case l.loc.Machine == "":
 				state = inspectLocalPath(ref)
+				resolved.Location = domain.PathReferenceLocal
 			default:
 				state = remote[remoteKey{l.loc.SSH, ref}]
+				resolved.Location = domain.PathReferenceRemote
+				resolved.Machine = l.loc.Machine
 			}
 			switch {
 			case state.kind != "":
 				resolved.Exists = true
 				resolved.Kind = state.kind
+				resolved.Status = domain.PathReferencePresent
 			case state.missing:
+				resolved.Status = domain.PathReferenceMissing
 				entry.warnings = append(entry.warnings, domain.TicketWarning{
 					Code:    warningMissingPathReference,
 					Message: "referenced path does not exist on " + l.loc.String() + ": " + ref,
 				})
 			default:
+				resolved.Status = domain.PathReferenceUnverified
+				resolved.Error = state.err.Error()
 				where := ""
 				if l.err == nil {
 					where = " on " + l.loc.String()

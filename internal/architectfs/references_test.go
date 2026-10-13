@@ -166,13 +166,13 @@ func TestPathReferencesResolveOnThePrimaryRepoMachine(t *testing.T) {
 	}
 
 	remoteRefs := resolvedByValue(t, boardTicket(t, board, "remote-ticket"))
-	if ref := remoteRefs["target"]; ref.Type != domain.TicketReferenceTicket || !ref.Exists {
+	if ref := remoteRefs["target"]; ref.Type != domain.TicketReferenceTicket || !ref.Exists || ref.Status != "" || ref.Location != "" {
 		t.Fatalf("ticket reference = %#v", ref)
 	}
-	if ref := remoteRefs[same]; !ref.Exists || ref.Kind != domain.PathReferenceDirectory {
+	if ref := remoteRefs[same]; !ref.Exists || ref.Kind != domain.PathReferenceDirectory || ref.Status != domain.PathReferencePresent || ref.Location != domain.PathReferenceRemote || ref.Machine != "bk" || ref.Error != "" {
 		t.Fatalf("remote view of %s = %#v", same, ref)
 	}
-	if ref := remoteRefs[localOnly]; ref.Exists || ref.Kind != "" {
+	if ref := remoteRefs[localOnly]; ref.Exists || ref.Kind != "" || ref.Status != domain.PathReferenceMissing || ref.Location != domain.PathReferenceRemote || ref.Machine != "bk" || ref.Error != "" {
 		t.Fatalf("local-only path on remote = %#v", ref)
 	}
 	if ref := remoteRefs[remoteOnly]; !ref.Exists || ref.Kind != domain.PathReferenceFile {
@@ -187,13 +187,13 @@ func TestPathReferencesResolveOnThePrimaryRepoMachine(t *testing.T) {
 	}
 
 	localRefs := resolvedByValue(t, boardTicket(t, board, "local-ticket"))
-	if ref := localRefs[same]; !ref.Exists || ref.Kind != domain.PathReferenceFile {
+	if ref := localRefs[same]; !ref.Exists || ref.Kind != domain.PathReferenceFile || ref.Status != domain.PathReferencePresent || ref.Location != domain.PathReferenceLocal || ref.Machine != "" {
 		t.Fatalf("local view of %s = %#v", same, ref)
 	}
 	if ref := localRefs[localOnly]; !ref.Exists || ref.Kind != domain.PathReferenceDirectory {
 		t.Fatalf("local-only path locally = %#v", ref)
 	}
-	if ref := localRefs[remoteOnly]; ref.Exists {
+	if ref := localRefs[remoteOnly]; ref.Exists || ref.Status != domain.PathReferenceMissing || ref.Location != domain.PathReferenceLocal {
 		t.Fatalf("remote-only path locally = %#v", ref)
 	}
 	localSummary := boardTicket(t, board, "local-ticket")
@@ -254,7 +254,8 @@ func TestUnreachableMachineLeavesPathsUnverified(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ref := ticket.ResolvedReferences[0]; ref.Exists || ref.Kind != "" {
+		ref := ticket.ResolvedReferences[0]
+		if ref.Exists || ref.Kind != "" || ref.Status != domain.PathReferenceUnverified || ref.Location != domain.PathReferenceRemote || ref.Machine != "bk" || !strings.Contains(ref.Error, "Connection refused") {
 			t.Fatalf("unreachable reference = %#v", ref)
 		}
 		if codes := warningCodes(ticket.TicketSummary); !slices.Equal(codes, []string{warningUnverifiedPathReference}) {
@@ -293,7 +294,9 @@ func TestUnlocatableRepoLeavesPathsUnverified(t *testing.T) {
 	if ref := resolvedByValue(t, gone)["target"]; !ref.Exists {
 		t.Fatalf("ticket reference = %#v", ref)
 	}
-	if ref := resolvedByValue(t, gone)[existsLocally]; ref.Exists {
+	// The machine is unknown, so the path is not treated as local even
+	// though it exists here.
+	if ref := resolvedByValue(t, gone)[existsLocally]; ref.Exists || ref.Status != domain.PathReferenceUnverified || ref.Location != domain.PathReferenceUnknown || ref.Machine != "" || !strings.Contains(ref.Error, `primary repo "removed" is not configured`) {
 		t.Fatalf("path of unlocatable repo = %#v", ref)
 	}
 	if codes := warningCodes(gone); !slices.Equal(codes, []string{warningUnverifiedPathReference}) || !strings.Contains(gone.Warnings[0].Message, `primary repo "removed" is not configured`) {

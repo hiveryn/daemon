@@ -14,6 +14,8 @@ type (
 	TicketWarning              = sd.TicketWarning
 	TicketReferenceType        = sd.TicketReferenceType
 	PathReferenceKind          = sd.PathReferenceKind
+	PathReferenceStatus        = sd.PathReferenceStatus
+	PathReferenceLocation      = sd.PathReferenceLocation
 	TicketReference            = sd.TicketReference
 	TicketSummary              = sd.TicketSummary
 	TicketConclusion           = sd.TicketConclusion
@@ -30,6 +32,14 @@ const (
 	TicketReferencePath    = sd.TicketReferencePath
 	PathReferenceFile      = sd.PathReferenceFile
 	PathReferenceDirectory = sd.PathReferenceDirectory
+
+	PathReferencePresent    = sd.PathReferencePresent
+	PathReferenceMissing    = sd.PathReferenceMissing
+	PathReferenceUnverified = sd.PathReferenceUnverified
+
+	PathReferenceLocal   = sd.PathReferenceLocal
+	PathReferenceRemote  = sd.PathReferenceRemote
+	PathReferenceUnknown = sd.PathReferenceUnknown
 )
 
 const (

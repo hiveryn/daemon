@@ -156,11 +156,13 @@ commit-diff and conclusion-commit checks run in the actual remote checkout.
 Project documents and selected workflows arrive as embedded text. A ticket's
 absolute path references are interpreted on its primary repo's machine: the
 board stats them over SSH there (one bounded call per machine per board read,
-answers reused for 15 s), so `exists`/`kind` describe the worker's machine. A
-path that is absent there is `MISSING_PATH_REFERENCE`; one that cannot be
-inspected (unreachable host, unlocatable repo, permission) is
-`UNVERIFIED_PATH_REFERENCE` with the cause, and is never checked on the laptop
-instead. Laptop files are not copied to remote workers; Action results
+answers reused for 15 s), so `exists`/`kind` describe the worker's machine. Each
+path reference also states its `location` (`remote` with its `machine`, `local`,
+or `unknown`) and `status`. A path that is absent there is `missing`
+(`MISSING_PATH_REFERENCE`); one that cannot be inspected (unreachable host,
+unlocatable repo, permission) is `unverified` with its `error`
+(`UNVERIFIED_PATH_REFERENCE`), and is never checked on the laptop instead. The
+desktop offers Reveal in Finder only for a `local`, `present` path. Laptop files are not copied to remote workers; Action results
 are, because the result tools copy each completed package to the caller's
 machine. A remote Action session is launched, reattached and stopped like a
 remote worker and its gateway serves only the Action tools. Remote architects,
