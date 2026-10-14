@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hiveryn/daemon/internal/domain"
@@ -36,11 +37,17 @@ type TicketService struct {
 	locate        RepoLocator
 	inspectRemote remoteInspector
 	now           func() time.Time
+	waitBudget    time.Duration
 	cache         remoteCache
+
+	inflightMu        sync.Mutex
+	inflight          map[string]*inspection
+	background        sync.WaitGroup
+	referencesChanged func(architectPath string)
 }
 
 func NewTicketService(locate RepoLocator) *TicketService {
-	return &TicketService{locate: locate, inspectRemote: inspectRemotePaths, now: time.Now}
+	return &TicketService{locate: locate, inspectRemote: inspectRemotePaths, now: time.Now, waitBudget: remoteWaitBudget}
 }
 
 func (s *TicketService) ListTickets(ctx context.Context, architectPath string) (domain.TicketBoard, error) {

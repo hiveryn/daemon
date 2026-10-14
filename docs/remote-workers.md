@@ -155,8 +155,10 @@ commit-diff and conclusion-commit checks run in the actual remote checkout.
 
 Project documents and selected workflows arrive as embedded text. A ticket's
 absolute path references are interpreted on its primary repo's machine: the
-board stats them over SSH there (one bounded call per machine per board read,
-answers reused for 15 s), so `exists`/`kind` describe the worker's machine. Each
+board stats them over SSH there (one detached call per machine; a read waits
+for it at most 2 s and otherwise reports the path `unverified` until the answer
+arrives and the board is told to refresh; answers are reused for 15 s, then
+served while refreshed in the background for up to 10 min), so `exists`/`kind` describe the worker's machine. Each
 path reference also states its `location` (`remote` with its `machine`, `local`,
 or `unknown`) and `status`. A path that is absent there is `missing`
 (`MISSING_PATH_REFERENCE`); one that cannot be inspected (unreachable host,

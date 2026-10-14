@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -17,13 +18,21 @@ import (
 )
 
 const (
-	// remoteInspectTimeout bounds one board read's SSH inspection of a machine,
-	// so an unreachable host costs a board read seconds, not a TCP timeout.
-	remoteInspectTimeout = 5 * time.Second
+	// remoteInspectTimeout bounds one detached SSH inspection of a machine. It
+	// runs apart from the reads that need it, so it can allow for a slow SSH
+	// connection setup without holding up a board read.
+	remoteInspectTimeout = 15 * time.Second
+	// remoteWaitBudget is the most a ticket read waits for remote paths that
+	// have no usable answer yet, so a slow or unreachable machine leaves the
+	// board responsive with those paths unverified.
+	remoteWaitBudget = 2 * time.Second
 	// remoteInspectTTL is how long a remote answer — including a machine that
-	// could not be inspected — is reused, so repeated board reads neither open
-	// a connection each nor wait on a dead host each time.
+	// could not be inspected — is reused as is, so repeated board reads
+	// neither open a connection each nor wait on a dead host each time.
 	remoteInspectTTL = 15 * time.Second
+	// remoteStaleLimit is how long an answer past remoteInspectTTL is still
+	// served while a background inspection refreshes it.
+	remoteStaleLimit = 10 * time.Minute
 )
 
 // PathLocation is where a ticket's absolute path references are interpreted:
@@ -173,20 +182,29 @@ type remoteCache struct {
 	failures map[string]remoteAnswer
 }
 
-func (c *remoteCache) get(key remoteKey, now time.Time) (pathState, bool) {
+// get returns the newest known state of key — an answer for the path or a
+// failure to inspect its machine, whichever is more recent — and whether it
+// is still fresh. A stale state (older than remoteInspectTTL but younger than
+// remoteStaleLimit) is served while it is refreshed in the background.
+func (c *remoteCache) get(key remoteKey, now time.Time) (state pathState, fresh, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if failure, ok := c.failures[key.alias]; ok && now.Sub(failure.at) < remoteInspectTTL {
-		return failure.state, true
+	answer, haveAnswer := c.answers[key]
+	failure, haveFailure := c.failures[key.alias]
+	if haveFailure && (!haveAnswer || failure.at.After(answer.at)) {
+		answer, haveAnswer = failure, true
 	}
-	answer, ok := c.answers[key]
-	if !ok || now.Sub(answer.at) >= remoteInspectTTL {
-		return pathState{}, false
+	age := now.Sub(answer.at)
+	if !haveAnswer || age >= remoteStaleLimit {
+		return pathState{}, false, false
 	}
-	return answer.state, true
+	return answer.state, age < remoteInspectTTL, true
 }
 
-func (c *remoteCache) put(alias string, paths []string, states []pathState, failure error, now time.Time) {
+// put records an inspection's answers, or its failure for the whole alias,
+// and reports whether any path's newest known state changed (or was
+// previously unknown).
+func (c *remoteCache) put(alias string, paths []string, states []pathState, failure error, now time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.answers == nil {
@@ -194,25 +212,149 @@ func (c *remoteCache) put(alias string, paths []string, states []pathState, fail
 		c.failures = map[string]remoteAnswer{}
 	}
 	for key, answer := range c.answers {
-		if now.Sub(answer.at) >= remoteInspectTTL {
+		if now.Sub(answer.at) >= remoteStaleLimit {
 			delete(c.answers, key)
+		}
+	}
+	previous := func(p string) (pathState, bool) {
+		answer, haveAnswer := c.answers[remoteKey{alias, p}]
+		failure, haveFailure := c.failures[alias]
+		if haveFailure && (!haveAnswer || failure.at.After(answer.at)) {
+			return failure.state, true
+		}
+		return answer.state, haveAnswer
+	}
+	changed := false
+	for i, p := range paths {
+		next := pathState{err: failure}
+		if failure == nil {
+			next = states[i]
+		}
+		if prev, ok := previous(p); !ok || !prev.equal(next) {
+			changed = true
 		}
 	}
 	if failure != nil {
 		c.failures[alias] = remoteAnswer{state: pathState{err: failure}, at: now}
-		return
+		return changed
 	}
 	delete(c.failures, alias)
 	for i, p := range paths {
 		c.answers[remoteKey{alias, p}] = remoteAnswer{state: states[i], at: now}
 	}
+	return changed
 }
+
+func (p pathState) equal(o pathState) bool {
+	if p.kind != o.kind || p.missing != o.missing || (p.err == nil) != (o.err == nil) {
+		return false
+	}
+	return p.err == nil || p.err.Error() == o.err.Error()
+}
+
+// inspection is one detached SSH inspection of a set of paths on an alias,
+// shared by every read that needs exactly those paths while it runs.
+type inspection struct {
+	alias string
+	paths []string
+	done  chan struct{}
+	// Set before done closes.
+	states map[string]pathState
+	err    error
+	// Guarded by TicketService.inflightMu.
+	finished bool
+	// late holds the workspaces of reads that gave up waiting for the answer
+	// (always told when it arrives); stale those of reads that were served an
+	// older answer meanwhile (told only when the answer changed).
+	late  map[string]struct{}
+	stale map[string]struct{}
+}
+
+func (i *inspection) state(p string) pathState {
+	if i.err != nil {
+		return pathState{err: i.err}
+	}
+	if state, ok := i.states[p]; ok {
+		return state
+	}
+	return pathState{err: fmt.Errorf("SSH %s: path inspection did not include %s", i.alias, p)}
+}
+
+// inspect returns the running inspection of exactly these paths on alias, or
+// starts one. It runs detached from any request, bounded by
+// remoteInspectTimeout, caches its answer and, when it ends, tells the
+// workspaces whose reads did not see it through referencesChanged.
+func (s *TicketService) inspect(alias string, paths []string) *inspection {
+	paths = slices.Clone(paths)
+	slices.Sort(paths)
+	paths = slices.Compact(paths)
+	key := alias + "\x00" + strings.Join(paths, "\x00")
+
+	s.inflightMu.Lock()
+	if running, ok := s.inflight[key]; ok {
+		s.inflightMu.Unlock()
+		return running
+	}
+	if s.inflight == nil {
+		s.inflight = map[string]*inspection{}
+	}
+	in := &inspection{alias: alias, paths: paths, done: make(chan struct{}), late: map[string]struct{}{}, stale: map[string]struct{}{}}
+	s.inflight[key] = in
+	s.inflightMu.Unlock()
+
+	s.background.Add(1)
+	go func() {
+		defer s.background.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), remoteInspectTimeout)
+		states, err := s.inspectRemote(ctx, alias, paths)
+		cancel()
+		changed := s.cache.put(alias, paths, states, err, s.now())
+		in.err = err
+		if err == nil {
+			in.states = make(map[string]pathState, len(paths))
+			for n, p := range paths {
+				in.states[p] = states[n]
+			}
+		}
+
+		s.inflightMu.Lock()
+		delete(s.inflight, key)
+		in.finished = true
+		notify := in.late
+		if changed {
+			for workspace := range in.stale {
+				notify[workspace] = struct{}{}
+			}
+		}
+		s.inflightMu.Unlock()
+		close(in.done)
+
+		if s.referencesChanged != nil {
+			for workspace := range notify {
+				s.referencesChanged(workspace)
+			}
+		}
+	}()
+	return in
+}
+
+// SetReferencesChanged registers fn to be told, with the architect workspace
+// path, when a remote inspection answers after a read of that workspace
+// stopped waiting for it, or changes an answer such a read was served from
+// the cache — so clients can read the board again.
+func (s *TicketService) SetReferencesChanged(fn func(architectPath string)) {
+	s.referencesChanged = fn
+}
+
+// waitForBackground waits until every detached inspection has ended.
+func (s *TicketService) waitForBackground() { s.background.Wait() }
 
 // resolveReferences fills resolvedReferences and reference warnings for the
 // targets. Ticket-ID references are checked against every ticket on the
 // board; absolute paths are inspected on the target ticket's primary-repo
-// machine — locally with os.Stat, remotely with one SSH call per machine for
-// all of the targets' paths — and never on another machine as a fallback.
+// machine — locally with os.Stat, remotely from the cache or one detached
+// SSH inspection per machine for all of the targets' paths, waited for at
+// most waitBudget — and never on another machine as a fallback.
 func (s *TicketService) resolveReferences(ctx context.Context, architectPath string, entries map[domain.TicketStatus][]ticketEntry, targets []*ticketEntry) {
 	ids := ticketIDs(entries)
 
@@ -238,9 +380,12 @@ func (s *TicketService) resolveReferences(ctx context.Context, architectPath str
 		return l
 	}
 
-	// Answer remote paths from the cache, collecting the rest per alias.
+	// Answer remote paths from the cache, collecting per alias the paths to
+	// inspect: those with no usable answer (needed) and those whose answer
+	// is stale (refreshed in the background).
 	remote := map[remoteKey]pathState{}
-	pending := map[string][]string{}
+	needed := map[string][]string{}
+	refresh := map[string][]string{}
 	for _, entry := range targets {
 		l := locate(entry.metadata.Repo)
 		if l.err != nil || l.loc.Machine == "" {
@@ -254,14 +399,22 @@ func (s *TicketService) resolveReferences(ctx context.Context, architectPath str
 			if _, ok := remote[key]; ok {
 				continue
 			}
-			state, ok := s.cache.get(key, s.now())
+			if strings.ContainsAny(ref, "\n\x00") {
+				// Not representable in the line protocol.
+				remote[key] = pathState{err: errors.New("path contains a newline or NUL and cannot be inspected over SSH")}
+				continue
+			}
+			state, fresh, ok := s.cache.get(key, s.now())
 			remote[key] = state
-			if !ok {
-				pending[l.loc.SSH] = append(pending[l.loc.SSH], ref)
+			switch {
+			case !ok:
+				needed[key.alias] = append(needed[key.alias], ref)
+			case !fresh:
+				refresh[key.alias] = append(refresh[key.alias], ref)
 			}
 		}
 	}
-	for key, state := range s.inspectPending(ctx, pending) {
+	for key, state := range s.inspectPending(ctx, architectPath, needed, refresh) {
 		remote[key] = state
 	}
 
@@ -324,51 +477,68 @@ func (s *TicketService) resolveReferences(ctx context.Context, architectPath str
 	}
 }
 
-// inspectPending runs one bounded inspection per alias, concurrently, and
-// returns (and caches) each answer, or the alias's failure for its paths.
-func (s *TicketService) inspectPending(ctx context.Context, pending map[string][]string) map[remoteKey]pathState {
+// inspectPending inspects each alias's needed and stale paths together in one
+// detached inspection. Aliases with needed paths are waited for, all
+// together, at most remoteWaitBudget (and never past ctx): a needed path
+// whose machine has not answered by then is unverified, and its workspace is
+// told when the answer arrives. Stale-only aliases are not waited for; the
+// caller serves their cached answers.
+func (s *TicketService) inspectPending(ctx context.Context, architectPath string, needed, refresh map[string][]string) map[remoteKey]pathState {
 	answers := map[remoteKey]pathState{}
-	if len(pending) == 0 {
+	waiting := map[string]*inspection{}
+	for alias, paths := range needed {
+		waiting[alias] = s.inspect(alias, append(paths, refresh[alias]...))
+	}
+	for alias, paths := range refresh {
+		if _, ok := needed[alias]; ok {
+			continue
+		}
+		in := s.inspect(alias, paths)
+		s.inflightMu.Lock()
+		finished := in.finished
+		if !finished {
+			in.stale[architectPath] = struct{}{}
+		}
+		s.inflightMu.Unlock()
+		if finished {
+			// Answered already, so it would not tell this read: use it.
+			for _, p := range paths {
+				answers[remoteKey{alias, p}] = in.state(p)
+			}
+		}
+	}
+	if len(waiting) == 0 {
 		return answers
 	}
-	ctx, cancel := context.WithTimeout(ctx, remoteInspectTimeout)
-	defer cancel()
-	var (
-		wg sync.WaitGroup
-		mu sync.Mutex
-	)
-	for alias, paths := range pending {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			result := map[remoteKey]pathState{}
-			inspectable := make([]string, 0, len(paths))
-			for _, p := range paths {
-				if strings.ContainsAny(p, "\n\x00") {
-					// Not representable in the line protocol.
-					result[remoteKey{alias, p}] = pathState{err: errors.New("path contains a newline or NUL and cannot be inspected over SSH")}
-					continue
-				}
-				inspectable = append(inspectable, p)
+
+	budget := time.NewTimer(s.waitBudget)
+	defer budget.Stop()
+	expired := false
+	for alias, in := range waiting {
+		if !expired {
+			select {
+			case <-in.done:
+			case <-budget.C:
+				expired = true
+			case <-ctx.Done():
+				expired = true
 			}
-			if len(inspectable) > 0 {
-				states, err := s.inspectRemote(ctx, alias, inspectable)
-				s.cache.put(alias, inspectable, states, err, s.now())
-				for i, p := range inspectable {
-					if err != nil {
-						result[remoteKey{alias, p}] = pathState{err: err}
-					} else {
-						result[remoteKey{alias, p}] = states[i]
-					}
-				}
+		}
+		s.inflightMu.Lock()
+		finished := in.finished
+		if !finished {
+			in.late[architectPath] = struct{}{}
+		}
+		s.inflightMu.Unlock()
+		for _, p := range needed[alias] {
+			if finished {
+				answers[remoteKey{alias, p}] = in.state(p)
+				continue
 			}
-			mu.Lock()
-			defer mu.Unlock()
-			for key, state := range result {
-				answers[key] = state
-			}
-		}()
+			answers[remoteKey{alias, p}] = pathState{err: fmt.Errorf(
+				"no answer within %s; the inspection continues in the background (up to %s), read again for its answer",
+				s.waitBudget, remoteInspectTimeout)}
+		}
 	}
-	wg.Wait()
 	return answers
 }

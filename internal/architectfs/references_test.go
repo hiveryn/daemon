@@ -36,9 +36,14 @@ type fakeRemote struct {
 	paths map[string]map[string]domain.PathReferenceKind
 	down  map[string]error
 	calls []string // alias: sorted paths
+	// gate, when set, holds every inspection until it is closed.
+	gate chan struct{}
 }
 
 func (f *fakeRemote) inspect(_ context.Context, alias string, paths []string) ([]pathState, error) {
+	if f.gate != nil {
+		<-f.gate
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	sorted := slices.Clone(paths)
@@ -56,6 +61,18 @@ func (f *fakeRemote) inspect(_ context.Context, alias string, paths []string) ([
 		}
 	}
 	return states, nil
+}
+
+func (f *fakeRemote) set(alias, path string, kind domain.PathReferenceKind) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.paths == nil {
+		f.paths = map[string]map[string]domain.PathReferenceKind{}
+	}
+	if f.paths[alias] == nil {
+		f.paths[alias] = map[string]domain.PathReferenceKind{}
+	}
+	f.paths[alias][path] = kind
 }
 
 func (f *fakeRemote) takeCalls() []string {
@@ -214,10 +231,13 @@ func TestPathReferencesResolveOnThePrimaryRepoMachine(t *testing.T) {
 	if calls := remote.takeCalls(); len(calls) != 0 {
 		t.Fatalf("cached board read inspected again: %#v", calls)
 	}
+	// After it the stale answers are served while they are refreshed in the
+	// background.
 	clock.Advance(remoteInspectTTL)
 	if _, err := service.ListTickets(context.Background(), root); err != nil {
 		t.Fatal(err)
 	}
+	service.waitForBackground()
 	if calls := remote.takeCalls(); len(calls) != 1 {
 		t.Fatalf("expired cache calls = %#v", calls)
 	}
@@ -228,6 +248,7 @@ func TestPathReferencesResolveOnThePrimaryRepoMachine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	service.waitForBackground()
 	if !ticket.ResolvedReferences[0].Exists || len(ticket.Warnings) != 0 {
 		t.Fatalf("remote ticket = %#v", ticket.TicketSummary)
 	}
@@ -364,10 +385,21 @@ func TestRemoteReferencesThroughSSH(t *testing.T) {
 		t.Fatalf("two warnings = %#v", two.Warnings)
 	}
 
+	// A host that goes down: the first read past the TTL is served the
+	// earlier answers while they are refreshed; the refresh fails and later
+	// reads report the failure.
 	fake.SetDown(t, "bk", true)
 	fake.SetDown(t, "bk-alias", true)
 	clock.Advance(remoteInspectTTL)
 	ticket, err := service.GetTicket(context.Background(), root, "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ticket.ResolvedReferences[0].Exists || !ticket.ResolvedReferences[1].Exists {
+		t.Fatalf("stale references = %#v", ticket.ResolvedReferences)
+	}
+	service.waitForBackground()
+	ticket, err = service.GetTicket(context.Background(), root, "one")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -407,4 +439,177 @@ func TestInspectRemotePathsReportsUnsearchableAncestors(t *testing.T) {
 	if !states[1].missing {
 		t.Fatalf("absent = %#v", states[1])
 	}
+}
+
+// changeRecorder records the workspaces told that their references changed.
+type changeRecorder struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+func (r *changeRecorder) record(architectPath string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.seen = append(r.seen, architectPath)
+}
+
+func (r *changeRecorder) take() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	seen := r.seen
+	r.seen = nil
+	return seen
+}
+
+// A machine that has not answered within the wait budget leaves the board
+// read responsive with its paths unverified; the inspection continues, its
+// answer is cached for the next read and the workspace is told.
+func TestSlowMachineDoesNotHoldUpTheBoard(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	remote := &fakeRemote{gate: make(chan struct{})}
+	remote.set("bk-alias", "/srv/spec.md", domain.PathReferenceFile)
+	clock := &fakeClock{now: time.Date(2026, 10, 14, 11, 0, 0, 0, time.UTC)}
+	service := newReferenceService(referenceConfig(root), remote, clock)
+	service.waitBudget = 50 * time.Millisecond
+	changes := &changeRecorder{}
+	service.SetReferencesChanged(changes.record)
+	refTicket(t, root, "remote-ticket", "infra", "/srv/spec.md")
+
+	// Two reads while the machine is silent: neither waits past the budget,
+	// and they share one inspection.
+	for range 2 {
+		started := time.Now()
+		board, err := service.ListTickets(context.Background(), root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if elapsed := time.Since(started); elapsed > time.Second {
+			t.Fatalf("board read took %s", elapsed)
+		}
+		summary := boardTicket(t, board, "remote-ticket")
+		ref := resolvedByValue(t, summary)["/srv/spec.md"]
+		if ref.Exists || ref.Status != domain.PathReferenceUnverified || ref.Location != domain.PathReferenceRemote || ref.Machine != "bk" || !strings.Contains(ref.Error, "no answer within 50ms") {
+			t.Fatalf("pending reference = %#v", ref)
+		}
+		if codes := warningCodes(summary); !slices.Equal(codes, []string{warningUnverifiedPathReference}) || !strings.Contains(summary.Warnings[0].Message, `machine "bk" (SSH bk-alias)`) {
+			t.Fatalf("pending warnings = %#v", summary.Warnings)
+		}
+	}
+	if seen := changes.take(); len(seen) != 0 {
+		t.Fatalf("told before the answer: %#v", seen)
+	}
+
+	close(remote.gate)
+	service.waitForBackground()
+	if calls := remote.takeCalls(); len(calls) != 1 {
+		t.Fatalf("remote calls = %#v", calls)
+	}
+	if seen := changes.take(); !slices.Equal(seen, []string{root}) {
+		t.Fatalf("told = %#v, want the workspace once", seen)
+	}
+
+	board, err := service.ListTickets(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref := resolvedByValue(t, boardTicket(t, board, "remote-ticket"))["/srv/spec.md"]; !ref.Exists || ref.Status != domain.PathReferencePresent {
+		t.Fatalf("answered reference = %#v", ref)
+	}
+	if calls := remote.takeCalls(); len(calls) != 0 {
+		t.Fatalf("answered read inspected again: %#v", calls)
+	}
+}
+
+// A read whose request ends stops waiting at once.
+func TestCancelledReadDoesNotWaitForTheMachine(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	remote := &fakeRemote{gate: make(chan struct{})}
+	clock := &fakeClock{now: time.Date(2026, 10, 14, 11, 0, 0, 0, time.UTC)}
+	service := newReferenceService(referenceConfig(root), remote, clock)
+	service.waitBudget = time.Hour
+	refTicket(t, root, "remote-ticket", "infra", "/srv/spec.md")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ticket, err := service.GetTicket(ctx, root, "remote-ticket")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref := ticket.ResolvedReferences[0]; ref.Status != domain.PathReferenceUnverified {
+		t.Fatalf("reference = %#v", ref)
+	}
+	close(remote.gate)
+	service.waitForBackground()
+}
+
+// A stale answer is served without waiting while it is refreshed; the
+// workspace is told only when the refresh changes it.
+func TestStaleAnswersAreServedWhileRefreshed(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	remote := &fakeRemote{}
+	remote.set("bk-alias", "/srv/spec.md", domain.PathReferenceFile)
+	clock := &fakeClock{now: time.Date(2026, 10, 14, 11, 0, 0, 0, time.UTC)}
+	service := newReferenceService(referenceConfig(root), remote, clock)
+	changes := &changeRecorder{}
+	service.SetReferencesChanged(changes.record)
+	refTicket(t, root, "remote-ticket", "infra", "/srv/spec.md")
+
+	read := func() domain.TicketReference {
+		t.Helper()
+		ticket, err := service.GetTicket(context.Background(), root, "remote-ticket")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ticket.ResolvedReferences[0]
+	}
+	if ref := read(); !ref.Exists {
+		t.Fatalf("first read = %#v", ref)
+	}
+	remote.takeCalls()
+
+	// Unchanged on refresh: nobody is told.
+	clock.Advance(remoteInspectTTL)
+	remote.gate = make(chan struct{})
+	if ref := read(); !ref.Exists {
+		t.Fatalf("stale read = %#v", ref)
+	}
+	close(remote.gate)
+	service.waitForBackground()
+	remote.gate = nil
+	if calls := remote.takeCalls(); len(calls) != 1 {
+		t.Fatalf("refresh calls = %#v", calls)
+	}
+	if seen := changes.take(); len(seen) != 0 {
+		t.Fatalf("told of an unchanged answer: %#v", seen)
+	}
+
+	// Gone on refresh: the stale read still shows it, then the workspace is
+	// told and the next read reports it missing.
+	remote.mu.Lock()
+	delete(remote.paths["bk-alias"], "/srv/spec.md")
+	remote.mu.Unlock()
+	clock.Advance(remoteInspectTTL)
+	if ref := read(); !ref.Exists {
+		t.Fatalf("stale read = %#v", ref)
+	}
+	service.waitForBackground()
+	if seen := changes.take(); !slices.Equal(seen, []string{root}) {
+		t.Fatalf("told = %#v", seen)
+	}
+	if ref := read(); ref.Exists || ref.Status != domain.PathReferenceMissing {
+		t.Fatalf("refreshed read = %#v", ref)
+	}
+
+	// Past the stale limit an answer is no longer served.
+	clock.Advance(remoteStaleLimit)
+	service.waitBudget = 0
+	remote.gate = make(chan struct{})
+	if ref := read(); ref.Status != domain.PathReferenceUnverified {
+		t.Fatalf("expired read = %#v", ref)
+	}
+	close(remote.gate)
+	service.waitForBackground()
 }

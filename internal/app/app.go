@@ -19,6 +19,7 @@ import (
 	"github.com/hiveryn/daemon/internal/architectfs"
 	"github.com/hiveryn/daemon/internal/archive"
 	"github.com/hiveryn/daemon/internal/config"
+	"github.com/hiveryn/daemon/internal/domain"
 	"github.com/hiveryn/daemon/internal/logging"
 	"github.com/hiveryn/daemon/internal/server"
 	"github.com/hiveryn/daemon/internal/sessionruntime"
@@ -133,6 +134,26 @@ func Run(configPath, databasePath string, portOverride int) error {
 	// from inside the service, because a generic approve path cannot know which
 	// tool touched a ticket.
 	service.SetArchitectPublisher(architectHub.Publish)
+	// A remote reference answer that arrives after a board read stopped
+	// waiting for it reaches clients as a ticket update, so they read again.
+	ticketService.SetReferencesChanged(func(architectPath string) {
+		current, err := configSource.Current()
+		if err != nil {
+			logger.Error("cannot announce resolved ticket references", "architect_path", architectPath, "error", err)
+			return
+		}
+		for key, architect := range current.Architects {
+			if filepath.Clean(architect.Path) != filepath.Clean(architectPath) {
+				continue
+			}
+			architectHub.Publish(key, domain.ArchitectEvent{
+				Type:         domain.ArchitectEventType,
+				ArchitectKey: key,
+				Reason:       domain.ArchitectEventTicketUpdated,
+				At:           time.Now().UTC(),
+			})
+		}
+	})
 
 	handler := api.NewHandler(api.Dependencies{
 		Config:          cfg,
