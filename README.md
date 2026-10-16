@@ -308,7 +308,7 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `GET` | `/api/architects` | List configured architects |
 | `GET` | `/api/architects/status` | List all configured architects plus their running architect status and nested running ticket worker sessions for desktop command-palette/session pickers |
 | `GET` | `/api/architects/{key}` | Get one configured architect by key |
-| `GET` | `/api/architects/{key}/tickets` | List ticket board columns; supports `?status=backlog\|progress\|done` and `?limit=N` |
+| `GET` | `/api/architects/{key}/tickets` | List ticket board columns; supports `?q=keyword` (keep tickets whose title, body or conclusion contains it, case-insensitively, in list order — the desktop's kanban search), `?status=backlog\|progress\|done` and `?limit=N` |
 | `POST` | `/api/architects/{key}/tickets` | Create a backlog ticket with required primary `repo` and optional `additional_repos` keys |
 | `GET` | `/api/architects/{key}/tickets/{id}` | Get one filesystem-backed ticket by ID |
 | `PATCH` | `/api/architects/{key}/tickets/{id}` | Apply a targeted body edit to a backlog ticket |

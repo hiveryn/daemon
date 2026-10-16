@@ -30,7 +30,14 @@ func (h *ticketsHandler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	board, err := h.tickets.ListTickets(r.Context(), architectPath)
+	// q keeps only the tickets whose title, body or conclusion contains it
+	// (case-insensitive); blank lists the whole board.
+	var board domain.TicketBoard
+	if query := strings.TrimSpace(r.URL.Query().Get("q")); query != "" {
+		board, err = h.tickets.SearchTickets(r.Context(), architectPath, query)
+	} else {
+		board, err = h.tickets.ListTickets(r.Context(), architectPath)
+	}
 	if err != nil {
 		writeDomainError(w, r, err)
 		return

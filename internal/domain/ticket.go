@@ -56,6 +56,10 @@ const (
 
 type TicketService interface {
 	ListTickets(context.Context, string) (TicketBoard, error)
+	// SearchTickets lists the tickets whose title, body or conclusion text
+	// contains query, case-insensitively, in the same columns and order as
+	// ListTickets. A blank query lists the whole board.
+	SearchTickets(ctx context.Context, architectPath, query string) (TicketBoard, error)
 	GetTicket(context.Context, string, string) (Ticket, error)
 	CreateTicket(context.Context, string, CreateTicketParams) (Ticket, error)
 	EditTicket(context.Context, string, string, EditTicketParams) (Ticket, error)

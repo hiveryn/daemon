@@ -190,6 +190,7 @@ func defaultShortcuts() map[string]map[string]string {
 			"open":    "o",
 			"spawn":   "s",
 			"refresh": "r",
+			"search":  "/",
 		},
 		"event-log": {
 			"down": "j",

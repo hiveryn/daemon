@@ -51,36 +51,70 @@ func NewTicketService(locate RepoLocator) *TicketService {
 }
 
 func (s *TicketService) ListTickets(ctx context.Context, architectPath string) (domain.TicketBoard, error) {
+	return s.listBoard(ctx, architectPath, func(*ticketEntry) bool { return true })
+}
+
+// SearchTickets keeps the tickets whose title, body or conclusion text
+// contains query, compared case-insensitively. Matches stay in their status
+// column in listing order; nothing is ranked. A blank query is no filter.
+func (s *TicketService) SearchTickets(ctx context.Context, architectPath, query string) (domain.TicketBoard, error) {
+	needle := strings.ToLower(strings.TrimSpace(query))
+	if needle == "" {
+		return s.ListTickets(ctx, architectPath)
+	}
+	return s.listBoard(ctx, architectPath, func(entry *ticketEntry) bool { return entry.matches(needle) })
+}
+
+// listBoard scans the workspace and builds the board from the entries keep
+// accepts, resolving references for those only.
+func (s *TicketService) listBoard(ctx context.Context, architectPath string, keep func(*ticketEntry) bool) (domain.TicketBoard, error) {
 	entries, err := scanTickets(architectPath)
 	if err != nil {
 		return domain.TicketBoard{}, err
 	}
+	kept := map[domain.TicketStatus][]*ticketEntry{}
 	var targets []*ticketEntry
 	for _, status := range []domain.TicketStatus{domain.TicketStatusBacklog, domain.TicketStatusProgress, domain.TicketStatusDone} {
+		kept[status] = make([]*ticketEntry, 0, len(entries[status]))
 		for i := range entries[status] {
-			targets = append(targets, &entries[status][i])
+			entry := &entries[status][i]
+			if !keep(entry) {
+				continue
+			}
+			kept[status] = append(kept[status], entry)
+			targets = append(targets, entry)
 		}
 	}
 	s.resolveReferences(ctx, architectPath, entries, targets)
 
 	board := domain.TicketBoard{
-		Backlog:  make([]domain.TicketSummary, 0, len(entries[domain.TicketStatusBacklog])),
-		Progress: make([]domain.TicketSummary, 0, len(entries[domain.TicketStatusProgress])),
-		Done:     make([]domain.TicketSummary, 0, len(entries[domain.TicketStatusDone])),
+		Backlog:  make([]domain.TicketSummary, 0, len(kept[domain.TicketStatusBacklog])),
+		Progress: make([]domain.TicketSummary, 0, len(kept[domain.TicketStatusProgress])),
+		Done:     make([]domain.TicketSummary, 0, len(kept[domain.TicketStatusDone])),
 	}
-
-	for _, item := range entries[domain.TicketStatusBacklog] {
+	for _, item := range kept[domain.TicketStatusBacklog] {
 		board.Backlog = append(board.Backlog, item.summary())
 	}
-	for _, item := range entries[domain.TicketStatusProgress] {
+	for _, item := range kept[domain.TicketStatusProgress] {
 		board.Progress = append(board.Progress, item.summary())
 	}
-	for _, item := range entries[domain.TicketStatusDone] {
+	for _, item := range kept[domain.TicketStatusDone] {
 		board.Done = append(board.Done, item.summary())
 	}
-
 	return board, nil
+}
 
+// matches reports whether needle (already lower-cased and trimmed) occurs in
+// the ticket's title, body or conclusion body. A ticket without a conclusion
+// is matched on title and body alone.
+func (e *ticketEntry) matches(needle string) bool {
+	if strings.Contains(strings.ToLower(e.metadata.Title), needle) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(e.document.Body), needle) {
+		return true
+	}
+	return e.conclusion != nil && strings.Contains(strings.ToLower(e.conclusion.Body), needle)
 }
 
 func (s *TicketService) GetTicket(ctx context.Context, architectPath, id string) (domain.Ticket, error) {

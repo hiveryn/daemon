@@ -2151,6 +2151,10 @@ func (f *fakeTicketService) ListTickets(context.Context, string) (domain.TicketB
 	return domain.TicketBoard{}, nil
 }
 
+func (f *fakeTicketService) SearchTickets(context.Context, string, string) (domain.TicketBoard, error) {
+	return domain.TicketBoard{}, nil
+}
+
 func (f *fakeTicketService) GetTicket(context.Context, string, string) (domain.Ticket, error) {
 	return f.ticket, f.err
 }

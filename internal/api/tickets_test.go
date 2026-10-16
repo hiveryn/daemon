@@ -128,6 +128,50 @@ func TestTicketsAPIFlow(t *testing.T) {
 	}
 }
 
+func TestTicketsAPIListSearchQuery(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeTicketFixture(t, root, domain.TicketStatusBacklog, "2026-05-11-0900-match-title", "---\ntitle: Kanban Search\ncreated: 2026-05-11T09:00:00Z\n---\n\nbody\n")
+	writeTicketFixture(t, root, domain.TicketStatusBacklog, "2026-05-11-0910-match-body", "---\ntitle: Other\ncreated: 2026-05-11T09:10:00Z\n---\n\nMentions kanban in the body.\n")
+	writeTicketFixture(t, root, domain.TicketStatusBacklog, "2026-05-11-0920-no-match", "---\ntitle: Unrelated\ncreated: 2026-05-11T09:20:00Z\n---\n\nnothing\n")
+	handler := newTicketTestHandler(t, root)
+
+	status, body := request(t, handler, http.MethodGet, "/api/architects/hiveryn/tickets?q=KANBAN", nil)
+	if status != http.StatusOK {
+		t.Fatalf("expected search status %d, got %d: %s", http.StatusOK, status, string(body))
+	}
+	var board domain.TicketBoard
+	decodeEnvelopeData(t, body, &board)
+	if len(board.Backlog) != 2 || board.Backlog[0].ID != "2026-05-11-0910-match-body" || board.Backlog[1].ID != "2026-05-11-0900-match-title" {
+		t.Fatalf("expected the two matches newest first, got %#v", board.Backlog)
+	}
+	if board.Progress == nil || board.Done == nil || len(board.Progress)+len(board.Done) != 0 {
+		t.Fatalf("expected empty non-nil other columns, got %#v", board)
+	}
+
+	// q composes with the status/limit slice used by the MCP listing.
+	status, body = request(t, handler, http.MethodGet, "/api/architects/hiveryn/tickets?q=kanban&status=backlog&limit=1", nil)
+	if status != http.StatusOK {
+		t.Fatalf("expected filtered status %d, got %d: %s", http.StatusOK, status, string(body))
+	}
+	var filtered []domain.TicketSummary
+	decodeEnvelopeData(t, body, &filtered)
+	if len(filtered) != 1 || filtered[0].ID != "2026-05-11-0910-match-body" {
+		t.Fatalf("expected one newest match, got %#v", filtered)
+	}
+
+	// A blank q is the plain listing.
+	status, body = request(t, handler, http.MethodGet, "/api/architects/hiveryn/tickets?q=%20", nil)
+	if status != http.StatusOK {
+		t.Fatalf("expected list status %d, got %d: %s", http.StatusOK, status, string(body))
+	}
+	decodeEnvelopeData(t, body, &board)
+	if len(board.Backlog) != 3 {
+		t.Fatalf("expected the whole board for a blank query, got %#v", board.Backlog)
+	}
+}
+
 func TestTicketsAPIValidationAndNotFound(t *testing.T) {
 	t.Parallel()
 

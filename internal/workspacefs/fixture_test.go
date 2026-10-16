@@ -224,6 +224,10 @@ func (s stubTickets) ListTickets(context.Context, string) (domain.TicketBoard, e
 	return s.board, s.err
 }
 
+func (s stubTickets) SearchTickets(context.Context, string, string) (domain.TicketBoard, error) {
+	return s.board, s.err
+}
+
 func (s stubTickets) GetTicket(context.Context, string, string) (domain.Ticket, error) {
 	panic("not used")
 }

@@ -638,3 +638,72 @@ func readFile(t *testing.T, path string) string {
 func newLocalTicketService() *TicketService {
 	return NewTicketService(func(string, string) (PathLocation, error) { return PathLocation{}, nil })
 }
+
+func TestTicketServiceSearchTickets(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	// Two backlog tickets, newest first by created; the older one matches on
+	// its body only.
+	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-older", "---\ntitle: Older ticket\ncreated: 2026-05-12T09:00:00Z\n---\n\nMentions the Palette window.\n")
+	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0930-newer", "---\ntitle: Newer PALETTE ticket\ncreated: 2026-05-12T09:30:00Z\n---\n\nNothing else.\n")
+	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0945-unrelated", "---\ntitle: Unrelated\ncreated: 2026-05-12T09:45:00Z\n---\n\nNo match here.\n")
+	writeTicketFile(t, root, domain.TicketStatusProgress, "2026-05-12-1000-progress", "---\ntitle: Progress work\n---\n\nStill no match.\n")
+	// A done ticket matching only through its conclusion body.
+	writeTicketFile(t, root, domain.TicketStatusDone, "2026-05-12-1100-done", "---\ntitle: Done work\n---\n\nTicket body without the word.\n")
+	writeConclusionFile(t, root, domain.TicketStatusDone, "2026-05-12-1100-done", "---\nstarted_at: 2026-05-12T11:00:00Z\nconcluded_at: 2026-05-12T11:30:00Z\noutcome: completed\n---\n\nShipped the palette search.\n")
+	// A done ticket with no conclusion stays searchable by title/body.
+	writeTicketFile(t, root, domain.TicketStatusDone, "2026-05-12-1200-done-no-conclusion", "---\ntitle: Done without conclusion\n---\n\nAlso about the palette.\n")
+
+	service := newLocalTicketService()
+
+	board, err := service.SearchTickets(context.Background(), root, "  pAlEtTe ")
+	if err != nil {
+		t.Fatalf("SearchTickets: %v", err)
+	}
+	backlog := summaryIDs(board.Backlog)
+	if !slices.Equal(backlog, []string{"2026-05-12-0930-newer", "2026-05-12-0900-older"}) {
+		t.Fatalf("expected title and body matches in listing order, got %v", backlog)
+	}
+	if len(board.Progress) != 0 {
+		t.Fatalf("expected no progress match, got %v", summaryIDs(board.Progress))
+	}
+	done := summaryIDs(board.Done)
+	if !slices.Equal(done, []string{"2026-05-12-1200-done-no-conclusion", "2026-05-12-1100-done"}) {
+		t.Fatalf("expected conclusion and body matches in listing order, got %v", done)
+	}
+	if !board.Done[1].HasConclusion {
+		t.Fatalf("expected the conclusion match to keep its summary fields, got %#v", board.Done[1])
+	}
+
+	none, err := service.SearchTickets(context.Background(), root, "zzz-no-such-word")
+	if err != nil {
+		t.Fatalf("SearchTickets: %v", err)
+	}
+	if len(none.Backlog)+len(none.Progress)+len(none.Done) != 0 {
+		t.Fatalf("expected an empty board, got %#v", none)
+	}
+	if none.Backlog == nil || none.Progress == nil || none.Done == nil {
+		t.Fatalf("expected empty columns to be non-nil, got %#v", none)
+	}
+
+	all, err := service.SearchTickets(context.Background(), root, "   ")
+	if err != nil {
+		t.Fatalf("SearchTickets: %v", err)
+	}
+	full, err := service.ListTickets(context.Background(), root)
+	if err != nil {
+		t.Fatalf("ListTickets: %v", err)
+	}
+	if !slices.Equal(summaryIDs(all.Backlog), summaryIDs(full.Backlog)) || !slices.Equal(summaryIDs(all.Done), summaryIDs(full.Done)) || len(all.Progress) != len(full.Progress) {
+		t.Fatalf("expected a blank query to list the whole board, got %#v vs %#v", all, full)
+	}
+}
+
+func summaryIDs(summaries []domain.TicketSummary) []string {
+	ids := make([]string, 0, len(summaries))
+	for _, summary := range summaries {
+		ids = append(ids, summary.ID)
+	}
+	return ids
+}
