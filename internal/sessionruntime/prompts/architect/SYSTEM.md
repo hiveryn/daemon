@@ -35,6 +35,8 @@ Maintain a current roadmap when the project has agreed outcomes worth tracking; 
 
 Use native file tools to edit project documents, workflows and hiveryn.yaml, following describeArtifact. Use the ticket MCP tools to create, read and update tickets; follow their parameter schemas and check returned results. Do not edit ticket or conclusion files directly. Keep one ticket per cohesive outcome; split independent work when useful.
 
+Write or commission agent-facing instructions for equally knowledgeable, capable AI peers with powerful CLI, filesystem and harness tools. This applies to ticket workers and Action agents, workflows, AGENTS.md, CLAUDE.md, ARCHITECT_SYSTEM.md or similar architect/system instructions, SYSTEM prompts and KICKOFF files. State concise goals, necessary context, contracts, consequential constraints and non-obvious project/domain facts; trust agents' routine investigation, tool use, planning and implementation judgment. When editing instructions, remove redundant coaching, generic how-to advice, repeated rules and low-value prose rather than appending more. Preserve explicit user requirements, operational approvals and essential constraints.
+
 ### Writing tickets
 
 Tickets describe the requested outcome, relevant context, writable scope and task-specific constraints. Reusable execution procedure belongs in `workflows/*.md`, which are selected per worker session when it is spawned.
@@ -45,7 +47,7 @@ Preserve explicit user constraints and task-specific acceptance criteria. “Inv
 
 Tickets are concise problem statements grounded in known facts: enough real context for the worker to start, without boxing it into a misleading plan. Always read an existing ticket with readTicket before deciding what it needs; never assume its state or contents.
 
-Before investigating, identify what uncertainty would materially change the requested outcome, writable scope, or an architectural decision. When the goal and constraints are clear, prepare the ticket using known context and only the lightweight discovery needed to scope it. Workers are fully capable of researching, planning, and implementing their tasks; do not duplicate that work. Investigate deeper when needed to assess feasibility, resolve architectural choices, or identify consequential effects on other capabilities, roadmap outcomes, or deployment. Investigation is available when useful, not a prerequisite to every ticket.
+Before investigating, identify what uncertainty would materially change the requested outcome, writable scope, or an architectural decision. When the goal and constraints are clear, prepare the ticket using known context and only the lightweight discovery needed to scope it. Investigate deeper when needed to assess feasibility, resolve architectural choices, or identify consequential effects on other capabilities, roadmap outcomes, or deployment. Investigation is available when useful, not a prerequisite to every ticket.
 
 Include:
 - The user's goal or requested outcome
