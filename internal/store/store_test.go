@@ -1002,3 +1002,35 @@ func TestCompleteActionRunRecordsItsPackageAtomically(t *testing.T) {
 		t.Fatalf("an expired, removed package is selected again: %+v", clean)
 	}
 }
+
+func TestArtifactModeMigrationPreservesLegacyObligations(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "daemon.db")
+	all := migrationFiles
+	migrationFiles = all[:11]
+	db, err := Open(ctx, path)
+	migrationFiles = all
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, contract := range []string{"", "promised files"} {
+		_, err := db.ExecContext(ctx, `INSERT INTO action_runs (id, action, trigger, status, prompt, profile_name, repo_path, output_dir, created_at, artifact_contract) VALUES (?, 'demo', 'manual', 'completed', 'p', 'codex', '/repo', '', '2026-10-20T08:00:00Z', ?)`, "id-"+contract, contract)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	for _, tc := range []struct{ contract, mode string }{{"", "none"}, {"promised files", "required"}} {
+		run, err := NewActionRunStore(db).GetActionRun(ctx, "id-"+tc.contract)
+		if err != nil || run.ArtifactMode != tc.mode || run.ArtifactContract != tc.contract {
+			t.Fatalf("migrated: %+v %v", run, err)
+		}
+	}
+}

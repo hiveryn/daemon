@@ -66,7 +66,7 @@ func initAction(dir string) error {
 	if out, err := exec.Command("git", "-C", dir, "rev-parse", "--git-dir").CombinedOutput(); err != nil {
 		return fmt.Errorf("inspect Git repository: %w: %s", err, out)
 	}
-	manifest := fmt.Sprintf("name: %q\ndescription: Write a short greeting for the person named in the request. Supply their name.\n# Optional: omit this artifacts key for work without files; remove output instructions from KICKOFF.md too.\nartifacts: greeting.txt containing the requested greeting.\nsuggestions:\n  - Write a short greeting for Alex.\n", name)
+	manifest := fmt.Sprintf("name: %q\ndescription: Write a short greeting for the person named in the request. Supply their name.\n# Use optional for request-dependent files, or omit artifacts and output instructions for none.\nartifacts:\n  mode: required\n  description: greeting.txt containing the requested greeting.\nsuggestions:\n  - Write a short greeting for Alex.\n", name)
 	kickoff := "Write the requested greeting as greeting.txt in the output directory. Verify the file contains the requested greeting.\n\nRequest:\n{{prompt}}\n\nOutput directory:\n{{output_dir}}\n"
 	for _, file := range []struct{ name, body string }{{actionfs.DefinitionFileName, manifest}, {actionfs.KickoffFileName, kickoff}} {
 		path := filepath.Join(dir, file.name)

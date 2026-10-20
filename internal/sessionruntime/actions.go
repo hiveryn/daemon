@@ -305,7 +305,7 @@ func (s *Service) LaunchAction(ctx context.Context, name string, req domain.Laun
 		return domain.LaunchActionResult{}, err
 	}
 
-	if def.Artifacts == "" {
+	if def.ArtifactMode == "none" {
 		outputDir = ""
 	}
 	now := time.Now().UTC()
@@ -319,6 +319,7 @@ func (s *Service) LaunchAction(ctx context.Context, name string, req domain.Laun
 		RepoPath:         loc.path,
 		OutputDir:        outputDir,
 		ArtifactContract: def.Artifacts,
+		ArtifactMode:     def.ArtifactMode,
 		Machine:          loc.machine,
 		CreatedAt:        now,
 		StartedAt:        &now,
@@ -375,13 +376,13 @@ func (s *Service) launchActionSession(ctx context.Context, def actionfs.Definiti
 	}
 
 	var additionalRepos, additionalWorkdirs []string
-	if def.Artifacts != "" {
+	if def.ArtifactMode != "none" {
 		if err := actionpkg.MkdirEmpty(ctx, actionpkg.Location{Alias: loc.ssh, Path: run.OutputDir}); err != nil {
 			return fail("create output directory", err)
 		}
 		additionalRepos, additionalWorkdirs = []string{actionOutputAdditionalRepoKey}, []string{run.OutputDir}
 	}
-	instructions, err := renderBuiltinPrompt(actionSystemPromptName, actionKickoffData{Artifacts: def.Artifacts})
+	instructions, err := renderBuiltinPrompt(actionSystemPromptName, actionKickoffData{Artifacts: def.Artifacts, ArtifactMode: def.ArtifactMode})
 	if err != nil {
 		return fail("instructions", err)
 	}
@@ -453,6 +454,7 @@ func renderActionKickoff(def actionfs.Definition, run domain.ActionRun) (string,
 		OutputDir:      run.OutputDir,
 		DefinitionPath: join(def.Path, actionfs.DefinitionFileName),
 		Artifacts:      def.Artifacts,
+		ArtifactMode:   def.ArtifactMode,
 		KickoffName:    actionfs.KickoffFileName,
 		Kickoff:        kickoff,
 	})
@@ -473,6 +475,7 @@ type actionKickoffData struct {
 	RepoPath       string
 	OutputDir      string
 	DefinitionPath string
+	ArtifactMode   string
 	Artifacts      string
 	KickoffName    string
 	Kickoff        string

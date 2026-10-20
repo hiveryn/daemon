@@ -49,12 +49,26 @@ time, wherever it runs.
 
 ## Preparing and publishing artifacts
 
-`artifacts` in action.yaml is optional. Omit it for work without files; when
-present it must be a nonempty delivery contract. Every kickoff requires
-`{{prompt}}`; only Actions declaring artifacts require `{{output_dir}}`.
-The launch contract is frozen on the execution, so later definition edits do
-not change its obligations. Artifact-free runs get no output folder or artifact
-instructions.
+`artifacts` accepts a policy mapping:
+
+```yaml
+artifacts:
+  mode: optional
+  description: Files requested by the user, in suitable formats.
+```
+
+Modes are `none`, `optional` and `required`. Omission means `none`; a legacy
+nonempty string or a mapping without `mode` means `required`. `description`
+is required and nonempty for optional/required, and omitted for none. Unknown
+keys and modes are errors. `action init` scaffolds an explicit required policy.
+Discovery exposes the normalized `artifact_mode` and textual `artifacts` contract;
+execution history freezes `artifact_mode` alongside `artifact_contract`.
+
+Every kickoff requires `{{prompt}}`; optional/required policies also require
+`{{output_dir}}`. None gets no output grant or artifact instructions and rejects
+delivery. Optional permits summary-only completion; explicitly requested files
+still belong to the requested work. The launch policy and contract are frozen,
+so definition edits cannot change a running execution's obligations.
 
 An Action agent calls `deliverArtifacts(path)` to prepare a verified package.
 The absolute folder on its execution machine must be nonempty, contain only
@@ -70,7 +84,7 @@ remain recorded for bounded startup cleanup. Source folders are untouched.
 Prepared packages survive restart/resume while their execution is running.
 
 `concludeSession(summary, outcome)` takes no path or artifact flag. Completed
-requires preparation only when the launch declared artifacts; failed may retain
+requires preparation only for mode `required`; failed may retain
 a useful partial package or have none. Timed conclusion approval atomically
 publishes the prepared package with the final outcome. Denial leaves the run
 and preparation intact. Approval checks the exact snapshot proposed: replacing

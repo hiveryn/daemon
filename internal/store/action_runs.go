@@ -24,7 +24,7 @@ const actionRunColumns = `id, action, trigger, status, prompt, profile_name, rep
 	COALESCE(session_id, ''), COALESCE(summary, ''), COALESCE(error, ''),
 	created_at, COALESCE(started_at, ''), COALESCE(ended_at, ''),
 	COALESCE(architect_key, ''), COALESCE(requester_session_id, ''), COALESCE(reason, ''),
-	COALESCE(requester_ticket_id, ''), machine, COALESCE(delivery_dir, ''), artifact_contract`
+	COALESCE(requester_ticket_id, ''), machine, COALESCE(delivery_dir, ''), artifact_contract, artifact_mode`
 
 func (s *ActionRunStore) CreateActionRun(ctx context.Context, run domain.ActionRun) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -47,13 +47,13 @@ func (s *ActionRunStore) CreateActionRun(ctx context.Context, run domain.ActionR
 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO action_runs (id, action, trigger, status, prompt, profile_name, repo_path, output_dir, session_id, summary, error, created_at, started_at, ended_at,
-		                         architect_key, requester_session_id, reason, requester_ticket_id, machine, artifact_contract)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                         architect_key, requester_session_id, reason, requester_ticket_id, machine, artifact_contract, artifact_mode)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, run.ID, run.Action, string(run.Trigger), string(run.Status), run.Prompt, run.ProfileName, run.RepoPath, run.OutputDir,
 		nullIfEmpty(run.SessionID), nullIfEmpty(run.Summary), nullIfEmpty(run.Error),
 		formatPreciseTime(run.CreatedAt), nullableTime(run.StartedAt), nullableTime(run.EndedAt),
 		nullIfEmpty(run.ArchitectKey), nullIfEmpty(run.RequesterSessionID), nullIfEmpty(run.Reason), nullIfEmpty(run.RequesterTicketID),
-		run.Machine, run.ArtifactContract)
+		run.Machine, run.ArtifactContract, domain.EffectiveArtifactMode(run.ArtifactMode, run.ArtifactContract))
 	if err != nil {
 		// The partial unique index is the backstop for the check above.
 		if strings.Contains(err.Error(), "UNIQUE constraint failed: action_runs.action") {
@@ -185,9 +185,9 @@ func (s *ActionRunStore) StartActionRun(ctx context.Context, id string, start do
 		return fmt.Errorf("check running execution of action %s: %w", action, err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE action_runs SET status = ?, profile_name = ?, started_at = ?, machine = ?, repo_path = ?, output_dir = ?, artifact_contract = ?
+		UPDATE action_runs SET status = ?, profile_name = ?, started_at = ?, machine = ?, repo_path = ?, output_dir = ?, artifact_contract = ?, artifact_mode = ?
 		WHERE id = ? AND status = ?
-	`, string(domain.ActionRunRunning), start.ProfileName, formatPreciseTime(start.At), start.Machine, start.RepoPath, start.OutputDir, start.ArtifactContract,
+	`, string(domain.ActionRunRunning), start.ProfileName, formatPreciseTime(start.At), start.Machine, start.RepoPath, start.OutputDir, start.ArtifactContract, domain.EffectiveArtifactMode(start.ArtifactMode, start.ArtifactContract),
 		id, string(domain.ActionRunPendingApproval)); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed: action_runs.action") {
 			return busyActionError(action, "")
@@ -322,7 +322,7 @@ func scanActionRun(row rowScanner) (domain.ActionRun, error) {
 	)
 	if err := row.Scan(&run.ID, &run.Action, &trigger, &status, &run.Prompt, &run.ProfileName, &run.RepoPath, &run.OutputDir,
 		&run.SessionID, &run.Summary, &run.Error, &createdAt, &startedAt, &endedAt,
-		&run.ArchitectKey, &run.RequesterSessionID, &run.Reason, &run.RequesterTicketID, &run.Machine, &run.DeliveryDir, &run.ArtifactContract); err != nil {
+		&run.ArchitectKey, &run.RequesterSessionID, &run.Reason, &run.RequesterTicketID, &run.Machine, &run.DeliveryDir, &run.ArtifactContract, &run.ArtifactMode); err != nil {
 		return domain.ActionRun{}, err
 	}
 	run.Trigger = domain.ActionRunTrigger(trigger)

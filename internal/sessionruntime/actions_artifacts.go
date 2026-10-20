@@ -282,7 +282,7 @@ func (s *Service) callerArtifacts(ctx context.Context, caller domain.Session, ru
 		return out, ""
 	}
 	if pkg == nil || pkg.State == domain.ActionArtifactsPrepared {
-		if run.Status == domain.ActionRunCompleted && run.ArtifactContract != "" {
+		if run.Status == domain.ActionRunCompleted && domain.EffectiveArtifactMode(run.ArtifactMode, run.ArtifactContract) == "required" {
 			out.State, out.Error = domain.ActionArtifactsFailed, "expected artifact package is missing"
 		}
 		return out, ""
@@ -613,7 +613,7 @@ func (s *Service) DeliverActionArtifacts(ctx context.Context, sessionID, dir str
 	if err != nil {
 		return domain.ActionArtifactCopy{}, err
 	}
-	if run.ArtifactContract == "" {
+	if domain.EffectiveArtifactMode(run.ArtifactMode, run.ArtifactContract) == "none" {
 		return domain.ActionArtifactCopy{}, &domain.ValidationError{Field: "path", Message: "this Action did not declare artifacts; concludeSession needs only summary and outcome"}
 	}
 	ctx, cancel := context.WithTimeout(ctx, actionDeliveryTimeout)
@@ -642,7 +642,7 @@ func (s *Service) preparedPackage(ctx context.Context, run domain.ActionRun, sta
 	if pkg != nil && pkg.State == domain.ActionArtifactsPrepared {
 		return pkg, nil
 	}
-	if status == domain.ActionRunCompleted && run.ArtifactContract != "" {
+	if status == domain.ActionRunCompleted && domain.EffectiveArtifactMode(run.ArtifactMode, run.ArtifactContract) == "required" {
 		return nil, &domain.ValidationError{Field: "outcome", Message: "this Action promises artifacts: call deliverArtifacts(path) with a verified, nonempty package before concludeSession(completed), or conclude failed honestly if the work or delivery could not finish"}
 	}
 	return nil, nil

@@ -17,7 +17,7 @@ import (
 // registerUserTools). They cannot invoke other Actions and inherit none of the
 // architect or ticket tools.
 func (s *Server) registerActionTools() {
-	mcp.AddTool(s.mcpServer, &mcp.Tool{Name: "deliverArtifacts", Description: "Validate and freeze a nonempty folder of regular files/directories on this execution machine. Requires a declared artifact contract. Prepares a package without publishing it or ending the session; concludeSession approval publishes it, including partial results with failed outcome. Each successful call replaces the prepared snapshot; failed replacements preserve the previous package. Retrying is safe. Later source edits do not change the snapshot."}, s.handleDeliverArtifacts)
+	mcp.AddTool(s.mcpServer, &mcp.Tool{Name: "deliverArtifacts", Description: "Validate and freeze a nonempty folder of regular files/directories on this execution machine. Requires optional or required artifact mode. Prepares a package without publishing it or ending the session; concludeSession approval publishes it, including partial results with failed outcome. Each successful call replaces the prepared snapshot; failed replacements preserve the previous package. Retrying is safe. Later source edits do not change the snapshot."}, s.handleDeliverArtifacts)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "readRecentConclusions",
@@ -26,7 +26,7 @@ func (s *Server) registerActionTools() {
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "concludeSession",
-		Description: "Propose ending this Action with summary and outcome (completed or failed). If this Action declares artifacts, completed requires a package prepared first with deliverArtifacts(path). Failed may retain a prepared partial package. Approval publishes the recorded package and ends the execution; denial keeps it running with its prepared package. This timed approval auto-approves if unanswered. Check the returned outcome and reason; denial is not permission to retry the same conclusion.",
+		Description: "Propose ending this Action with summary and outcome (completed or failed). Required artifact mode needs a package prepared with deliverArtifacts(path) before completed; optional permits completion without a package. Failed may retain a prepared partial package. Approval publishes the recorded package and ends the execution; denial keeps it running with its prepared package. This timed approval auto-approves if unanswered. Check the returned outcome and reason; denial is not permission to retry the same conclusion.",
 	}, s.handleConcludeAction)
 }
 

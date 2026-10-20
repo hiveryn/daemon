@@ -6,7 +6,7 @@ Definition: {{.DefinitionPath}}
 {{if .Artifacts}}
 Output directory: {{.OutputDir}}
 
-Artifact contract:
+Artifact contract ({{.ArtifactMode}}):
 {{.Artifacts}}
 {{end}}
 Launch instructions from {{.KickoffName}}:

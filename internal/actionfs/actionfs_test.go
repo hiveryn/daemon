@@ -334,6 +334,17 @@ func TestOptionalArtifactContractLocalAndSSH(t *testing.T) {
 		name, field, kickoff string
 		valid                bool
 	}{
+		{"none", "artifacts: {mode: none}\n", "Handle {{prompt}}.", true},
+		{"optional", "artifacts: {mode: optional, description: report}\n", "{{prompt}} {{output_dir}}", true},
+		{"required", "artifacts: {mode: required, description: report}\n", "{{prompt}} {{output_dir}}", true},
+		{"legacy-map", "artifacts: {description: report}\n", "{{prompt}} {{output_dir}}", true},
+		{"null-mode", "artifacts: {mode: null, description: report}\n", "{{prompt}} {{output_dir}}", false},
+		{"blank-mode", "artifacts: {mode: '', description: report}\n", "{{prompt}} {{output_dir}}", false},
+		{"bad-mode", "artifacts: {mode: sometimes, description: report}\n", "{{prompt}} {{output_dir}}", false},
+		{"none-contract", "artifacts: {mode: none, description: report}\n", "{{prompt}}", false},
+		{"optional-empty", "artifacts: {mode: optional}\n", "{{prompt}} {{output_dir}}", false},
+		{"optional-output", "artifacts: {mode: optional, description: report}\n", "{{prompt}}", false},
+		{"unknown-key", "artifacts: {mode: optional, description: report, extra: x}\n", "{{prompt}} {{output_dir}}", false},
 		{"absent", "", "Handle {{prompt}}.", true},
 		{"empty", "artifacts: ''\n", "Handle {{prompt}}.", false},
 		{"null", "artifacts: null\n", "Handle {{prompt}}.", false},

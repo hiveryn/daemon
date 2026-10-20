@@ -2,6 +2,7 @@ package sessionruntime
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -166,5 +167,92 @@ func TestCancelledPreparedPackageIsNeverPublishedAndIsCleaned(t *testing.T) {
 	}
 	if _, err := os.Stat(live.Run.OutputDir); err != nil {
 		t.Fatalf("original removed: %v", err)
+	}
+}
+
+// The requested policy survives persistence and definition edits. Summary-only
+// optional results and notices never imply that a package is still expected.
+func TestActionArtifactModes(t *testing.T) {
+	for _, mode := range []string{"none", "optional", "required"} {
+		for _, prepared := range []bool{false, true} {
+			for _, outcome := range []string{"completed", "failed"} {
+				t.Run(mode+"/"+outcome+"/"+fmt.Sprint(prepared), func(t *testing.T) {
+					f := newActionFixture(t)
+					declaration, kickoff := "artifacts: {mode: none}\n", "{{prompt}}"
+					if mode != "none" {
+						declaration = "artifacts: {mode: " + mode + ", description: requested files}\n"
+						kickoff += " {{output_dir}}"
+					}
+					f.writeAction(t, "policy", "name: policy\ndescription: Handle request\nsuggestions: [Review idea]\n"+declaration, kickoff)
+					f.architect(t, "alpha", "policy")
+					caller := f.worker(t, "alpha", "ticket-1")
+					available, err := f.service.AvailableActions(context.Background(), caller.ID)
+					if err != nil || len(available.Actions) != 1 || available.Actions[0].ArtifactMode != mode {
+						t.Fatalf("discovery: %+v %v", available, err)
+					}
+					run := f.requestAndStart(t, caller.ID, "policy")
+					ctx := context.Background()
+					stored, err := f.runs.GetActionRun(ctx, run.ID)
+					if err != nil || stored.ArtifactMode != mode {
+						t.Fatalf("frozen policy: %+v %v", stored, err)
+					}
+					session, err := f.sessions.GetSession(ctx, run.SessionID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if mode == "optional" && !strings.Contains(session.Instructions, "Deliver artifacts when the request calls for files; otherwise conclude with a summary.") {
+						t.Fatal("optional guidance missing")
+					}
+					if mode == "none" && (run.OutputDir != "" || len(session.AdditionalWorkdirs) != 0 || strings.Contains(session.Instructions, "deliverArtifacts")) {
+						t.Fatal("none received artifact capability")
+					}
+					if mode != "none" && (run.OutputDir == "" || len(session.AdditionalWorkdirs) != 1) {
+						t.Fatal("missing output grant")
+					}
+					if prepared {
+						dir := t.TempDir()
+						if err := os.WriteFile(filepath.Join(dir, "report.txt"), []byte("result"), 0600); err != nil {
+							t.Fatal(err)
+						}
+						_, err := f.service.DeliverActionArtifacts(ctx, run.SessionID, dir)
+						if mode == "none" {
+							if err == nil {
+								t.Fatal("none accepted delivery")
+							}
+						} else if err != nil {
+							t.Fatal(err)
+						}
+					}
+					// Editing the definition cannot relax or strengthen this run's policy.
+					f.writeArtifactFreeAction(t, "policy")
+					finished, err := f.conclude(t, run.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionOutcome(outcome), Summary: "Task result"})
+					if mode == "required" && !prepared && outcome == "completed" {
+						if err == nil || !strings.Contains(err.Error(), "promises artifacts") {
+							t.Fatalf("missing required package: %v", err)
+						}
+						return
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					wantPackage := prepared && mode != "none"
+					if (finished.Package != nil) != wantPackage {
+						t.Fatalf("package: %+v", finished)
+					}
+					notice := f.onlyNotice(t, "alpha", run.ID)
+					if notice.Payload["package"] != wantPackage {
+						t.Fatalf("notice: %+v", notice)
+					}
+					result := f.result(t, caller.ID, run.ID)
+					wantState := domain.ActionArtifactsNone
+					if wantPackage {
+						wantState = domain.ActionArtifactsReady
+					}
+					if result.Artifacts.State != wantState || (result.OutputDir != "") != wantPackage {
+						t.Fatalf("result: %+v", result)
+					}
+				})
+			}
+		}
 	}
 }

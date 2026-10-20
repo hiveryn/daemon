@@ -171,6 +171,7 @@ type ActionRunRepository interface {
 // ActionRunStart is what an approved request becomes when it starts: the
 // variant and the execution location resolved at approval.
 type ActionRunStart struct {
+	ArtifactMode     string
 	ArtifactContract string
 	ProfileName      string
 	Machine          string
@@ -207,3 +208,5 @@ type ActionService interface {
 	RequestExecuteAction(ctx context.Context, sessionID string, req ExecuteActionRequest) (ExecuteActionResponse, error)
 	GetActionResult(ctx context.Context, sessionID, executionID string) (ActionResult, error)
 }
+
+var EffectiveArtifactMode = sd.EffectiveArtifactMode

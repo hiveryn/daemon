@@ -322,13 +322,9 @@ func inspect(dir, dirName string, files checkoutFiles, join func(...string) stri
 			}
 		} else {
 			def.Description = strings.TrimSpace(m.Description)
-			if m.Artifacts.Kind != 0 {
-				if m.Artifacts.Kind != yaml.ScalarNode || m.Artifacts.Tag != "!!str" {
-					problem(manifestPath, CodeArtifactsRequired, "artifacts must be a nonempty string when declared; omit it for no files")
-				} else {
-					def.Artifacts = strings.TrimSpace(m.Artifacts.Value)
-				}
-			}
+			var artifactErr error
+			def.ArtifactMode, def.Artifacts, artifactErr = artifactPolicy(m.Artifacts)
+
 			switch name := strings.TrimSpace(m.Name); {
 			case name == "":
 				problem(manifestPath, CodeDefinitionNameRequired, "name is required and must equal the registered name %q", dirName)
@@ -338,8 +334,9 @@ func inspect(dir, dirName string, files checkoutFiles, join func(...string) stri
 			if def.Description == "" {
 				problem(manifestPath, CodeDescriptionRequired, "description is required: say what the action does and what the caller's prompt must contain")
 			}
-			if m.Artifacts.Kind != 0 && def.Artifacts == "" {
-				problem(manifestPath, CodeArtifactsRequired, "artifacts must be nonempty when declared; omit it for an Action without files")
+
+			if artifactErr != nil {
+				problem(manifestPath, CodeArtifactsRequired, "%s", artifactErr)
 			}
 			var findings []finding
 			def.Suggestions, findings = suggestions(m.Suggestions)
@@ -354,7 +351,7 @@ func inspect(dir, dirName string, files checkoutFiles, join func(...string) stri
 		problem(kickoffPath, f.code, "%s", f.message)
 	} else {
 		def.Kickoff = string(files.kickoff.data)
-		for _, f := range kickoffProblems(def.Kickoff, def.Artifacts != "") {
+		for _, f := range kickoffProblems(def.Kickoff, def.ArtifactMode == "optional" || def.ArtifactMode == "required") {
 			problem(kickoffPath, f.code, "%s", f.message)
 		}
 	}
@@ -458,4 +455,55 @@ func InvalidError(def Definition) error {
 		parts = append(parts, p.Path+": "+p.Message)
 	}
 	return &domain.ValidationError{Field: "action", Message: fmt.Sprintf("%s has an invalid definition: %s", def.Name, strings.Join(parts, "; "))}
+}
+
+// artifactPolicy normalizes both legacy textual contracts and explicit policies.
+func artifactPolicy(node yaml.Node) (string, string, error) {
+	if node.Kind == 0 {
+		return "none", "", nil
+	}
+	if node.Kind == yaml.ScalarNode && node.Tag == "!!str" && strings.TrimSpace(node.Value) != "" {
+		return "required", strings.TrimSpace(node.Value), nil
+	}
+	if node.Kind != yaml.MappingNode {
+		return "", "", fmt.Errorf("artifacts must be a nonempty string or a mapping with mode and description")
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		key, value := node.Content[i].Value, node.Content[i+1]
+		if (key == "mode" || key == "description") && (value.Kind != yaml.ScalarNode || value.Tag != "!!str" || strings.TrimSpace(value.Value) == "") {
+			return "", "", fmt.Errorf("artifacts.%s must be a nonempty string", key)
+		}
+	}
+	var policy struct {
+		Mode        string `yaml:"mode"`
+		Description string `yaml:"description"`
+	}
+	data, err := yaml.Marshal(&node)
+	if err != nil {
+		return "", "", err
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&policy); err != nil {
+		return "", "", fmt.Errorf("artifacts: %w", err)
+	}
+	description := strings.TrimSpace(policy.Description)
+	mode := policy.Mode
+	// An omitted mode on a declaration is required, including an empty mapping.
+	if policy.Mode == "" {
+		mode = "required"
+	}
+	switch mode {
+	case "none":
+		if description != "" {
+			return "", "", fmt.Errorf("artifacts.description must be omitted for mode none")
+		}
+	case "optional", "required":
+		if description == "" {
+			return "", "", fmt.Errorf("artifacts.description must be nonempty for mode %s", mode)
+		}
+	default:
+		return "", "", fmt.Errorf("artifacts.mode must be none, optional or required")
+	}
+	return mode, description, nil
 }
