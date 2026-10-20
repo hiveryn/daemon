@@ -93,6 +93,7 @@ func (f *fakeMessageAdapter) deliveries() []agentruntime.DeliverRequest {
 
 type messageFixture struct {
 	t        *testing.T
+	dbPath   string
 	service  *Service
 	repo     *fakeSessionRepository
 	messages *store.AgentMessageStore
@@ -105,12 +106,19 @@ type messageFixture struct {
 
 func newMessageFixture(t *testing.T) *messageFixture {
 	t.Helper()
-	db, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "daemon.db"))
+	return newMessageFixtureAt(t, filepath.Join(t.TempDir(), "daemon.db"))
+}
+
+// newMessageFixtureAt builds a fixture over the SQLite file at dbPath; a
+// second fixture over the same file is a restarted daemon.
+func newMessageFixtureAt(t *testing.T, dbPath string) *messageFixture {
+	t.Helper()
+	db, err := store.Open(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	f := &messageFixture{t: t, repo: newFakeSessionRepository(), messages: store.NewAgentMessageStore(db), tickets: &fakeTicketService{},
+	f := &messageFixture{t: t, dbPath: dbPath, repo: newFakeSessionRepository(), messages: store.NewAgentMessageStore(db), tickets: &fakeTicketService{},
 		now: time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)}
 	f.adapters = map[agentruntime.AgentKind]*fakeMessageAdapter{
 		agentruntime.AgentClaude:   {kind: agentruntime.AgentClaude, mode: agentruntime.MessageDeliveryPull, gateOnIdle: true},
@@ -438,20 +446,27 @@ func TestFailedDeliveryBacksOffWithAVisibleError(t *testing.T) {
 	codex.deliverErr = errors.New("codex app-server exited: boom")
 	m := f.enqueue("retry")
 	f.dispatch()
-	failed := f.expect(m.ID, domain.AgentMessagePending, "delivery attempt 1 failed: codex app-server exited: boom")
-	if failed.Attempts != 1 || failed.LastError != "codex app-server exited: boom" || failed.NextAttemptAt == nil || !failed.NextAttemptAt.Equal(f.now.Add(30*time.Second)) {
+	// A transport failure is not a hand-off: nothing reached the agent, so
+	// Attempts stays 0 and only the backoff grows.
+	failed := f.expect(m.ID, domain.AgentMessagePending, "delivery attempt failed (1 in a row): codex app-server exited: boom")
+	if failed.Attempts != 0 || failed.LastError != "codex app-server exited: boom" || failed.NextAttemptAt == nil || !failed.NextAttemptAt.Equal(f.now.Add(30*time.Second)) {
 		t.Fatalf("failed = %+v", failed)
 	}
 	// Not retried before its time.
 	f.now = f.now.Add(10 * time.Second)
 	f.dispatch()
-	if got := f.get(m.ID); got.Attempts != 1 {
+	if got := f.get(m.ID); got.Attempts != 0 || len(codex.deliveries()) != 0 {
 		t.Fatalf("retried early: %+v", got)
 	}
-	codex.deliverErr = nil
 	f.now = f.now.Add(30 * time.Second)
 	f.dispatch()
-	if got := f.expect(m.ID, domain.AgentMessageHanded, "queued"); got.Attempts != 2 || got.LastError != "" || got.NextAttemptAt != nil {
+	if got := f.expect(m.ID, domain.AgentMessagePending, "delivery attempt failed (2 in a row)"); got.Attempts != 0 || !got.NextAttemptAt.Equal(f.now.Add(time.Minute)) {
+		t.Fatalf("second failure = %+v", got)
+	}
+	codex.deliverErr = nil
+	f.now = f.now.Add(time.Minute)
+	f.dispatch()
+	if got := f.expect(m.ID, domain.AgentMessageHanded, "queued"); got.Attempts != 1 || got.LastError != "" || got.NextAttemptAt != nil {
 		t.Fatalf("recovered = %+v", got)
 	}
 }
@@ -659,5 +674,231 @@ func TestDispatcherLoopKicksAndStops(t *testing.T) {
 	case <-f.service.messages.done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("dispatcher did not stop")
+	}
+}
+
+func TestStaleRecordIsNotALossUntilItReachesPastTheHandoff(t *testing.T) {
+	f := newMessageFixture(t)
+	f.repo.listedSessions = []domain.Session{f.architectSession("arch-1", agentruntime.AgentCodex, "thread-1")}
+	codex := f.adapters[agentruntime.AgentCodex]
+	m := f.enqueue("stale")
+	f.dispatch()
+	handed := f.expect(m.ID, domain.AgentMessageHanded, "queued")
+	// The lookup reads a record that ends hours before the hand-off (an old
+	// rollout segment): the thread going idle proves nothing about the
+	// message, so it is not redelivered.
+	codex.setReceipt(m.ID, agentruntime.MessageReceipt{RecordedThrough: handed.HandedAt.Add(-3 * time.Hour)})
+	f.now = f.now.Add(time.Minute)
+	f.service.observeAgentStatusForMessages(agentruntime.Event{ID: "arch-1", Status: agentruntime.StatusIdle, NativeSessionRole: agentruntime.NativeSessionRolePrimary})
+	f.dispatch()
+	if got := f.expect(m.ID, domain.AgentMessageHanded, "ends before the hand-off"); got.Attempts != 1 || len(codex.deliveries()) != 1 {
+		t.Fatalf("stale = %+v deliveries %d", got, len(codex.deliveries()))
+	}
+	// Once the record reaches past the hand-off, the same idle makes the
+	// absence authoritative: redelivered under the same id.
+	codex.setReceipt(m.ID, agentruntime.MessageReceipt{RecordedThrough: f.now})
+	f.dispatch()
+	if got := f.expect(m.ID, domain.AgentMessageHanded, "queued"); got.Attempts != 2 || len(codex.deliveries()) != 2 {
+		t.Fatalf("redelivered = %+v", got)
+	}
+	// A record that stays stale for the handed cap is redelivered too,
+	// visibly: the lookup may be reading the wrong file.
+	codex.setReceipt(m.ID, agentruntime.MessageReceipt{RecordedThrough: handed.HandedAt.Add(-3 * time.Hour)})
+	f.now = f.now.Add(messageHandedCap + time.Second)
+	f.dispatch()
+	if got := f.expect(m.ID, domain.AgentMessageHanded, "queued"); got.Attempts != 3 {
+		t.Fatalf("after cap = %+v", got)
+	}
+	f.now = f.now.Add(time.Second)
+	f.service.observeAgentStatusForMessages(agentruntime.Event{ID: "arch-1", Status: agentruntime.StatusIdle, NativeSessionRole: agentruntime.NativeSessionRolePrimary})
+	f.dispatch()
+	if got := f.expect(m.ID, domain.AgentMessageHanded, "ends before the hand-off"); got.Attempts != 3 {
+		t.Fatalf("stale again = %+v", got)
+	}
+	codex.setReceipt(m.ID, agentruntime.MessageReceipt{Appeared: true, Acknowledged: true, RecordedThrough: f.now})
+	f.dispatch()
+	if got := f.get(m.ID); got.State != domain.AgentMessageAcknowledged {
+		t.Fatalf("final = %+v", got)
+	}
+}
+
+func TestUnconfirmedHandoffsAreBoundedAndFailVisibly(t *testing.T) {
+	f := newMessageFixture(t)
+	f.repo.listedSessions = []domain.Session{f.architectSession("arch-1", agentruntime.AgentCodex, "thread-1")}
+	codex := f.adapters[agentruntime.AgentCodex]
+	m := f.enqueue("vanishing")
+	f.dispatch()
+	f.expect(m.ID, domain.AgentMessageHanded, "queued")
+	// The record never shows it and the thread keeps going idle: redelivered
+	// under the same id, but only up to the cap.
+	for handoff := 2; handoff <= messageMaxHandoffs; handoff++ {
+		f.now = f.now.Add(time.Minute)
+		f.service.observeAgentStatusForMessages(agentruntime.Event{ID: "arch-1", Status: agentruntime.StatusIdle, NativeSessionRole: agentruntime.NativeSessionRolePrimary})
+		f.dispatch()
+		if got := f.expect(m.ID, domain.AgentMessageHanded, "queued"); got.Attempts != handoff || len(codex.deliveries()) != handoff {
+			t.Fatalf("hand-off %d = %+v deliveries %d", handoff, got, len(codex.deliveries()))
+		}
+	}
+	f.now = f.now.Add(time.Minute)
+	f.service.observeAgentStatusForMessages(agentruntime.Event{ID: "arch-1", Status: agentruntime.StatusIdle, NativeSessionRole: agentruntime.NativeSessionRolePrimary})
+	f.dispatch()
+	failed := f.get(m.ID)
+	if failed.State != domain.AgentMessageFailed || failed.EndedAt == nil || failed.HandedAt != nil || failed.Attempts != messageMaxHandoffs || len(codex.deliveries()) != messageMaxHandoffs ||
+		!strings.Contains(failed.LastError, "handed over 3 times without a confirmed receipt") || !strings.Contains(failed.LastError, "not found in the agent's record after its next turn ended") {
+		t.Fatalf("failed = %+v deliveries %d", failed, len(codex.deliveries()))
+	}
+	// Terminal: later passes and idles leave it alone.
+	f.now = f.now.Add(time.Hour)
+	f.service.observeAgentStatusForMessages(agentruntime.Event{ID: "arch-1", Status: agentruntime.StatusIdle, NativeSessionRole: agentruntime.NativeSessionRolePrimary})
+	f.dispatch()
+	if got := f.get(m.ID); got.State != domain.AgentMessageFailed || len(codex.deliveries()) != messageMaxHandoffs {
+		t.Fatalf("after failure = %+v", got)
+	}
+	// Transport failures never count toward the cap.
+	codex.deliverErr = errors.New("boom")
+	second := f.enqueue("flaky")
+	for i := 0; i < messageMaxHandoffs+2; i++ {
+		f.now = f.now.Add(messageRetryBackoff)
+		f.dispatch()
+	}
+	if got := f.expect(second.ID, domain.AgentMessagePending, "delivery attempt failed"); got.Attempts != 0 {
+		t.Fatalf("flaky = %+v", got)
+	}
+	codex.deliverErr = nil
+	f.now = f.now.Add(messageRetryBackoff)
+	f.dispatch()
+	f.expect(second.ID, domain.AgentMessageHanded, "queued")
+}
+
+func TestReceiptIsCheckedBeforeRedelivery(t *testing.T) {
+	f := newMessageFixture(t)
+	f.repo.listedSessions = []domain.Session{f.architectSession("arch-1", agentruntime.AgentClaude, "native-arch-1")}
+	claude := f.adapters[agentruntime.AgentClaude]
+	m := f.enqueue("already there")
+	f.service.observeAgentStatusForMessages(agentruntime.Event{ID: "arch-1", Status: agentruntime.StatusIdle})
+	f.armWaiter("arch-1", "Stop", "")
+	f.dispatch()
+	f.expect(m.ID, domain.AgentMessageHanded, "handed")
+	// Lost by the next idle (the transcript could not show it), returned to
+	// pending; no waiter is armed, so nothing is sent in this pass.
+	f.now = f.now.Add(time.Minute)
+	f.service.observeAgentStatusForMessages(agentruntime.Event{ID: "arch-1", Status: agentruntime.StatusIdle})
+	f.dispatch()
+	f.expect(m.ID, domain.AgentMessagePending, "no waiter armed")
+	// The record now shows it after all (it was flushed late, or became
+	// readable): the next hand-off opportunity closes it instead of sending.
+	claude.setReceipt(m.ID, agentruntime.MessageReceipt{Appeared: true, RecordedThrough: f.now})
+	stop := f.armWaiter("arch-1", "Stop", "")
+	f.dispatch()
+	got := f.get(m.ID)
+	if got.State != domain.AgentMessageAppeared || got.Attempts != 1 || got.AppearedAt == nil || got.Condition != "" || got.LastError != "" {
+		t.Fatalf("closed before redelivery = %+v", got)
+	}
+	if _, armed := f.service.messages.mailbox.Armed("arch-1"); !armed {
+		t.Fatal("the waiter was consumed although nothing was sent")
+	}
+	select {
+	case resp := <-stop:
+		t.Fatalf("waiter answered: %+v", resp)
+	default:
+	}
+	// A record that still cannot be read does not block a bounded
+	// redelivery.
+	lost := f.enqueue("unreadable")
+	f.dispatch()
+	f.expect(lost.ID, domain.AgentMessageHanded, "handed")
+	f.now = f.now.Add(time.Minute)
+	f.service.observeAgentStatusForMessages(agentruntime.Event{ID: "arch-1", Status: agentruntime.StatusIdle})
+	f.dispatch()
+	f.expect(lost.ID, domain.AgentMessagePending, "no waiter armed")
+	claude.confirmErr = errors.New("transcript not found")
+	f.armWaiter("arch-1", "Stop", "")
+	f.dispatch()
+	if got := f.expect(lost.ID, domain.AgentMessageHanded, "handed"); got.Attempts != 2 {
+		t.Fatalf("redelivered despite unreadable record = %+v", got)
+	}
+}
+
+func TestHandedMessageFoundInTheEndedTargetRecordIsNotMoved(t *testing.T) {
+	f := newMessageFixture(t)
+	f.repo.listedSessions = []domain.Session{f.architectSession("arch-1", agentruntime.AgentCodex, "thread-1")}
+	m := f.enqueue("ran before the end")
+	f.dispatch()
+	f.expect(m.ID, domain.AgentMessageHanded, "queued")
+	// The architect session ended, but its rollout on disk holds the receipt.
+	f.adapters[agentruntime.AgentCodex].setReceipt(m.ID, agentruntime.MessageReceipt{Appeared: true, Acknowledged: true})
+	f.repo.listedSessions = []domain.Session{f.architectSession("arch-2", agentruntime.AgentClaude, "native-2")}
+	f.dispatch()
+	if got := f.get(m.ID); got.State != domain.AgentMessageAcknowledged || got.TargetSessionID != "arch-1" || got.Attempts != 1 {
+		t.Fatalf("got = %+v", got)
+	}
+}
+
+func TestRestartReconcilesOpenMessagesAgainstTheRecordBeforeSendingAgain(t *testing.T) {
+	first := newMessageFixture(t)
+	first.repo.listedSessions = []domain.Session{first.architectSession("arch-1", agentruntime.AgentCodex, "thread-1")}
+	codex := first.adapters[agentruntime.AgentCodex]
+	handed := first.enqueue("handed before restart")
+	// Open messages are dispatched oldest first; same-instant rows tie on id.
+	first.now = first.now.Add(time.Second)
+	repended := first.enqueue("repended before restart")
+	first.dispatch()
+	first.expect(handed.ID, domain.AgentMessageHanded, "queued")
+	first.expect(repended.ID, domain.AgentMessagePending, "waiting for the previous message")
+	// The first appears; the second is handed, then lost at the cap and its
+	// redelivery fails on transport, leaving a pending row with one hand-off.
+	codex.setReceipt(handed.ID, agentruntime.MessageReceipt{Appeared: true})
+	first.dispatch()
+	first.expect(repended.ID, domain.AgentMessageHanded, "queued")
+	first.now = first.now.Add(messageHandedCap + time.Second)
+	codex.deliverErr = errors.New("app-server down")
+	first.dispatch()
+	if got := first.expect(repended.ID, domain.AgentMessagePending, "delivery attempt failed"); got.Attempts != 1 {
+		t.Fatalf("before restart = %+v", got)
+	}
+	// Both appeared in the record the old daemon could not read: a third
+	// message is handed and still open at restart.
+	third := first.enqueue("open at restart")
+	codex.deliverErr = nil
+	first.now = first.now.Add(messageRetryBackoff)
+	// The repended one is sent again first (its record still lacks it), then
+	// the third waits behind it.
+	first.dispatch()
+	first.expect(repended.ID, domain.AgentMessageHanded, "queued")
+	first.expect(third.ID, domain.AgentMessagePending, "waiting for the previous message")
+
+	// Restart: a new daemon over the same database, whose lookup now finds
+	// the receipts. Nothing is sent again.
+	second := newMessageFixtureAt(t, first.dbPath)
+	second.now = first.now.Add(time.Minute)
+	second.repo.listedSessions = first.repo.listedSessions
+	restarted := second.adapters[agentruntime.AgentCodex]
+	restarted.setReceipt(repended.ID, agentruntime.MessageReceipt{Appeared: true, Acknowledged: true, RecordedThrough: second.now})
+	if err := second.service.StartMessageDelivery(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(second.service.stopMessageDelivery)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := second.get(repended.ID); got.State == domain.AgentMessageAcknowledged {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := second.get(repended.ID); got.State != domain.AgentMessageAcknowledged || got.Attempts != 2 {
+		t.Fatalf("reconciled = %+v", got)
+	}
+	if got := second.get(handed.ID); got.State != domain.AgentMessageAppeared {
+		t.Fatalf("appeared before restart = %+v", got)
+	}
+	// The third is now delivered once, through the restarted dispatcher.
+	for time.Now().Before(deadline) {
+		if got := second.get(third.ID); got.State == domain.AgentMessageHanded {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := second.get(third.ID); got.State != domain.AgentMessageHanded || got.Attempts != 1 || len(restarted.deliveries()) != 1 || restarted.deliveries()[0].MessageID != third.ID {
+		t.Fatalf("third = %+v deliveries %+v", got, restarted.deliveries())
 	}
 }

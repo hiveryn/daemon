@@ -38,7 +38,13 @@ import (
 //
 // Delivery is effectively once: one message is in flight per target session,
 // identity is stable across retries, and the provider's record is consulted
-// before redelivery. The windows that remain are documented in each adapter's
+// before redelivery — both when deciding that a handed message is lost and
+// again right before sending a previously handed message once more. An
+// absence counts only when the record reaches past the hand-off
+// (MessageReceipt.RecordedThrough); a record that ends before it is stale
+// evidence and waits. Hand-offs are bounded (messageMaxHandoffs): a message
+// that cannot be confirmed after that many is failed visibly rather than sent
+// again. The windows that remain are documented in each adapter's
 // MessageCapability.Coverage.
 
 const (
@@ -60,6 +66,14 @@ const (
 	// messageAckWindow is how long after appearing a message is still checked
 	// for the agent's reply (appeared → acknowledged).
 	messageAckWindow = 10 * time.Minute
+	// messageMaxHandoffs bounds redelivery: a message handed over this many
+	// times without a confirmed receipt is failed with the reason instead of
+	// being sent again. Redelivery recovers a genuinely lost message (a
+	// Claude process killed before running it, a Codex queue row gone); a
+	// message that keeps vanishing from every record the daemon can read is
+	// a receipt-lookup problem, and every further send would reach the
+	// agent as a new copy.
+	messageMaxHandoffs = 3
 )
 
 // messageEndpoint is the per-session OpenCode server reachability minted at
@@ -81,6 +95,9 @@ type messageRuntime struct {
 	idle      map[string]bool
 	idleAt    map[string]time.Time
 	endpoints map[string]messageEndpoint
+	// failures counts consecutive transport failures per message for the
+	// retry backoff; Attempts on the row counts hand-offs only.
+	failures map[string]int
 	// commitChecks reconcile pending_commit rows per kind.
 	commitChecks map[domain.AgentMessageKind]messageCommitCheck
 
@@ -114,6 +131,7 @@ func newMessageRuntime() *messageRuntime {
 		idle:         map[string]bool{},
 		idleAt:       map[string]time.Time{},
 		endpoints:    map[string]messageEndpoint{},
+		failures:     map[string]int{},
 		commitChecks: map[domain.AgentMessageKind]messageCommitCheck{},
 		kick:         make(chan struct{}, 1),
 		stop:         make(chan struct{}),
