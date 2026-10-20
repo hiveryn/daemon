@@ -133,6 +133,8 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/architects/{key}/conclusions", ah.listConclusions)
 	mux.HandleFunc("GET /api/architects/{key}/conclusions/recent", ah.readRecentConclusion)
 	mux.HandleFunc("GET /api/architects/{key}/conclusions/{id}", ah.readConclusion)
+	// Agent messages of the project (delivery state and condition).
+	mux.HandleFunc("GET /api/architects/{key}/messages", ah.listMessages)
 	mux.HandleFunc("GET /api/architects/{key}/tickets", th.list)
 	mux.HandleFunc("POST /api/architects/{key}/tickets", th.create)
 	mux.HandleFunc("GET /api/architects/{key}/tickets/{id}", th.get)

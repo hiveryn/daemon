@@ -125,6 +125,9 @@ type SessionService interface {
 	ReadConclusion(context.Context, string, string) (ArchitectConclusion, error)
 	ReadRecentConclusion(context.Context, string) (ArchitectConclusion, error)
 	ListConclusions(context.Context, string, int) ([]ConclusionSummary, error)
+	// ListAgentMessages returns a project's agent messages (shared
+	// domain/message.go), newest first.
+	ListAgentMessages(context.Context, string) ([]AgentMessage, error)
 	GetSession(context.Context, string) (Session, error)
 	ListSessions(context.Context) ([]Session, error)
 	ListSessionEvents(context.Context, string) ([]SessionEvent, error)

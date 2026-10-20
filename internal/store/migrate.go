@@ -22,6 +22,7 @@ var migrationFiles = []string{
 	"migrations/0008_remote_sessions.sql",
 	"migrations/0009_action_locations_and_artifacts.sql",
 	"migrations/0010_action_preparation.sql",
+	"migrations/0011_agent_messages.sql",
 }
 
 func runMigrations(ctx context.Context, db *sql.DB) error {

@@ -549,6 +549,10 @@ func (f *fakeSessionService) ListConclusions(_ context.Context, key string, limi
 	return nil, nil
 }
 
+func (f *fakeSessionService) ListAgentMessages(context.Context, string) ([]domain.AgentMessage, error) {
+	return nil, nil
+}
+
 func (f *fakeSessionService) GetSession(_ context.Context, id string) (domain.Session, error) {
 	if f.getSessionResult.ID != "" {
 		return f.getSessionResult, nil

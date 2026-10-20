@@ -107,6 +107,9 @@ type Service struct {
 	notifier        notificationPublisher
 	questions       *questionStore
 	questionTimeout time.Duration
+
+	// messages is the agent-message outbox runtime (messages.go).
+	messages *messageRuntime
 }
 
 type eventSubscription struct {
@@ -153,8 +156,11 @@ func New(ctx context.Context, cfg config.Config, configSource config.Source, rep
 	mux.Handle("/claude", receiver.Handler(agentruntime.AgentClaude))
 	mux.Handle("/codex", receiver.Handler(agentruntime.AgentCodex))
 	mux.Handle("/opencode", receiver.Handler(agentruntime.AgentOpenCode))
+	messages := newMessageRuntime()
+	// Claude's asyncRewake waiters long-poll here (see ingest.Mailbox).
+	mux.Handle("/claude/wait", messages.mailbox.Handler())
 
-	return &Service{
+	service := &Service{
 		remoteStop:     make(chan struct{}),
 		remotes:        map[string]*remoteWorker{},
 		logger:         logger,
@@ -171,11 +177,14 @@ func New(ctx context.Context, cfg config.Config, configSource config.Source, rep
 		intents:        newIntentStore(),
 		notifier:       notifierFromConfig(cfg),
 		questions:      newQuestionStore(),
+		messages:       messages,
 		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
 		bridgeCancels:  map[string]func(){},
 		attention:      map[string]*attentionMonitor{},
 		terminalStates: map[string]sessionTerminalState{},
-	}, nil
+	}
+	messages.mailbox.SetObservers(service.waiterArmed, service.waiterGone)
+	return service, nil
 }
 
 func (s *Service) IngestHandler() http.Handler {
@@ -861,6 +870,14 @@ func (s *Service) prepareLaunchSpec(ctx context.Context, session domain.Session,
 	// Claude auto-memory is off unless the variant opts in; agentruntime sets
 	// CLAUDE_CODE_DISABLE_AUTO_MEMORY explicitly, overriding inherited env.
 	startReq.ClaudeAutoMemory = profile.ClaudeAutoMemory
+	// Every local session can receive agent messages (messages.go): Claude
+	// arms its asyncRewake waiters, OpenCode exposes its session server on a
+	// daemon-chosen port, Codex needs nothing at launch.
+	delivery, err := s.messageDeliveryFor(session.ID, agentKind)
+	if err != nil {
+		return agentruntime.LaunchSpec{}, err
+	}
+	startReq.MessageDelivery = delivery
 
 	adapter := s.adapters[agentKind]
 	if _, err := adapter.EnsureSetup(ctx, setupRequestForAgent(adapter, profile.Env)); err != nil {
@@ -1474,8 +1491,29 @@ func (s *Service) concludeTicketSession(ctx context.Context, session domain.Sess
 	if err := s.stopRemote(ctx, session); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
+	// The architect's notice is recorded before the conclusion files are
+	// written and made deliverable only once the ticket is in done, so a
+	// crash in between leaves a pending_commit row reconciled against the
+	// ticket instead of a lost or premature announcement. A denied intent
+	// never reaches this code.
+	notice, err := s.beginTicketConcludedMessage(ctx, session, conclusion)
+	switch {
+	case errors.Is(err, errAgentMessagesNotConfigured):
+		// A Service without the outbox (tests) concludes without a notice;
+		// the daemon always wires one.
+		s.logger.Error("ticket conclusion notice not recorded", "ticket_id", session.ContextID, "error", err)
+	case err != nil:
+		return domain.ConcludeSessionResult{}, fmt.Errorf("record ticket conclusion notice: %w", err)
+	}
 	if _, err := s.tickets.ConcludeTicket(ctx, architect.Path, session.ContextID, conclusion); err != nil {
 		return domain.ConcludeSessionResult{}, err
+	}
+	if notice.ID != "" {
+		if err := s.CommitAgentMessage(ctx, notice.ID); err != nil {
+			// The conclusion is persisted; startup and periodic reconciliation
+			// promote the notice from the ticket on disk.
+			s.logger.Error("commit ticket conclusion notice; reconciliation will promote it", "message_id", notice.ID, "ticket_id", session.ContextID, "error", err)
+		}
 	}
 
 	if err := s.repo.MarkRunCompleted(ctx, run.ID); err != nil {
@@ -1726,6 +1764,7 @@ func (s *Service) cleanupDeletedSession(id string) {
 	s.cancelReceiverBridge(id)
 	s.closeEventSubscribers(id)
 	s.removeSessionTerminalState(id)
+	s.forgetMessageSession(id)
 }
 
 func (s *Service) GetSession(ctx context.Context, id string) (domain.Session, error) {
@@ -2095,6 +2134,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	// a blocked askQuestion gets an honest reply instead of a dropped
 	// connection, and the desktop stops offering an answer nobody would read.
 	s.interruptQuestions(ctx)
+	s.stopMessageDelivery()
 	s.remoteMu.Lock()
 	ids := []string{}
 	for id := range s.remotes {
@@ -2237,6 +2277,7 @@ func (s *Service) handleReceiverEvent(event agentruntime.Event) {
 	}
 
 	s.archiveEvent(event, run)
+	s.observeAgentStatusForMessages(event)
 	if monitor := s.attentionMonitor(event.ID); monitor != nil {
 		monitor.ObserveEvent(event)
 	}

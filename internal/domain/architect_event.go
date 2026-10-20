@@ -22,4 +22,7 @@ const (
 	ArchitectEventTicketConcluded = sd.ArchitectEventTicketConcluded
 	ArchitectEventSessionStarted  = sd.ArchitectEventSessionStarted
 	ArchitectEventSessionEnded    = sd.ArchitectEventSessionEnded
+	// ArchitectEventAgentMessageChanged: an agent message of the project
+	// changed state; clients list messages again.
+	ArchitectEventAgentMessageChanged = sd.ArchitectEventAgentMessageChanged
 )

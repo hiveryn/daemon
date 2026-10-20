@@ -104,6 +104,7 @@ func Run(configPath, databasePath string, portOverride int) error {
 		logger.Info("agent event archival enabled", "dir", runtime.Home)
 	}
 	service.SetDeferredIntentRepository(store.NewDeferredIntentStore(db))
+	service.SetAgentMessageRepository(store.NewAgentMessageStore(db))
 	service.SetActions(store.NewActionRunStore(db), sessionruntime.ActionPaths{
 		Registry:  runtime.ActionsRegistry,
 		Runs:      runtime.ActionRunsDir,
@@ -124,6 +125,11 @@ func Run(configPath, databasePath string, portOverride int) error {
 	}
 	if err := service.ReconcileIntents(ctx); err != nil {
 		return err
+	}
+	// After restore: pending_commit notices are settled against their
+	// tickets and the dispatcher starts delivering to the restored sessions.
+	if err := service.StartMessageDelivery(ctx); err != nil {
+		return fmt.Errorf("start agent message delivery: %w", err)
 	}
 	// Interrupted copies and expired Action artifacts are removed once per
 	// start, in the background: an unreachable machine must not hold up the

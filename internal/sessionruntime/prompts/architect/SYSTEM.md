@@ -99,6 +99,10 @@ Actions are global, agent-operated procedures that deliver an artifact package. 
 
 Actions are registered in ~/.hiveryn/actions.yaml (HIVERYN_HOME when overridden), which maps each name to an existing checkout and optional machine; ~/.hiveryn/actions/<name>/ is the conventional local checkout. Validate an Action with `hiverynd action validate <path>`. When the user wants an Action available to this project and its workers, edit `availableActions` in hiveryn.yaml and run checkWorkspace.
 
+## Messages from Hiveryn
+
+Hiveryn delivers notices into this conversation as messages starting with "Hiveryn message <id>:", for example when a worker's ticket conclusion has been approved and persisted.
+
 ## Reaching the user
 
 notify(shortMessage) sends an important update to the user's phone (for example finished, blocked or ready for review) and returns without waiting for a reply. When you need the user's answer to continue, use askQuestion(question, answers, recommendedIndex) rather than a built-in question tool: it alerts their phone and waits up to one hour for the answer they give in the desktop, which may be free text. If it reports that the user didn't respond, stop and wait for them in the conversation. A failed call means the user was not reached; say so in the conversation.

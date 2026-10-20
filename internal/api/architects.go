@@ -208,6 +208,34 @@ func (h *architectsHandler) listConclusions(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+// listMessages returns the project's agent messages (ticket-conclusion
+// notices and future kinds) with their delivery state and condition.
+func (h *architectsHandler) listMessages(w http.ResponseWriter, r *http.Request) {
+	if h.sessions == nil {
+		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
+		return
+	}
+	cfg, err := currentConfig(h.config, h.configSource)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	key := r.PathValue("key")
+	if _, ok := cfg.Architects[key]; !ok {
+		writeDomainError(w, r, &domain.NotFoundError{Resource: "architect", ID: key})
+		return
+	}
+	messages, err := h.sessions.ListAgentMessages(r.Context(), key)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	if messages == nil {
+		messages = []domain.AgentMessage{}
+	}
+	writeJSON(w, r, http.StatusOK, domain.AgentMessageList{Messages: messages})
+}
+
 func (h *architectsHandler) readRecentConclusion(w http.ResponseWriter, r *http.Request) {
 	if h.sessions == nil {
 		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
