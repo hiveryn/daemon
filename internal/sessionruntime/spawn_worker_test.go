@@ -209,9 +209,34 @@ func TestSpawnTicketWorkerEmptySelectionAndAutoApproval(t *testing.T) {
 	writeWorkflow(t, f.workspace, "SUGGESTED.md", "---\nattach: suggested\nrepos:\n- daemon\n---\n\nSuggested.\n")
 	ticket := f.backlogTicket(t, "No workflows")
 
+	// Policy execution wakes the tool waiter before persisting its resolved
+	// event. Observe that event before the fixture closes SQLite and removes
+	// its files, so cleanup cannot race the final write.
+	sub, err := f.service.SubscribeSessionEvents(context.Background(), f.architect.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+
 	res, err := f.service.RequestSpawnTicketWorker(context.Background(), f.architect.ID, domain.SpawnTicketWorkerRequest{TicketID: ticket.ID, Variant: "codex"})
 	if err != nil || res.Outcome != domain.IntentOutcomeAutoApproved || res.Worker == nil {
 		t.Fatalf("spawn = %+v, %v", res, err)
+	}
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+resolved:
+	for {
+		select {
+		case event := <-sub.C():
+			if event.Type == sessionEventTypeIntent && event.Status == sessionEventStatusResolvd && event.Raw["intent_id"] == res.IntentID {
+				if event.Raw["outcome"] != string(domain.IntentOutcomeAutoApproved) {
+					t.Fatalf("resolved outcome = %v", event.Raw)
+				}
+				break resolved
+			}
+		case <-timer.C:
+			t.Fatal("auto-approval did not persist and publish its resolved event")
+		}
 	}
 	if len(res.Worker.Workflows) != 0 || len(res.Worker.WorkflowPaths) != 0 {
 		t.Fatalf("empty selection gained workflows: %+v", res.Worker)
