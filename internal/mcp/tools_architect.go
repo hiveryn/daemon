@@ -81,10 +81,8 @@ func (s *Server) registerArchitectTools() {
 
 	// Actions: discovery of this architect's availableActions, the
 	// executeAction request (waits for approval) and its result/wait under the
-	// one execution id, plus the architect-only addAvailableAction. Action
-	// agents cannot invoke Actions.
+	// one execution id. Action agents cannot invoke Actions.
 	s.registerAgentActionTools()
-	s.registerAddAvailableActionTool()
 }
 
 func (s *Server) handleReadTicketConclusion(

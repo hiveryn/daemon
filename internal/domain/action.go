@@ -9,33 +9,31 @@ import (
 
 // Re-export the Actions wire types from shared.
 type (
-	ActionProblem             = sd.ActionProblem
-	ActionDefinition          = sd.ActionDefinition
-	ActionList                = sd.ActionList
-	ActionRunStatus           = sd.ActionRunStatus
-	ActionRunTrigger          = sd.ActionRunTrigger
-	ActionRun                 = sd.ActionRun
-	LaunchActionRequest       = sd.LaunchActionRequest
-	LaunchActionResult        = sd.LaunchActionResult
-	ActionConclusionOutcome   = sd.ActionConclusionOutcome
-	ConcludeActionRequest     = sd.ConcludeActionRequest
-	ActionConclusion          = sd.ActionConclusion
-	ActionEvent               = sd.ActionEvent
-	ExecuteActionRequest      = sd.ExecuteActionRequest
-	ExecuteActionResponse     = sd.ExecuteActionResponse
-	AvailableActionList       = sd.AvailableActionList
-	AddAvailableActionRequest = sd.AddAvailableActionRequest
-	AddAvailableActionResult  = sd.AddAvailableActionResult
-	ActionAgentActivity       = sd.ActionAgentActivity
-	ActionAgentAttention      = sd.ActionAgentAttention
-	ActionAttentionState      = sd.ActionAttentionState
-	ActionAttentionSource     = sd.ActionAttentionSource
-	ActionResult              = sd.ActionResult
-	ActionWaitResult          = sd.ActionWaitResult
-	ActionArtifactState       = sd.ActionArtifactState
-	ActionArtifactCopy        = sd.ActionArtifactCopy
-	ActionArtifactLocation    = sd.ActionArtifactLocation
-	ActionArtifacts           = sd.ActionArtifacts
+	ActionProblem           = sd.ActionProblem
+	ActionDefinition        = sd.ActionDefinition
+	ActionList              = sd.ActionList
+	ActionRunStatus         = sd.ActionRunStatus
+	ActionRunTrigger        = sd.ActionRunTrigger
+	ActionRun               = sd.ActionRun
+	LaunchActionRequest     = sd.LaunchActionRequest
+	LaunchActionResult      = sd.LaunchActionResult
+	ActionConclusionOutcome = sd.ActionConclusionOutcome
+	ConcludeActionRequest   = sd.ConcludeActionRequest
+	ActionConclusion        = sd.ActionConclusion
+	ActionEvent             = sd.ActionEvent
+	ExecuteActionRequest    = sd.ExecuteActionRequest
+	ExecuteActionResponse   = sd.ExecuteActionResponse
+	AvailableActionList     = sd.AvailableActionList
+	ActionAgentActivity     = sd.ActionAgentActivity
+	ActionAgentAttention    = sd.ActionAgentAttention
+	ActionAttentionState    = sd.ActionAttentionState
+	ActionAttentionSource   = sd.ActionAttentionSource
+	ActionResult            = sd.ActionResult
+	ActionWaitResult        = sd.ActionWaitResult
+	ActionArtifactState     = sd.ActionArtifactState
+	ActionArtifactCopy      = sd.ActionArtifactCopy
+	ActionArtifactLocation  = sd.ActionArtifactLocation
+	ActionArtifacts         = sd.ActionArtifacts
 )
 
 const (
@@ -205,8 +203,7 @@ type ActionService interface {
 
 	// Architect- and worker-facing, addressed by the calling architect or
 	// ticket session; the project is always the session's, never the caller's
-	// claim. AddAvailableAction is architect-only.
-	AddAvailableAction(ctx context.Context, sessionID string, req AddAvailableActionRequest) (AddAvailableActionResult, error)
+	// claim.
 	AvailableActions(ctx context.Context, sessionID string) (AvailableActionList, error)
 	RequestExecuteAction(ctx context.Context, sessionID string, req ExecuteActionRequest) (ExecuteActionResponse, error)
 	GetActionResult(ctx context.Context, sessionID, executionID string) (ActionResult, error)

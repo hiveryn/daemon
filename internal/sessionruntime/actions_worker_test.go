@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -105,61 +104,5 @@ func TestWorkerRequestsActionsOfItsProject(t *testing.T) {
 	f.endArchitect(t, later)
 	if got := f.result(t, arch.ID, abandoned.ExecutionID); got.Status != domain.ActionRunFailed || got.StartedAt != nil || !strings.Contains(got.Error, "session ended") {
 		t.Fatalf("abandoned = %+v, want failed as never run", got)
-	}
-}
-
-func TestAddAvailableActionIsArchitectOnly(t *testing.T) {
-	f := newActionFixture(t)
-	f.writeValidAction(t, "demo")
-	arch := f.architect(t, "alpha")
-	path := filepath.Join(f.service.cfg.Architects["alpha"].Path, "hiveryn.yaml")
-	if err := os.WriteFile(path, []byte("name: alpha\nrepos:\n    daemon: /tmp/daemon\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-
-	added, err := f.service.AddAvailableAction(ctx, arch.ID, domain.AddAvailableActionRequest{Name: " demo "})
-	if err != nil || !added.Changed || !slices.Equal(added.AvailableActions, []string{"demo"}) {
-		t.Fatalf("add = %+v, %v", added, err)
-	}
-	// A name missing from the library is allowed; discovery reports it.
-	added, err = f.service.AddAvailableAction(ctx, arch.ID, domain.AddAvailableActionRequest{Name: "later"})
-	if err != nil || !slices.Equal(added.AvailableActions, []string{"demo", "later"}) {
-		t.Fatalf("add missing = %+v, %v", added, err)
-	}
-	again, err := f.service.AddAvailableAction(ctx, arch.ID, domain.AddAvailableActionRequest{Name: "demo"})
-	if err != nil || again.Changed || !slices.Equal(again.AvailableActions, []string{"demo", "later"}) {
-		t.Fatalf("repeat = %+v, %v; want unchanged", again, err)
-	}
-	data, _ := os.ReadFile(path)
-	if !strings.Contains(string(data), "daemon: /tmp/daemon") {
-		t.Fatalf("unrelated config lost: %s", data)
-	}
-
-	for _, bad := range []string{"", "Bad Name"} {
-		if _, err := f.service.AddAvailableAction(ctx, arch.ID, domain.AddAvailableActionRequest{Name: bad}); !errors.As(err, new(*domain.ValidationError)) {
-			t.Errorf("name %q err = %v, want validation error", bad, err)
-		}
-	}
-
-	w := f.worker(t, "alpha", "ticket-1")
-	if _, err := f.service.AddAvailableAction(ctx, w.ID, domain.AddAvailableActionRequest{Name: "other"}); !errors.As(err, new(*domain.ValidationError)) {
-		t.Fatalf("worker add err = %v, want validation error", err)
-	}
-	launched := f.launch(t, "demo", "go")
-	if _, err := f.service.AddAvailableAction(ctx, launched.Session.ID, domain.AddAvailableActionRequest{Name: "other"}); !errors.As(err, new(*domain.ValidationError)) {
-		t.Fatalf("action agent add err = %v, want validation error", err)
-	}
-
-	// A config that does not load is reported and left for repair.
-	broken := "name: alpha\nprompts: {}\n"
-	if err := os.WriteFile(path, []byte(broken), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.AddAvailableAction(ctx, arch.ID, domain.AddAvailableActionRequest{Name: "other"}); !errors.As(err, new(*domain.ValidationError)) || !strings.Contains(err.Error(), "repair") {
-		t.Fatalf("broken config err = %v, want validation error asking for repair", err)
-	}
-	if data, _ := os.ReadFile(path); string(data) != broken {
-		t.Fatalf("broken config rewritten: %s", data)
 	}
 }

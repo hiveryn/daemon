@@ -196,25 +196,6 @@ func (h *actionsHandler) events(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// addAvailable is the architect's addAvailableAction: it allows one more
-// Action in the calling architect's own hiveryn.yaml.
-func (h *actionsHandler) addAvailable(w http.ResponseWriter, r *http.Request) {
-	if !h.ready(w, r) {
-		return
-	}
-	var input domain.AddAvailableActionRequest
-	if err := decodeJSON(r, &input); err != nil {
-		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
-		return
-	}
-	result, err := h.actions.AddAvailableAction(r.Context(), r.PathValue("id"), input)
-	if err != nil {
-		writeDomainError(w, r, err)
-		return
-	}
-	writeJSON(w, r, http.StatusOK, result)
-}
-
 // available lists the Actions the calling architect or worker session may
 // request.
 func (h *actionsHandler) available(w http.ResponseWriter, r *http.Request) {

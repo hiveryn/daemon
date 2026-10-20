@@ -62,43 +62,6 @@ func (s *Service) requesterSession(ctx context.Context, sessionID string) (domai
 	}
 }
 
-// AddAvailableAction adds name to the calling architect's own hiveryn.yaml
-// availableActions. Only architect sessions may, and only for their own
-// project. Discovery reflects it at once: the config is reread per request.
-// Whether the library holds the Action is not checked; getAvailableActions
-// reports a missing or invalid definition.
-func (s *Service) AddAvailableAction(ctx context.Context, sessionID string, req domain.AddAvailableActionRequest) (domain.AddAvailableActionResult, error) {
-	session, err := s.repo.GetSession(ctx, sessionID)
-	if err != nil {
-		return domain.AddAvailableActionResult{}, err
-	}
-	if session.SessionType != domain.SessionTypeArchitect {
-		return domain.AddAvailableActionResult{}, &domain.ValidationError{Field: "session_id", Message: "only architect sessions may change availableActions"}
-	}
-	name := strings.TrimSpace(req.Name)
-	if name == "" {
-		return domain.AddAvailableActionResult{}, &domain.ValidationError{Field: "name", Message: "is required"}
-	}
-	if !domain.ValidActionName(name) {
-		return domain.AddAvailableActionResult{}, &domain.ValidationError{Field: "name", Message: fmt.Sprintf("%q is not a valid action name: use lowercase letters, digits, '.', '_' or '-', starting with a letter or digit (at most 64 characters)", name)}
-	}
-	architect, err := s.currentArchitect(session.ArchitectKey)
-	if err != nil {
-		return domain.AddAvailableActionResult{}, err
-	}
-	update, err := config.AddAvailableAction(architect.Path, session.ArchitectKey, name)
-	switch {
-	case errors.Is(err, config.ErrInvalidArchitectConfig):
-		return domain.AddAvailableActionResult{}, &domain.ValidationError{Field: "hiveryn.yaml", Message: err.Error() + " — repair it (see checkWorkspace), then add the Action again"}
-	case errors.Is(err, config.ErrArchitectConfigChanged):
-		return domain.AddAvailableActionResult{}, &domain.ConflictError{Resource: "hiveryn.yaml", Field: "availableActions", Message: err.Error() + "; add the Action again to apply it to the current file"}
-	case err != nil:
-		return domain.AddAvailableActionResult{}, fmt.Errorf("add %q to availableActions of architect %s: %w", name, session.ArchitectKey, err)
-	}
-	s.logger.Info("available action added", "architect", session.ArchitectKey, "action", name, "changed", update.Changed, "session_id", sessionID)
-	return domain.AddAvailableActionResult{Changed: update.Changed, AvailableActions: update.AvailableActions}, nil
-}
-
 // AvailableActions lists the project's configured Actions in config order,
 // each enriched from its registered checkout, with where it runs and the
 // variants eligible there. A configured name that is not registered is listed

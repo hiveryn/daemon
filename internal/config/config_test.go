@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -924,8 +925,9 @@ func TestReloadingSourceKeepsLastValidConfigOnBrokenEdit(t *testing.T) {
 
 	// A valid edit is picked up.
 	writeYAML(t, filepath.Join(architectDir, architectConfigFileName), map[string]any{
-		"name":  "Hiveryn",
-		"repos": map[string]string{"daemon": "/tmp/daemon", "shared": "/tmp/shared"},
+		"name":             "Hiveryn",
+		"repos":            map[string]string{"daemon": "/tmp/daemon", "shared": "/tmp/shared"},
+		"availableActions": []string{"demo-evidence"},
 	})
 	cfg, err := source.Current()
 	if err != nil {
@@ -933,6 +935,9 @@ func TestReloadingSourceKeepsLastValidConfigOnBrokenEdit(t *testing.T) {
 	}
 	if _, ok := cfg.Architects["hiveryn"].Repos["shared"]; !ok {
 		t.Fatalf("expected the valid edit to be served, got repos %v", cfg.Architects["hiveryn"].Repos)
+	}
+	if !slices.Equal(cfg.Architects["hiveryn"].AvailableActions, []string{"demo-evidence"}) {
+		t.Fatalf("expected direct availableActions edit to be served without restart, got %v", cfg.Architects["hiveryn"].AvailableActions)
 	}
 	if status := source.LoadStatus(); status.Error != "" {
 		t.Fatalf("expected clean load status, got %+v", status)
@@ -948,6 +953,9 @@ func TestReloadingSourceKeepsLastValidConfigOnBrokenEdit(t *testing.T) {
 	}
 	if _, ok := cfg.Architects["hiveryn"].Repos["shared"]; !ok {
 		t.Fatalf("expected the last valid config to be served, got repos %v", cfg.Architects["hiveryn"].Repos)
+	}
+	if !slices.Equal(cfg.Architects["hiveryn"].AvailableActions, []string{"demo-evidence"}) {
+		t.Fatalf("expected last valid availableActions after broken edit, got %v", cfg.Architects["hiveryn"].AvailableActions)
 	}
 	status := source.LoadStatus()
 	if status.Error == "" || status.FailedAt == nil {

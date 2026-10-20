@@ -69,6 +69,9 @@ func TestActionLaunchRoutes(t *testing.T) {
 	if rec := do(http.MethodGet, "/api/action-runs?action=demo-evidence&limit=20", ""); rec.Code != http.StatusOK || svc.limit != 20 {
 		t.Fatalf("list status = %d limit %d", rec.Code, svc.limit)
 	}
+	if rec := do(http.MethodPost, "/api/sessions/sess-a/available-actions", `{"name":"demo-evidence"}`); rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("removed available-actions mutation status = %d body %s", rec.Code, rec.Body)
+	}
 }
 
 type fakeConcludeActionService struct {

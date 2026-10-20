@@ -37,43 +37,6 @@ func (s *Server) registerAgentActionTools() {
 	}, s.handleWaitForActionResult)
 }
 
-// registerAddAvailableActionTool is architect-only: workers and Action agents
-// consume the project's availableActions but never change it.
-func (s *Server) registerAddAvailableActionTool() {
-	mcp.AddTool(s.mcpServer, &mcp.Tool{
-		Name:        "addAvailableAction",
-		Description: "Allow one more Action for this project by adding its name to availableActions in this project's hiveryn.yaml. Keeps every existing entry and all other configuration; adding a name that is already listed succeeds without duplicating it (changed=false). Returns the resulting list, which getAvailableActions reflects at once. The name is not checked against the Actions library: getAvailableActions reports a missing or invalid definition. Errors if the name is malformed, hiveryn.yaml does not load (repair it first) or the file was edited concurrently (add it again).",
-	}, s.handleAddAvailableAction)
-}
-
-type AddAvailableActionInput struct {
-	Name string `json:"name" jsonschema:"The Action name: its directory name in the Actions library (required)."`
-}
-
-type AddAvailableActionOutput struct {
-	Changed          bool     `json:"changed" jsonschema:"hiveryn.yaml was changed; false when the name was already listed."`
-	AvailableActions []string `json:"available_actions" jsonschema:"availableActions after the call, in file order."`
-}
-
-func (s *Server) handleAddAvailableAction(
-	ctx context.Context,
-	_ *mcp.CallToolRequest,
-	input AddAvailableActionInput,
-) (*mcp.CallToolResult, AddAvailableActionOutput, error) {
-	name := strings.TrimSpace(input.Name)
-	if name == "" {
-		return nil, AddAvailableActionOutput{}, newValidationError("name", "is required")
-	}
-	var out domain.AddAvailableActionResult
-	if err := s.sessionRequest(ctx, http.MethodPost, "available-actions", domain.AddAvailableActionRequest{Name: name}, &out); err != nil {
-		return nil, AddAvailableActionOutput{}, err
-	}
-	if out.AvailableActions == nil {
-		out.AvailableActions = []string{}
-	}
-	return nil, AddAvailableActionOutput{Changed: out.Changed, AvailableActions: out.AvailableActions}, nil
-}
-
 type GetAvailableActionsInput struct{}
 
 type GetAvailableActionsOutput struct {
