@@ -1,7 +1,6 @@
 # Actions
 
-An Action is a reusable, agent-operated procedure that delivers an artifact
-package. Each one is a Git checkout holding `action.yaml` and `KICKOFF.md`
+An Action is a reusable, agent-operated procedure with optional file delivery. Each one is a Git checkout holding `action.yaml` and `KICKOFF.md`
 (validate one with `hiverynd action validate <path>`), registered under a name
 in the global registry.
 
@@ -46,26 +45,44 @@ Working output directories live in `~/.local/state/hiveryn-actions/runs` there,
 and `HIVERYN_HOME/action-runs` locally. One execution of an Action runs at a
 time, wherever it runs.
 
-## Concluding: the frozen package
+## Preparing and publishing artifacts
 
-A completed conclusion names `delivery_dir`, the absolute path of the folder
-holding the package on the execution machine — normally the output directory
-the execution was given. Before the user sees the conclusion, the daemon checks
-it there: an existing directory (not a symbolic link) containing at least one
-file, only regular files and directories, within the limits. A folder that
-fails is returned to the agent with the reason, so it can fix it and conclude
-again. A failed conclusion takes no folder.
+`artifacts` in action.yaml is optional. Omit it for work without files; when
+present it must be a nonempty delivery contract. Every kickoff requires
+`{{prompt}}`; only Actions declaring artifacts require `{{output_dir}}`.
+The launch contract is frozen on the execution, so later definition edits do
+not change its obligations. Artifact-free runs get no output folder or artifact
+instructions.
 
-On approval the folder is copied into a Hiveryn-managed package on the
-execution machine (`HIVERYN_HOME/action-artifacts/packages/<id>` locally,
-`~/.local/state/hiveryn-actions/artifacts/packages/<id>` remotely), enforcing
-the same rules on every entry, and the execution becomes `completed` only
-together with that ready package. The original folder is left as it is, and
-later changes to it do not reach the package.
+An Action agent calls `deliverArtifacts(path)` to prepare a verified package.
+The absolute folder on its execution machine must be nonempty, contain only
+regular files/directories, and meet package limits. Preparation freezes an
+immutable copy in `action-artifacts/packages/<execution>/<snapshot>` locally,
+or `~/.local/state/hiveryn-actions/artifacts/packages/<execution>/<snapshot>`
+remotely. It does not publish files or end the execution.
+
+Every attempt gets a durable ownership record before copying. A successful
+replacement atomically becomes the current prepared package; a failed one
+preserves the previous snapshot. Replaced snapshots and interrupted attempts
+remain recorded for bounded startup cleanup. Source folders are untouched.
+Prepared packages survive restart/resume while their execution is running.
+
+`concludeSession(summary, outcome)` takes no path or artifact flag. Completed
+requires preparation only when the launch declared artifacts; failed may retain
+a useful partial package or have none. Timed conclusion approval atomically
+publishes the prepared package with the final outcome. Denial leaves the run
+and preparation intact. Approval checks the exact snapshot proposed: replacing
+it while approval is pending requires a fresh conclusion. Overlapping
+preparation, approval execution or cancellation returns a retryable conflict.
+Preparation is bounded at ten minutes, independently of conclusion approval.
+
+Cancellation and launch/resume failure never publish private preparations.
+Abandoned preparations are removed at startup; a running execution's prepared
+package is retained. Older executions retain their historical package records.
 
 ## Delivery to the caller
 
-`getActionResult` and `waitForActionResult` make a completed package available
+`getActionResult` and `waitForActionResult` make an approved package available (including partial artifacts of failed runs)
 on the caller's own machine, determined from the calling session:
 
 - on the execution machine, the package itself;
@@ -76,7 +93,7 @@ on the caller's own machine, determined from the calling session:
 `artifacts.state` reports `ready` (the result's `output_dir` is the path on the
 caller's machine, with `artifacts.expires_at`), `copying` (read again; copies
 continue across calls, bounded at 10 minutes), `failed` (with the cause; the
-next read retries) or `expired`. A partial copy is never at the destination
+next read retries) or `expired`; `none` means no package was delivered, including successful artifact-free work. A partial copy is never at the destination
 path. Delivery never changes the execution's status, and a ready copy is reused.
 
 The Actions window shows each execution's machine, package and delivered copies
@@ -93,7 +110,7 @@ action_packages:
   retention_days: 30       # packages and copies, from completion
 ```
 
-Packages and copies expire `retention_days` after the execution completed;
+Packages and copies expire `retention_days` after the approved conclusion;
 reading them does not extend that. Expired artifacts are reported `expired`
 while the execution, its summary and its records remain.
 

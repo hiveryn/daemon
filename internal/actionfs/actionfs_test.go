@@ -271,7 +271,7 @@ func TestInspectReportsCodedErrorsForAnyPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := strings.Join(diagnosticCodes(def, SeverityError), ",")
-	want := strings.Join([]string{CodeNotGitRepository, CodeDefinitionNameMismatch, CodeArtifactsRequired, CodeSuggestionDuplicate, CodeKickoffMissingOutputDir, CodeKickoffUnknownPlaceholder}, ",")
+	want := strings.Join([]string{CodeNotGitRepository, CodeDefinitionNameMismatch, CodeArtifactsRequired, CodeSuggestionDuplicate, CodeKickoffUnknownPlaceholder}, ",")
 	if def.Valid || got != want || len(def.Problems) != len(def.Diagnostics) {
 		t.Fatalf("codes = %s, want %s; problems %d diagnostics %d", got, want, len(def.Problems), len(def.Diagnostics))
 	}
@@ -325,5 +325,32 @@ func TestRemoteExampleErrorsMatchLocal(t *testing.T) {
 		if local.Valid || remote.Valid || strings.Join(diagnosticCodes(local, SeverityError), ",") != strings.Join(diagnosticCodes(remote, SeverityError), ",") {
 			t.Fatalf("local=%+v remote=%+v", local.Diagnostics, remote.Diagnostics)
 		}
+	}
+}
+
+func TestOptionalArtifactContractLocalAndSSH(t *testing.T) {
+	fake := sshtest.Install(t)
+	for _, tc := range []struct {
+		name, field, kickoff string
+		valid                bool
+	}{
+		{"absent", "", "Handle {{prompt}}.", true},
+		{"empty", "artifacts: ''\n", "Handle {{prompt}}.", false},
+		{"null", "artifacts: null\n", "Handle {{prompt}}.", false},
+		{"map", "artifacts: {file: report}\n", "Handle {{prompt}}.", false},
+		{"promised", "artifacts: report.txt\n", "Handle {{prompt}}.", false},
+		{"output", "artifacts: report.txt\n", "Handle {{prompt}} into {{output_dir}}.", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeAction(t, fake.Home("box"), tc.name, true, map[string]string{"action.yaml": "name: " + tc.name + "\ndescription: Review request\nsuggestions: [Review idea]\n" + tc.field, "KICKOFF.md": tc.kickoff})
+			local, err := Inspect(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			remote := InspectRemote(context.Background(), "box", "box", dir, tc.name)
+			if local.Valid != tc.valid || remote.Valid != tc.valid {
+				t.Fatalf("local %+v remote %+v", local, remote)
+			}
+		})
 	}
 }

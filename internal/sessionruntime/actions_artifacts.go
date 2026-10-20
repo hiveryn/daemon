@@ -11,43 +11,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hiveryn/daemon/internal/actionpkg"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
-// Artifact packages. A completed execution's delivered folder is frozen into
-// a Hiveryn-managed package on the execution machine; callers elsewhere get a
-// verified copy on their own machine. Every managed directory has an
-// ownership record (action_artifacts) written before the directory is
-// created:
-//
-//	snapshot   on approved completion: the delivered folder is copied into
-//	           packages/<id> (actionpkg: regular files and directories only,
-//	           limits enforced per entry, partial copy renamed only once
-//	           verified); the execution is recorded completed together with
-//	           its ready package, so a completed execution always has one
-//	deliver    getActionResult/waitForActionResult from a caller on another
-//	           machine copy the package into deliveries/<id> there, through
-//	           this daemon (a remote-to-remote copy passes through the
-//	           laptop); a caller on the execution machine reads the package
-//	           itself. A copy runs detached and bounded; the tools wait for
-//	           it briefly and report copying meanwhile. A ready copy is reused,
-//	           a failed one retried by the next read. Delivery never changes
-//	           the execution's status
-//	expire     packages and copies expire a retention period after
-//	           completion (reads do not extend it) and are reported expired;
-//	           the execution record and summary stay
-//	cleanup    at daemon startup only, in the background: interrupted copies
-//	           and expired directories are removed with short, bounded
-//	           attempts, failing fast per machine; a failure is logged and
-//	           kept on the record for the next startup. Records without a
-//	           managed root (packages that predate snapshots, at their
-//	           original folder) are never removed, and neither is an agent's
-//	           delivered folder
-//
-// Managed roots: HIVERYN_HOME/action-artifacts locally, and
-// ~/.local/state/hiveryn-actions/artifacts in a remote account.
+// Artifact snapshots are prepared privately by deliverArtifacts and published
+// atomically with approved conclusions. Each attempt has a unique staging key;
+// PrepareActionPackage swaps the current package without losing ownership of
+// replaced snapshots. Retrieval copies published packages to callers. Startup
+// cleanup removes abandoned preparations, retired/interrupted attempts and
+// expired published packages/copies, never the original source folders.
 
 const (
 	// actionDeliveryTimeout bounds one copy to a caller's machine.
@@ -69,6 +44,7 @@ const (
 // never while it is being made, and nothing starts on a record being removed.
 type artifactState struct {
 	mu        sync.Mutex
+	mutations map[string]bool
 	homes     map[string]string
 	active    map[string]int
 	cleaning  map[string]bool // by recordKey
@@ -86,21 +62,6 @@ func transferKey(executionID, machine string) string { return executionID + "\x0
 
 func recordKey(executionID string, kind domain.ActionArtifactKind, machine string) string {
 	return executionID + "\x00" + string(kind) + "\x00" + machine
-}
-
-// begin admits a snapshot of an execution's package unless the package is
-// being cleaned up.
-func (a *artifactState) begin(executionID string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.cleaningPackage(executionID) {
-		return fmt.Errorf("expired artifacts of execution %s are being removed; try again shortly", executionID)
-	}
-	if a.active == nil {
-		a.active = map[string]int{}
-	}
-	a.active[executionID]++
-	return nil
 }
 
 func (a *artifactState) end(executionID string) {
@@ -133,7 +94,7 @@ func (a *artifactState) claimCleanup(rec domain.ActionArtifactRecord) bool {
 	if a.cleaning[key] {
 		return false
 	}
-	if rec.Kind == domain.ActionArtifactPackage && a.active[rec.ExecutionID] > 0 {
+	if rec.Kind != domain.ActionArtifactDelivery && a.active[rec.ExecutionID] > 0 {
 		return false
 	}
 	if _, copying := a.transfers[transferKey(rec.ExecutionID, rec.Machine)]; rec.Kind == domain.ActionArtifactDelivery && copying {
@@ -214,30 +175,22 @@ func artifactLocation(rec domain.ActionArtifactRecord) actionpkg.Location {
 	return actionpkg.Location{Alias: rec.SSH, Path: rec.Path}
 }
 
-// snapshotPackage freezes the delivered folder of a concluding execution into
-// its managed package on the execution machine and returns the ready record,
-// which the caller persists together with the completed status. Its
-// ownership record is written (copying) before the copy starts; a failed
-// snapshot is recorded failed, its partial copy removed, and returned as a
-// ValidationError on delivery_dir when the folder itself is at fault.
+// snapshotPackage writes an owned candidate before copying. Promotion to the
+// current prepared package is a separate atomic store operation; failures here
+// never overwrite the current preparation.
 func (s *Service) snapshotPackage(ctx context.Context, session domain.Session, run domain.ActionRun, deliveryDir string, now time.Time) (domain.ActionArtifactRecord, error) {
 	rt := s.actions
-	if err := rt.artifacts.begin(run.ID); err != nil {
-		return domain.ActionArtifactRecord{}, err
-	}
-	defer rt.artifacts.end(run.ID)
-
-	limits, retention := s.actionPackageSettings()
+	limits, _ := s.actionPackageSettings()
 	root, err := s.artifactsRoot(ctx, run.Machine, session.SSH)
 	if err != nil {
 		return domain.ActionArtifactRecord{}, err
 	}
 	rec := domain.ActionArtifactRecord{
 		ExecutionID: run.ID,
-		Kind:        domain.ActionArtifactPackage,
+		Kind:        domain.ActionArtifactKind("staging:" + uuid.NewString()),
 		Machine:     run.Machine,
 		SSH:         session.SSH,
-		Path:        joinOn(run.Machine, root, "packages", run.ID),
+		Path:        joinOn(run.Machine, root, "packages", run.ID, uuid.NewString()),
 		ManagedRoot: root,
 		State:       domain.ActionArtifactsCopying,
 		CreatedAt:   now,
@@ -258,11 +211,10 @@ func (s *Service) snapshotPackage(ctx context.Context, session domain.Session, r
 		if !errors.As(err, new(*domain.ValidationError)) && !errors.As(err, new(*actionpkg.Error)) {
 			s.logger.Error("action package snapshot failed", "execution_id", run.ID, "delivery_dir", deliveryDir, "package", rec.Path, "machine", run.Machine, "error", err)
 		}
-		return domain.ActionArtifactRecord{}, packageError("delivery_dir", err)
+		return domain.ActionArtifactRecord{}, packageError("path", err)
 	}
 	ready := time.Now().UTC()
-	expires := now.Add(retention)
-	rec.State, rec.Files, rec.Bytes, rec.ReadyAt, rec.ExpiresAt = domain.ActionArtifactsReady, stats.Files, stats.Bytes, &ready, &expires
+	rec.State, rec.Files, rec.Bytes, rec.ReadyAt = domain.ActionArtifactsReady, stats.Files, stats.Bytes, &ready
 	return rec, nil
 }
 
@@ -298,27 +250,30 @@ func effectiveCopy(rec domain.ActionArtifactRecord, now time.Time) domain.Action
 
 // withArtifacts attaches the execution's package and deliveries.
 func (s *Service) withArtifacts(ctx context.Context, run domain.ActionRun, now time.Time) (domain.ActionRun, error) {
+	if run.Status != domain.ActionRunCompleted && (run.Status != domain.ActionRunFailed || run.Summary == "") {
+		return run, nil
+	}
 	recs, err := s.actions.runs.ActionArtifacts(ctx, run.ID)
 	if err != nil {
 		return domain.ActionRun{}, err
 	}
 	for _, rec := range recs {
 		view := effectiveCopy(rec, now)
-		if rec.Kind == domain.ActionArtifactPackage {
+		if rec.Kind == domain.ActionArtifactPackage && rec.State != domain.ActionArtifactsPrepared {
 			run.Package = &view
-		} else {
+		} else if rec.Kind == domain.ActionArtifactDelivery {
 			run.Deliveries = append(run.Deliveries, view)
 		}
 	}
 	return run, nil
 }
 
-// callerArtifacts makes a completed execution's package available on the
+// callerArtifacts makes an approved execution's package available on the
 // caller's machine and reports it, with the path the caller can use when it
 // is ready. It waits up to wait for a copy in progress.
 func (s *Service) callerArtifacts(ctx context.Context, caller domain.Session, run domain.ActionRun, wait time.Duration) (domain.ActionArtifacts, string) {
 	out := domain.ActionArtifacts{State: domain.ActionArtifactsNone}
-	if run.Status != domain.ActionRunCompleted {
+	if run.Status != domain.ActionRunCompleted && (run.Status != domain.ActionRunFailed || run.Summary == "") {
 		return out, ""
 	}
 	rt := s.actions
@@ -327,7 +282,10 @@ func (s *Service) callerArtifacts(ctx context.Context, caller domain.Session, ru
 		out.State, out.Error = domain.ActionArtifactsFailed, err.Error()
 		return out, ""
 	}
-	if pkg == nil {
+	if pkg == nil || pkg.State == domain.ActionArtifactsPrepared {
+		if run.Status == domain.ActionRunCompleted && run.ArtifactContract != "" {
+			out.State, out.Error = domain.ActionArtifactsFailed, "expected artifact package is missing"
+		}
 		return out, ""
 	}
 	out.Source = &domain.ActionArtifactLocation{Machine: pkg.Machine, Path: pkg.Path}
@@ -392,7 +350,7 @@ func (s *Service) artifactRecords(ctx context.Context, executionID, machine stri
 		switch {
 		case recs[i].Kind == domain.ActionArtifactPackage:
 			pkg = &recs[i]
-		case recs[i].Machine == machine:
+		case recs[i].Kind == domain.ActionArtifactDelivery && recs[i].Machine == machine:
 			delivery = &recs[i]
 		}
 	}
@@ -564,7 +522,16 @@ func (s *Service) cleanupMachineArtifacts(ctx context.Context, machine string, r
 			defer rt.artifacts.releaseCleanup(stale)
 			// Reread under the claim: a copy may have finished since the list.
 			rec, ok := s.currentArtifact(ctx, stale)
-			if !ok || !needsCleanup(rec, now) {
+			abandoned := false
+			if rec.State == domain.ActionArtifactsPrepared {
+				run, err := rt.runs.GetActionRun(ctx, rec.ExecutionID)
+				if err != nil {
+					s.logger.Error("check abandoned package", "error", err)
+					return
+				}
+				abandoned = run.Status != domain.ActionRunRunning
+			}
+			if !ok || (!abandoned && !needsCleanup(rec, now)) {
 				return
 			}
 			if unreachable != nil {
@@ -590,7 +557,7 @@ func (s *Service) cleanupMachineArtifacts(ctx context.Context, machine string, r
 			removed++
 			rec.CleanupError = ""
 			switch {
-			case expired(rec, now):
+			case abandoned || expired(rec, now):
 				rec.State = domain.ActionArtifactsExpired
 			case rec.State == domain.ActionArtifactsCopying:
 				rec.State, rec.Error = domain.ActionArtifactsFailed, interruptedCopyError
@@ -626,4 +593,86 @@ func (s *Service) putArtifact(ctx context.Context, rec domain.ActionArtifactReco
 	if err := s.actions.runs.PutActionArtifact(context.WithoutCancel(ctx), rec); err != nil {
 		s.logger.Error("record action artifact cleanup", "execution_id", rec.ExecutionID, "kind", rec.Kind, "error", err)
 	}
+}
+
+// DeliverActionArtifacts prepares an immutable snapshot without publication.
+// Calls are serialized with conclusion/cancel. A failed replacement leaves the
+// current package untouched; each candidate has its own durable cleanup record.
+func (s *Service) DeliverActionArtifacts(ctx context.Context, sessionID, dir string) (domain.ActionArtifactCopy, error) {
+	if _, err := s.actionRuntime(); err != nil {
+		return domain.ActionArtifactCopy{}, err
+	}
+	_, run, err := s.runningActionSession(ctx, sessionID)
+	if err != nil {
+		return domain.ActionArtifactCopy{}, err
+	}
+	if err := s.actions.artifacts.beginMutation(run.ID); err != nil {
+		return domain.ActionArtifactCopy{}, err
+	}
+	defer s.actions.artifacts.endMutation(run.ID)
+	session, run, err := s.runningActionSession(ctx, sessionID)
+	if err != nil {
+		return domain.ActionArtifactCopy{}, err
+	}
+	if run.ArtifactContract == "" {
+		return domain.ActionArtifactCopy{}, &domain.ValidationError{Field: "path", Message: "this Action did not declare artifacts; concludeSession needs only summary and outcome"}
+	}
+	ctx, cancel := context.WithTimeout(ctx, actionDeliveryTimeout)
+	defer cancel()
+	dir, err = s.checkDeliveryDir(ctx, session, strings.TrimSpace(dir))
+	if err != nil {
+		return domain.ActionArtifactCopy{}, err
+	}
+	rec, err := s.snapshotPackage(ctx, session, run, dir, time.Now().UTC())
+	if err != nil {
+		return domain.ActionArtifactCopy{}, err
+	}
+	if err := s.actions.runs.PrepareActionPackage(ctx, rec); err != nil {
+		s.recordFailedCopy(rec, err)
+		return domain.ActionArtifactCopy{}, err
+	}
+	rec.State, rec.ExpiresAt = domain.ActionArtifactsPrepared, nil
+	return rec.Copy(), nil
+}
+
+func (s *Service) preparedPackage(ctx context.Context, run domain.ActionRun, status domain.ActionRunStatus) (*domain.ActionArtifactRecord, error) {
+	pkg, _, err := s.artifactRecords(ctx, run.ID, run.Machine)
+	if err != nil {
+		return nil, err
+	}
+	if pkg != nil && pkg.State == domain.ActionArtifactsPrepared {
+		return pkg, nil
+	}
+	if status == domain.ActionRunCompleted && run.ArtifactContract != "" {
+		return nil, &domain.ValidationError{Field: "outcome", Message: "this Action promises artifacts: call deliverArtifacts(path) with a verified, nonempty package before concludeSession(completed), or conclude failed honestly if the work or delivery could not finish"}
+	}
+	return nil, nil
+}
+
+// beginMutation rejects overlapping preparation/conclusion/cancel rather than
+// holding an approval or user request behind a potentially slow transfer.
+func (a *artifactState) beginMutation(id string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.mutations[id] || a.cleaningPackage(id) {
+		return &domain.ConflictError{Resource: "action_artifacts", Message: "an artifact preparation, conclusion, cancellation or cleanup is in progress; retry after it finishes"}
+	}
+	if a.mutations == nil {
+		a.mutations = map[string]bool{}
+	}
+	if a.active == nil {
+		a.active = map[string]int{}
+	}
+	a.mutations[id] = true
+	a.active[id]++
+	return nil
+}
+func (a *artifactState) endMutation(id string) {
+	a.mu.Lock()
+	delete(a.mutations, id)
+	a.active[id]--
+	if a.active[id] == 0 {
+		delete(a.active, id)
+	}
+	a.mu.Unlock()
 }

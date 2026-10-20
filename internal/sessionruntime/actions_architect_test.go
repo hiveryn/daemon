@@ -342,7 +342,10 @@ func TestExecuteActionWaitsForApprovalThenLaunchesUnderSameID(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(run.OutputDir, "summary.md"), []byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.conclude(t, run.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: run.OutputDir, Summary: "delivered"}); err != nil {
+	if _, err := f.service.DeliverActionArtifacts(context.Background(), run.SessionID, run.OutputDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.conclude(t, run.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "delivered"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -350,7 +353,10 @@ func TestExecuteActionWaitsForApprovalThenLaunchesUnderSameID(t *testing.T) {
 	later := f.architect(t, "alpha", "demo")
 	done := f.result(t, later.ID, pending.ExecutionID)
 	// A local caller reads the frozen package itself, not the agent's folder.
-	pkg := filepath.Join(f.artRoot, "packages", pending.ExecutionID)
+	pkg := done.OutputDir
+	if !strings.HasPrefix(pkg, filepath.Join(f.artRoot, "packages", pending.ExecutionID)+string(os.PathSeparator)) {
+		t.Fatalf("unexpected package path %s", pkg)
+	}
 	if done.Status != domain.ActionRunCompleted || done.Summary != "delivered" || done.OutputDir != pkg || done.EndedAt == nil || done.Activity.Available ||
 		done.Artifacts.State != domain.ActionArtifactsReady || done.Artifacts.ExpiresAt == nil || done.Artifacts.Source == nil || done.Artifacts.Source.Path != pkg {
 		t.Fatalf("completed = %+v", done)
@@ -664,7 +670,10 @@ func TestExecuteActionTeardownAndRestartFailPendingRequests(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(liveRun.OutputDir, "summary.md"), []byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.conclude(t, liveRun.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: liveRun.OutputDir, Summary: "ok"}); err != nil {
+	if _, err := f.service.DeliverActionArtifacts(context.Background(), liveRun.SessionID, liveRun.OutputDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.conclude(t, liveRun.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "ok"}); err != nil {
 		t.Fatal(err)
 	}
 }

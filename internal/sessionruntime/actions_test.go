@@ -151,7 +151,7 @@ func TestLaunchActionStartsRunningExecutionInRepoWithEmptyOutputDir(t *testing.T
 	}
 	// The kickoff carries the exact output path and the caller's prompt
 	// verbatim: placeholder-looking prompt text is not expanded.
-	for _, want := range []string{"Output directory: " + run.OutputDir, "Write everything to " + run.OutputDir, "Run AMS and LDN {{output_dir}} three times", "execution " + run.ID} {
+	for _, want := range []string{"Output directory: " + run.OutputDir, "Write everything to " + run.OutputDir, "Run AMS and LDN {{output_dir}} three times", "Execution: " + run.ID} {
 		if !strings.Contains(req.Prompt, want) {
 			t.Fatalf("kickoff missing %q:\n%s", want, req.Prompt)
 		}
@@ -232,7 +232,7 @@ func TestLaunchActionRejectsInvalidDefinitionWithProblems(t *testing.T) {
 	if !errors.As(err, &validation) {
 		t.Fatalf("err = %v, want validation error", err)
 	}
-	for _, want := range []string{"must equal the registered name", "artifacts is required", "{{prompt}}", "{{output_dir}}", "unknown placeholder {{nope}}"} {
+	for _, want := range []string{"must equal the registered name", "{{prompt}}", "{{output_dir}}", "unknown placeholder {{nope}}"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q missing %q", err, want)
 		}
@@ -270,8 +270,8 @@ func TestConcludeActionCompletesAndRetainsHistory(t *testing.T) {
 	result := f.launch(t, "demo", "go")
 
 	// completed is refused while nothing was delivered.
-	_, err := f.conclude(t, result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: result.Run.OutputDir, Summary: "done"})
-	if err == nil || !strings.Contains(err.Error(), "is empty") {
+	_, err := f.conclude(t, result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "done"})
+	if err == nil || !strings.Contains(err.Error(), "deliverArtifacts") {
 		t.Fatalf("empty-output conclusion err = %v", err)
 	}
 	if _, err := f.conclude(t, result.Session.ID, domain.ConcludeActionRequest{Outcome: "maybe", Summary: "x"}); err == nil {
@@ -284,12 +284,15 @@ func TestConcludeActionCompletesAndRetainsHistory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(result.Run.OutputDir, "summary.md"), []byte("# synthetic\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	run, err := f.conclude(t, result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: result.Run.OutputDir, Summary: "AMS 19.7% vs LDN 8.5%; LDN run 2 recovered."})
+	if _, err := f.service.DeliverActionArtifacts(context.Background(), result.Session.ID, result.Run.OutputDir); err != nil {
+		t.Fatal(err)
+	}
+	run, err := f.conclude(t, result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "AMS 19.7% vs LDN 8.5%; LDN run 2 recovered."})
 	if err != nil {
 		t.Fatalf("conclude: %v", err)
 	}
 	if run.Status != domain.ActionRunCompleted || run.Summary == "" || run.EndedAt == nil || run.OutputDir != result.Run.OutputDir ||
-		run.DeliveryDir != result.Run.OutputDir || run.Package == nil || run.Package.State != domain.ActionArtifactsReady || run.Package.Files != 1 {
+		run.Package == nil || run.Package.State != domain.ActionArtifactsReady || run.Package.Files != 1 {
 		t.Fatalf("concluded run = %+v (package %+v)", run, run.Package)
 	}
 	if _, err := f.sessions.GetSession(ctx, result.Session.ID); !errors.As(err, new(*domain.NotFoundError)) {
@@ -390,7 +393,10 @@ func TestRestartKeepsRestoredExecutionRunningAndFailsOrphans(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(live.Run.OutputDir, "results.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	done, err := f.conclude(t, live.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: live.Run.OutputDir, Summary: "ok"})
+	if _, err := f.service.DeliverActionArtifacts(context.Background(), live.Session.ID, live.Run.OutputDir); err != nil {
+		t.Fatal(err)
+	}
+	done, err := f.conclude(t, live.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "ok"})
 	if err != nil || done.ID != live.Run.ID || done.Status != domain.ActionRunCompleted {
 		t.Fatalf("conclude after restart = %+v, %v", done, err)
 	}
@@ -462,7 +468,10 @@ func TestConcludeActionSurvivesCallerCancellationDuringTeardown(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(result.Run.OutputDir, "summary.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	done := f.startConclude(result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: result.Run.OutputDir, Summary: "ok"})
+	if _, err := f.service.DeliverActionArtifacts(context.Background(), result.Session.ID, result.Run.OutputDir); err != nil {
+		t.Fatal(err)
+	}
+	done := f.startConclude(result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "ok"})
 	id, _ := f.pendingConclusion(t, result.Session.ID, done)
 	ctx, cancel := context.WithCancel(context.Background())
 	f.terminal.onKill = cancel

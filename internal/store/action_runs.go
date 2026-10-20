@@ -24,7 +24,7 @@ const actionRunColumns = `id, action, trigger, status, prompt, profile_name, rep
 	COALESCE(session_id, ''), COALESCE(summary, ''), COALESCE(error, ''),
 	created_at, COALESCE(started_at, ''), COALESCE(ended_at, ''),
 	COALESCE(architect_key, ''), COALESCE(requester_session_id, ''), COALESCE(reason, ''),
-	COALESCE(requester_ticket_id, ''), machine, COALESCE(delivery_dir, '')`
+	COALESCE(requester_ticket_id, ''), machine, COALESCE(delivery_dir, ''), artifact_contract`
 
 func (s *ActionRunStore) CreateActionRun(ctx context.Context, run domain.ActionRun) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -47,13 +47,13 @@ func (s *ActionRunStore) CreateActionRun(ctx context.Context, run domain.ActionR
 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO action_runs (id, action, trigger, status, prompt, profile_name, repo_path, output_dir, session_id, summary, error, created_at, started_at, ended_at,
-		                         architect_key, requester_session_id, reason, requester_ticket_id, machine)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                         architect_key, requester_session_id, reason, requester_ticket_id, machine, artifact_contract)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, run.ID, run.Action, string(run.Trigger), string(run.Status), run.Prompt, run.ProfileName, run.RepoPath, run.OutputDir,
 		nullIfEmpty(run.SessionID), nullIfEmpty(run.Summary), nullIfEmpty(run.Error),
 		formatPreciseTime(run.CreatedAt), nullableTime(run.StartedAt), nullableTime(run.EndedAt),
 		nullIfEmpty(run.ArchitectKey), nullIfEmpty(run.RequesterSessionID), nullIfEmpty(run.Reason), nullIfEmpty(run.RequesterTicketID),
-		run.Machine)
+		run.Machine, run.ArtifactContract)
 	if err != nil {
 		// The partial unique index is the backstop for the check above.
 		if strings.Contains(err.Error(), "UNIQUE constraint failed: action_runs.action") {
@@ -185,9 +185,9 @@ func (s *ActionRunStore) StartActionRun(ctx context.Context, id string, start do
 		return fmt.Errorf("check running execution of action %s: %w", action, err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE action_runs SET status = ?, profile_name = ?, started_at = ?, machine = ?, repo_path = ?, output_dir = ?
+		UPDATE action_runs SET status = ?, profile_name = ?, started_at = ?, machine = ?, repo_path = ?, output_dir = ?, artifact_contract = ?
 		WHERE id = ? AND status = ?
-	`, string(domain.ActionRunRunning), start.ProfileName, formatPreciseTime(start.At), start.Machine, start.RepoPath, start.OutputDir,
+	`, string(domain.ActionRunRunning), start.ProfileName, formatPreciseTime(start.At), start.Machine, start.RepoPath, start.OutputDir, start.ArtifactContract,
 		id, string(domain.ActionRunPendingApproval)); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed: action_runs.action") {
 			return busyActionError(action, "")
@@ -322,7 +322,7 @@ func scanActionRun(row rowScanner) (domain.ActionRun, error) {
 	)
 	if err := row.Scan(&run.ID, &run.Action, &trigger, &status, &run.Prompt, &run.ProfileName, &run.RepoPath, &run.OutputDir,
 		&run.SessionID, &run.Summary, &run.Error, &createdAt, &startedAt, &endedAt,
-		&run.ArchitectKey, &run.RequesterSessionID, &run.Reason, &run.RequesterTicketID, &run.Machine, &run.DeliveryDir); err != nil {
+		&run.ArchitectKey, &run.RequesterSessionID, &run.Reason, &run.RequesterTicketID, &run.Machine, &run.DeliveryDir, &run.ArtifactContract); err != nil {
 		return domain.ActionRun{}, err
 	}
 	run.Trigger = domain.ActionRunTrigger(trigger)
@@ -340,8 +340,11 @@ func scanActionRun(row rowScanner) (domain.ActionRun, error) {
 	return run, nil
 }
 
-func (s *ActionRunStore) CompleteActionRun(ctx context.Context, id, summary, deliveryDir string, pkg domain.ActionArtifactRecord, at time.Time) error {
-	if pkg.ExecutionID != id || pkg.Kind != domain.ActionArtifactPackage || pkg.State != domain.ActionArtifactsReady {
+func (s *ActionRunStore) PublishActionConclusion(ctx context.Context, id string, status domain.ActionRunStatus, summary string, pkg *domain.ActionArtifactRecord, at time.Time) error {
+	if status != domain.ActionRunCompleted && status != domain.ActionRunFailed {
+		return fmt.Errorf("publish action conclusion: invalid outcome %q", status)
+	}
+	if pkg != nil && (pkg.ExecutionID != id || pkg.Kind != domain.ActionArtifactPackage || pkg.State != domain.ActionArtifactsReady) {
 		return fmt.Errorf("complete action run %s: package record must be the execution's ready package", id)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -350,9 +353,9 @@ func (s *ActionRunStore) CompleteActionRun(ctx context.Context, id, summary, del
 	}
 	defer func() { _ = tx.Rollback() }()
 	res, err := tx.ExecContext(ctx, `
-		UPDATE action_runs SET status = ?, summary = ?, delivery_dir = ?, ended_at = ?
+		UPDATE action_runs SET status = ?, summary = ?, ended_at = ?
 		WHERE id = ? AND status = ?
-	`, string(domain.ActionRunCompleted), nullIfEmpty(summary), nullIfEmpty(deliveryDir), formatPreciseTime(at), id, string(domain.ActionRunRunning))
+	`, string(status), nullIfEmpty(summary), formatPreciseTime(at), id, string(domain.ActionRunRunning))
 	if err != nil {
 		return fmt.Errorf("complete action run %s: %w", id, err)
 	}
@@ -370,8 +373,10 @@ func (s *ActionRunStore) CompleteActionRun(ctx context.Context, id, summary, del
 		}
 		return &domain.ConflictError{Resource: "action_run", Field: "status", Message: fmt.Sprintf("action execution %s is %s, not running", id, status)}
 	}
-	if err := putActionArtifact(ctx, tx, pkg); err != nil {
-		return err
+	if pkg != nil {
+		if err := putActionArtifact(ctx, tx, *pkg); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit complete action run tx: %w", err)
@@ -388,7 +393,7 @@ func (s *ActionRunStore) PutActionArtifact(ctx context.Context, rec domain.Actio
 }
 
 func putActionArtifact(ctx context.Context, db execer, rec domain.ActionArtifactRecord) error {
-	if rec.ExecutionID == "" || rec.Path == "" || (rec.Kind != domain.ActionArtifactPackage && rec.Kind != domain.ActionArtifactDelivery) {
+	if rec.ExecutionID == "" || rec.Path == "" || (rec.Kind != domain.ActionArtifactPackage && rec.Kind != domain.ActionArtifactDelivery && !strings.HasPrefix(string(rec.Kind), "staging:")) {
 		return fmt.Errorf("put action artifact: incomplete record %+v", rec)
 	}
 	_, err := db.ExecContext(ctx, `
@@ -416,7 +421,8 @@ func (s *ActionRunStore) ActionArtifactsToClean(ctx context.Context, now time.Ti
 	return s.queryActionArtifacts(ctx, `SELECT `+actionArtifactColumns+` FROM action_artifacts
 		WHERE managed_root != '' AND (
 			state = ? OR (cleanup_error IS NOT NULL AND cleanup_error != '' AND state != ?)
-			OR (state IN (?, ?) AND expires_at IS NOT NULL AND expires_at <= ?))
+			OR (state IN (?, ?) AND expires_at IS NOT NULL AND expires_at <= ?)
+			OR (state = 'prepared' AND execution_id IN (SELECT id FROM action_runs WHERE status != 'running')))
 		ORDER BY machine, execution_id, kind`,
 		string(domain.ActionArtifactsCopying), string(domain.ActionArtifactsExpired),
 		string(domain.ActionArtifactsReady), string(domain.ActionArtifactsFailed), formatPreciseTime(now.UTC()))
@@ -455,4 +461,42 @@ func (s *ActionRunStore) queryActionArtifacts(ctx context.Context, query string,
 		return nil, fmt.Errorf("iterate action artifacts: %w", err)
 	}
 	return out, nil
+}
+
+// PrepareActionPackage atomically swaps the current prepared package. The candidate
+// and replaced package retain ownership records for bounded startup cleanup.
+func (s *ActionRunStore) PrepareActionPackage(ctx context.Context, rec domain.ActionArtifactRecord) error {
+	if !strings.HasPrefix(string(rec.Kind), "staging:") || rec.State != domain.ActionArtifactsReady || rec.Files < 1 {
+		return fmt.Errorf("prepare package: candidate must be a ready nonempty staging snapshot")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin prepare package: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var status string
+	if err := tx.QueryRowContext(ctx, "SELECT status FROM action_runs WHERE id = ?", rec.ExecutionID).Scan(&status); err != nil {
+		return fmt.Errorf("read preparing execution: %w", err)
+	}
+	if status != string(domain.ActionRunRunning) {
+		return &domain.ConflictError{Resource: "action_run", Message: "execution ended during preparation"}
+	}
+	// The old package assumes the candidate's unique cleanup key; the new
+	// package becomes current. All three changes commit together.
+	if _, err := tx.ExecContext(ctx, "DELETE FROM action_artifacts WHERE execution_id = ? AND kind = ? AND machine = ?", rec.ExecutionID, string(rec.Kind), rec.Machine); err != nil {
+		return fmt.Errorf("remove candidate record: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE action_artifacts SET kind = ?, state = 'copying' WHERE execution_id = ? AND kind = 'package'", string(rec.Kind), rec.ExecutionID); err != nil {
+		return fmt.Errorf("retire previous package: %w", err)
+	}
+	rec.Kind = domain.ActionArtifactPackage
+	rec.State = domain.ActionArtifactsPrepared
+	rec.ExpiresAt = nil
+	if err := putActionArtifact(ctx, tx, rec); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit prepared package: %w", err)
+	}
+	return nil
 }

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -108,7 +107,10 @@ func TestActionConclusionWaitsForApprovalAndShowsItsProposal(t *testing.T) {
 	result := f.launch(t, "demo", "go")
 	f.deliver(t, result.Run)
 
-	done := f.startConclude(result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: result.Run.OutputDir, Summary: "  AMS 19.7% vs LDN 8.5%  "})
+	if _, err := f.service.DeliverActionArtifacts(context.Background(), result.Session.ID, result.Run.OutputDir); err != nil {
+		t.Fatal(err)
+	}
+	done := f.startConclude(result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "  AMS 19.7% vs LDN 8.5%  "})
 	id, returned := f.pendingConclusion(t, result.Session.ID, done)
 	if returned != nil {
 		t.Fatalf("conclude returned before approval: %+v", returned)
@@ -184,7 +186,10 @@ func TestActionConclusionDenialKeepsExecutionRunningForFollowUp(t *testing.T) {
 	result := f.launch(t, "demo", "go")
 	f.deliver(t, result.Run)
 
-	done := f.startConclude(result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: result.Run.OutputDir, Summary: "first pass"})
+	if _, err := f.service.DeliverActionArtifacts(context.Background(), result.Session.ID, result.Run.OutputDir); err != nil {
+		t.Fatal(err)
+	}
+	done := f.startConclude(result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "first pass"})
 	id, _ := f.pendingConclusion(t, result.Session.ID, done)
 	if err := f.service.DenyIntent(ctx, result.Session.ID, id, "also compare FRA"); err != nil {
 		t.Fatalf("deny: %v", err)
@@ -195,33 +200,51 @@ func TestActionConclusionDenialKeepsExecutionRunningForFollowUp(t *testing.T) {
 	}
 	f.requireRunning(t, result)
 
+	pkg, _, err := f.service.artifactRecords(ctx, result.Run.ID, "")
+	if err != nil || pkg == nil || pkg.State != domain.ActionArtifactsPrepared {
+		t.Fatalf("denial lost package: %+v %v", pkg, err)
+	}
+	visible, err := f.service.GetActionRun(ctx, result.Run.ID)
+	if err != nil || visible.Package != nil {
+		t.Fatalf("denial published package: %+v %v", visible, err)
+	}
+
 	// The agent follows up and proposes a new conclusion, which applies.
-	run, err := f.conclude(t, result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: result.Run.OutputDir, Summary: "AMS, LDN and FRA compared"})
+	if _, err := f.service.DeliverActionArtifacts(context.Background(), result.Session.ID, result.Run.OutputDir); err != nil {
+		t.Fatal(err)
+	}
+	run, err := f.conclude(t, result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "AMS, LDN and FRA compared"})
 	if err != nil || run.Status != domain.ActionRunCompleted || run.Summary != "AMS, LDN and FRA compared" {
 		t.Fatalf("follow-up conclusion = %+v, %v", run, err)
 	}
 }
 
-func TestActionConclusionRechecksDeliveryWhenApplied(t *testing.T) {
+func TestActionConclusionUsesFrozenPackageDespiteSourceRemoval(t *testing.T) {
 	f := newActionFixture(t)
 	f.writeValidAction(t, "demo")
 	ctx := context.Background()
 	result := f.launch(t, "demo", "go")
 	f.deliver(t, result.Run)
 
-	done := f.startConclude(result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: result.Run.OutputDir, Summary: "done"})
+	if _, err := f.service.DeliverActionArtifacts(context.Background(), result.Session.ID, result.Run.OutputDir); err != nil {
+		t.Fatal(err)
+	}
+	done := f.startConclude(result.Session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "done"})
 	id, _ := f.pendingConclusion(t, result.Session.ID, done)
 	if err := os.Remove(filepath.Join(result.Run.OutputDir, "summary.md")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.ApproveIntent(ctx, result.Session.ID, id, nil); err == nil || !strings.Contains(err.Error(), "is empty") {
-		t.Fatalf("approve err = %v, want the empty output refused", err)
+	if _, err := f.service.ApproveIntent(ctx, result.Session.ID, id, nil); err != nil {
+		t.Fatal(err)
 	}
 	call := awaitConclude(t, done)
-	if call.err != nil || call.res.Outcome != domain.IntentOutcomeError || !strings.Contains(call.res.Reason, "is empty") {
-		t.Fatalf("conclusion = %+v, %v; want an error outcome", call.res, call.err)
+	if call.err != nil || call.res.Outcome != domain.IntentOutcomeApproved {
+		t.Fatalf("conclusion = %+v, %v", call.res, call.err)
 	}
-	f.requireRunning(t, result)
+	if got := readFile(t, filepath.Join(call.res.Result.Package.Path, "summary.md")); got != "ok" {
+		t.Fatalf("snapshot = %s", got)
+	}
+
 }
 
 func TestActionConclusionPendingWhenCancelledEndsTheRequest(t *testing.T) {
@@ -262,7 +285,10 @@ func TestArchitectSeesNoFinalResultWhileActionConclusionIsPending(t *testing.T) 
 	run, _ := f.service.GetActionRun(ctx, pending.ExecutionID)
 	f.deliver(t, run)
 
-	done := f.startConclude(run.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, DeliveryDir: run.OutputDir, Summary: "delivered"})
+	if _, err := f.service.DeliverActionArtifacts(context.Background(), run.SessionID, run.OutputDir); err != nil {
+		t.Fatal(err)
+	}
+	done := f.startConclude(run.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "delivered"})
 	id, _ := f.pendingConclusion(t, run.SessionID, done)
 
 	if got := f.result(t, arch.ID, pending.ExecutionID); got.Status != domain.ActionRunRunning || got.Summary != "" || got.EndedAt != nil {

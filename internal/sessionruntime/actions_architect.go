@@ -411,10 +411,14 @@ func (s *Service) startRequestedAction(ctx context.Context, executionID, archite
 		return fail(err)
 	}
 	now := time.Now().UTC()
-	start := domain.ActionRunStart{ProfileName: variant, Machine: loc.machine, RepoPath: loc.path, OutputDir: outputDir, At: now}
+	if def.Artifacts == "" {
+		outputDir = ""
+	}
+	start := domain.ActionRunStart{ArtifactContract: def.Artifacts, ProfileName: variant, Machine: loc.machine, RepoPath: loc.path, OutputDir: outputDir, At: now}
 	if err := rt.runs.StartActionRun(ctx, executionID, start); err != nil {
 		return fail(err)
 	}
+	run.ArtifactContract = def.Artifacts
 	run.Status = domain.ActionRunRunning
 	run.ProfileName = variant
 	run.StartedAt = &now

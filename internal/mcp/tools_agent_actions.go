@@ -28,7 +28,7 @@ func (s *Server) registerAgentActionTools() {
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "getActionResult",
-		Description: "Read the current state of an execution this project requested, by execution_id: pending_approval (not started), denied (with the user's reason), running (with started time, elapsed seconds, the agent's last reported activity when known, and its attention), completed (with the agent's summary and its artifact package) or failed (with the error or the agent's summary). For completed, artifacts.state says whether the package is available on your machine: ready (output_dir is its path here, usable until artifacts.expires_at), copying (it is being copied here — call again), failed (the copy failed: artifacts.error says why, and calling again retries it; the execution itself still completed) or expired (the retention period ended; the summary remains). Copying happens automatically, waiting briefly before reporting copying. attention.state is input_required when an explicit provider signal shows the Action agent waiting for the user at its terminal (for example a folder-trust dialog or an interrupted conversation after a restart; message says what it asks), none_detected when no such signal is present — which does not prove it is not waiting, see attention.coverage — or unavailable when it is not running. The execution stays running either way; only the user can answer, by opening the execution's terminal in the Actions window, so tell them what the agent is asking instead of waiting repeatedly. Returns immediately.",
+		Description: "Read the current state of an execution this project requested, by execution_id: pending_approval (not started), denied (with the user's reason), running (with started time, elapsed seconds, the agent's last reported activity when known, and its attention), completed (with the agent's summary and its artifact package) or failed (with the error or the agent's summary). For completed or failed with partial results, artifacts.state says whether the package is available on your machine: none (no package was delivered; artifact-free completion is valid), ready (output_dir is its path here, usable until artifacts.expires_at), copying (it is being copied here — call again), failed (the copy failed: artifacts.error says why, and calling again retries it; the execution itself still completed) or expired (the retention period ended; the summary remains). Copying happens automatically, waiting briefly before reporting copying. attention.state is input_required when an explicit provider signal shows the Action agent waiting for the user at its terminal (for example a folder-trust dialog or an interrupted conversation after a restart; message says what it asks), none_detected when no such signal is present — which does not prove it is not waiting, see attention.coverage — or unavailable when it is not running. The execution stays running either way; only the user can answer, by opening the execution's terminal in the Actions window, so tell them what the agent is asking instead of waiting repeatedly. Returns immediately.",
 	}, s.handleGetActionResult)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
@@ -130,7 +130,7 @@ var actionGuidance = map[domain.ActionRunStatus]string{
 var artifactGuidance = map[domain.ActionArtifactState]string{
 	domain.ActionArtifactsReady:   " The artifact package is on your machine in `output_dir` (a frozen copy; it is removed after `artifacts.expires_at`); read the artifacts there.",
 	domain.ActionArtifactsCopying: " The artifact package is still being copied to your machine: call waitForActionResult (or getActionResult) again for `output_dir`.",
-	domain.ActionArtifactsFailed:  " Copying the artifact package to your machine failed (`artifacts.error`). The execution still completed — do not request it again; call getActionResult again to retry the copy, and tell the user if it keeps failing.",
+	domain.ActionArtifactsFailed:  " Copying the artifact package to your machine failed (`artifacts.error`). The execution outcome is unchanged — do not request it again; call getActionResult again to retry the copy, and tell the user if it keeps failing.",
 	domain.ActionArtifactsExpired: " Its artifact package expired and was removed; only `summary` remains. Request the Action again if you need the artifacts.",
 	domain.ActionArtifactsNone:    " It has no artifact package.",
 }
@@ -140,7 +140,7 @@ func actionResultGuidance(result domain.ActionResult) (string, error) {
 	if !ok {
 		return "", newInternalError(fmt.Sprintf("daemon returned unknown action status %q", result.Status))
 	}
-	if result.Status == domain.ActionRunCompleted {
+	if result.Status == domain.ActionRunCompleted || result.Status == domain.ActionRunFailed {
 		extra, ok := artifactGuidance[result.Artifacts.State]
 		if !ok {
 			return "", newInternalError(fmt.Sprintf("daemon returned unknown artifact state %q", result.Artifacts.State))

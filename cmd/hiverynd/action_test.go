@@ -77,7 +77,7 @@ func TestActionValidateErrorsFail(t *testing.T) {
 	for _, d := range report.Diagnostics {
 		codes = append(codes, d.Code)
 	}
-	if code != exitFailed || report.Valid || report.Passed || strings.Join(codes, ",") != "DEFINITION_INVALID_YAML,KICKOFF_MISSING_OUTPUT_DIR" {
+	if code != exitFailed || report.Valid || report.Passed || strings.Join(codes, ",") != "DEFINITION_INVALID_YAML" {
 		t.Fatalf("code %d report %+v", code, report)
 	}
 	if !strings.Contains(report.Diagnostics[0].Message, "field extra not found") {

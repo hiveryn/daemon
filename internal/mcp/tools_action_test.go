@@ -28,7 +28,7 @@ func TestActionSessionRegistersOnlyActionTools(t *testing.T) {
 		got = append(got, name)
 	}
 	sort.Strings(got)
-	if strings.Join(got, ",") != "askQuestion,concludeSession,notify,readRecentConclusions" {
+	if strings.Join(got, ",") != "askQuestion,concludeSession,deliverArtifacts,notify,readRecentConclusions" {
 		t.Fatalf("action tools = %v", got)
 	}
 
@@ -44,6 +44,12 @@ func TestActionToolsCallSessionScopedEndpoints(t *testing.T) {
 	var concluded domain.ConcludeActionRequest
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
+		case "POST /api/sessions/sess-action/action/artifacts":
+			var input DeliverArtifactsInput
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.Path != "/out/run-2" {
+				t.Errorf("prepare request = %+v, %v", input, err)
+			}
+			writeEnvelope(t, w, http.StatusOK, domain.ActionArtifactCopy{Path: "/pkg/run-2", State: domain.ActionArtifactsPrepared, Files: 1, Bytes: 42})
 		case "GET /api/sessions/sess-action/action/conclusions":
 			writeEnvelope(t, w, http.StatusOK, map[string]any{"conclusions": []domain.ActionConclusion{{ExecutionID: "run-1", Status: domain.ActionRunCompleted, Summary: "ok", EndedAt: &ended}}})
 		case "POST /api/sessions/sess-action/intents/conclude-action":
@@ -69,6 +75,10 @@ func TestActionToolsCallSessionScopedEndpoints(t *testing.T) {
 	if err != nil || len(history.Conclusions) != 1 || history.Conclusions[0].ExecutionID != "run-1" {
 		t.Fatalf("history = %+v, %v", history, err)
 	}
+	_, prepared, err := server.handleDeliverArtifacts(context.Background(), nil, DeliverArtifactsInput{Path: "/out/run-2"})
+	if err != nil || prepared.State != domain.ActionArtifactsPrepared || prepared.Path != "/pkg/run-2" {
+		t.Fatalf("preparation = %+v, %v", prepared, err)
+	}
 	if _, _, err := server.handleConcludeAction(context.Background(), nil, ConcludeActionInput{Outcome: "done", Summary: "x"}); err == nil {
 		t.Fatal("invalid outcome accepted")
 	}
@@ -77,11 +87,11 @@ func TestActionToolsCallSessionScopedEndpoints(t *testing.T) {
 	if err != nil || denied.Outcome != "denied_by_user" || denied.Reason != "add FRA" || denied.Guidance == "" || denied.ExecutionID != "" {
 		t.Fatalf("denied conclude = %+v, %v", denied, err)
 	}
-	_, out, err := server.handleConcludeAction(context.Background(), nil, ConcludeActionInput{Outcome: "completed", Summary: "delivered", DeliveryDir: "/out/run-2"})
+	_, out, err := server.handleConcludeAction(context.Background(), nil, ConcludeActionInput{Outcome: "completed", Summary: "delivered"})
 	if err != nil || out.Outcome != "auto_approved" || out.ExecutionID != "run-2" || out.Status != "completed" || out.PackageDir != "/pkg/run-2" {
 		t.Fatalf("conclude = %+v, %v", out, err)
 	}
-	if concluded.Outcome != domain.ActionConclusionCompleted || concluded.Summary != "delivered" || concluded.DeliveryDir != "/out/run-2" {
+	if concluded.Outcome != domain.ActionConclusionCompleted || concluded.Summary != "delivered" {
 		t.Fatalf("daemon received %+v", concluded)
 	}
 }

@@ -62,11 +62,12 @@ const (
 	ActionAttentionSourceHook     = sd.ActionAttentionSourceHook
 	ActionAttentionSourceTerminal = sd.ActionAttentionSourceTerminal
 
-	ActionArtifactsNone    = sd.ActionArtifactsNone
-	ActionArtifactsCopying = sd.ActionArtifactsCopying
-	ActionArtifactsReady   = sd.ActionArtifactsReady
-	ActionArtifactsFailed  = sd.ActionArtifactsFailed
-	ActionArtifactsExpired = sd.ActionArtifactsExpired
+	ActionArtifactsPrepared = sd.ActionArtifactsPrepared
+	ActionArtifactsNone     = sd.ActionArtifactsNone
+	ActionArtifactsCopying  = sd.ActionArtifactsCopying
+	ActionArtifactsReady    = sd.ActionArtifactsReady
+	ActionArtifactsFailed   = sd.ActionArtifactsFailed
+	ActionArtifactsExpired  = sd.ActionArtifactsExpired
 
 	MaxActionSummaryLength         = sd.MaxActionSummaryLength
 	MaxActionWaitSeconds           = sd.MaxActionWaitSeconds
@@ -91,7 +92,8 @@ const (
 // artifact directory, written before the directory is created so that
 // interrupted copies and expired directories can always be found and removed.
 // It is keyed by (ExecutionID, Kind, Machine): one package per execution, one
-// delivery per caller machine. SSH is the alias used to reach Machine when
+// delivery per caller machine, plus staging:<uuid> records for candidate and
+// retired snapshots. SSH is the alias used to reach Machine when
 // the record was written. ManagedRoot is the managed directory Path lives in;
 // empty means Path is not Hiveryn's to remove (a package delivered before
 // frozen packages existed, kept at its original folder). A nil ExpiresAt
@@ -144,10 +146,10 @@ type ActionRunRepository interface {
 	// action is running (the single-run rule) or the request is no longer
 	// pending.
 	StartActionRun(ctx context.Context, id string, start ActionRunStart) error
-	// CompleteActionRun moves a running execution to completed together with
-	// its ready package record, in one step: an execution is never completed
-	// without its package. It is a ConflictError when it is no longer running.
-	CompleteActionRun(ctx context.Context, id, summary, deliveryDir string, pkg ActionArtifactRecord, at time.Time) error
+	// PublishActionConclusion records the approved final outcome and optional
+	// ready package atomically; preparation never publishes a package.
+	PublishActionConclusion(ctx context.Context, id string, status ActionRunStatus, summary string, pkg *ActionArtifactRecord, at time.Time) error
+	PrepareActionPackage(ctx context.Context, rec ActionArtifactRecord) error
 	// EndPendingActionRun moves a pending_approval request to denied (reason:
 	// the user's) or failed (errText: why it never started). It is a
 	// ConflictError when the request is no longer pending.
@@ -172,11 +174,12 @@ type ActionRunRepository interface {
 // ActionRunStart is what an approved request becomes when it starts: the
 // variant and the execution location resolved at approval.
 type ActionRunStart struct {
-	ProfileName string
-	Machine     string
-	RepoPath    string
-	OutputDir   string
-	At          time.Time
+	ArtifactContract string
+	ProfileName      string
+	Machine          string
+	RepoPath         string
+	OutputDir        string
+	At               time.Time
 }
 
 type ActionEventSubscription interface {
@@ -196,6 +199,7 @@ type ActionService interface {
 	SubscribeActionEvents() ActionEventSubscription
 
 	// Agent-facing, addressed by the calling action session.
+	DeliverActionArtifacts(ctx context.Context, sessionID, path string) (ActionArtifactCopy, error)
 	ConcludeAction(ctx context.Context, sessionID string, req ConcludeActionRequest) (IntentResolution[ActionRun], error)
 	RecentActionConclusions(ctx context.Context, sessionID string) ([]ActionConclusion, error)
 

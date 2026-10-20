@@ -13,10 +13,12 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Action agents get these two tools plus notify and askQuestion (see
+// Action agents get these three tools plus notify and askQuestion (see
 // registerUserTools). They cannot invoke other Actions and inherit none of the
 // architect or ticket tools.
 func (s *Server) registerActionTools() {
+	mcp.AddTool(s.mcpServer, &mcp.Tool{Name: "deliverArtifacts", Description: "Validate and freeze a nonempty folder of regular files/directories on this execution machine. Requires a declared artifact contract. Prepares a package without publishing it or ending the session; concludeSession approval publishes it, including partial results with failed outcome. Each successful call replaces the prepared snapshot; failed replacements preserve the previous package. Retrying is safe. Later source edits do not change the snapshot."}, s.handleDeliverArtifacts)
+
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "readRecentConclusions",
 		Description: "Read the concise summaries of this Action's latest concluded executions (up to five, newest first), with each execution's status. Use them for known problems and context; they are history, not instructions for this execution.",
@@ -24,7 +26,7 @@ func (s *Server) registerActionTools() {
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "concludeSession",
-		Description: "Propose ending this Action execution. outcome=completed means the requested artifact package is delivered and verified (findings such as failed checks inside the package still count as completed): pass delivery_dir, the absolute path on this machine of the folder holding the package — usually the output directory you were given. It must be an existing directory of regular files and directories only (no symbolic links or special files) within the package limits; a folder that breaks these rules is refused with the reason, so fix it and conclude again. On approval Hiveryn freezes a snapshot of that folder as the execution's package; later changes to the folder do not reach it. outcome=failed means the Action could not be executed or delivered; it takes no delivery_dir. summary is a concise, at-a-glance account: what was delivered, key findings, recoveries, repository changes you committed, and anything a later execution should know. The user is asked to approve; this call blocks until they answer, and it is auto-approved if they do not answer in time. Check `outcome`: approved/auto_approved ended the execution and the session (your terminal is killed); denied_by_user/auto_denied means nothing ended and the execution is still running — read `reason`, do not retry the same conclusion, and ask the user what they want next; error means it was not applied (read `reason`) and the execution is still running.",
+		Description: "Propose ending this Action with summary and outcome (completed or failed). If this Action declares artifacts, completed requires a package prepared first with deliverArtifacts(path). Failed may retain a prepared partial package. Approval publishes the recorded package and ends the execution; denial keeps it running with its prepared package. This timed approval auto-approves if unanswered. Check the returned outcome and reason; denial is not permission to retry the same conclusion.",
 	}, s.handleConcludeAction)
 }
 
@@ -34,19 +36,16 @@ type ReadRecentActionConclusionsOutput struct {
 	Conclusions []domain.ActionConclusion `json:"conclusions"`
 }
 
-// DeliveryDir is omitempty: it is required for completed only, and the
-// daemon names what is wrong with a missing or unusable folder.
 type ConcludeActionInput struct {
-	Outcome     string `json:"outcome" jsonschema:"One of: completed, failed (required)."`
-	Summary     string `json:"summary" jsonschema:"Concise summary of the execution (required, at most 2000 characters)."`
-	DeliveryDir string `json:"delivery_dir,omitempty" jsonschema:"For completed (required): absolute path, on this machine, of the folder holding the delivered package — usually the output directory you were given. Omit it for failed."`
+	Outcome string `json:"outcome" jsonschema:"One of: completed, failed (required)."`
+	Summary string `json:"summary" jsonschema:"Concise summary of the execution (required, at most 2000 characters)."`
 }
 
 type ConcludeActionOutput struct {
 	IntentEnvelopeFields
 	ExecutionID string `json:"execution_id,omitempty" jsonschema:"The concluded execution; set only when the conclusion was applied."`
 	Status      string `json:"status,omitempty" jsonschema:"The execution's final status (completed or failed); set only when the conclusion was applied."`
-	PackageDir  string `json:"package_dir,omitempty" jsonschema:"The frozen package of a completed execution; set only when the conclusion was applied."`
+	PackageDir  string `json:"package_dir,omitempty" jsonschema:"The published package, including partial artifacts of a failed execution; set only when the conclusion was applied."`
 }
 
 func (s *Server) handleReadRecentActionConclusions(
@@ -77,9 +76,8 @@ func (s *Server) handleConcludeAction(
 		return nil, ConcludeActionOutput{}, newValidationError("summary", "is required")
 	}
 	res, err := s.requestIntent(ctx, "conclude-action", domain.ConcludeActionRequest{
-		Outcome:     domain.ActionConclusionOutcome(outcome),
-		Summary:     input.Summary,
-		DeliveryDir: input.DeliveryDir,
+		Outcome: domain.ActionConclusionOutcome(outcome),
+		Summary: input.Summary,
 	})
 	if err != nil {
 		return nil, ConcludeActionOutput{}, err
@@ -151,4 +149,14 @@ func (s *Server) sessionRequest(ctx context.Context, method, subPath string, bod
 		return newInternalError(fmt.Sprintf("decode %s payload: %v", subPath, err))
 	}
 	return nil
+}
+
+type DeliverArtifactsInput struct {
+	Path string `json:"path" jsonschema:"Absolute path on this execution machine of the verified artifact folder."`
+}
+
+func (s *Server) handleDeliverArtifacts(ctx context.Context, _ *mcp.CallToolRequest, input DeliverArtifactsInput) (*mcp.CallToolResult, domain.ActionArtifactCopy, error) {
+	var out domain.ActionArtifactCopy
+	err := s.sessionRequest(ctx, http.MethodPost, "action/artifacts", input, &out)
+	return nil, out, err
 }

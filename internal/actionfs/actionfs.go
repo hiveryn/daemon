@@ -9,7 +9,7 @@
 //
 //	<checkout>/.git          the action is a Git repository
 //	<checkout>/action.yaml   name (== the registered name), description,
-//	                         artifacts and required suggestions
+//	                         optional artifacts and required suggestions
 //	                         (example invocation prompts); no other key
 //	<checkout>/KICKOFF.md    launch instructions containing {{prompt}} and
 //	                         {{output_dir}}; no other {{...}} placeholder
@@ -121,10 +121,10 @@ type Definition struct {
 }
 
 type manifest struct {
-	Name        string   `yaml:"name"`
-	Description string   `yaml:"description"`
-	Artifacts   string   `yaml:"artifacts"`
-	Suggestions []string `yaml:"suggestions"`
+	Name        string    `yaml:"name"`
+	Description string    `yaml:"description"`
+	Artifacts   yaml.Node `yaml:"artifacts"`
+	Suggestions []string  `yaml:"suggestions"`
 }
 
 // fileRead is one definition file as read from a checkout: its content, or
@@ -316,13 +316,19 @@ func inspect(dir, dirName string, files checkoutFiles, join func(...string) stri
 		decoder.KnownFields(true)
 		if err := decoder.Decode(&m); err != nil {
 			if errors.Is(err, io.EOF) {
-				problem(manifestPath, CodeDefinitionEmpty, "file is empty; required keys: name, description, artifacts, suggestions")
+				problem(manifestPath, CodeDefinitionEmpty, "file is empty; required keys: name, description, suggestions")
 			} else {
 				problem(manifestPath, CodeDefinitionInvalidYAML, "invalid YAML (allowed keys: name, description, artifacts, suggestions): %v", err)
 			}
 		} else {
 			def.Description = strings.TrimSpace(m.Description)
-			def.Artifacts = strings.TrimSpace(m.Artifacts)
+			if m.Artifacts.Kind != 0 {
+				if m.Artifacts.Kind != yaml.ScalarNode || m.Artifacts.Tag != "!!str" {
+					problem(manifestPath, CodeArtifactsRequired, "artifacts must be a nonempty string when declared; omit it for no files")
+				} else {
+					def.Artifacts = strings.TrimSpace(m.Artifacts.Value)
+				}
+			}
 			switch name := strings.TrimSpace(m.Name); {
 			case name == "":
 				problem(manifestPath, CodeDefinitionNameRequired, "name is required and must equal the registered name %q", dirName)
@@ -332,8 +338,8 @@ func inspect(dir, dirName string, files checkoutFiles, join func(...string) stri
 			if def.Description == "" {
 				problem(manifestPath, CodeDescriptionRequired, "description is required: say what the action does and what the caller's prompt must contain")
 			}
-			if def.Artifacts == "" {
-				problem(manifestPath, CodeArtifactsRequired, "artifacts is required: describe the delivered artifact package")
+			if m.Artifacts.Kind != 0 && def.Artifacts == "" {
+				problem(manifestPath, CodeArtifactsRequired, "artifacts must be nonempty when declared; omit it for an Action without files")
 			}
 			var findings []finding
 			def.Suggestions, findings = suggestions(m.Suggestions)
@@ -348,7 +354,7 @@ func inspect(dir, dirName string, files checkoutFiles, join func(...string) stri
 		problem(kickoffPath, f.code, "%s", f.message)
 	} else {
 		def.Kickoff = string(files.kickoff.data)
-		for _, f := range kickoffProblems(def.Kickoff) {
+		for _, f := range kickoffProblems(def.Kickoff, def.Artifacts != "") {
 			problem(kickoffPath, f.code, "%s", f.message)
 		}
 	}
@@ -394,7 +400,7 @@ func suggestions(raw []string) ([]string, []finding) {
 	return out, problems
 }
 
-func kickoffProblems(kickoff string) []finding {
+func kickoffProblems(kickoff string, delivers ...bool) []finding {
 	var problems []finding
 	if strings.TrimSpace(kickoff) == "" {
 		return []finding{{CodeKickoffEmpty, "file is empty"}}
@@ -402,7 +408,7 @@ func kickoffProblems(kickoff string) []finding {
 	if !strings.Contains(kickoff, PromptPlaceholder) {
 		problems = append(problems, finding{CodeKickoffMissingPrompt, "missing the " + PromptPlaceholder + " placeholder, which receives the caller's prompt"})
 	}
-	if !strings.Contains(kickoff, OutputDirPlaceholder) {
+	if (len(delivers) == 0 || delivers[0]) && !strings.Contains(kickoff, OutputDirPlaceholder) {
 		problems = append(problems, finding{CodeKickoffMissingOutputDir, "missing the " + OutputDirPlaceholder + " placeholder, which receives the output directory"})
 	}
 	for _, found := range placeholderPattern.FindAllString(kickoff, -1) {

@@ -291,3 +291,22 @@ func (h *actionsHandler) wait(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, r, http.StatusOK, result)
 }
+
+func (h *actionsHandler) deliverArtifacts(w http.ResponseWriter, r *http.Request) {
+	if !h.ready(w, r) {
+		return
+	}
+	var input struct {
+		Path string `json:"path"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
+		return
+	}
+	result, err := h.actions.DeliverActionArtifacts(r.Context(), r.PathValue("id"), input.Path)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, result)
+}

@@ -65,7 +65,7 @@ func (f *actionFixture) remoteExecution(t *testing.T, fake *sshtest.Fake, name, 
 	}
 	run := domain.ActionRun{
 		ID: id, Action: name, Trigger: domain.ActionRunTriggerArchitect, Status: domain.ActionRunRunning, Prompt: "collect",
-		ProfileName: "box-codex", RepoPath: f.registry[name].Path, OutputDir: output, Machine: "box",
+		ArtifactContract: "evidence", ProfileName: "box-codex", RepoPath: f.registry[name].Path, OutputDir: output, Machine: "box",
 		CreatedAt: now, StartedAt: &now, ArchitectKey: architectKey,
 	}
 	if err := f.runs.CreateActionRun(ctx, run); err != nil {
@@ -174,82 +174,91 @@ func TestRemoteActionsAreDiscoveredWhereTheyAreRegistered(t *testing.T) {
 }
 
 func TestRemoteConclusionFreezesThePackageAndDeliversItToEveryCaller(t *testing.T) {
-	f, fake := remoteActionFixture(t)
-	f.writeRemoteAction(t, fake, "evidence")
-	arch := f.architect(t, "alpha", "evidence")
-	ctx := context.Background()
-	run, session := f.remoteExecution(t, fake, "evidence", "alpha")
+	for _, outcome := range []domain.ActionConclusionOutcome{domain.ActionConclusionCompleted, domain.ActionConclusionFailed} {
+		t.Run(string(outcome), func(t *testing.T) {
+			f, fake := remoteActionFixture(t)
+			f.writeRemoteAction(t, fake, "evidence")
+			arch := f.architect(t, "alpha", "evidence")
+			ctx := context.Background()
+			run, session := f.remoteExecution(t, fake, "evidence", "alpha")
 
-	// The folder is checked on the execution machine before the popup.
-	_, err := f.service.ConcludeAction(ctx, session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "x", DeliveryDir: run.OutputDir})
-	requireErr(t, "empty folder", err, "is empty")
-	_, err = f.service.ConcludeAction(ctx, session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "x", DeliveryDir: "relative/out"})
-	requireErr(t, "relative folder", err, "absolute path on machine box")
-	if err := os.WriteFile(filepath.Join(run.OutputDir, "summary.md"), []byte("v1"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("/etc/hosts", filepath.Join(run.OutputDir, "hosts")); err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.service.ConcludeAction(ctx, session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "x", DeliveryDir: run.OutputDir})
-	requireErr(t, "symlink", err, "only regular files and directories", "hosts")
-	if err := os.Remove(filepath.Join(run.OutputDir, "hosts")); err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.service.ConcludeAction(ctx, session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionFailed, Summary: "x", DeliveryDir: run.OutputDir})
-	requireErr(t, "failed with a folder", err, "completed only")
+			// The folder is checked on the execution machine before the popup.
+			_, err := f.service.DeliverActionArtifacts(ctx, session.ID, run.OutputDir)
+			requireErr(t, "empty folder", err, "is empty")
+			_, err = f.service.DeliverActionArtifacts(ctx, session.ID, "relative/out")
+			requireErr(t, "relative folder", err, "absolute path on machine box")
+			if err := os.WriteFile(filepath.Join(run.OutputDir, "summary.md"), []byte("v1"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("/etc/hosts", filepath.Join(run.OutputDir, "hosts")); err != nil {
+				t.Fatal(err)
+			}
+			_, err = f.service.DeliverActionArtifacts(ctx, session.ID, run.OutputDir)
+			requireErr(t, "symlink", err, "only regular files and directories", "hosts")
+			if err := os.Remove(filepath.Join(run.OutputDir, "hosts")); err != nil {
+				t.Fatal(err)
+			}
+			_, err = f.service.DeliverActionArtifacts(ctx, session.ID, run.OutputDir)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	concluded, err := f.conclude(t, session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "collected", DeliveryDir: run.OutputDir})
-	if err != nil {
-		t.Fatal(err)
-	}
-	pkgPath := filepath.Join(fake.Home("box"), remoteActionsStateDir, "artifacts", "packages", run.ID)
-	if concluded.Status != domain.ActionRunCompleted || concluded.Package == nil || concluded.Package.Machine != "box" || concluded.Package.Path != pkgPath ||
-		concluded.Package.State != domain.ActionArtifactsReady || concluded.Package.Files != 1 || concluded.DeliveryDir != run.OutputDir {
-		t.Fatalf("concluded = %+v (package %+v)", concluded, concluded.Package)
-	}
-	if _, err := f.sessions.GetSession(ctx, session.ID); err == nil {
-		t.Fatal("the remote action session survived its conclusion")
-	}
+			if _, err := f.service.DeliverActionArtifacts(context.Background(), session.ID, run.OutputDir); err != nil {
+				t.Fatal(err)
+			}
+			concluded, err := f.conclude(t, session.ID, domain.ConcludeActionRequest{Outcome: outcome, Summary: "collected"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pkgPath := concluded.Package.Path
+			if concluded.Status != domain.ActionRunStatus(outcome) || concluded.Package == nil || concluded.Package.Machine != "box" || concluded.Package.Path != pkgPath ||
+				concluded.Package.State != domain.ActionArtifactsReady || concluded.Package.Files != 1 {
+				t.Fatalf("concluded = %+v (package %+v)", concluded, concluded.Package)
+			}
+			if _, err := f.sessions.GetSession(ctx, session.ID); err == nil {
+				t.Fatal("the remote action session survived its conclusion")
+			}
 
-	// The original folder is preserved; later edits never reach the package.
-	if err := os.WriteFile(filepath.Join(run.OutputDir, "summary.md"), []byte("v2"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+			// The original folder is preserved; later edits never reach the package.
+			if err := os.WriteFile(filepath.Join(run.OutputDir, "summary.md"), []byte("v2"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 
-	// A local architect gets a verified copy on the laptop.
-	result := f.result(t, arch.ID, run.ID)
-	localCopy := filepath.Join(f.artRoot, "deliveries", run.ID)
-	if result.Artifacts.State != domain.ActionArtifactsReady || result.OutputDir != localCopy || result.Machine != "box" ||
-		result.Artifacts.Source == nil || result.Artifacts.Source.Machine != "box" || result.Artifacts.ExpiresAt == nil {
-		t.Fatalf("local caller result = %+v", result)
-	}
-	if got := readFile(t, filepath.Join(localCopy, "summary.md")); got != "v1" {
-		t.Fatalf("local copy holds %q, want the frozen v1", got)
-	}
+			// A local architect gets a verified copy on the laptop.
+			result := f.result(t, arch.ID, run.ID)
+			localCopy := filepath.Join(f.artRoot, "deliveries", run.ID)
+			if result.Artifacts.State != domain.ActionArtifactsReady || result.OutputDir != localCopy || result.Machine != "box" ||
+				result.Artifacts.Source == nil || result.Artifacts.Source.Machine != "box" || result.Artifacts.ExpiresAt == nil {
+				t.Fatalf("local caller result = %+v", result)
+			}
+			if got := readFile(t, filepath.Join(localCopy, "summary.md")); got != "v1" {
+				t.Fatalf("local copy holds %q, want the frozen v1", got)
+			}
 
-	// A worker on the execution machine reads the package in place.
-	same := f.remoteWorker(t, "alpha", "t-same", "box")
-	if got := f.result(t, same.ID, run.ID); got.Artifacts.State != domain.ActionArtifactsReady || got.OutputDir != pkgPath {
-		t.Fatalf("same-machine caller = %+v", got)
-	}
+			// A worker on the execution machine reads the package in place.
+			same := f.remoteWorker(t, "alpha", "t-same", "box")
+			if got := f.result(t, same.ID, run.ID); got.Artifacts.State != domain.ActionArtifactsReady || got.OutputDir != pkgPath {
+				t.Fatalf("same-machine caller = %+v", got)
+			}
 
-	// A worker on another machine gets a copy there, through the laptop; a
-	// repeated read reuses it without copying again.
-	other := f.remoteWorker(t, "alpha", "t-other", "other")
-	otherCopy := filepath.Join(fake.Home("other"), remoteActionsStateDir, "artifacts", "deliveries", run.ID)
-	got := f.result(t, other.ID, run.ID)
-	if got.Artifacts.State != domain.ActionArtifactsReady || got.OutputDir != otherCopy || readFile(t, filepath.Join(otherCopy, "summary.md")) != "v1" {
-		t.Fatalf("other-machine caller = %+v", got)
-	}
-	copies := len(fake.Commands("other"))
-	if again := f.result(t, other.ID, run.ID); again.OutputDir != otherCopy || len(fake.Commands("other")) != copies {
-		t.Fatalf("repeat read = %+v, ssh commands %d -> %d", again, copies, len(fake.Commands("other")))
-	}
+			// A worker on another machine gets a copy there, through the laptop; a
+			// repeated read reuses it without copying again.
+			other := f.remoteWorker(t, "alpha", "t-other", "other")
+			otherCopy := filepath.Join(fake.Home("other"), remoteActionsStateDir, "artifacts", "deliveries", run.ID)
+			got := f.result(t, other.ID, run.ID)
+			if got.Artifacts.State != domain.ActionArtifactsReady || got.OutputDir != otherCopy || readFile(t, filepath.Join(otherCopy, "summary.md")) != "v1" {
+				t.Fatalf("other-machine caller = %+v", got)
+			}
+			copies := len(fake.Commands("other"))
+			if again := f.result(t, other.ID, run.ID); again.OutputDir != otherCopy || len(fake.Commands("other")) != copies {
+				t.Fatalf("repeat read = %+v, ssh commands %d -> %d", again, copies, len(fake.Commands("other")))
+			}
 
-	view, err := f.service.GetActionRun(ctx, run.ID)
-	if err != nil || view.Package == nil || len(view.Deliveries) != 2 {
-		t.Fatalf("run view = %+v, %v", view, err)
+			view, err := f.service.GetActionRun(ctx, run.ID)
+			if err != nil || view.Package == nil || len(view.Deliveries) != 2 {
+				t.Fatalf("run view = %+v, %v", view, err)
+			}
+		})
 	}
 }
 
@@ -262,7 +271,10 @@ func TestDeliveryFailuresAreSeparateFromCompletionAndRetried(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(run.OutputDir, "summary.md"), []byte("v1"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.conclude(t, session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "ok", DeliveryDir: run.OutputDir}); err != nil {
+	if _, err := f.service.DeliverActionArtifacts(context.Background(), session.ID, run.OutputDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.conclude(t, session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "ok"}); err != nil {
 		t.Fatal(err)
 	}
 	worker := f.remoteWorker(t, "alpha", "t-1", "other")
@@ -300,7 +312,10 @@ func TestExpiredArtifactsAreReportedAndCleanedAtStartupWithoutBlocking(t *testin
 	if err := os.WriteFile(filepath.Join(run.OutputDir, "summary.md"), []byte("v1"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.conclude(t, session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "ok", DeliveryDir: run.OutputDir}); err != nil {
+	if _, err := f.service.DeliverActionArtifacts(context.Background(), session.ID, run.OutputDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.conclude(t, session.ID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "ok"}); err != nil {
 		t.Fatal(err)
 	}
 	local := f.result(t, arch.ID, run.ID)
@@ -350,7 +365,7 @@ func TestExpiredArtifactsAreReportedAndCleanedAtStartupWithoutBlocking(t *testin
 	if _, err := os.Stat(interrupted + ".partial"); !os.IsNotExist(err) {
 		t.Fatalf("interrupted partial copy remains: %v", err)
 	}
-	pkgPath := filepath.Join(fake.Home("box"), remoteActionsStateDir, "artifacts", "packages", run.ID)
+	pkgPath := local.Artifacts.Source.Path
 	if _, err := os.Stat(pkgPath); err != nil {
 		t.Fatalf("package on the offline machine was not kept for retry: %v", err)
 	}
@@ -447,7 +462,7 @@ func TestRemoteActionLaunchesOnItsMachine(t *testing.T) {
 		len(req.AdditionalWorkdirs) != 1 || req.AdditionalWorkdirs[0] != result.Run.OutputDir {
 		t.Fatalf("remote launch request = %+v", req)
 	}
-	if !strings.Contains(req.Prompt, "running on machine box") {
+	if !strings.Contains(req.Prompt, "Machine: on machine box") {
 		t.Fatalf("kickoff does not say where it runs: %q", req.Prompt)
 	}
 	workdirs, err := f.service.ListTerminalWorkdirs(ctx, session.ID)

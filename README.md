@@ -228,14 +228,14 @@ Each Action is its own Git repository directly under `HIVERYN_HOME/actions`; the
 name: demo-evidence            # required, equal to the directory name
 description: |                 # required: what the Action does and what the prompt must contain
   Compare synthetic AMS and LDN evidence. Say how many collections to run.
-artifacts: |                   # required: the delivered artifact package contract
+artifacts: |                   # optional: nonempty when this Action promises files
   summary.md and results.json in the output directory.
 suggestions:                   # required: complete example prompts for users and agents
   - Compare AMS and LDN with three collections.
   - Compare AMS and LDN with six collections and a first-attempt failure.
 ```
 
-`KICKOFF.md` holds the launch instructions and must contain `{{prompt}}` (the caller's prompt) and `{{output_dir}}` (the fresh output directory); no other `{{…}}` placeholder is supplied.
+`KICKOFF.md` holds the launch instructions and must contain `{{prompt}}` (the caller's prompt) and, when `artifacts` is declared, `{{output_dir}}` (the fresh output directory); no other `{{…}}` placeholder is supplied.
 
 `suggestions` is a list of plain prompt strings, in the order the launch form shows them — 1–3, each nonblank after trimming, unique, at most 60 whitespace-separated words each and 120 words total (multi-line block scalars are fine). In the Actions window each appears as a chip under the Launch prompt; clicking one replaces the prompt text, which stays editable, and never launches anything. The same examples reach architects and ticket workers through `getAvailableActions`; callers must adapt synthetic example identifiers and dates to the actual request, never use them as defaults. A definition that breaks any rule is listed with its problems (the Actions window shows them) and cannot launch until repaired.
 

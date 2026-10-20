@@ -961,14 +961,14 @@ func TestCompleteActionRunRecordsItsPackageAtomically(t *testing.T) {
 	expires := now.Add(30 * 24 * time.Hour)
 	pkg := domain.ActionArtifactRecord{ExecutionID: "r1", Kind: domain.ActionArtifactPackage, Machine: "box", SSH: "box", Path: "/home/x/.local/state/hiveryn-actions/artifacts/packages/r1",
 		ManagedRoot: "/home/x/.local/state/hiveryn-actions/artifacts", State: domain.ActionArtifactsReady, Files: 3, Bytes: 42, CreatedAt: now, ReadyAt: &now, ExpiresAt: &expires}
-	if err := runs.CompleteActionRun(ctx, "r1", "done", "/srv/out", domain.ActionArtifactRecord{ExecutionID: "r1", Kind: domain.ActionArtifactPackage, State: domain.ActionArtifactsCopying, Path: "/p"}, now); err == nil {
+	if err := runs.PublishActionConclusion(ctx, "r1", domain.ActionRunCompleted, "done", &domain.ActionArtifactRecord{ExecutionID: "r1", Kind: domain.ActionArtifactPackage, State: domain.ActionArtifactsCopying, Path: "/p"}, now); err == nil {
 		t.Fatal("completed with a package that is not ready")
 	}
-	if err := runs.CompleteActionRun(ctx, "r1", "done", "/srv/out", pkg, now); err != nil {
+	if err := runs.PublishActionConclusion(ctx, "r1", domain.ActionRunCompleted, "done", &pkg, now); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := runs.GetActionRun(ctx, "r1")
-	if got.Status != domain.ActionRunCompleted || got.Machine != "box" || got.DeliveryDir != "/srv/out" || got.Summary != "done" {
+	if got.Status != domain.ActionRunCompleted || got.Machine != "box" || got.Summary != "done" {
 		t.Fatalf("run = %+v", got)
 	}
 	recs, _ := runs.ActionArtifacts(ctx, "r1")
@@ -976,7 +976,7 @@ func TestCompleteActionRunRecordsItsPackageAtomically(t *testing.T) {
 		t.Fatalf("package = %+v", recs)
 	}
 	// Completing again conflicts and leaves everything as it was.
-	if err := runs.CompleteActionRun(ctx, "r1", "again", "/x", pkg, now); !errors.As(err, new(*domain.ConflictError)) {
+	if err := runs.PublishActionConclusion(ctx, "r1", domain.ActionRunCompleted, "again", &pkg, now); !errors.As(err, new(*domain.ConflictError)) {
 		t.Fatalf("second completion err = %v", err)
 	}
 
