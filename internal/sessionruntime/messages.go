@@ -543,6 +543,7 @@ func (s *Service) markMessageFailed(m *domain.AgentMessage, reason string) {
 	m.NextAttemptAt = nil
 	m.EndedAt = &now
 	m.UpdatedAt = now
+	s.forgetMessageFailures(m.ID)
 }
 
 func (s *Service) setMessageCondition(ctx context.Context, m *domain.AgentMessage, condition string) {

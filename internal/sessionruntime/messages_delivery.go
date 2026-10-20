@@ -284,8 +284,14 @@ func (s *Service) markMessageHanded(m *domain.AgentMessage, providerRef, conditi
 		m.ProviderRef = providerRef
 	}
 	m.Condition = condition
+	s.forgetMessageFailures(m.ID)
+}
+
+// forgetMessageFailures resets a message's transport-failure backoff once it
+// was handed over or closed.
+func (s *Service) forgetMessageFailures(id string) {
 	s.messages.mu.Lock()
-	delete(s.messages.failures, m.ID)
+	delete(s.messages.failures, id)
 	s.messages.mu.Unlock()
 }
 
@@ -443,6 +449,7 @@ func (s *Service) confirmBeforeRedelivery(ctx context.Context, m *domain.AgentMe
 		m.State = domain.AgentMessageAcknowledged
 		m.AcknowledgedAt = &now
 	}
+	s.forgetMessageFailures(m.ID)
 	s.logger.Info("agent message found in the record before redelivery", "message_id", m.ID, "target_session_id", m.TargetSessionID, "hand_offs", m.Attempts, "state", m.State)
 	return true
 }
