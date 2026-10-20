@@ -23,6 +23,7 @@ type actionFixture struct {
 	service  *Service
 	sessions *store.SessionStore
 	runs     *store.ActionRunStore
+	messages *store.AgentMessageStore
 	adapter  *fakeAdapter
 	terminal *fakeTerminalManager
 	root     string
@@ -74,6 +75,8 @@ func (f *actionFixture) open(t *testing.T) {
 	}
 	f.service.SetActions(f.runs, ActionPaths{Registry: filepath.Join(f.root, "actions.yaml"), Runs: f.outRoot, Artifacts: f.artRoot})
 	f.service.SetDeferredIntentRepository(store.NewDeferredIntentStore(db))
+	f.messages = store.NewAgentMessageStore(db)
+	f.service.SetAgentMessageRepository(f.messages)
 }
 
 func (f *actionFixture) writeAction(t *testing.T, name, manifest, kickoff string) string {

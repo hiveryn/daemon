@@ -36,6 +36,9 @@ import (
 //	              together with the final status. Completed requires a package
 //	              only when promised; failed may publish partial results.
 //	              Denial retains the preparation and leaves the agent running.
+//	              An agent-requested execution's caller is told through the
+//	              durable agent-message outbox once the conclusion is
+//	              published (messages_action.go).
 //	cancel        the user stops a running execution: failed, session ended
 //	launch error  failed with the launch error; the session is removed
 //	PTY exit      the agent is resumed like every session; a failed resume
@@ -631,6 +634,21 @@ func (s *Service) applyActionConclusion(ctx context.Context, sessionID string, o
 		expires := now.Add(retention)
 		pkg.State, pkg.ExpiresAt = domain.ActionArtifactsReady, &expires
 	}
+	// The caller's notice is recorded before the agent is stopped and the
+	// conclusion published, and made deliverable right after the publish —
+	// the point from which getActionResult serves the final status and the
+	// package record — so a crash in between leaves a pending_commit row
+	// reconciled against the execution instead of a lost or premature
+	// announcement. A denied intent never reaches this code.
+	notice, err := s.beginActionConcludedMessage(ctx, run, status, pkg)
+	switch {
+	case errors.Is(err, errAgentMessagesNotConfigured):
+		// A Service without the outbox (tests) concludes without a notice;
+		// the daemon always wires one.
+		s.logger.Error("action conclusion notice not recorded", "execution_id", run.ID, "error", err)
+	case err != nil:
+		return domain.ActionRun{}, fmt.Errorf("record action conclusion notice: %w", err)
+	}
 	if session.Machine != "" {
 		if err := s.stopRemote(ctx, session); err != nil {
 			return domain.ActionRun{}, fmt.Errorf("conclusion not applied: %w", err)
@@ -639,6 +657,13 @@ func (s *Service) applyActionConclusion(ctx context.Context, sessionID string, o
 	err = rt.runs.PublishActionConclusion(ctx, run.ID, status, summary, pkg, now)
 	if err != nil {
 		return domain.ActionRun{}, err
+	}
+	if notice.ID != "" {
+		if err := s.CommitAgentMessage(ctx, notice.ID); err != nil {
+			// The conclusion is published; startup and periodic reconciliation
+			// promote the notice from the execution record.
+			s.logger.Error("commit action conclusion notice; reconciliation will promote it", "message_id", notice.ID, "execution_id", run.ID, "error", err)
+		}
 	}
 	raw := map[string]any{
 		"execution_id": run.ID,

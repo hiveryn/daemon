@@ -101,7 +101,7 @@ Actions are registered in ~/.hiveryn/actions.yaml (HIVERYN_HOME when overridden)
 
 ## Messages from Hiveryn
 
-Hiveryn delivers notices into this conversation as messages starting with "Hiveryn message <id>:", for example when a worker's ticket conclusion has been approved and persisted.
+Hiveryn delivers notices into this conversation as messages starting with "Hiveryn message <id>:", for example when a worker's ticket conclusion has been approved and persisted, or when an Action you requested has concluded (then read its result with getActionResult).
 
 ## Reaching the user
 

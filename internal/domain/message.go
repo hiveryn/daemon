@@ -17,6 +17,12 @@ type (
 
 const (
 	AgentMessageTicketConcluded = sd.AgentMessageTicketConcluded
+	// AgentMessageActionConcluded: an Action agent's approved, persisted
+	// conclusion, addressed to the agent that requested the execution.
+	// Payload: execution_id, action, outcome, package (bool). Declared here
+	// because the kind is produced and reconciled by the daemon alone; the
+	// record shape is shared.
+	AgentMessageActionConcluded AgentMessageKind = "action_concluded"
 
 	AgentMessagePendingCommit = sd.AgentMessagePendingCommit
 	AgentMessagePending       = sd.AgentMessagePending

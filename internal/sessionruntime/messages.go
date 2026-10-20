@@ -22,9 +22,11 @@ import (
 // route — Claude's asyncRewake waiter (pull), Codex's thread queue and
 // OpenCode's session server (push) — never by typing into a terminal.
 //
-// Producers call BeginAgentMessage (state pending_commit) before a
-// non-transactional side effect and CommitAgentMessage after it, or
-// EnqueueAgentMessage for a one-shot. A single dispatcher goroutine owns every
+// Producers (messages_conclusion.go: ticket conclusions to the architect;
+// messages_action.go: Action conclusions to the requesting agent) call
+// BeginAgentMessage (state pending_commit) before a non-transactional side
+// effect and CommitAgentMessage after it, or EnqueueAgentMessage for a
+// one-shot. A single dispatcher goroutine owns every
 // state change after that: it resolves the recipient to a running session,
 // gates on idle where the provider needs it, hands over or pushes, confirms
 // the provider's own receipt before any redelivery, backs off on transport
@@ -124,6 +126,7 @@ func (s *Service) SetAgentMessageRepository(repo domain.AgentMessageRepository) 
 	}
 	s.messages.repo = repo
 	s.messages.commitChecks[domain.AgentMessageTicketConcluded] = s.checkTicketConcludedCommit
+	s.messages.commitChecks[domain.AgentMessageActionConcluded] = s.checkActionConcludedCommit
 }
 
 // errAgentMessagesNotConfigured: the Service was built without a message
