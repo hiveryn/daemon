@@ -847,9 +847,8 @@ func (s *Service) finishActionRunFailed(id, reason string) {
 	}
 	notice, err := s.beginActionEndedMessage(ctx, failedRun(run, reason), nil)
 	if err != nil {
-		// The failure must still be recorded; reconciliation cannot create
-		// the notice from nothing, so say so loudly.
-		s.logger.Error("action ended notice not recorded; the requester will not be told", "execution_id", id, "reason", reason, "error", err)
+		// The terminal write retains a durable notification obligation.
+		s.logger.Error("action ended notice not recorded; terminal obligation will retry", "execution_id", id, "reason", reason, "error", err)
 	}
 	if err := s.actions.runs.FinishActionRun(ctx, id, domain.ActionRunFailed, "", reason, time.Now().UTC()); err != nil {
 		var conflict *domain.ConflictError

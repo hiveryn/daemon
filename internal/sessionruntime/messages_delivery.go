@@ -35,6 +35,13 @@ func messageText(m domain.AgentMessage) string {
 // messages, then deliver the next pending message of each target.
 func (s *Service) dispatchAgentMessages(ctx context.Context) error {
 	repo := s.messages.repo
+	for id, m := range s.messages.dirty {
+		if err := repo.UpdateAgentMessage(ctx, m); err != nil {
+			return fmt.Errorf("retry message state %s: %w", id, err)
+		}
+		delete(s.messages.dirty, id)
+		s.emitArchitectEvent(m.ArchitectKey, domain.ArchitectEventAgentMessageChanged, "", "")
+	}
 	s.upgradeAcknowledged(ctx)
 	open, err := repo.ListOpenAgentMessages(ctx)
 	if err != nil {
@@ -51,6 +58,9 @@ func (s *Service) dispatchAgentMessages(ctx context.Context) error {
 	// Handed messages first, so serialization sees the current state.
 	for i := range open {
 		m := &open[i]
+		if _, dirty := s.messages.dirty[m.ID]; dirty {
+			continue
+		}
 		if m.State != domain.AgentMessageHanded {
 			continue
 		}
@@ -63,6 +73,9 @@ func (s *Service) dispatchAgentMessages(ctx context.Context) error {
 	}
 	for i := range open {
 		m := &open[i]
+		if _, dirty := s.messages.dirty[m.ID]; dirty {
+			continue
+		}
 		if m.State != domain.AgentMessagePending {
 			continue
 		}
@@ -124,6 +137,7 @@ func (s *Service) persistMessageChange(ctx context.Context, before, after domain
 	}
 	after.UpdatedAt = s.messages.now()
 	if err := s.messages.repo.UpdateAgentMessage(ctx, after); err != nil {
+		s.messages.dirty[after.ID] = after
 		s.logger.Error("update agent message", "message_id", after.ID, "state", after.State, "error", err)
 		return
 	}
@@ -223,9 +237,12 @@ func (s *Service) attemptMessageDelivery(ctx context.Context, m *domain.AgentMes
 			m.Condition = "agent busy; handed over at its next idle point"
 			return
 		}
+		if !s.reserveMessageAttempt(ctx, m) {
+			return
+		}
 		handed, ok := s.messages.mailbox.Deliver(target.session.ID, ingest.MailboxMessage{ID: m.ID, Text: messageText(*m)})
 		if !ok {
-			m.Condition = "the waiter left before the hand-off; retried when the next one arms"
+			s.repend(m, "the waiter left before the hand-off; retried when the next one arms")
 			return
 		}
 		s.setMessageIdle(target.session.ID, false)
@@ -251,6 +268,19 @@ func (s *Service) attemptMessageDelivery(ctx context.Context, m *domain.AgentMes
 			}
 			req.ServerPort, req.ServerPassword = endpoint.port, endpoint.password
 		}
+		if preparer, ok := deliverer.(agentruntime.MessagePreparer); ok {
+			prepareCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			ref, err := preparer.PrepareMessage(prepareCtx, req)
+			cancel()
+			if err != nil {
+				s.recordMessageAttemptFailure(m, err)
+				return
+			}
+			m.ProviderRef, req.ProviderRef = ref, ref
+		}
+		if !s.reserveMessageAttempt(ctx, m) {
+			return
+		}
 		deliverCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		result, err := deliverer.DeliverMessage(deliverCtx, req)
 		cancel()
@@ -271,12 +301,34 @@ func (s *Service) attemptMessageDelivery(ctx context.Context, m *domain.AgentMes
 	}
 }
 
-// markMessageHanded records a hand-off: the provider accepted the message or
-// a waiter took it. Attempts counts these, and only these.
-func (s *Service) markMessageHanded(m *domain.AgentMessage, providerRef, condition string) {
+// reserveMessageAttempt durably records uncertainty BEFORE any external effect.
+// Even a crash before the send consumes a slot: acceptance cannot be inferred
+// from a missing acknowledgement. No provider call is allowed on write failure.
+func (s *Service) reserveMessageAttempt(ctx context.Context, m *domain.AgentMessage) bool {
+	if m.Attempts >= messageMaxHandoffs {
+		s.markMessageFailed(m, "delivery attempt budget exhausted; not sent again automatically")
+		return false
+	}
+	before := *m
 	now := s.messages.now()
 	m.State = domain.AgentMessageHanded
 	m.Attempts++
+	m.HandedAt = &now
+	m.UpdatedAt = now
+	m.NextAttemptAt = nil
+	m.Condition = "delivery attempt reserved; acceptance unknown until the provider record is inspected"
+	if err := s.messages.repo.UpdateAgentMessage(ctx, *m); err != nil {
+		*m = before
+		s.recordMessageAttemptFailure(m, fmt.Errorf("persist delivery attempt: %w", err))
+		return false
+	}
+	return true
+}
+
+// markMessageHanded records acknowledgement of an already reserved attempt.
+func (s *Service) markMessageHanded(m *domain.AgentMessage, providerRef, condition string) {
+	now := s.messages.now()
+	m.State = domain.AgentMessageHanded
 	m.HandedAt = &now
 	m.NextAttemptAt = nil
 	m.LastError = ""
@@ -295,15 +347,19 @@ func (s *Service) forgetMessageFailures(id string) {
 	s.messages.mu.Unlock()
 }
 
-// recordMessageAttemptFailure backs off after a transport failure (nothing
-// reached the agent, so it is not a hand-off): 30 s more per consecutive
-// failure up to messageRetryBackoff, counted in memory.
+// recordMessageAttemptFailure keeps a reserved attempt inspectable: transport
+// errors do not prove non-delivery. Preparation failures alone back off pending.
 func (s *Service) recordMessageAttemptFailure(m *domain.AgentMessage, err error) {
 	s.messages.mu.Lock()
 	s.messages.failures[m.ID]++
 	failures := s.messages.failures[m.ID]
 	s.messages.mu.Unlock()
 	m.LastError = err.Error()
+	if m.State == domain.AgentMessageHanded {
+		m.Condition = "delivery acceptance unknown: " + err.Error() + "; awaiting the provider record before bounded recovery"
+		s.logger.Warn("agent message acceptance unknown", "message_id", m.ID, "attempts", m.Attempts, "error", err)
+		return
+	}
 	delay := time.Duration(failures) * 30 * time.Second
 	if delay > messageRetryBackoff {
 		delay = messageRetryBackoff
@@ -375,7 +431,7 @@ func (s *Service) confirmHandedMessage(ctx context.Context, m *domain.AgentMessa
 		m.Condition = "handed over; the agent's record ends before the hand-off (" + receipt.RecordedThrough.UTC().Format(time.RFC3339) + "), so its absence there proves nothing yet"
 	case confirmErr == nil && idle && idleAt.After(m.HandedAt.Add(messageLostAfter)):
 		s.repend(m, "not found in the agent's record after its next turn ended")
-	case confirmErr == nil && m.Mechanism != "" && !deliverer.MessageCapability().GateOnIdle && handedFor > messageHandedCap:
+	case confirmErr == nil && handedFor > messageHandedCap:
 		s.repend(m, "neither queued nor in the agent's record after "+handedFor.Round(time.Second).String())
 	case confirmErr != nil && handedFor > messageHandedCap:
 		s.repend(m, "its record could not be read for "+handedFor.Round(time.Second).String()+": "+confirmErr.Error()+"; redelivery may repeat it")
@@ -392,7 +448,7 @@ func (s *Service) confirmHandedMessage(ctx context.Context, m *domain.AgentMessa
 // one more copy of a message the daemon keeps failing to find.
 func (s *Service) repend(m *domain.AgentMessage, reason string) {
 	if m.Attempts >= messageMaxHandoffs {
-		failure := fmt.Sprintf("handed over %d times without a confirmed receipt (last: %s); not sent again automatically", m.Attempts, reason)
+		failure := fmt.Sprintf("attempted %d times without a confirmed receipt (last: %s); not sent again automatically", m.Attempts, reason)
 		s.markMessageFailed(m, failure)
 		m.HandedAt = nil
 		s.logger.Error("agent message failed after repeated unconfirmed hand-offs", "message_id", m.ID, "kind", m.Kind, "recipient", m.Recipient,

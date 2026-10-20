@@ -31,12 +31,12 @@ import (
 // state change after that: it resolves the recipient to a running session,
 // gates on idle where the provider needs it, hands over or pushes, confirms
 // the provider's own receipt before any redelivery, backs off on transport
-// failures and records why a message is not progressing (Condition). Nothing
+// uncertainty and records why a message is not progressing (Condition). Nothing
 // here launches a session: a message addressed to an architect with no running
 // session waits for its next one. Open messages survive restart in SQLite;
 // pending_commit rows are reconciled against their producer's side effect.
 //
-// Delivery is effectively once: one message is in flight per target session,
+// Delivery uses bounded recovery: one message is in flight per target session,
 // identity is stable across retries, and the provider's record is consulted
 // before redelivery — both when deciding that a handed message is lost and
 // again right before sending a previously handed message once more. An
@@ -84,6 +84,8 @@ type messageEndpoint struct {
 }
 
 type messageRuntime struct {
+	// dirty is dispatcher-owned: retry failed state writes before further sends.
+	dirty   map[string]domain.AgentMessage
 	repo    domain.AgentMessageRepository
 	mailbox *ingest.Mailbox
 
@@ -95,8 +97,8 @@ type messageRuntime struct {
 	idle      map[string]bool
 	idleAt    map[string]time.Time
 	endpoints map[string]messageEndpoint
-	// failures counts consecutive transport failures per message for the
-	// retry backoff; Attempts on the row counts hand-offs only.
+	// failures counts preparation/storage failures for pending retry backoff;
+	// Attempts counts durably reserved hand-offs, including unknown acceptance.
 	failures map[string]int
 	// commitChecks reconcile pending_commit rows per kind.
 	commitChecks map[domain.AgentMessageKind]messageCommitCheck
@@ -127,6 +129,7 @@ type messageCommitVerdict struct {
 
 func newMessageRuntime() *messageRuntime {
 	return &messageRuntime{
+		dirty:        map[string]domain.AgentMessage{},
 		mailbox:      ingest.NewMailbox(),
 		idle:         map[string]bool{},
 		idleAt:       map[string]time.Time{},
@@ -508,6 +511,9 @@ func (s *Service) runMessageDispatcher(ctx context.Context) {
 // reconcileAgentMessages settles pending_commit rows: all of them at startup,
 // only those older than messageCommitGrace afterwards.
 func (s *Service) reconcileAgentMessages(ctx context.Context, startup bool) error {
+	if err := s.repairActionNotifications(ctx); err != nil {
+		return err
+	}
 	repo := s.messages.repo
 	open, err := repo.ListOpenAgentMessages(ctx)
 	if err != nil {

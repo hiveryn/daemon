@@ -39,7 +39,7 @@ func actionEndedDedupeKey(executionID string) string {
 // launch.
 func actionEndedRecipient(run domain.ActionRun) string {
 	switch {
-	case run.ArchitectKey == "":
+	case run.ArchitectKey == "" || run.Trigger == domain.ActionRunTriggerManual:
 		return ""
 	case run.Trigger == domain.ActionRunTriggerWorker && run.RequesterSessionID != "":
 		return domain.AgentMessageRecipientSession + run.RequesterSessionID
@@ -109,7 +109,15 @@ func (s *Service) beginActionEndedMessage(ctx context.Context, run domain.Action
 // reconciliation; the execution is already final.
 func (s *Service) settleActionEndedMessage(ctx context.Context, notice domain.AgentMessage, executionID string) {
 	if notice.ID == "" {
+		s.kickMessages()
 		return
+	}
+	if s.actions != nil {
+		if obligations, ok := s.actions.runs.(domain.ActionNotificationRepository); ok {
+			if err := obligations.ClearActionNotification(ctx, executionID); err != nil {
+				s.logger.Error("clear action notification obligation", "execution_id", executionID, "error", err)
+			}
+		}
 	}
 	if err := s.settleAgentMessage(ctx, notice.ID); err != nil {
 		s.logger.Error("settle action ended notice; reconciliation will settle it", "message_id", notice.ID, "execution_id", executionID, "error", err)
@@ -164,4 +172,35 @@ func (s *Service) publishedPackage(ctx context.Context, run domain.ActionRun) (*
 		return nil, nil
 	}
 	return pkg, nil
+}
+
+// repairActionNotifications transfers durable terminal obligations into the
+// outbox. Begin is idempotent; clear only after it succeeds. The final text is
+// always rendered from the winning execution state, not the failed producer.
+func (s *Service) repairActionNotifications(ctx context.Context) error {
+	if s.actions == nil {
+		return nil
+	}
+	obligations, ok := s.actions.runs.(domain.ActionNotificationRepository)
+	if !ok {
+		return nil
+	}
+	runs, err := obligations.PendingActionNotifications(ctx)
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		notice, err := s.beginActionEndedMessage(ctx, run, nil)
+		if err != nil {
+			return fmt.Errorf("repair action notice %s: %w", run.ID, err)
+		}
+		if notice.ID == "" {
+			return fmt.Errorf("action notice %s has no recipient", run.ID)
+		}
+		if err := obligations.ClearActionNotification(ctx, run.ID); err != nil {
+			return err
+		}
+		s.settleActionEndedMessage(ctx, notice, run.ID)
+	}
+	return nil
 }

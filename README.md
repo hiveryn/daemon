@@ -495,3 +495,22 @@ All responses use a standard envelope:
 ## Remote ticket workers
 
 See [SSH machine setup and lifecycle](docs/remote-workers.md) for remote repositories, tmux persistence, worker MCP, verification and limitations.
+
+### Notification recovery
+
+The outbox records the recipient, provider identity and attempt before any
+hand-off. Transport failures retain an uncertain `handed` attempt for receipt
+inspection, including after restart. Three reserved attempts without a receipt
+end in visible failure; a crash before sending can consume an attempt. Pending
+preparation/storage failures back off without sending. Failed post-send writes
+are retried before further dispatch. Confirmed receipts are retained in memory
+until persisted; if both persistence and the process fail, recovery depends on
+the provider record still being available. This is bounded recovery, not an
+exactly-once guarantee. Provider crash windows remain documented in agentruntime.
+
+Terminal Action writes atomically retain a notification obligation for started
+agent requests. Startup and periodic reconciliation repair missing outbox rows
+and render the notice from the winning terminal outcome. The obligation clears
+only once the outbox owns it. Historical executions are not backfilled, and
+pruned notices are not replayed. Manual, denied and never-run requests do not
+create obligations. No artifact or live-session launch behavior changes.

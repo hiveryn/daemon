@@ -134,7 +134,7 @@ func (s *ActionRunStore) FinishActionRun(ctx context.Context, id string, status 
 		return fmt.Errorf("finish action run %s: %s is not a finishing status", id, status)
 	}
 	res, err := s.db.ExecContext(ctx, `
-		UPDATE action_runs SET status = ?, summary = ?, error = ?, ended_at = ?
+		UPDATE action_runs SET notification_pending = CASE WHEN started_at IS NOT NULL AND COALESCE(architect_key, '') != '' AND trigger IN ('architect', 'worker') THEN 1 ELSE 0 END, status = ?, summary = ?, error = ?, ended_at = ?
 		WHERE id = ? AND status = ?
 	`, string(status), nullIfEmpty(summary), nullIfEmpty(errText), formatPreciseTime(at), id, string(domain.ActionRunRunning))
 	if err != nil {
@@ -353,7 +353,7 @@ func (s *ActionRunStore) PublishActionConclusion(ctx context.Context, id string,
 	}
 	defer func() { _ = tx.Rollback() }()
 	res, err := tx.ExecContext(ctx, `
-		UPDATE action_runs SET status = ?, summary = ?, ended_at = ?
+		UPDATE action_runs SET notification_pending = CASE WHEN started_at IS NOT NULL AND COALESCE(architect_key, '') != '' AND trigger IN ('architect', 'worker') THEN 1 ELSE 0 END, status = ?, summary = ?, ended_at = ?
 		WHERE id = ? AND status = ?
 	`, string(status), nullIfEmpty(summary), formatPreciseTime(at), id, string(domain.ActionRunRunning))
 	if err != nil {
@@ -497,6 +497,20 @@ func (s *ActionRunStore) PrepareActionPackage(ctx context.Context, rec domain.Ac
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit prepared package: %w", err)
+	}
+	return nil
+}
+
+// PendingActionNotifications lists only explicit obligations from terminal writes,
+// never historical executions or requests that did not run.
+func (s *ActionRunStore) PendingActionNotifications(ctx context.Context) ([]domain.ActionRun, error) {
+	return s.queryActionRuns(ctx, `SELECT `+actionRunColumns+` FROM action_runs WHERE notification_pending = 1`)
+}
+
+func (s *ActionRunStore) ClearActionNotification(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE action_runs SET notification_pending = 0 WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("clear notification obligation for %s: %w", id, err)
 	}
 	return nil
 }

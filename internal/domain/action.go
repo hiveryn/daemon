@@ -210,3 +210,10 @@ type ActionService interface {
 }
 
 var EffectiveArtifactMode = sd.EffectiveArtifactMode
+
+// ActionNotificationRepository retains the obligation alongside terminal state
+// until the outbox owns it. Kept separate from the shared execution wire model.
+type ActionNotificationRepository interface {
+	PendingActionNotifications(context.Context) ([]ActionRun, error)
+	ClearActionNotification(context.Context, string) error
+}

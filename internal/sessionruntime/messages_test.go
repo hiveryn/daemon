@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -29,14 +30,15 @@ type fakeMessageAdapter struct {
 	mode       agentruntime.MessageDeliveryMode
 	gateOnIdle bool
 
-	mu          sync.Mutex
-	delivered   []agentruntime.DeliverRequest
-	deliverErr  error
-	providerRef string
-	receipts    map[string]agentruntime.MessageReceipt
-	confirmErr  error
-	locateErr   error
-	confirmed   []agentruntime.ConfirmRequest
+	mu              sync.Mutex
+	delivered       []agentruntime.DeliverRequest
+	deliverErr      error
+	acceptedOnError bool
+	providerRef     string
+	receipts        map[string]agentruntime.MessageReceipt
+	confirmErr      error
+	locateErr       error
+	confirmed       []agentruntime.ConfirmRequest
 }
 
 func (f *fakeMessageAdapter) Agent() agentruntime.AgentKind { return f.kind }
@@ -56,6 +58,9 @@ func (f *fakeMessageAdapter) DeliverMessage(_ context.Context, req agentruntime.
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.deliverErr != nil {
+		if f.acceptedOnError {
+			f.delivered = append(f.delivered, req)
+		}
 		return agentruntime.DeliverResult{}, f.deliverErr
 	}
 	f.delivered = append(f.delivered, req)
@@ -439,35 +444,28 @@ func TestOpenCodeMessageNeedsIdleAndTheLaunchEndpoint(t *testing.T) {
 	}
 }
 
-func TestFailedDeliveryBacksOffWithAVisibleError(t *testing.T) {
+func TestAmbiguousDeliveryWaitsForReceiptAndConsumesBudget(t *testing.T) {
 	f := newMessageFixture(t)
 	f.repo.listedSessions = []domain.Session{f.architectSession("arch-1", agentruntime.AgentCodex, "thread-1")}
 	codex := f.adapters[agentruntime.AgentCodex]
 	codex.deliverErr = errors.New("codex app-server exited: boom")
 	m := f.enqueue("retry")
-	f.dispatch()
-	// A transport failure is not a hand-off: nothing reached the agent, so
-	// Attempts stays 0 and only the backoff grows.
-	failed := f.expect(m.ID, domain.AgentMessagePending, "delivery attempt failed (1 in a row): codex app-server exited: boom")
-	if failed.Attempts != 0 || failed.LastError != "codex app-server exited: boom" || failed.NextAttemptAt == nil || !failed.NextAttemptAt.Equal(f.now.Add(30*time.Second)) {
-		t.Fatalf("failed = %+v", failed)
+	for attempt := 1; attempt <= messageMaxHandoffs; attempt++ {
+		f.dispatch()
+		got := f.expect(m.ID, domain.AgentMessageHanded, "acceptance unknown")
+		if got.Attempts != attempt || got.HandedAt == nil || got.TargetNativeID != "thread-1" || got.LastError != codex.deliverErr.Error() {
+			t.Fatalf("attempt: %+v", got)
+		}
+		f.now = f.now.Add(time.Second)
+		f.dispatch()
+		if got := f.get(m.ID); got.Attempts != attempt {
+			t.Fatalf("early retry: %+v", got)
+		}
+		f.now = f.now.Add(messageHandedCap + time.Second)
 	}
-	// Not retried before its time.
-	f.now = f.now.Add(10 * time.Second)
 	f.dispatch()
-	if got := f.get(m.ID); got.Attempts != 0 || len(codex.deliveries()) != 0 {
-		t.Fatalf("retried early: %+v", got)
-	}
-	f.now = f.now.Add(30 * time.Second)
-	f.dispatch()
-	if got := f.expect(m.ID, domain.AgentMessagePending, "delivery attempt failed (2 in a row)"); got.Attempts != 0 || !got.NextAttemptAt.Equal(f.now.Add(time.Minute)) {
-		t.Fatalf("second failure = %+v", got)
-	}
-	codex.deliverErr = nil
-	f.now = f.now.Add(time.Minute)
-	f.dispatch()
-	if got := f.expect(m.ID, domain.AgentMessageHanded, "queued"); got.Attempts != 1 || got.LastError != "" || got.NextAttemptAt != nil {
-		t.Fatalf("recovered = %+v", got)
+	if got := f.get(m.ID); got.State != domain.AgentMessageFailed || got.Attempts != messageMaxHandoffs {
+		t.Fatalf("not bounded: %+v", got)
 	}
 }
 
@@ -744,7 +742,7 @@ func TestUnconfirmedHandoffsAreBoundedAndFailVisibly(t *testing.T) {
 	f.dispatch()
 	failed := f.get(m.ID)
 	if failed.State != domain.AgentMessageFailed || failed.EndedAt == nil || failed.HandedAt != nil || failed.Attempts != messageMaxHandoffs || len(codex.deliveries()) != messageMaxHandoffs ||
-		!strings.Contains(failed.LastError, "handed over 3 times without a confirmed receipt") || !strings.Contains(failed.LastError, "not found in the agent's record after its next turn ended") {
+		!strings.Contains(failed.LastError, "attempted 3 times without a confirmed receipt") || !strings.Contains(failed.LastError, "not found in the agent's record after its next turn ended") {
 		t.Fatalf("failed = %+v deliveries %d", failed, len(codex.deliveries()))
 	}
 	// Terminal: later passes and idles leave it alone.
@@ -754,20 +752,7 @@ func TestUnconfirmedHandoffsAreBoundedAndFailVisibly(t *testing.T) {
 	if got := f.get(m.ID); got.State != domain.AgentMessageFailed || len(codex.deliveries()) != messageMaxHandoffs {
 		t.Fatalf("after failure = %+v", got)
 	}
-	// Transport failures never count toward the cap.
-	codex.deliverErr = errors.New("boom")
-	second := f.enqueue("flaky")
-	for i := 0; i < messageMaxHandoffs+2; i++ {
-		f.now = f.now.Add(messageRetryBackoff)
-		f.dispatch()
-	}
-	if got := f.expect(second.ID, domain.AgentMessagePending, "delivery attempt failed"); got.Attempts != 0 {
-		t.Fatalf("flaky = %+v", got)
-	}
-	codex.deliverErr = nil
-	f.now = f.now.Add(messageRetryBackoff)
-	f.dispatch()
-	f.expect(second.ID, domain.AgentMessageHanded, "queued")
+
 }
 
 func TestReceiptIsCheckedBeforeRedelivery(t *testing.T) {
@@ -853,7 +838,7 @@ func TestRestartReconcilesOpenMessagesAgainstTheRecordBeforeSendingAgain(t *test
 	first.now = first.now.Add(messageHandedCap + time.Second)
 	codex.deliverErr = errors.New("app-server down")
 	first.dispatch()
-	if got := first.expect(repended.ID, domain.AgentMessagePending, "delivery attempt failed"); got.Attempts != 1 {
+	if got := first.expect(repended.ID, domain.AgentMessageHanded, "acceptance unknown"); got.Attempts != 2 {
 		t.Fatalf("before restart = %+v", got)
 	}
 	// Both appeared in the record the old daemon could not read: a third
@@ -864,7 +849,7 @@ func TestRestartReconcilesOpenMessagesAgainstTheRecordBeforeSendingAgain(t *test
 	// The repended one is sent again first (its record still lacks it), then
 	// the third waits behind it.
 	first.dispatch()
-	first.expect(repended.ID, domain.AgentMessageHanded, "queued")
+	first.expect(repended.ID, domain.AgentMessageHanded, "awaiting")
 	first.expect(third.ID, domain.AgentMessagePending, "waiting for the previous message")
 
 	// Restart: a new daemon over the same database, whose lookup now finds
@@ -900,5 +885,168 @@ func TestRestartReconcilesOpenMessagesAgainstTheRecordBeforeSendingAgain(t *test
 	}
 	if got := second.get(third.ID); got.State != domain.AgentMessageHanded || got.Attempts != 1 || len(restarted.deliveries()) != 1 || restarted.deliveries()[0].MessageID != third.ID {
 		t.Fatalf("third = %+v deliveries %+v", got, restarted.deliveries())
+	}
+}
+
+// failingMessageWrites injects storage failures at exact side-effect boundaries.
+type failingMessageWrites struct {
+	domain.AgentMessageRepository
+	updates    int
+	failUpdate func(domain.AgentMessage, int) bool
+	failCreate bool
+}
+
+func (r *failingMessageWrites) UpdateAgentMessage(ctx context.Context, m domain.AgentMessage) error {
+	r.updates++
+	if r.failUpdate != nil && r.failUpdate(m, r.updates) {
+		return errors.New("injected outbox write failure")
+	}
+	return r.AgentMessageRepository.UpdateAgentMessage(ctx, m)
+}
+func (r *failingMessageWrites) CreateAgentMessage(ctx context.Context, m domain.AgentMessage) error {
+	if r.failCreate {
+		return errors.New("injected outbox insert failure")
+	}
+	return r.AgentMessageRepository.CreateAgentMessage(ctx, m)
+}
+
+func TestAttemptMustBeDurableBeforeSend(t *testing.T) {
+	f := newMessageFixture(t)
+	f.repo.listedSessions = []domain.Session{f.architectSession("arch", agentruntime.AgentCodex, "thread")}
+	m := f.enqueue("reserve failure")
+	r := &failingMessageWrites{AgentMessageRepository: f.messages, failUpdate: func(m domain.AgentMessage, _ int) bool { return m.State == domain.AgentMessageHanded }}
+	f.service.messages.repo = r
+	f.dispatch()
+	if len(f.adapters[agentruntime.AgentCodex].deliveries()) != 0 {
+		t.Fatal("sent without durable reservation")
+	}
+	if got := f.get(m.ID); got.Attempts != 0 || !strings.Contains(got.LastError, "injected") {
+		t.Fatalf("not recoverable: %+v", got)
+	}
+	r.failUpdate = nil
+	f.now = f.now.Add(time.Minute)
+	f.dispatch()
+	if got := f.get(m.ID); got.Attempts != 1 || len(f.adapters[agentruntime.AgentCodex].deliveries()) != 1 {
+		t.Fatalf("not recovered: %+v", got)
+	}
+}
+
+func TestAcceptedSendWriteFailureAndLostResponseSurviveRestart(t *testing.T) {
+	for _, lostResponse := range []bool{false, true} {
+		t.Run(fmt.Sprint(lostResponse), func(t *testing.T) {
+			f := newMessageFixture(t)
+			f.repo.listedSessions = []domain.Session{f.architectSession("arch", agentruntime.AgentCodex, "thread")}
+			m := f.enqueue("accepted")
+			// First write reserves; all post-send writes fail, including receipt storage.
+			f.service.messages.repo = &failingMessageWrites{AgentMessageRepository: f.messages, failUpdate: func(_ domain.AgentMessage, n int) bool { return n > 1 }}
+			adapter := f.adapters[agentruntime.AgentCodex]
+			if lostResponse {
+				adapter.acceptedOnError = true
+				adapter.deliverErr = errors.New("accepted but response lost")
+			}
+			f.dispatch()
+			durable := f.get(m.ID)
+			if durable.State != domain.AgentMessageHanded || durable.Attempts != 1 || durable.TargetNativeID != "thread" || durable.HandedAt == nil {
+				t.Fatalf("missing attempt: %+v", durable)
+			}
+			restarted := newMessageFixtureAt(t, f.dbPath)
+			restarted.now = f.now.Add(time.Hour)
+			restarted.repo.listedSessions = f.repo.listedSessions
+			restarted.adapters[agentruntime.AgentCodex].setReceipt(m.ID, agentruntime.MessageReceipt{Appeared: true})
+			restarted.dispatch()
+			if got := restarted.get(m.ID); got.State != domain.AgentMessageAppeared || got.Attempts != 1 {
+				t.Fatalf("receipt not recovered: %+v", got)
+			}
+			if len(restarted.adapters[agentruntime.AgentCodex].deliveries()) != 0 {
+				t.Fatal("resent accepted message")
+			}
+		})
+	}
+}
+
+func TestConfirmedReceiptWriteFailureNeverResendsInProcess(t *testing.T) {
+	f := newMessageFixture(t)
+	f.repo.listedSessions = []domain.Session{f.architectSession("arch", agentruntime.AgentCodex, "thread")}
+	m := f.enqueue("receipt write failure")
+	adapter := f.adapters[agentruntime.AgentCodex]
+	f.dispatch()
+	adapter.setReceipt(m.ID, agentruntime.MessageReceipt{Appeared: true})
+	writes := &failingMessageWrites{AgentMessageRepository: f.messages, failUpdate: func(_ domain.AgentMessage, _ int) bool { return true }}
+	f.service.messages.repo = writes
+	f.dispatch()
+	adapter.confirmErr = errors.New("record now unavailable")
+	f.now = f.now.Add(time.Hour)
+	if err := f.service.dispatchAgentMessages(context.Background()); err == nil {
+		t.Fatal("failed flush should stop dispatch")
+	}
+	writes.failUpdate = nil
+	f.dispatch()
+	if got := f.get(m.ID); got.State != domain.AgentMessageAppeared || len(adapter.deliveries()) != 1 {
+		t.Fatalf("receipt forgotten: %+v", got)
+	}
+}
+
+func TestAmbiguousIdleGatedSendRecoversWithoutAnotherIdleEvent(t *testing.T) {
+	f := newMessageFixture(t)
+	f.repo.listedSessions = []domain.Session{f.architectSession("arch", agentruntime.AgentOpenCode, "native")}
+	f.service.setMessageIdle("arch", true)
+	f.service.messages.endpoints["arch"] = messageEndpoint{port: 1234, password: "fixture"}
+	adapter := f.adapters[agentruntime.AgentOpenCode]
+	adapter.deliverErr = errors.New("response lost")
+	m := f.enqueue("idle gated ambiguity")
+	f.dispatch()
+	f.expect(m.ID, domain.AgentMessageHanded, "acceptance unknown")
+	// If the send never arrived there is no new idle hook. Absence still needs
+	// bounded recovery, without interrupting a busy recipient.
+	f.now = f.now.Add(messageHandedCap + time.Second)
+	adapter.deliverErr = nil
+	f.service.setMessageIdle("arch", false)
+	f.dispatch()
+	if got := f.expect(m.ID, domain.AgentMessagePending, "agent busy"); got.Attempts != 1 {
+		t.Fatalf("busy retry: %+v", got)
+	}
+	f.service.setMessageIdle("arch", true)
+	f.dispatch()
+	if got := f.get(m.ID); got.State != domain.AgentMessageHanded || got.Attempts != 2 || len(adapter.deliveries()) != 1 {
+		t.Fatalf("not recovered: %+v", got)
+	}
+}
+
+type preparedMessageAdapter struct {
+	*fakeMessageAdapter
+	beforeSend func(agentruntime.DeliverRequest)
+}
+
+func (a *preparedMessageAdapter) PrepareMessage(context.Context, agentruntime.DeliverRequest) (string, error) {
+	return "prepared-provider-id", nil
+}
+func (a *preparedMessageAdapter) DeliverMessage(ctx context.Context, req agentruntime.DeliverRequest) (agentruntime.DeliverResult, error) {
+	a.beforeSend(req)
+	return a.fakeMessageAdapter.DeliverMessage(ctx, req)
+}
+
+func TestPreparedProviderIdentityIsPersistedBeforeOpenCodeSend(t *testing.T) {
+	f := newMessageFixture(t)
+	f.repo.listedSessions = []domain.Session{f.architectSession("arch", agentruntime.AgentOpenCode, "native")}
+	f.service.setMessageIdle("arch", true)
+	f.service.messages.endpoints["arch"] = messageEndpoint{port: 1234, password: "fixture"}
+	m := f.enqueue("prepared identity")
+	adapter := f.adapters[agentruntime.AgentOpenCode]
+	adapter.deliverErr = errors.New("accepted, response lost")
+	adapter.acceptedOnError = true
+	f.service.adapters[agentruntime.AgentOpenCode] = &preparedMessageAdapter{fakeMessageAdapter: adapter, beforeSend: func(req agentruntime.DeliverRequest) {
+		durable := f.get(m.ID)
+		if durable.ProviderRef != "prepared-provider-id" || req.ProviderRef != durable.ProviderRef || durable.Attempts != 1 || durable.State != domain.AgentMessageHanded {
+			t.Fatalf("send preceded reservation: %+v request %+v", durable, req)
+		}
+	}}
+	f.dispatch()
+	restarted := newMessageFixtureAt(t, f.dbPath)
+	restarted.repo.listedSessions = f.repo.listedSessions
+	reader := restarted.adapters[agentruntime.AgentOpenCode]
+	reader.setReceipt(m.ID, agentruntime.MessageReceipt{Appeared: true})
+	restarted.dispatch()
+	if got := restarted.get(m.ID); got.State != domain.AgentMessageAppeared || len(reader.confirmed) != 1 || reader.confirmed[0].ProviderRef != "prepared-provider-id" || len(reader.deliveries()) != 0 {
+		t.Fatalf("restart lost identity: %+v", got)
 	}
 }

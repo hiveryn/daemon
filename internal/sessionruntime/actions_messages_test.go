@@ -434,11 +434,11 @@ func TestReconcileActionNoticeAgainstTheExecutionRecord(t *testing.T) {
 				t.Fatal(err)
 			}
 			tc.finish(t, f, id)
-			// A young row is left alone by the periodic pass, settled at startup.
+			// A durable terminal obligation can settle immediately; other young rows wait for startup.
 			if err := f.service.reconcileAgentMessages(ctx, false); err != nil {
 				t.Fatal(err)
 			}
-			if got, _ := f.messages.GetAgentMessage(ctx, m.ID); got.State != domain.AgentMessagePendingCommit {
+			if got, _ := f.messages.GetAgentMessage(ctx, m.ID); got.State != domain.AgentMessagePendingCommit && tc.state != domain.AgentMessagePending {
 				t.Fatalf("periodic pass touched a young row: %+v", got)
 			}
 			if err := f.service.reconcileAgentMessages(ctx, true); err != nil {
@@ -633,4 +633,53 @@ func (f *actionFixture) onlyNoticeFor(t *testing.T, architectKey, executionID st
 		t.Fatalf("notices for %s = %+v, want exactly one", executionID, found)
 	}
 	return found[0]
+}
+
+func TestActionFailureInsertFailureRetainsObligationAcrossRestart(t *testing.T) {
+	f := newActionFixture(t)
+	f.writeArtifactFreeAction(t, "demo")
+	arch := f.architect(t, "alpha", "demo")
+	run := f.requestAndStart(t, arch.ID, "demo")
+	f.service.messages.repo = &failingMessageWrites{AgentMessageRepository: f.messages, failCreate: true}
+	f.service.finishActionRunFailed(run.ID, "provider launch failed")
+	ctx := context.Background()
+	final, err := f.runs.GetActionRun(ctx, run.ID)
+	if err != nil || final.Status != domain.ActionRunFailed {
+		t.Fatalf("failure not persisted: %+v %v", final, err)
+	}
+	if got := f.notices(t, "alpha"); len(got) != 0 {
+		t.Fatalf("unexpected notice: %+v", got)
+	}
+	owed, err := f.runs.PendingActionNotifications(ctx)
+	if err != nil || len(owed) != 1 {
+		t.Fatalf("missing obligation: %+v %v", owed, err)
+	}
+	f.open(t)
+	if err := f.service.reconcileAgentMessages(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	notice := f.onlyNotice(t, "alpha", run.ID)
+	if !strings.Contains(notice.Body, "provider launch failed") || !strings.Contains(notice.Body, "No artifact package") {
+		t.Fatalf("wrong winning outcome: %+v", notice)
+	}
+	owed, err = f.runs.PendingActionNotifications(ctx)
+	if err != nil || len(owed) != 0 {
+		t.Fatalf("obligation not transferred: %+v %v", owed, err)
+	}
+	// Repeated recovery and terminal-row pruning must not recreate a notice.
+	now := time.Now().UTC()
+	notice.State, notice.EndedAt = domain.AgentMessageAppeared, &now
+	if err := f.messages.UpdateAgentMessage(ctx, notice); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := f.messages.PruneAgentMessages(ctx, now.Add(time.Hour)); err != nil || n != 1 {
+		t.Fatalf("prune: %d %v", n, err)
+	}
+	f.open(t)
+	if err := f.service.reconcileAgentMessages(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.notices(t, "alpha"); len(got) != 0 {
+		t.Fatalf("replayed pruned notice: %+v", got)
+	}
 }
