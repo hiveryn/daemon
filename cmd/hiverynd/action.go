@@ -18,7 +18,11 @@ const (
 	exitUsageErr = 2 // bad usage, or the path could not be validated at all
 )
 
-const actionUsage = `usage: hiverynd action validate [--json] [--strict] [path]
+const actionUsage = `usage: hiverynd action init [path]
+        hiverynd action validate [--json] [--strict] [path]
+
+Init creates a minimal greeting Action, initializes Git if needed and refuses
+to overwrite existing files. It does not register, launch or commit it.
 
 Validate an Action repository (action.yaml, KICKOFF.md, .git) offline with the
 daemon's own definition rules. path defaults to the current directory; the
@@ -51,6 +55,8 @@ func runAction(args []string, stdout, stderr io.Writer) int {
 		return exitUsageErr
 	}
 	switch args[0] {
+	case "init":
+		return runActionInit(args[1:], stdout, stderr)
 	case "validate":
 		return runActionValidate(args[1:], stdout, stderr)
 	case "-h", "-help", "--help", "help":

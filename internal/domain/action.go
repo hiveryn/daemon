@@ -68,10 +68,11 @@ const (
 	ActionArtifactsFailed  = sd.ActionArtifactsFailed
 	ActionArtifactsExpired = sd.ActionArtifactsExpired
 
-	MaxActionSummaryLength    = sd.MaxActionSummaryLength
-	MaxActionWaitSeconds      = sd.MaxActionWaitSeconds
-	MaxActionSuggestions      = sd.MaxActionSuggestions
-	MaxActionSuggestionLength = sd.MaxActionSuggestionLength
+	MaxActionSummaryLength         = sd.MaxActionSummaryLength
+	MaxActionWaitSeconds           = sd.MaxActionWaitSeconds
+	MaxActionSuggestions           = sd.MaxActionSuggestions
+	MaxActionSuggestionWords       = sd.MaxActionSuggestionWords
+	MaxActionSuggestionsTotalWords = sd.MaxActionSuggestionsTotalWords
 )
 
 // ValidActionName reports whether name is a well-formed action name.

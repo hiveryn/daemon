@@ -134,9 +134,6 @@ func (s *Service) AvailableActions(ctx context.Context, sessionID string) (domai
 				return
 			}
 			item := def.ActionDefinition
-			// Suggestions prefill the user's manual launch form; they are not
-			// guidance for an agent composing a request.
-			item.Suggestions = nil
 			if run, ok := running[item.Name]; ok {
 				item.RunningExecutionID = run.ID
 			}

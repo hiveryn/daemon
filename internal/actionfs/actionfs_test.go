@@ -40,7 +40,7 @@ func problemText(def Definition) string {
 func TestInspectReportsValidAndInvalidCheckouts(t *testing.T) {
 	root := t.TempDir()
 	writeAction(t, root, "demo", true, map[string]string{
-		"action.yaml": "name: demo\ndescription: |\n  Compare AMS and LDN; say how many runs.\nartifacts: summary.md, results.json\n",
+		"action.yaml": "name: demo\ndescription: |\n  Compare AMS and LDN; say how many runs.\nartifacts: summary.md, results.json\nsuggestions: [Compare three runs]\n",
 		"KICKOFF.md":  "Do {{prompt}} into {{output_dir}}.",
 	})
 	writeAction(t, root, "nogit", false, map[string]string{
@@ -164,7 +164,7 @@ func TestRenderKickoffIsSinglePass(t *testing.T) {
 	}
 }
 
-func TestSuggestionsAreOptionalTrimmedAndBounded(t *testing.T) {
+func TestSuggestionsAreRequiredTrimmedAndBounded(t *testing.T) {
 	root := t.TempDir()
 	kickoff := "Do {{prompt}} into {{output_dir}}."
 	writeAction(t, root, "none", true, map[string]string{
@@ -176,7 +176,7 @@ func TestSuggestionsAreOptionalTrimmedAndBounded(t *testing.T) {
 		"KICKOFF.md":  kickoff,
 	})
 	writeAction(t, root, "broken", true, map[string]string{
-		"action.yaml": "name: broken\ndescription: d\nartifacts: a\nsuggestions:\n  - one\n  - \"  \"\n  - one\n  - " + strings.Repeat("x", 1001) + "\n",
+		"action.yaml": "name: broken\ndescription: d\nartifacts: a\nsuggestions:\n  - one\n  - \"  \"\n  - one\n  - " + strings.Repeat("x ", 61) + "\n",
 		"KICKOFF.md":  kickoff,
 	})
 	writeAction(t, root, "mapping", true, map[string]string{
@@ -185,7 +185,7 @@ func TestSuggestionsAreOptionalTrimmedAndBounded(t *testing.T) {
 	})
 	var many strings.Builder
 	many.WriteString("name: many\ndescription: d\nartifacts: a\nsuggestions:\n")
-	for i := range 11 {
+	for i := range 4 {
 		many.WriteString("  - prompt " + string(rune('a'+i)) + "\n")
 	}
 	writeAction(t, root, "many", true, map[string]string{"action.yaml": many.String(), "KICKOFF.md": kickoff})
@@ -195,7 +195,7 @@ func TestSuggestionsAreOptionalTrimmedAndBounded(t *testing.T) {
 		return InspectLocal(filepath.Join(root, name), name)
 	}
 
-	if def := get("none"); !def.Valid || def.Suggestions != nil {
+	if def := get("none"); def.Valid || def.Suggestions != nil {
 		t.Fatalf("none = %+v problems:\n%s", def.ActionDefinition, problemText(def))
 	}
 	some := get("some")
@@ -204,7 +204,7 @@ func TestSuggestionsAreOptionalTrimmedAndBounded(t *testing.T) {
 	}
 	broken := get("broken")
 	text := problemText(broken)
-	for _, want := range []string{"suggestions[1] is blank", "suggestions[2] repeats suggestions[0]", "suggestions[3] is 1001 characters; the limit is 1000"} {
+	for _, want := range []string{"suggestions[1] is blank", "suggestions[2] repeats suggestions[0]", "suggestions[3] is 61 words; the limit is 60"} {
 		if broken.Valid || !strings.Contains(text, want) {
 			t.Fatalf("broken problems missing %q:\n%s", want, text)
 		}
@@ -212,7 +212,7 @@ func TestSuggestionsAreOptionalTrimmedAndBounded(t *testing.T) {
 	if mapping := get("mapping"); mapping.Valid || !strings.Contains(problemText(mapping), "invalid YAML") {
 		t.Fatalf("mapping problems:\n%s", problemText(mapping))
 	}
-	if many := get("many"); many.Valid || !strings.Contains(problemText(many), "suggestions has 11 entries; the limit is 10") {
+	if many := get("many"); many.Valid || !strings.Contains(problemText(many), "suggestions has 4 entries; the limit is 3") {
 		t.Fatalf("many problems:\n%s", problemText(many))
 	}
 }
@@ -227,7 +227,7 @@ func diagnosticCodes(def Definition, severity Severity) []string {
 	return codes
 }
 
-func TestMissingSuggestionsWarnWithoutInvalidating(t *testing.T) {
+func TestMissingSuggestionsInvalidate(t *testing.T) {
 	root := t.TempDir()
 	kickoff := "Do {{prompt}} into {{output_dir}}."
 	cases := map[string]string{
@@ -241,10 +241,10 @@ func TestMissingSuggestionsWarnWithoutInvalidating(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !def.Valid || len(def.Problems) != 0 {
+		if def.Valid || len(def.Problems) != 1 {
 			t.Fatalf("%s invalid: %s", name, problemText(def))
 		}
-		warnings := diagnosticCodes(def, SeverityWarning)
+		warnings := diagnosticCodes(def, SeverityError)
 		if len(warnings) != 1 || warnings[0] != CodeSuggestionsMissing {
 			t.Fatalf("%s warnings = %v", name, warnings)
 		}
@@ -281,5 +281,49 @@ func TestInspectReportsCodedErrorsForAnyPath(t *testing.T) {
 	}
 	if _, err := Inspect(filepath.Join(dir, "KICKOFF.md")); err == nil || !strings.Contains(err.Error(), "not a directory") {
 		t.Fatalf("file path err = %v", err)
+	}
+}
+
+func TestSuggestionWordBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		prompts []string
+		code    string
+	}{
+		{"sixty", []string{strings.Repeat("word\t", 60)}, ""},
+		{"sixty-one", []string{strings.Repeat("word\n", 61)}, CodeSuggestionTooLong},
+		{"total-120", []string{strings.Repeat("a ", 60), strings.Repeat("b\u2003", 60)}, ""},
+		{"total-121", []string{strings.Repeat("a ", 60), strings.Repeat("b ", 60), "c"}, CodeSuggestionsTotalTooLong},
+		{"unicode", []string{strings.Repeat("字", 2000)}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, findings := suggestions(tc.prompts)
+			if tc.code == "" {
+				if len(findings) != 0 {
+					t.Fatal(findings)
+				}
+				return
+			}
+			if len(findings) != 1 || findings[0].code != tc.code {
+				t.Fatal(findings)
+			}
+		})
+	}
+}
+
+func TestRemoteExampleErrorsMatchLocal(t *testing.T) {
+	fake := sshtest.Install(t)
+	for _, tc := range []struct{ name, examples string }{
+		{"missing", ""},
+		{"many", "suggestions: [one, two, three, four]\n"},
+		{"long", "suggestions: [\"" + strings.Repeat("word ", 61) + "\"]\n"},
+		{"total", "suggestions: [\"" + strings.Repeat("a ", 60) + "\", \"" + strings.Repeat("b ", 60) + "\", c]\n"},
+	} {
+		dir := writeAction(t, fake.Home("box"), tc.name, true, map[string]string{"action.yaml": "name: " + tc.name + "\ndescription: d\nartifacts: a\n" + tc.examples, "KICKOFF.md": "{{prompt}} {{output_dir}}"})
+		local := InspectLocal(dir, tc.name)
+		remote := InspectRemote(context.Background(), "box", "box", dir, tc.name)
+		if local.Valid || remote.Valid || strings.Join(diagnosticCodes(local, SeverityError), ",") != strings.Join(diagnosticCodes(remote, SeverityError), ",") {
+			t.Fatalf("local=%+v remote=%+v", local.Diagnostics, remote.Diagnostics)
+		}
 	}
 }

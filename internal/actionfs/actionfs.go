@@ -9,8 +9,8 @@
 //
 //	<checkout>/.git          the action is a Git repository
 //	<checkout>/action.yaml   name (== the registered name), description,
-//	                         artifacts and the optional suggestions
-//	                         (manual-launch prompts); no other key
+//	                         artifacts and required suggestions
+//	                         (example invocation prompts); no other key
 //	<checkout>/KICKOFF.md    launch instructions containing {{prompt}} and
 //	                         {{output_dir}}; no other {{...}} placeholder
 //
@@ -19,7 +19,7 @@
 // interpreted locally.
 //
 // Every finding is a Diagnostic with a stable code. Errors are the definition's
-// Problems and make it invalid; warnings (today only missing suggestions) are
+// Problems and make it invalid; warnings are
 // authoring advice that never blocks a launch. Inspect applies the same rules
 // to an action repository at any local path, which is what `hiverynd action
 // validate` runs offline.
@@ -39,7 +39,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/hiveryn/daemon/internal/domain"
 	"github.com/hiveryn/daemon/internal/remoteexec"
@@ -86,6 +85,7 @@ const (
 	CodeDescriptionRequired       = "DEFINITION_DESCRIPTION_REQUIRED"
 	CodeArtifactsRequired         = "DEFINITION_ARTIFACTS_REQUIRED"
 	CodeSuggestionsMissing        = "SUGGESTIONS_MISSING"
+	CodeSuggestionsTotalTooLong   = "SUGGESTIONS_TOTAL_TOO_LONG"
 	CodeSuggestionsTooMany        = "SUGGESTIONS_TOO_MANY"
 	CodeSuggestionBlank           = "SUGGESTION_BLANK"
 	CodeSuggestionTooLong         = "SUGGESTION_TOO_LONG"
@@ -175,7 +175,7 @@ func InspectLocal(dir, name string) Definition {
 		manifest: readBounded(filepath.Join(dir, DefinitionFileName)),
 		kickoff:  readBounded(filepath.Join(dir, KickoffFileName)),
 	}
-	if info, err := os.Stat(filepath.Join(dir, ".git")); err == nil && info.IsDir() {
+	if info, err := os.Stat(filepath.Join(dir, ".git")); err == nil && (info.IsDir() || info.Mode().IsRegular()) {
 		files.gitDir = true
 	}
 	return inspect(dir, name, files, filepath.Join)
@@ -186,7 +186,7 @@ func InspectLocal(dir, name string) Definition {
 // carrying the cause; dir is never interpreted locally.
 func InspectRemote(ctx context.Context, alias, machine, dir, name string) Definition {
 	script := "d=" + remoteexec.Quote(dir) + "\n" + `if ! test -d "$d"; then printf 'nodir\n'; exit 0; fi
-if test -d "$d/.git"; then printf 'git 1\n'; else printf 'git 0\n'; fi
+if test -d "$d/.git" || test -f "$d/.git"; then printf 'git 1\n'; else printf 'git 0\n'; fi
 for f in ` + remoteexec.Args(DefinitionFileName, KickoffFileName) + `; do
   p="$d/$f"
   if ! test -e "$p"; then printf 'missing\n'
@@ -316,7 +316,7 @@ func inspect(dir, dirName string, files checkoutFiles, join func(...string) stri
 		decoder.KnownFields(true)
 		if err := decoder.Decode(&m); err != nil {
 			if errors.Is(err, io.EOF) {
-				problem(manifestPath, CodeDefinitionEmpty, "file is empty; required keys: name, description, artifacts")
+				problem(manifestPath, CodeDefinitionEmpty, "file is empty; required keys: name, description, artifacts, suggestions")
 			} else {
 				problem(manifestPath, CodeDefinitionInvalidYAML, "invalid YAML (allowed keys: name, description, artifacts, suggestions): %v", err)
 			}
@@ -334,13 +334,6 @@ func inspect(dir, dirName string, files checkoutFiles, join func(...string) stri
 			}
 			if def.Artifacts == "" {
 				problem(manifestPath, CodeArtifactsRequired, "artifacts is required: describe the delivered artifact package")
-			}
-			if len(m.Suggestions) == 0 {
-				state := "absent"
-				if m.Suggestions != nil {
-					state = "empty"
-				}
-				report(SeverityWarning, manifestPath, CodeSuggestionsMissing, "suggestions is %s; add 2-3 useful example prompts so the manual launch form can offer them", state)
 			}
 			var findings []finding
 			def.Suggestions, findings = suggestions(m.Suggestions)
@@ -364,11 +357,11 @@ func inspect(dir, dirName string, files checkoutFiles, join func(...string) stri
 	return def
 }
 
-// suggestions trims the optional suggested prompts and reports every entry
+// suggestions trims the required example prompts and reports every entry
 // that breaks the bounds: blank, too long, repeated, or too many.
 func suggestions(raw []string) ([]string, []finding) {
 	if len(raw) == 0 {
-		return nil, nil
+		return nil, []finding{{CodeSuggestionsMissing, "suggestions is required: provide 1–3 unique example prompts"}}
 	}
 	var problems []finding
 	if len(raw) > domain.MaxActionSuggestions {
@@ -376,14 +369,17 @@ func suggestions(raw []string) ([]string, []finding) {
 	}
 	out := make([]string, 0, len(raw))
 	seen := make(map[string]int, len(raw))
+	total := 0
 	for i, entry := range raw {
 		entry = strings.TrimSpace(entry)
-		switch length := utf8.RuneCountInString(entry); {
+		length := len(strings.Fields(entry))
+		total += length
+		switch {
 		case entry == "":
 			problems = append(problems, finding{CodeSuggestionBlank, fmt.Sprintf("suggestions[%d] is blank; each suggestion is a prompt the launch form can fill in", i)})
 			continue
-		case length > domain.MaxActionSuggestionLength:
-			problems = append(problems, finding{CodeSuggestionTooLong, fmt.Sprintf("suggestions[%d] is %d characters; the limit is %d", i, length, domain.MaxActionSuggestionLength)})
+		case length > domain.MaxActionSuggestionWords:
+			problems = append(problems, finding{CodeSuggestionTooLong, fmt.Sprintf("suggestions[%d] is %d words; the limit is %d", i, length, domain.MaxActionSuggestionWords)})
 		}
 		if first, ok := seen[entry]; ok {
 			problems = append(problems, finding{CodeSuggestionDuplicate, fmt.Sprintf("suggestions[%d] repeats suggestions[%d]", i, first)})
@@ -391,6 +387,9 @@ func suggestions(raw []string) ([]string, []finding) {
 		}
 		seen[entry] = i
 		out = append(out, entry)
+	}
+	if total > domain.MaxActionSuggestionsTotalWords {
+		problems = append(problems, finding{CodeSuggestionsTotalTooLong, fmt.Sprintf("suggestions total %d words; the limit is %d", total, domain.MaxActionSuggestionsTotalWords)})
 	}
 	return out, problems
 }

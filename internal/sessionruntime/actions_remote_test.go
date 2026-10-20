@@ -40,7 +40,7 @@ func (f *actionFixture) writeRemoteAction(t *testing.T, fake *sshtest.Fake, name
 		t.Fatal(err)
 	}
 	for file, content := range map[string]string{
-		"action.yaml": "name: " + name + "\ndescription: Collects evidence remotely.\nartifacts: summary.md\n",
+		"action.yaml": "name: " + name + "\ndescription: Collects evidence remotely.\nartifacts: summary.md\nsuggestions: [Collect synthetic evidence]\n",
 		"KICKOFF.md":  testActionKickoff,
 	} {
 		if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0o644); err != nil {
@@ -142,7 +142,7 @@ func TestRemoteActionsAreDiscoveredWhereTheyAreRegistered(t *testing.T) {
 	}
 
 	available, err := f.service.AvailableActions(ctx, arch.ID)
-	if err != nil || len(available.Actions) != 2 || available.Actions[0].Machine != "box" || available.Actions[0].Suggestions != nil {
+	if err != nil || len(available.Actions) != 2 || available.Actions[0].Machine != "box" || strings.Join(available.Actions[0].Suggestions, ",") != "Collect synthetic evidence" {
 		t.Fatalf("available = %+v, %v", available, err)
 	}
 

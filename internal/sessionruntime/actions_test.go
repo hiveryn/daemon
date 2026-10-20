@@ -98,7 +98,7 @@ func (f *actionFixture) writeAction(t *testing.T, name, manifest, kickoff string
 
 func (f *actionFixture) writeValidAction(t *testing.T, name string) string {
 	t.Helper()
-	return f.writeAction(t, name, "name: "+name+"\ndescription: Compares things; say how many runs.\nartifacts: summary.md and results.json\n", testActionKickoff)
+	return f.writeAction(t, name, "name: "+name+"\ndescription: Compares things; say how many runs.\nartifacts: summary.md and results.json\nsuggestions: [Compare three runs]\n", testActionKickoff)
 }
 
 func (f *actionFixture) launch(t *testing.T, name, prompt string) domain.LaunchActionResult {

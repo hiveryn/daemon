@@ -31,7 +31,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "serve":
 		err = runServe(rest)
 	default:
-		say(stderr, "hiverynd: unknown command %q\nusage: hiverynd [serve] [flags] | hiverynd mcp [flags] | hiverynd action validate [path]\n", command)
+		say(stderr, "hiverynd: unknown command %q\nusage: hiverynd [serve] [flags] | hiverynd mcp [flags] | hiverynd action init|validate [path]\n", command)
 		return exitUsageErr
 	}
 	if err != nil {

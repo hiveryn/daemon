@@ -39,15 +39,18 @@ hiverynd mcp --daemon-url http://127.0.0.1:4201 --architect-key hiveryn
 
 `hiverynd mcp` is intended to be spawned by `agentruntime`; session scoping comes from `HIVERYN_SESSION_TYPE` (`architect` or `ticket`; any other value, including the removed `freeform`, is a startup error).
 
-### Validating an Action
+### Creating and validating an Action
 
 ```bash
+hiverynd action init [path]
 hiverynd action validate [--json] [--strict] [path]
 ```
 
-Checks an Action repository (default: the current directory) with the daemon's own definition rules — `.git`, strict `action.yaml` keys and required fields, `suggestions` bounds, and the `KICKOFF.md` placeholders. It runs fully offline: no running daemon, config, database or provider setup, and the path need not be inside `HIVERYN_HOME/actions`. The action name is the directory's base name, as it will be once installed.
+Init creates a runnable greeting example (`action.yaml` and `KICKOFF.md`), initializing Git when needed. It preserves existing repository state, refuses to overwrite either file, and never registers, launches or commits the Action. The target directory name must be a valid Action identifier. README, AGENTS, operational notes, scripts, tests and dependency manifests are optional.
 
-Every finding has a stable `code`, a `severity` and the absolute `path` of the file (or action directory) it concerns; `--json` prints them as a report (`path`, `name`, `valid`, `strict`, `passed`, `errors`, `warnings`, `diagnostics`). Errors make the definition invalid, exactly as the runtime refuses to launch it. Warnings are advice that never blocks a launch — currently `SUGGESTIONS_MISSING`, when `suggestions` is absent or empty, recommending 2–3 useful manual launch prompts.
+Validate checks an Action repository (default: the current directory) with the daemon's own definition rules — `.git`, strict `action.yaml` keys and required fields, `suggestions` bounds, and the `KICKOFF.md` placeholders. It runs fully offline: no running daemon, config, database or provider setup, and the path need not be inside `HIVERYN_HOME/actions`. The action name is the directory's base name, as it will be once installed.
+
+Every finding has a stable `code`, a `severity` and the absolute `path` of the file (or action directory) it concerns; `--json` prints them as a report (`path`, `name`, `valid`, `strict`, `passed`, `errors`, `warnings`, `diagnostics`). Errors make the definition invalid, exactly as the runtime refuses to launch it. Missing or empty examples produce the error `SUGGESTIONS_MISSING`; count, per-example word and total-word violations are errors too. `--strict` also rejects any warnings.
 
 | Exit | Meaning |
 |---|---|
@@ -227,14 +230,14 @@ description: |                 # required: what the Action does and what the pro
   Compare synthetic AMS and LDN evidence. Say how many collections to run.
 artifacts: |                   # required: the delivered artifact package contract
   summary.md and results.json in the output directory.
-suggestions:                   # optional: ready-made prompts for the manual launch form
+suggestions:                   # required: complete example prompts for users and agents
   - Compare AMS and LDN with three collections.
   - Compare AMS and LDN with six collections and a first-attempt failure.
 ```
 
 `KICKOFF.md` holds the launch instructions and must contain `{{prompt}}` (the caller's prompt) and `{{output_dir}}` (the fresh output directory); no other `{{…}}` placeholder is supplied.
 
-`suggestions` is a list of plain prompt strings, in the order the launch form shows them — at most 10, each nonblank after trimming, unique and at most 1000 characters (multi-line block scalars are fine). In the Actions window each appears as a chip under the Launch prompt; clicking one replaces the prompt text, which stays editable, and never launches anything. Suggestions are manual-entry conveniences only: they are not part of `getAvailableActions`, architect requests or their approval. Omit the key when there is nothing to suggest. A definition that breaks any rule is listed with its problems (the Actions window shows them) and cannot launch until repaired.
+`suggestions` is a list of plain prompt strings, in the order the launch form shows them — 1–3, each nonblank after trimming, unique, at most 60 whitespace-separated words each and 120 words total (multi-line block scalars are fine). In the Actions window each appears as a chip under the Launch prompt; clicking one replaces the prompt text, which stays editable, and never launches anything. The same examples reach architects and ticket workers through `getAvailableActions`; callers must adapt synthetic example identifiers and dates to the actual request, never use them as defaults. A definition that breaks any rule is listed with its problems (the Actions window shows them) and cannot launch until repaired.
 
 ### `tabs.yaml` — tab layout per session type
 

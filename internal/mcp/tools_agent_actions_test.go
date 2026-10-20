@@ -93,7 +93,7 @@ func TestAgentActionToolsCallSessionScopedEndpoints(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
 		case "GET /api/sessions/sess-arch/available-actions":
-			writeEnvelope(t, w, http.StatusOK, domain.AvailableActionList{Actions: []domain.ActionDefinition{{Name: "demo", Valid: true, Description: "d", Artifacts: "a"}}})
+			writeEnvelope(t, w, http.StatusOK, domain.AvailableActionList{Actions: []domain.ActionDefinition{{Name: "demo", Valid: true, Description: "d", Artifacts: "a", Suggestions: []string{"Compare three runs"}}}})
 		case "POST /api/sessions/sess-arch/intents/execute-action":
 			if err := json.NewDecoder(r.Body).Decode(&executed); err != nil {
 				t.Fatalf("decode: %v", err)
@@ -121,7 +121,7 @@ func TestAgentActionToolsCallSessionScopedEndpoints(t *testing.T) {
 	ctx := context.Background()
 
 	_, list, err := server.handleGetAvailableActions(ctx, nil, GetAvailableActionsInput{})
-	if err != nil || len(list.Actions) != 1 || list.Actions[0].Problems == nil {
+	if err != nil || len(list.Actions) != 1 || list.Actions[0].Problems == nil || len(list.Actions[0].Suggestions) != 1 || list.Actions[0].Suggestions[0] != "Compare three runs" {
 		t.Fatalf("available = %+v, %v", list, err)
 	}
 

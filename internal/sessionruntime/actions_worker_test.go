@@ -48,7 +48,7 @@ func TestWorkerRequestsActionsOfItsProject(t *testing.T) {
 
 	// Discovery is the parent project's availableActions, missing ones included.
 	list, err := f.service.AvailableActions(ctx, w.ID)
-	if err != nil || len(list.Actions) != 2 || list.Actions[0].Name != "demo" || !list.Actions[0].Valid || list.Actions[1].Valid {
+	if err != nil || len(list.Actions) != 2 || list.Actions[0].Name != "demo" || !list.Actions[0].Valid || list.Actions[1].Valid || len(list.Actions[0].Suggestions) != 1 || list.Actions[0].Suggestions[0] != "Compare three runs" {
 		t.Fatalf("worker discovery = %+v, %v", list, err)
 	}
 	if _, err := f.service.RequestExecuteAction(ctx, w.ID, domain.ExecuteActionRequest{Name: "other", Prompt: "x", Variant: "codex"}); !errors.As(err, new(*domain.ValidationError)) || !strings.Contains(err.Error(), "not available") {

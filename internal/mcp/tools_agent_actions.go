@@ -18,7 +18,7 @@ import (
 func (s *Server) registerAgentActionTools() {
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "getAvailableActions",
-		Description: "List the Actions this project may request (hiveryn.yaml availableActions), each with its description — what the Action does and what your prompt must contain — its artifact contract, where it runs (machine; absent means local) and the agent variants eligible to run it there (variants). A listed Action with valid=false cannot be requested; its problems say why (for example a missing definition or an unreachable machine). running_execution_id is set while an execution of that Action is running.",
+		Description: "List the Actions this project may request (hiveryn.yaml availableActions), each with its description — what the Action does and what your prompt must contain — its artifact contract, suggestions (complete example prompts; adapt them to the actual requested inputs, never treat example identifiers or dates as defaults), where it runs (machine; absent means local) and the agent variants eligible to run it there (variants). A listed Action with valid=false cannot be requested; its problems say why (for example a missing definition or an unreachable machine). running_execution_id is set while an execution of that Action is running.",
 	}, s.handleGetAvailableActions)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
