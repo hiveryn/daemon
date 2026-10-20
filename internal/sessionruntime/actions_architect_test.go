@@ -34,7 +34,7 @@ func (f *actionFixture) architect(t *testing.T, key string, available ...string)
 	if err != nil {
 		t.Fatalf("create architect session: %v", err)
 	}
-	if _, err := f.sessions.CreateRun(ctx, domain.CreateSessionRunParams{SessionID: session.ID, ProfileName: "codex", Workdir: session.Workdir}); err != nil {
+	if _, err := f.sessions.CreateRun(ctx, domain.CreateSessionRunParams{SessionID: session.ID, ProfileName: "codex", ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex"}, Workdir: session.Workdir}); err != nil {
 		t.Fatalf("create architect run: %v", err)
 	}
 	session, err = f.sessions.GetSession(ctx, session.ID)
@@ -675,64 +675,5 @@ func TestExecuteActionTeardownAndRestartFailPendingRequests(t *testing.T) {
 	}
 	if _, err := f.conclude(t, liveRun.SessionID, domain.ConcludeActionRequest{Outcome: domain.ActionConclusionCompleted, Summary: "ok"}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestWaitForActionResult(t *testing.T) {
-	f := newActionFixture(t)
-	f.writeValidAction(t, "demo")
-	arch := f.architect(t, "alpha", "demo")
-	ctx := context.Background()
-	pending := f.request(t, arch.ID, "demo", "go")
-
-	for _, bad := range []time.Duration{0, -time.Second, 31 * time.Second} {
-		if _, err := f.service.WaitForActionResult(ctx, arch.ID, pending.ExecutionID, bad); !errors.As(err, new(*domain.ValidationError)) {
-			t.Errorf("timeout %v err = %v, want validation error", bad, err)
-		}
-	}
-
-	// No change: returns the unchanged state at the timeout, not at once.
-	start := time.Now()
-	res, err := f.service.WaitForActionResult(ctx, arch.ID, pending.ExecutionID, 300*time.Millisecond)
-	if err != nil || !res.TimedOut || res.Changed || res.Result.Status != domain.ActionRunPendingApproval || time.Since(start) < 250*time.Millisecond {
-		t.Fatalf("timeout wait = %+v, %v after %v", res, err, time.Since(start))
-	}
-
-	// A status change ends the wait early.
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		_ = f.approve(arch.ID, pending.ExecutionID)
-	}()
-	start = time.Now()
-	res, err = f.service.WaitForActionResult(ctx, arch.ID, pending.ExecutionID, 10*time.Second)
-	if err != nil || !res.Changed || res.TimedOut || res.Result.Status != domain.ActionRunRunning || time.Since(start) > 5*time.Second {
-		t.Fatalf("changed wait = %+v, %v", res, err)
-	}
-
-	// Cancelling the wait does not touch the execution.
-	cctx, cancel := context.WithCancel(ctx)
-	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
-	if _, err := f.service.WaitForActionResult(cctx, arch.ID, pending.ExecutionID, 10*time.Second); !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled wait err = %v", err)
-	}
-	if got := f.result(t, arch.ID, pending.ExecutionID); got.Status != domain.ActionRunRunning {
-		t.Fatalf("after cancelled wait = %+v, want still running", got)
-	}
-
-	// A final execution returns at once.
-	run, _ := f.service.GetActionRun(ctx, pending.ExecutionID)
-	if _, err := f.service.CancelActionRun(ctx, run.ID); err != nil {
-		t.Fatal(err)
-	}
-	start = time.Now()
-	res, err = f.service.WaitForActionResult(ctx, arch.ID, pending.ExecutionID, 10*time.Second)
-	if err != nil || res.Changed || res.TimedOut || res.Result.Status != domain.ActionRunFailed || time.Since(start) > time.Second {
-		t.Fatalf("final wait = %+v, %v", res, err)
-	}
-
-	// Scoped like getActionResult.
-	stranger := f.architect(t, "beta", "demo")
-	if _, err := f.service.WaitForActionResult(ctx, stranger.ID, pending.ExecutionID, time.Second); !errors.As(err, new(*domain.NotFoundError)) {
-		t.Fatalf("stranger wait err = %v", err)
 	}
 }

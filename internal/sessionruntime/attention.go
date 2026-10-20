@@ -243,13 +243,3 @@ func completeUTF8Prefix(data []byte) int {
 	}
 	return len(data)
 }
-
-// attentionKey is what makes an attention change worth waking a waiter:
-// input_required appearing, clearing or changing reason. The none_detected /
-// unavailable distinction and detection times are not.
-func attentionKey(a domain.ActionAgentAttention) string {
-	if a.State != domain.ActionAttentionInputRequired {
-		return ""
-	}
-	return string(a.Source) + ":" + a.Reason + ":" + a.Message
-}

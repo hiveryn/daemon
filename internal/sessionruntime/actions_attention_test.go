@@ -43,29 +43,22 @@ func (f *actionFixture) mainOutput(t *testing.T, output string) {
 	spec.Observer.Output([]byte(output))
 }
 
-func waitResult(t *testing.T, f *actionFixture, sessionID, executionID string, timeout time.Duration) <-chan domain.ActionWaitResult {
+// nextEvent returns the next action event for executionID, or fails.
+func nextEvent(t *testing.T, sub domain.ActionEventSubscription, executionID string) domain.ActionEvent {
 	t.Helper()
-	done := make(chan domain.ActionWaitResult, 1)
-	go func() {
-		res, err := f.service.WaitForActionResult(context.Background(), sessionID, executionID, timeout)
-		if err != nil {
-			t.Errorf("wait: %v", err)
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case event, ok := <-sub.C():
+			if !ok {
+				t.Fatal("subscription closed")
+			}
+			if event.ExecutionID == executionID {
+				return event
+			}
+		case <-deadline:
+			t.Fatal("no action event")
 		}
-		done <- res
-	}()
-	// Let the wait take its initial reading first.
-	time.Sleep(50 * time.Millisecond)
-	return done
-}
-
-func receive(t *testing.T, ch <-chan domain.ActionWaitResult) domain.ActionWaitResult {
-	t.Helper()
-	select {
-	case res := <-ch:
-		return res
-	case <-time.After(5 * time.Second):
-		t.Fatal("wait did not return")
-		return domain.ActionWaitResult{}
 	}
 }
 
@@ -88,38 +81,36 @@ func TestActionResultReportsAndWakesOnTerminalAttention(t *testing.T) {
 		t.Fatalf("running result = %+v, want none_detected with coverage", running)
 	}
 
-	// The trust prompt appearing wakes a waiter, well before its timeout.
-	start := time.Now()
-	done := waitResult(t, f, arch.ID, pending.ExecutionID, 10*time.Second)
+	// The trust prompt appearing is announced on the action stream (the
+	// Actions window's) while the execution stays running, and the result
+	// reports it.
+	sub := f.service.SubscribeActionEvents()
+	defer sub.Close()
 	f.mainOutput(t, codexTrustDialog)
-	res := receive(t, done)
-	if !res.Changed || res.TimedOut || res.Result.Status != domain.ActionRunRunning || time.Since(start) > 3*time.Second {
-		t.Fatalf("wait on attention = %+v after %v", res, time.Since(start))
+	if event := nextEvent(t, sub, pending.ExecutionID); event.Status != domain.ActionRunRunning {
+		t.Fatalf("attention event = %+v, want running", event)
 	}
-	got := res.Result.Attention
+	got := f.result(t, arch.ID, pending.ExecutionID).Attention
 	if got.State != domain.ActionAttentionInputRequired || got.Reason != artcodex.AttentionFolderTrust || got.Source != domain.ActionAttentionSourceTerminal || got.Since == nil {
 		t.Fatalf("attention = %+v, want terminal folder_trust", got)
 	}
-	// The Actions window sees it on the execution record, which stays running.
 	run, err := f.service.GetActionRun(ctx, pending.ExecutionID)
 	if err != nil || run.Status != domain.ActionRunRunning || run.Attention == nil || run.Attention.Reason != artcodex.AttentionFolderTrust {
 		t.Fatalf("run = %+v, %v", run, err)
 	}
 
-	// Waiting again on the unchanged condition does not return at once.
-	start = time.Now()
-	res, err = f.service.WaitForActionResult(ctx, arch.ID, pending.ExecutionID, 400*time.Millisecond)
-	if err != nil || res.Changed || !res.TimedOut || time.Since(start) < 350*time.Millisecond {
-		t.Fatalf("repeated wait = %+v, %v after %v", res, err, time.Since(start))
-	}
-
 	// The agent exits and is resumed: the new agent's attention starts over,
-	// and the cleared attention wakes a waiter.
-	done = waitResult(t, f, arch.ID, pending.ExecutionID, 10*time.Second)
+	// and the cleared attention is announced too.
 	f.service.handleTerminalExit(terminalExit{SessionID: run.SessionID, TerminalID: "old"})
-	res = receive(t, done)
-	if !res.Changed || res.Result.Attention.State != domain.ActionAttentionNoneDetected {
-		t.Fatalf("wait across resume = %+v, want cleared", res)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		nextEvent(t, sub, pending.ExecutionID)
+		if f.result(t, arch.ID, pending.ExecutionID).Attention.State == domain.ActionAttentionNoneDetected {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("attention not cleared across resume")
+		}
 	}
 }
 

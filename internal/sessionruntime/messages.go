@@ -23,10 +23,11 @@ import (
 // OpenCode's session server (push) — never by typing into a terminal.
 //
 // Producers (messages_conclusion.go: ticket conclusions to the architect;
-// messages_action.go: Action conclusions to the requesting agent) call
-// BeginAgentMessage (state pending_commit) before a non-transactional side
-// effect and CommitAgentMessage after it, or EnqueueAgentMessage for a
-// one-shot. A single dispatcher goroutine owns every
+// messages_action.go: the end of an agent-requested Action execution to the
+// requesting agent) call BeginAgentMessage (state pending_commit) before a
+// non-transactional side effect and CommitAgentMessage — or
+// settleAgentMessage, which re-reads the record through the kind's check —
+// after it, or EnqueueAgentMessage for a one-shot. A single dispatcher goroutine owns every
 // state change after that: it resolves the recipient to a running session,
 // gates on idle where the provider needs it, hands over or pushes, confirms
 // the provider's own receipt before any redelivery, backs off on transport
@@ -100,6 +101,11 @@ type messageCommitVerdict struct {
 	committed bool
 	failed    string
 	condition string
+	// body and payload, when set on a committed verdict, replace the text
+	// the producer wrote at begin time: the announced change is read back
+	// from its durable record, so the notice says what actually happened.
+	body    string
+	payload map[string]any
 }
 
 func newMessageRuntime() *messageRuntime {
@@ -126,7 +132,7 @@ func (s *Service) SetAgentMessageRepository(repo domain.AgentMessageRepository) 
 	}
 	s.messages.repo = repo
 	s.messages.commitChecks[domain.AgentMessageTicketConcluded] = s.checkTicketConcludedCommit
-	s.messages.commitChecks[domain.AgentMessageActionConcluded] = s.checkActionConcludedCommit
+	s.messages.commitChecks[domain.AgentMessageActionEnded] = s.checkActionEndedCommit
 }
 
 // errAgentMessagesNotConfigured: the Service was built without a message
@@ -235,6 +241,57 @@ func (s *Service) markCommitted(m *domain.AgentMessage) {
 	m.Condition = ""
 	m.CommittedAt = &now
 	m.UpdatedAt = now
+}
+
+// settleAgentMessage resolves one pending_commit message against its kind's
+// reconciliation check, as the periodic pass would, right after the producer
+// wrote the side effect it announces. Producers whose final text depends on
+// the written record use it instead of CommitAgentMessage. It is idempotent
+// for a message already past pending_commit.
+func (s *Service) settleAgentMessage(ctx context.Context, id string) error {
+	repo, err := s.messageRepo()
+	if err != nil {
+		return err
+	}
+	m, err := repo.GetAgentMessage(ctx, id)
+	if err != nil {
+		return err
+	}
+	if m.State != domain.AgentMessagePendingCommit {
+		return nil
+	}
+	check := s.messages.commitChecks[m.Kind]
+	if check == nil {
+		return fmt.Errorf("no reconciliation for kind %q", m.Kind)
+	}
+	s.applyCommitVerdict(&m, check(ctx, m))
+	if err := repo.UpdateAgentMessage(ctx, m); err != nil {
+		return err
+	}
+	s.emitArchitectEvent(m.ArchitectKey, domain.ArchitectEventAgentMessageChanged, "", "")
+	if m.State == domain.AgentMessagePending {
+		s.kickMessages()
+	}
+	return nil
+}
+
+// applyCommitVerdict moves a pending_commit message to what its check found.
+func (s *Service) applyCommitVerdict(m *domain.AgentMessage, verdict messageCommitVerdict) {
+	switch {
+	case verdict.committed:
+		if verdict.body != "" {
+			m.Body = verdict.body
+			m.Payload = cloneAnyMap(verdict.payload)
+		}
+		s.markCommitted(m)
+		s.logger.Info("agent message committed", "message_id", m.ID, "kind", m.Kind, "recipient", m.Recipient)
+	case verdict.failed != "":
+		s.markMessageFailed(m, verdict.failed)
+		s.logger.Warn("agent message failed by its check", "message_id", m.ID, "kind", m.Kind, "reason", verdict.failed)
+	default:
+		m.Condition = verdict.condition
+		m.UpdatedAt = s.messages.now()
+	}
 }
 
 // EnqueueAgentMessage records a deliverable message in one step.
@@ -451,18 +508,7 @@ func (s *Service) reconcileAgentMessages(ctx context.Context, startup bool) erro
 			s.setMessageCondition(ctx, &m, fmt.Sprintf("no reconciliation for kind %q; left unresolved", m.Kind))
 			continue
 		}
-		verdict := check(ctx, m)
-		switch {
-		case verdict.committed:
-			s.markCommitted(&m)
-			s.logger.Info("agent message committed by reconciliation", "message_id", m.ID, "kind", m.Kind, "recipient", m.Recipient)
-		case verdict.failed != "":
-			s.markMessageFailed(&m, verdict.failed)
-			s.logger.Warn("agent message failed by reconciliation", "message_id", m.ID, "kind", m.Kind, "reason", verdict.failed)
-		default:
-			m.Condition = verdict.condition
-			m.UpdatedAt = now
-		}
+		s.applyCommitVerdict(&m, check(ctx, m))
 		if err := repo.UpdateAgentMessage(ctx, m); err != nil {
 			return err
 		}

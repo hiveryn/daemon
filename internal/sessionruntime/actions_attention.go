@@ -69,8 +69,7 @@ func (s *Service) withAttention(run domain.ActionRun) domain.ActionRun {
 }
 
 // publishActionAttention announces on the actions stream that a running
-// execution's agent attention changed, so the Actions window refetches and
-// waitForActionResult rereads.
+// execution's agent attention changed, so the Actions window refetches.
 func (s *Service) publishActionAttention(executionID string) {
 	rt, err := s.actionRuntime()
 	if err != nil {

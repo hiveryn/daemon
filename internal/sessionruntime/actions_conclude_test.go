@@ -271,8 +271,9 @@ func TestActionConclusionPendingWhenCancelledEndsTheRequest(t *testing.T) {
 	}
 }
 
-// An architect waiting on its requested execution sees no final result while
-// the agent's conclusion is pending approval, and wakes when it is applied.
+// An architect reading its requested execution sees no final result, and is
+// not notified, while the agent's conclusion is pending approval; both follow
+// the applied conclusion.
 func TestArchitectSeesNoFinalResultWhileActionConclusionIsPending(t *testing.T) {
 	f := newActionFixture(t)
 	f.writeValidAction(t, "demo")
@@ -294,27 +295,18 @@ func TestArchitectSeesNoFinalResultWhileActionConclusionIsPending(t *testing.T) 
 	if got := f.result(t, arch.ID, pending.ExecutionID); got.Status != domain.ActionRunRunning || got.Summary != "" || got.EndedAt != nil {
 		t.Fatalf("result while pending = %+v, want running", got)
 	}
-	waited, err := f.service.WaitForActionResult(ctx, arch.ID, pending.ExecutionID, 200*time.Millisecond)
-	if err != nil || !waited.TimedOut || waited.Changed || waited.Result.Status != domain.ActionRunRunning {
-		t.Fatalf("wait while pending = %+v, %v; want timed out still running", waited, err)
+	if got := f.notices(t, "alpha"); len(got) != 0 {
+		t.Fatalf("notice while the conclusion is pending: %+v", got)
 	}
 
-	woke := make(chan domain.ActionWaitResult, 1)
-	go func() {
-		w, _ := f.service.WaitForActionResult(ctx, arch.ID, pending.ExecutionID, 5*time.Second)
-		woke <- w
-	}()
-	time.Sleep(50 * time.Millisecond)
 	if _, err := f.service.ApproveIntent(ctx, run.SessionID, id, nil); err != nil {
 		t.Fatal(err)
 	}
 	awaitConclude(t, done)
-	select {
-	case w := <-woke:
-		if !w.Changed || w.Result.Status != domain.ActionRunCompleted || w.Result.Summary != "delivered" {
-			t.Fatalf("wait after approval = %+v", w)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("wait did not wake on the applied conclusion")
+	if got := f.result(t, arch.ID, pending.ExecutionID); got.Status != domain.ActionRunCompleted || got.Summary != "delivered" {
+		t.Fatalf("result after approval = %+v", got)
+	}
+	if got := f.notices(t, "alpha"); len(got) != 1 || got[0].State != domain.AgentMessagePending {
+		t.Fatalf("notice after approval = %+v, want one deliverable notice", got)
 	}
 }

@@ -36,13 +36,14 @@ import (
 //	              together with the final status. Completed requires a package
 //	              only when promised; failed may publish partial results.
 //	              Denial retains the preparation and leaves the agent running.
-//	              An agent-requested execution's caller is told through the
-//	              durable agent-message outbox once the conclusion is
-//	              published (messages_action.go).
 //	cancel        the user stops a running execution: failed, session ended
 //	launch error  failed with the launch error; the session is removed
 //	PTY exit      the agent is resumed like every session; a failed resume
 //	              fails the execution (a remote one reattaches instead)
+//
+// Whatever takes an agent-requested execution out of running — conclusion,
+// cancel, launch/resume failure or the restart reconciliation — tells its
+// requester once through the durable agent-message outbox (messages_action.go).
 //	restart       running action sessions are restored like every session; a
 //	              failed local restore fails the execution, and
 //	              ReconcileActionRuns fails any execution left running without
@@ -634,20 +635,17 @@ func (s *Service) applyActionConclusion(ctx context.Context, sessionID string, o
 		expires := now.Add(retention)
 		pkg.State, pkg.ExpiresAt = domain.ActionArtifactsReady, &expires
 	}
-	// The caller's notice is recorded before the agent is stopped and the
-	// conclusion published, and made deliverable right after the publish —
-	// the point from which getActionResult serves the final status and the
-	// package record — so a crash in between leaves a pending_commit row
-	// reconciled against the execution instead of a lost or premature
-	// announcement. A denied intent never reaches this code.
-	notice, err := s.beginActionConcludedMessage(ctx, run, status, pkg)
-	switch {
-	case errors.Is(err, errAgentMessagesNotConfigured):
-		// A Service without the outbox (tests) concludes without a notice;
-		// the daemon always wires one.
-		s.logger.Error("action conclusion notice not recorded", "execution_id", run.ID, "error", err)
-	case err != nil:
-		return domain.ActionRun{}, fmt.Errorf("record action conclusion notice: %w", err)
+	// The caller's notice is begun before the agent is stopped and the
+	// conclusion published, and settled right after the publish — the point
+	// from which getActionResult serves the final status and the package
+	// record — so a crash in between leaves a pending_commit row reconciled
+	// against the execution instead of a lost or premature announcement. A
+	// denied intent never reaches this code.
+	proposed := run
+	proposed.Status, proposed.Summary = status, summary
+	notice, err := s.beginActionEndedMessage(ctx, proposed, pkg)
+	if err != nil {
+		return domain.ActionRun{}, fmt.Errorf("record action ended notice: %w", err)
 	}
 	if session.Machine != "" {
 		if err := s.stopRemote(ctx, session); err != nil {
@@ -658,13 +656,7 @@ func (s *Service) applyActionConclusion(ctx context.Context, sessionID string, o
 	if err != nil {
 		return domain.ActionRun{}, err
 	}
-	if notice.ID != "" {
-		if err := s.CommitAgentMessage(ctx, notice.ID); err != nil {
-			// The conclusion is published; startup and periodic reconciliation
-			// promote the notice from the execution record.
-			s.logger.Error("commit action conclusion notice; reconciliation will promote it", "message_id", notice.ID, "execution_id", run.ID, "error", err)
-		}
-	}
+	s.settleActionEndedMessage(ctx, notice, run.ID)
 	raw := map[string]any{
 		"execution_id": run.ID,
 		"outcome":      string(outcome),
@@ -750,9 +742,15 @@ func (s *Service) CancelActionRun(ctx context.Context, id string) (domain.Action
 			return domain.ActionRun{}, fmt.Errorf("execution not stopped: %w", err)
 		}
 	}
-	if err := rt.runs.FinishActionRun(ctx, id, domain.ActionRunFailed, "", "cancelled by user", time.Now().UTC()); err != nil {
+	const cancelled = "cancelled by user"
+	notice, err := s.beginActionEndedMessage(ctx, failedRun(run, cancelled), nil)
+	if err != nil {
+		return domain.ActionRun{}, fmt.Errorf("record action ended notice: %w", err)
+	}
+	if err := rt.runs.FinishActionRun(ctx, id, domain.ActionRunFailed, "", cancelled, time.Now().UTC()); err != nil {
 		return domain.ActionRun{}, err
 	}
+	s.settleActionEndedMessage(ctx, notice, id)
 	if session != nil {
 		if err := s.endActionSession(teardownCtx, *session, "session cancelled", "cancelled", map[string]any{"execution_id": id}); err != nil {
 			return domain.ActionRun{}, err
@@ -761,6 +759,12 @@ func (s *Service) CancelActionRun(ctx context.Context, id string) (domain.Action
 	s.publishActionEvent(run, domain.ActionRunFailed)
 	s.logger.Info("action execution cancelled", "action", run.Action, "execution_id", id)
 	return s.GetActionRun(ctx, id)
+}
+
+// failedRun is run as a daemon-side failure is about to record it.
+func failedRun(run domain.ActionRun, reason string) domain.ActionRun {
+	run.Status, run.Summary, run.Error = domain.ActionRunFailed, "", reason
+	return run
 }
 
 // ReconcileActionRuns runs at startup, after RestoreRunningSessions: an
@@ -821,11 +825,29 @@ func (s *Service) failActionSession(session domain.Session, reason string) {
 	s.removeActionSession(session.ID)
 }
 
+// finishActionRunFailed ends a running execution as a daemon-side failure
+// (launch, restore or resume failure, restart interruption) and tells its
+// requester. An execution no longer running was ended by another path, which
+// told the requester; it is left alone.
 func (s *Service) finishActionRunFailed(id, reason string) {
 	if s.actions == nil {
 		return
 	}
 	ctx := context.Background()
+	run, err := s.actions.runs.GetActionRun(ctx, id)
+	if err != nil {
+		s.logger.Error("failed to read action execution to fail", "execution_id", id, "reason", reason, "error", err)
+		return
+	}
+	if run.Status != domain.ActionRunRunning {
+		return
+	}
+	notice, err := s.beginActionEndedMessage(ctx, failedRun(run, reason), nil)
+	if err != nil {
+		// The failure must still be recorded; reconciliation cannot create
+		// the notice from nothing, so say so loudly.
+		s.logger.Error("action ended notice not recorded; the requester will not be told", "execution_id", id, "reason", reason, "error", err)
+	}
 	if err := s.actions.runs.FinishActionRun(ctx, id, domain.ActionRunFailed, "", reason, time.Now().UTC()); err != nil {
 		var conflict *domain.ConflictError
 		if errors.As(err, &conflict) {
@@ -835,7 +857,8 @@ func (s *Service) finishActionRunFailed(id, reason string) {
 		return
 	}
 	s.logger.Error("action execution failed", "execution_id", id, "reason", reason)
-	run, err := s.actions.runs.GetActionRun(ctx, id)
+	s.settleActionEndedMessage(ctx, notice, id)
+	run, err = s.actions.runs.GetActionRun(ctx, id)
 	if err != nil {
 		s.logger.Error("failed to read failed action execution", "execution_id", id, "error", err)
 		return

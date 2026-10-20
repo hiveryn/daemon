@@ -244,35 +244,6 @@ func (h *actionsHandler) result(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, result)
 }
 
-// wait long-polls one execution for a status change, for at most
-// timeout_seconds (default and cap: domain.MaxActionWaitSeconds).
-func (h *actionsHandler) wait(w http.ResponseWriter, r *http.Request) {
-	if !h.ready(w, r) {
-		return
-	}
-	timeout := domain.MaxActionWaitSeconds
-	if raw := r.URL.Query().Get("timeout_seconds"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 || n > domain.MaxActionWaitSeconds {
-			writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation),
-				fmt.Sprintf("timeout_seconds must be an integer between 1 and %d", domain.MaxActionWaitSeconds),
-				map[string]string{"field": "timeout_seconds"})
-			return
-		}
-		timeout = n
-	}
-	result, err := h.actions.WaitForActionResult(r.Context(), r.PathValue("id"), r.PathValue("executionID"), time.Duration(timeout)*time.Second)
-	if err != nil {
-		if r.Context().Err() != nil {
-			// The caller went away; there is nobody to answer.
-			return
-		}
-		writeDomainError(w, r, err)
-		return
-	}
-	writeJSON(w, r, http.StatusOK, result)
-}
-
 func (h *actionsHandler) deliverArtifacts(w http.ResponseWriter, r *http.Request) {
 	if !h.ready(w, r) {
 		return

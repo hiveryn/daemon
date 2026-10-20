@@ -19,7 +19,7 @@ import (
 func TestActionToolsAreRegisteredPerRole(t *testing.T) {
 	t.Parallel()
 
-	requestTools := []string{"getAvailableActions", "executeAction", "getActionResult", "waitForActionResult"}
+	requestTools := []string{"getAvailableActions", "executeAction", "getActionResult"}
 	cases := []struct {
 		name        string
 		cfg         Config
@@ -42,8 +42,10 @@ func TestActionToolsAreRegisteredPerRole(t *testing.T) {
 				t.Errorf("%s: has %s = %v, want %v", tc.name, tool, ok, tc.wantRequest)
 			}
 		}
-		if _, ok := names["addAvailableAction"]; ok {
-			t.Errorf("%s: obsolete addAvailableAction tool is registered", tc.name)
+		for _, obsolete := range []string{"addAvailableAction", "waitForActionResult"} {
+			if _, ok := names[obsolete]; ok {
+				t.Errorf("%s: obsolete %s tool is registered", tc.name, obsolete)
+			}
 		}
 		if _, ok := names["spawnTicketWorker"]; ok != tc.wantSpawn {
 			t.Errorf("%s: has spawnTicketWorker = %v, want %v", tc.name, ok, tc.wantSpawn)
@@ -57,7 +59,7 @@ func TestAgentActionToolsCallSessionScopedEndpoints(t *testing.T) {
 	started := time.Date(2026, 9, 24, 9, 0, 0, 0, time.UTC)
 	elapsed := int64(12)
 	var executed domain.ExecuteActionRequest
-	var waitQuery string
+	var notification *domain.ActionNotification
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
 		case "GET /api/sessions/sess-arch/available-actions":
@@ -70,12 +72,9 @@ func TestAgentActionToolsCallSessionScopedEndpoints(t *testing.T) {
 				writeErrorEnvelope(t, w, http.StatusBadRequest, &domain.ErrorBody{Code: string(domain.ErrCodeValidation), Message: missingVariantMessage})
 				return
 			}
-			writeEnvelope(t, w, http.StatusOK, domain.ExecuteActionResponse{Outcome: domain.IntentOutcomeAutoApproved, Result: domain.ActionResult{ExecutionID: "exec-1", Action: "demo", Status: domain.ActionRunRunning, ProfileName: executed.Variant}})
+			writeEnvelope(t, w, http.StatusOK, domain.ExecuteActionResponse{Outcome: domain.IntentOutcomeAutoApproved, Result: domain.ActionResult{ExecutionID: "exec-1", Action: "demo", Status: domain.ActionRunRunning, ProfileName: executed.Variant}, Notification: notification})
 		case "GET /api/sessions/sess-arch/action-results/exec-1":
 			writeEnvelope(t, w, http.StatusOK, domain.ActionResult{ExecutionID: "exec-1", Status: domain.ActionRunRunning, StartedAt: &started, ElapsedSeconds: &elapsed, Activity: domain.ActionAgentActivity{Available: true, Status: "active"}})
-		case "GET /api/sessions/sess-arch/action-results/exec-1/wait":
-			waitQuery = r.URL.RawQuery
-			writeEnvelope(t, w, http.StatusOK, domain.ActionWaitResult{Result: domain.ActionResult{ExecutionID: "exec-1", Status: domain.ActionRunRunning}, TimedOut: true})
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
@@ -100,12 +99,27 @@ func TestAgentActionToolsCallSessionScopedEndpoints(t *testing.T) {
 	if _, _, err := server.handleExecuteAction(ctx, nil, ExecuteActionInput{Name: "demo", Prompt: "compare"}); err == nil || !strings.Contains(err.Error(), missingVariantMessage) {
 		t.Fatalf("missing variant err = %v, want the daemon's message", err)
 	}
+	// A launched execution's guidance names the execution id and promises
+	// the notice — or says why it cannot reach this session.
+	notification = &domain.ActionNotification{Available: true}
 	_, launched, err := server.handleExecuteAction(ctx, nil, ExecuteActionInput{Name: "demo", Prompt: "compare", Variant: "codex"})
-	if err != nil || launched.Outcome != "auto_approved" || launched.IntentID != "exec-1" || launched.Result.ExecutionID != "exec-1" || launched.Result.Status != domain.ActionRunRunning || !strings.Contains(launched.Guidance, "runs independently") {
+	if err != nil || launched.Outcome != "auto_approved" || launched.IntentID != "exec-1" || launched.Result.ExecutionID != "exec-1" || launched.Result.Status != domain.ActionRunRunning ||
+		launched.Notification == nil || !launched.Notification.Available ||
+		!strings.Contains(launched.Guidance, "execution exec-1 now runs independently") || !strings.Contains(launched.Guidance, "You will be notified in this conversation when it ends") || strings.Contains(launched.Guidance, "wait") {
 		t.Fatalf("executeAction = %+v, %v", launched, err)
 	}
 	if executed.Name != "demo" || executed.Prompt != "compare" || executed.Variant != "codex" {
 		t.Fatalf("daemon received %+v", executed)
+	}
+	notification = &domain.ActionNotification{Reason: "this session runs on machine bk, and message delivery to remote sessions is not available"}
+	_, launched, err = server.handleExecuteAction(ctx, nil, ExecuteActionInput{Name: "demo", Prompt: "compare again", Variant: "codex"})
+	if err != nil || launched.Notification == nil || launched.Notification.Available || strings.Contains(launched.Guidance, "You will be notified") ||
+		!strings.Contains(launched.Guidance, "Notices cannot reach this session (this session runs on machine bk, and message delivery to remote sessions is not available): read getActionResult") {
+		t.Fatalf("executeAction without delivery = %+v, %v", launched, err)
+	}
+	notification = nil
+	if _, _, err := server.handleExecuteAction(ctx, nil, ExecuteActionInput{Name: "demo", Prompt: "compare once more", Variant: "codex"}); err == nil {
+		t.Fatal("a launched execution without notification information was accepted")
 	}
 
 	_, result, err := server.handleGetActionResult(ctx, nil, ActionResultInput{ExecutionID: "exec-1"})
@@ -113,17 +127,8 @@ func TestAgentActionToolsCallSessionScopedEndpoints(t *testing.T) {
 		t.Fatalf("getActionResult = %+v, %v", result, err)
 	}
 
-	for _, bad := range []int{-1, 31} {
-		if _, _, err := server.handleWaitForActionResult(ctx, nil, WaitForActionResultInput{ExecutionID: "exec-1", TimeoutSeconds: bad}); err == nil {
-			t.Errorf("timeout %d accepted", bad)
-		}
-	}
-	_, waited, err := server.handleWaitForActionResult(ctx, nil, WaitForActionResultInput{ExecutionID: "exec-1"})
-	if err != nil || !waited.TimedOut || !strings.Contains(waited.Guidance, "again") {
-		t.Fatalf("wait = %+v, %v", waited, err)
-	}
-	if waitQuery != "timeout_seconds=30" {
-		t.Fatalf("wait query = %q, want the 30s default", waitQuery)
+	if strings.Contains(result.Guidance, "wait") {
+		t.Fatalf("running guidance tells the agent to wait: %q", result.Guidance)
 	}
 }
 

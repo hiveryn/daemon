@@ -262,8 +262,43 @@ func (s *Service) RequestExecuteAction(ctx context.Context, sessionID string, re
 	if err != nil {
 		return zero, fmt.Errorf("read execution %s after its request resolved %s: %w", res.IntentID, res.Outcome, err)
 	}
+	response := domain.ExecuteActionResponse{Outcome: res.Outcome, Reason: res.Reason, Result: result}
+	if res.Outcome == domain.IntentOutcomeApproved || res.Outcome == domain.IntentOutcomeAutoApproved {
+		notification := s.actionNotification(ctx, session)
+		response.Notification = &notification
+	}
 	s.logger.Info("action request resolved", "action", name, "variant", variant, "execution_id", res.IntentID, "architect", session.ArchitectKey, "session_id", sessionID, "outcome", res.Outcome, "status", result.Status)
-	return domain.ExecuteActionResponse{Outcome: res.Outcome, Reason: res.Reason, Result: result}, nil
+	return response, nil
+}
+
+// actionNotification says whether the action_ended notice can reach the
+// requester: an architect is told in whichever of its sessions runs when the
+// execution ends; a worker is told in this session. Delivery is unavailable
+// for a session on another machine, an agent without a message route or a
+// daemon without the outbox — then the response says so instead of promising
+// a notice, and the requester reads getActionResult itself.
+func (s *Service) actionNotification(ctx context.Context, session domain.Session) domain.ActionNotification {
+	if _, err := s.messageRepo(); err != nil {
+		return domain.ActionNotification{Reason: "message delivery is not configured in this daemon"}
+	}
+	if session.SessionType == domain.SessionTypeTicket && session.Machine != "" {
+		return domain.ActionNotification{Reason: "this session runs on " + config.MachineLabel(session.Machine) + ", and message delivery to remote sessions is not available"}
+	}
+	current, err := s.repo.GetSession(ctx, session.ID)
+	if err != nil {
+		return domain.ActionNotification{Reason: "the requesting session cannot be read: " + err.Error()}
+	}
+	if current.CurrentRun == nil || current.CurrentRun.ProfileSnapshot == nil {
+		return domain.ActionNotification{Reason: "the requesting session has no agent profile snapshot"}
+	}
+	kind, err := parseAgentKind(current.CurrentRun.ProfileSnapshot.Agent)
+	if err != nil {
+		return domain.ActionNotification{Reason: "the requesting agent kind: " + err.Error()}
+	}
+	if _, _, ok := s.messageDeliverer(kind); !ok {
+		return domain.ActionNotification{Reason: "agent " + string(kind) + " cannot receive messages"}
+	}
+	return domain.ActionNotification{Available: true}
 }
 
 // actionRequestTrigger attributes a request to the kind of session that made
@@ -493,78 +528,4 @@ func (s *Service) actionResultOf(ctx context.Context, run domain.ActionRun, now 
 		}
 	}
 	return out
-}
-
-// WaitForActionResult waits up to timeout for the execution to change status
-// or its agent's attention to change (attentionKey), and returns the result
-// then. A final execution returns at once, unless its package is still being
-// copied to the caller's machine: then the wait lasts until that copy ends or
-// the timeout. Both are measured against the
-// result when the wait began, so a wait on an unchanged condition — an agent
-// already reported waiting for input — blocks until its timeout instead of
-// returning at once. The subscription is taken before the first read, so a
-// transition between the read and the wait is never missed. The wait
-// observes the execution only: its end — timeout or the caller going away —
-// never touches the Action.
-func (s *Service) WaitForActionResult(ctx context.Context, sessionID, executionID string, timeout time.Duration) (domain.ActionWaitResult, error) {
-	if timeout <= 0 || timeout > domain.MaxActionWaitSeconds*time.Second {
-		return domain.ActionWaitResult{}, &domain.ValidationError{Field: "timeout_seconds", Message: fmt.Sprintf("must be between 1 and %d", domain.MaxActionWaitSeconds)}
-	}
-	deadline := time.Now().Add(timeout)
-	sub := s.SubscribeActionEvents()
-	defer func() { sub.Close() }()
-
-	initial, err := s.actionResult(ctx, sessionID, executionID, 0)
-	if err != nil {
-		return domain.ActionWaitResult{}, err
-	}
-	if initial.Status.Terminal() {
-		// Final: only the caller's copy of the package can still change.
-		if initial.Artifacts.State != domain.ActionArtifactsCopying {
-			return domain.ActionWaitResult{Result: initial}, nil
-		}
-		current, err := s.actionResult(ctx, sessionID, executionID, time.Until(deadline))
-		if err != nil {
-			return domain.ActionWaitResult{}, err
-		}
-		changed := current.Artifacts.State != initial.Artifacts.State
-		return domain.ActionWaitResult{Result: current, Changed: changed, TimedOut: !changed}, nil
-	}
-
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return domain.ActionWaitResult{}, ctx.Err()
-		case <-timer.C:
-			current, err := s.actionResult(ctx, sessionID, executionID, 0)
-			if err != nil {
-				return domain.ActionWaitResult{}, err
-			}
-			changed := waitChanged(initial, current)
-			return domain.ActionWaitResult{Result: current, Changed: changed, TimedOut: !changed}, nil
-		case event, ok := <-sub.C():
-			if !ok {
-				// Closed for falling behind: resubscribe, then reread, so
-				// whatever it missed is caught by the read.
-				sub = s.SubscribeActionEvents()
-			} else if event.ExecutionID != initial.ExecutionID {
-				continue
-			}
-			// A completed execution's package copy may use what is left of
-			// the wait.
-			current, err := s.actionResult(ctx, sessionID, executionID, max(time.Until(deadline), 0))
-			if err != nil {
-				return domain.ActionWaitResult{}, err
-			}
-			if waitChanged(initial, current) {
-				return domain.ActionWaitResult{Result: current, Changed: true}, nil
-			}
-		}
-	}
-}
-
-func waitChanged(initial, current domain.ActionResult) bool {
-	return current.Status != initial.Status || attentionKey(current.Attention) != attentionKey(initial.Attention)
 }

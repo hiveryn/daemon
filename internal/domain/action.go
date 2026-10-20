@@ -29,7 +29,7 @@ type (
 	ActionAttentionState    = sd.ActionAttentionState
 	ActionAttentionSource   = sd.ActionAttentionSource
 	ActionResult            = sd.ActionResult
-	ActionWaitResult        = sd.ActionWaitResult
+	ActionNotification      = sd.ActionNotification
 	ActionArtifactState     = sd.ActionArtifactState
 	ActionArtifactCopy      = sd.ActionArtifactCopy
 	ActionArtifactLocation  = sd.ActionArtifactLocation
@@ -68,7 +68,6 @@ const (
 	ActionArtifactsExpired  = sd.ActionArtifactsExpired
 
 	MaxActionSummaryLength         = sd.MaxActionSummaryLength
-	MaxActionWaitSeconds           = sd.MaxActionWaitSeconds
 	MaxActionSuggestions           = sd.MaxActionSuggestions
 	MaxActionSuggestionWords       = sd.MaxActionSuggestionWords
 	MaxActionSuggestionsTotalWords = sd.MaxActionSuggestionsTotalWords
@@ -207,5 +206,4 @@ type ActionService interface {
 	AvailableActions(ctx context.Context, sessionID string) (AvailableActionList, error)
 	RequestExecuteAction(ctx context.Context, sessionID string, req ExecuteActionRequest) (ExecuteActionResponse, error)
 	GetActionResult(ctx context.Context, sessionID, executionID string) (ActionResult, error)
-	WaitForActionResult(ctx context.Context, sessionID, executionID string, timeout time.Duration) (ActionWaitResult, error)
 }

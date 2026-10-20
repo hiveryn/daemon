@@ -28,8 +28,7 @@ const (
 	// actionDeliveryTimeout bounds one copy to a caller's machine.
 	actionDeliveryTimeout = 10 * time.Minute
 	// actionResultDeliveryWait is how long getActionResult waits for a copy
-	// before reporting it copying; waitForActionResult waits up to its own
-	// timeout instead.
+	// before reporting it copying.
 	actionResultDeliveryWait = 20 * time.Second
 	// actionCleanupTimeout bounds one removal during startup cleanup.
 	actionCleanupTimeout = 15 * time.Second

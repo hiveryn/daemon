@@ -266,7 +266,7 @@ func TestDeliveryFailuresAreSeparateFromCompletionAndRetried(t *testing.T) {
 	f, fake := remoteActionFixture(t)
 	f.writeRemoteAction(t, fake, "evidence")
 	f.architect(t, "alpha", "evidence")
-	ctx := context.Background()
+
 	run, session := f.remoteExecution(t, fake, "evidence", "alpha")
 	if err := os.WriteFile(filepath.Join(run.OutputDir, "summary.md"), []byte("v1"), 0o644); err != nil {
 		t.Fatal(err)
@@ -288,18 +288,19 @@ func TestDeliveryFailuresAreSeparateFromCompletionAndRetried(t *testing.T) {
 		t.Fatalf("failed delivery = %+v", failed)
 	}
 
-	// Reading again retries, and succeeds once the machine is back.
+	// Reading again retries (the read waits for the copy), and succeeds once
+	// the machine is back.
 	fake.SetDown(t, "other", false)
-	wait, err := f.service.WaitForActionResult(ctx, worker.ID, run.ID, 10*time.Second)
-	if err != nil || wait.Result.Artifacts.State != domain.ActionArtifactsReady || wait.Result.OutputDir == "" || !wait.Changed {
-		t.Fatalf("retried delivery = %+v, %v", wait, err)
+	delivered := f.result(t, worker.ID, run.ID)
+	if delivered.Artifacts.State != domain.ActionArtifactsReady || delivered.OutputDir == "" {
+		t.Fatalf("retried delivery = %+v", delivered)
 	}
-	if _, err := os.Stat(wait.Result.OutputDir + ".partial"); !os.IsNotExist(err) {
+	if _, err := os.Stat(delivered.OutputDir + ".partial"); !os.IsNotExist(err) {
 		t.Fatalf("partial copy left behind: %v", err)
 	}
-	// A wait on a final execution whose copy is ready returns at once.
-	if again, err := f.service.WaitForActionResult(ctx, worker.ID, run.ID, 10*time.Second); err != nil || again.TimedOut || again.Result.OutputDir != wait.Result.OutputDir {
-		t.Fatalf("second wait = %+v, %v", again, err)
+	// The ready copy is reused.
+	if again := f.result(t, worker.ID, run.ID); again.Artifacts.State != domain.ActionArtifactsReady || again.OutputDir != delivered.OutputDir {
+		t.Fatalf("second read = %+v", again)
 	}
 }
 

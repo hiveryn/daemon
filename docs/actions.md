@@ -84,8 +84,11 @@ package is retained. Older executions retain their historical package records.
 
 ## Delivery to the caller
 
-`getActionResult` and `waitForActionResult` make an approved package available (including partial artifacts of failed runs)
-on the caller's own machine, determined from the calling session:
+`getActionResult` makes an approved package available (including partial artifacts of failed runs)
+on the caller's own machine, determined from the calling session. The requester
+does not poll for it: an agent-requested execution announces its end — whatever
+ends it — through the agent-message outbox, and the first `getActionResult`
+after that notice starts the copy:
 
 - on the execution machine, the package itself;
 - elsewhere, a verified copy in the caller's managed `deliveries/<id>`

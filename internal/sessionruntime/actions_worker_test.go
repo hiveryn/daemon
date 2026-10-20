@@ -27,7 +27,7 @@ func (f *actionFixture) worker(t *testing.T, architectKey, ticketID string) doma
 	if err != nil {
 		t.Fatalf("create ticket session: %v", err)
 	}
-	if _, err := f.sessions.CreateRun(ctx, domain.CreateSessionRunParams{SessionID: session.ID, ProfileName: "codex", Workdir: session.Workdir}); err != nil {
+	if _, err := f.sessions.CreateRun(ctx, domain.CreateSessionRunParams{SessionID: session.ID, ProfileName: "codex", ProfileSnapshot: domain.AgentProfileSnapshot{Agent: "codex"}, Workdir: session.Workdir}); err != nil {
 		t.Fatalf("create ticket run: %v", err)
 	}
 	session, err = f.sessions.GetSession(ctx, session.ID)

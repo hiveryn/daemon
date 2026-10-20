@@ -192,12 +192,12 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/action/artifacts", ach.deliverArtifacts)
 	mux.HandleFunc("POST /api/sessions/{id}/intents/conclude-action", ach.concludeIntent)
 	// Architect- and worker-facing Actions, addressed by the calling session:
-	// discovery, the deferred execute request, and the project-scoped result
-	// and bounded wait under the one execution id.
+	// discovery, the execute request (blocks until approved) and the
+	// project-scoped result under the one execution id. The end of an
+	// execution is announced through the agent-message outbox, not polled.
 	mux.HandleFunc("GET /api/sessions/{id}/available-actions", ach.available)
 	mux.HandleFunc("POST /api/sessions/{id}/intents/execute-action", ach.executeIntent)
 	mux.HandleFunc("GET /api/sessions/{id}/action-results/{executionID}", ach.result)
-	mux.HandleFunc("GET /api/sessions/{id}/action-results/{executionID}/wait", ach.wait)
 	// Agent notifications and questions (every session type). The question
 	// request blocks until answered, expired or cancelled; the answer is the
 	// desktop's.

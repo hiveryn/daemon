@@ -23,18 +23,13 @@ func (s *Server) registerAgentActionTools() {
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "executeAction",
-		Description: "Request one execution of an available Action with a prompt and the agent variant that runs it. variant is required and has no default: if the user has not said which variant to use, ask them first — it must be one of the Action's eligible variants from getAvailableActions (those configured for the machine where the Action runs, whatever machine you run on); an omitted, unknown or ineligible variant is rejected with the list of eligible variants. The call waits for the user's approval like createWorkTicket: the user reviews the Action, prompt and variant and approves or denies it; if they do not answer within the approval window it is auto-approved. Check outcome: approved or auto_approved means the Action was launched and now runs independently (result.status running); denied_by_user means it never ran; error means it could not start (reason and result.error say why). The call never waits for the Action to finish: keep result.execution_id and follow it with waitForActionResult or getActionResult. Errors before any approval if the Action is not available to this project, is invalid, or is already running (only one execution of an Action runs at a time). An identical request (same name, prompt and variant) from this session while it is pending, or within ten minutes of its resolution, returns the original execution instead of creating another; a different variant is a new request.",
+		Description: "Request one execution of an available Action with a prompt and the agent variant that runs it. variant is required and has no default: if the user has not said which variant to use, ask them first — it must be one of the Action's eligible variants from getAvailableActions (those configured for the machine where the Action runs, whatever machine you run on); an omitted, unknown or ineligible variant is rejected with the list of eligible variants. The call waits for the user's approval like createWorkTicket: the user reviews the Action, prompt and variant and approves or denies it; if they do not answer within the approval window it is auto-approved. Check outcome: approved or auto_approved means the Action was launched and now runs independently (result.status running); denied_by_user means it never ran; error means it could not start (reason and result.error say why). The call never waits for the Action to finish: when a launched execution ends — completed, failed, cancelled or interrupted — Hiveryn delivers one notice into this conversation (a message starting \"Hiveryn message\" naming result.execution_id); then read getActionResult. notification says whether that notice can reach this session; when it cannot (notification.reason), read getActionResult yourself when you need the result. Errors before any approval if the Action is not available to this project, is invalid, or is already running (only one execution of an Action runs at a time). An identical request (same name, prompt and variant) from this session while it is pending, or within ten minutes of its resolution, returns the original execution instead of creating another; a different variant is a new request.",
 	}, s.handleExecuteAction)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "getActionResult",
-		Description: "Read the current state of an execution this project requested, by execution_id: pending_approval (not started), denied (with the user's reason), running (with started time, elapsed seconds, the agent's last reported activity when known, and its attention), completed (with the agent's summary and its artifact package) or failed (with the error or the agent's summary). For completed or failed with partial results, artifacts.state says whether the package is available on your machine: none (no package was delivered; artifact-free completion is valid), ready (output_dir is its path here, usable until artifacts.expires_at), copying (it is being copied here — call again), failed (the copy failed: artifacts.error says why, and calling again retries it; the execution itself still completed) or expired (the retention period ended; the summary remains). Copying happens automatically, waiting briefly before reporting copying. attention.state is input_required when an explicit provider signal shows the Action agent waiting for the user at its terminal (for example a folder-trust dialog or an interrupted conversation after a restart; message says what it asks), none_detected when no such signal is present — which does not prove it is not waiting, see attention.coverage — or unavailable when it is not running. The execution stays running either way; only the user can answer, by opening the execution's terminal in the Actions window, so tell them what the agent is asking instead of waiting repeatedly. Returns immediately.",
+		Description: "Read the current state of an execution this project requested, by execution_id: pending_approval (not started), denied (with the user's reason), running (with started time, elapsed seconds, the agent's last reported activity when known, and its attention), completed (with the agent's summary and its artifact package) or failed (with the error or the agent's summary). For completed or failed with partial results, artifacts.state says whether the package is available on your machine: none (no package was delivered; artifact-free completion is valid), ready (output_dir is its path here, usable until artifacts.expires_at), copying (it is being copied here — call again), failed (the copy failed: artifacts.error says why, and calling again retries it; the execution itself still completed) or expired (the retention period ended; the summary remains). Copying happens automatically, waiting briefly before reporting copying. attention.state is input_required when an explicit provider signal shows the Action agent waiting for the user at its terminal (for example a folder-trust dialog or an interrupted conversation after a restart; message says what it asks), none_detected when no such signal is present — which does not prove it is not waiting, see attention.coverage — or unavailable when it is not running. The execution stays running either way; only the user can answer, by opening the execution's terminal in the Actions window, so tell them what the agent is asking. Returns immediately; the end of an execution you requested is announced to you, so there is no need to poll this while it runs.",
 	}, s.handleGetActionResult)
-
-	mcp.AddTool(s.mcpServer, &mcp.Tool{
-		Name:        "waitForActionResult",
-		Description: fmt.Sprintf("Wait for an execution this project requested to change state, for at most timeout_seconds (1-%d, default %d). Returns as soon as the status changes (for example pending_approval → running, running → completed) or the agent's attention changes (input_required appearing, clearing or changing reason — see getActionResult); a completed execution's artifact package is copied to your machine automatically, and the wait also covers that copy (artifacts.state copying → ready or failed, see getActionResult). Returns immediately if it is already final and its package is not being copied; otherwise returns the unchanged state with timed_out=true, and you may call it again. Waiting never affects the execution.", domain.MaxActionWaitSeconds, domain.MaxActionWaitSeconds),
-	}, s.handleWaitForActionResult)
 }
 
 type GetAvailableActionsInput struct{}
@@ -55,16 +50,12 @@ type ExecuteActionInput struct {
 
 type ExecuteActionOutput struct {
 	IntentEnvelopeFields
-	Result domain.ActionResult `json:"result" jsonschema:"The execution under its execution_id: running once launched, denied or failed otherwise."`
+	Result       domain.ActionResult        `json:"result" jsonschema:"The execution under its execution_id: running once launched, denied or failed otherwise."`
+	Notification *domain.ActionNotification `json:"notification,omitempty" jsonschema:"Set when the Action launched: whether the notice announcing its end can reach this session (available), else why not (reason) — then read getActionResult yourself."`
 }
 
 type ActionResultInput struct {
 	ExecutionID string `json:"execution_id" jsonschema:"The execution_id executeAction returned (required)."`
-}
-
-type WaitForActionResultInput struct {
-	ExecutionID    string `json:"execution_id" jsonschema:"The execution_id executeAction returned (required)."`
-	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"How long to wait for a status or attention change, 1-30 seconds; omitted means 30."`
 }
 
 type ActionResultOutput struct {
@@ -72,18 +63,11 @@ type ActionResultOutput struct {
 	Guidance string              `json:"guidance" jsonschema:"Plain-language instruction for what to do about this state."`
 }
 
-type WaitForActionResultOutput struct {
-	Result   domain.ActionResult `json:"result"`
-	Changed  bool                `json:"changed" jsonschema:"The status changed during this wait."`
-	TimedOut bool                `json:"timed_out" jsonschema:"The wait ended at its timeout with the status unchanged; you may wait again."`
-	Guidance string              `json:"guidance" jsonschema:"Plain-language instruction for what to do about this state."`
-}
-
 // actionGuidance spells out, per status, what the state means and what to do.
 var actionGuidance = map[domain.ActionRunStatus]string{
-	domain.ActionRunPendingApproval: "Waiting for the user's approval. Nothing has started. Call waitForActionResult to wait for the decision, or carry on and check getActionResult later.",
+	domain.ActionRunPendingApproval: "Waiting for the user's approval. Nothing has started.",
 	domain.ActionRunDenied:          "The user denied this request; it never ran. Do not request it again without asking the user — read `reason` and ask what they want instead.",
-	domain.ActionRunRunning:         "Approved and running. The Action agent is working; it ends in completed or failed. Call waitForActionResult again to keep waiting.",
+	domain.ActionRunRunning:         "Approved and running. The Action agent is working; it ends in completed or failed, and its requester is notified then.",
 	domain.ActionRunCompleted:       "Completed. Read `summary`. Findings inside the package (for example failed checks) are results, not a failed execution.",
 	domain.ActionRunFailed:          "Failed: the Action could not be started or delivered. Read `error` and `summary`. If it never started (no started_at), it may be requested again once the cause is resolved.",
 }
@@ -92,7 +76,7 @@ var actionGuidance = map[domain.ActionRunStatus]string{
 // the caller's machine.
 var artifactGuidance = map[domain.ActionArtifactState]string{
 	domain.ActionArtifactsReady:   " The artifact package is on your machine in `output_dir` (a frozen copy; it is removed after `artifacts.expires_at`); read the artifacts there.",
-	domain.ActionArtifactsCopying: " The artifact package is still being copied to your machine: call waitForActionResult (or getActionResult) again for `output_dir`.",
+	domain.ActionArtifactsCopying: " The artifact package is still being copied to your machine: call getActionResult again for `output_dir`.",
 	domain.ActionArtifactsFailed:  " Copying the artifact package to your machine failed (`artifacts.error`). The execution outcome is unchanged — do not request it again; call getActionResult again to retry the copy, and tell the user if it keeps failing.",
 	domain.ActionArtifactsExpired: " Its artifact package expired and was removed; only `summary` remains. Request the Action again if you need the artifacts.",
 	domain.ActionArtifactsNone:    " It has no artifact package.",
@@ -154,9 +138,9 @@ func (s *Server) handleExecuteAction(
 	}, &res); err != nil {
 		return nil, ExecuteActionOutput{}, err
 	}
-	guidance, ok := executeActionGuidance[res.Outcome]
-	if !ok {
-		return nil, ExecuteActionOutput{}, newInternalError(fmt.Sprintf("daemon returned unknown intent outcome %q", res.Outcome))
+	guidance, err := executeActionGuidance(res)
+	if err != nil {
+		return nil, ExecuteActionOutput{}, err
 	}
 	return nil, ExecuteActionOutput{
 		IntentEnvelopeFields: IntentEnvelopeFields{
@@ -165,18 +149,41 @@ func (s *Server) handleExecuteAction(
 			Reason:   res.Reason,
 			IntentID: res.Result.ExecutionID,
 		},
-		Result: res.Result,
+		Result:       res.Result,
+		Notification: res.Notification,
 	}, nil
 }
 
-// executeActionGuidance is the per-outcome instruction for a resolved
-// request. Approval means launched, never delivered.
-var executeActionGuidance = map[domain.IntentOutcome]string{
-	domain.IntentOutcomeApproved:     "The user approved the request and the Action was launched; it now runs independently. Follow result.execution_id with waitForActionResult or getActionResult for its progress and artifacts.",
-	domain.IntentOutcomeAutoApproved: "The user did not answer within the approval window, so the request was auto-approved and the Action was launched; it now runs independently. Follow result.execution_id with waitForActionResult or getActionResult for its progress and artifacts.",
-	domain.IntentOutcomeDeniedByUser: "The user denied this request; it never ran. Do not request it again without asking the user — read `reason` and ask what they want instead.",
-	domain.IntentOutcomeAutoDenied:   "The request was denied without a user response; it never ran. Do not request it again without asking the user.",
-	domain.IntentOutcomeError:        "The Action did not start: it failed to launch after approval, or the request ended unresolved. Read `reason` and result.error. It may be requested again once the cause is resolved.",
+// executeActionGuidance is the instruction for a resolved request. Approval
+// means launched, never delivered: a launched execution's end is announced
+// to the requester, unless the daemon says the notice cannot reach this
+// session — then, and only then, the requester is told to read the result
+// itself.
+func executeActionGuidance(res domain.ExecuteActionResponse) (string, error) {
+	switch res.Outcome {
+	case domain.IntentOutcomeApproved, domain.IntentOutcomeAutoApproved:
+		approved := "The user approved the request"
+		if res.Outcome == domain.IntentOutcomeAutoApproved {
+			approved = "The user did not answer within the approval window, so the request was auto-approved"
+		}
+		launched := fmt.Sprintf("%s and the Action was launched; execution %s now runs independently.", approved, res.Result.ExecutionID)
+		switch {
+		case res.Notification == nil:
+			return "", newInternalError("daemon returned a launched execution without saying how its end is announced")
+		case res.Notification.Available:
+			return launched + " You will be notified in this conversation when it ends; read getActionResult then.", nil
+		default:
+			return launched + fmt.Sprintf(" Notices cannot reach this session (%s): read getActionResult with that execution id yourself when you need the result.", res.Notification.Reason), nil
+		}
+	case domain.IntentOutcomeDeniedByUser:
+		return "The user denied this request; it never ran. Do not request it again without asking the user — read `reason` and ask what they want instead.", nil
+	case domain.IntentOutcomeAutoDenied:
+		return "The request was denied without a user response; it never ran. Do not request it again without asking the user.", nil
+	case domain.IntentOutcomeError:
+		return "The Action did not start: it failed to launch after approval, or the request ended unresolved. Read `reason` and result.error. It may be requested again once the cause is resolved.", nil
+	default:
+		return "", newInternalError(fmt.Sprintf("daemon returned unknown intent outcome %q", res.Outcome))
+	}
 }
 
 func (s *Server) handleGetActionResult(
@@ -197,35 +204,4 @@ func (s *Server) handleGetActionResult(
 		return nil, ActionResultOutput{}, err
 	}
 	return nil, ActionResultOutput{Result: result, Guidance: guidance}, nil
-}
-
-func (s *Server) handleWaitForActionResult(
-	ctx context.Context,
-	_ *mcp.CallToolRequest,
-	input WaitForActionResultInput,
-) (*mcp.CallToolResult, WaitForActionResultOutput, error) {
-	id := strings.TrimSpace(input.ExecutionID)
-	if id == "" {
-		return nil, WaitForActionResultOutput{}, newValidationError("execution_id", "is required")
-	}
-	timeout := input.TimeoutSeconds
-	if timeout == 0 {
-		timeout = domain.MaxActionWaitSeconds
-	}
-	if timeout < 1 || timeout > domain.MaxActionWaitSeconds {
-		return nil, WaitForActionResultOutput{}, newValidationError("timeout_seconds", fmt.Sprintf("must be between 1 and %d (omit it for %d); to wait longer, call waitForActionResult again", domain.MaxActionWaitSeconds, domain.MaxActionWaitSeconds))
-	}
-	var wait domain.ActionWaitResult
-	path := fmt.Sprintf("action-results/%s/wait?timeout_seconds=%d", url.PathEscape(id), timeout)
-	if err := s.sessionRequest(ctx, http.MethodGet, path, nil, &wait); err != nil {
-		return nil, WaitForActionResultOutput{}, err
-	}
-	guidance, err := actionResultGuidance(wait.Result)
-	if err != nil {
-		return nil, WaitForActionResultOutput{}, err
-	}
-	if wait.TimedOut {
-		guidance = "No change within the wait. " + guidance
-	}
-	return nil, WaitForActionResultOutput{Result: wait.Result, Changed: wait.Changed, TimedOut: wait.TimedOut, Guidance: guidance}, nil
 }
