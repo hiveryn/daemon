@@ -107,6 +107,10 @@ type Service struct {
 	notifier        notificationPublisher
 	questions       *questionStore
 	questionTimeout time.Duration
+	// questionEscalationDelay is how long a ticket worker's question stays
+	// unanswered before its architect is told (config.yaml
+	// question_escalation_delay); zero disables escalation.
+	questionEscalationDelay time.Duration
 
 	// messages is the agent-message outbox runtime (messages.go).
 	messages *messageRuntime
@@ -178,10 +182,12 @@ func New(ctx context.Context, cfg config.Config, configSource config.Source, rep
 		notifier:       notifierFromConfig(cfg),
 		questions:      newQuestionStore(),
 		messages:       messages,
-		eventStreams:   map[string]map[uint64]chan domain.SessionEvent{},
-		bridgeCancels:  map[string]func(){},
-		attention:      map[string]*attentionMonitor{},
-		terminalStates: map[string]sessionTerminalState{},
+
+		questionEscalationDelay: cfg.QuestionEscalationDelayDuration(),
+		eventStreams:            map[string]map[uint64]chan domain.SessionEvent{},
+		bridgeCancels:           map[string]func(){},
+		attention:               map[string]*attentionMonitor{},
+		terminalStates:          map[string]sessionTerminalState{},
 	}
 	messages.mailbox.SetObservers(service.waiterArmed, service.waiterGone)
 	return service, nil

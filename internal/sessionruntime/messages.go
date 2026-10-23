@@ -102,6 +102,11 @@ type messageRuntime struct {
 	failures map[string]int
 	// commitChecks reconcile pending_commit rows per kind.
 	commitChecks map[domain.AgentMessageKind]messageCommitCheck
+	// staleChecks say, per kind, why a pending message no longer announces
+	// anything worth delivering (empty: deliver it). A stale message is
+	// failed with that reason instead of being sent — a question escalation
+	// after the question resolved, for example.
+	staleChecks map[domain.AgentMessageKind]messageStaleCheck
 
 	kick chan struct{}
 	stop chan struct{}
@@ -115,6 +120,9 @@ type messageRuntime struct {
 // (the side effect is durable), failed (it demonstrably is not and never will
 // be, reason), or still unresolved (condition, kept as is).
 type messageCommitCheck func(ctx context.Context, m domain.AgentMessage) messageCommitVerdict
+
+// messageStaleCheck returns the reason a pending message is withdrawn, or "".
+type messageStaleCheck func(ctx context.Context, m domain.AgentMessage) string
 
 type messageCommitVerdict struct {
 	committed bool
@@ -136,6 +144,7 @@ func newMessageRuntime() *messageRuntime {
 		endpoints:    map[string]messageEndpoint{},
 		failures:     map[string]int{},
 		commitChecks: map[domain.AgentMessageKind]messageCommitCheck{},
+		staleChecks:  map[domain.AgentMessageKind]messageStaleCheck{},
 		kick:         make(chan struct{}, 1),
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
@@ -154,6 +163,10 @@ func (s *Service) SetAgentMessageRepository(repo domain.AgentMessageRepository) 
 	s.messages.repo = repo
 	s.messages.commitChecks[domain.AgentMessageTicketConcluded] = s.checkTicketConcludedCommit
 	s.messages.commitChecks[domain.AgentMessageActionEnded] = s.checkActionEndedCommit
+	s.messages.commitChecks[domain.AgentMessageQuestionEscalated] = s.checkQuestionEscalatedCommit
+	s.messages.staleChecks[domain.AgentMessageQuestionEscalated] = func(_ context.Context, m domain.AgentMessage) string {
+		return s.questionEscalationStale(m)
+	}
 }
 
 // errAgentMessagesNotConfigured: the Service was built without a message

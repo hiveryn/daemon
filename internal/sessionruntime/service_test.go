@@ -1990,9 +1990,14 @@ func (f *fakeSessionRepository) CreateSession(_ context.Context, params domain.C
 	return f.createdSession, nil
 }
 
-func (f *fakeSessionRepository) GetSession(context.Context, string) (domain.Session, error) {
+func (f *fakeSessionRepository) GetSession(_ context.Context, id string) (domain.Session, error) {
 	if f.createdSession.ID != "" {
 		return cloneSession(f.createdSession), nil
+	}
+	for i := range f.listedSessions {
+		if f.listedSessions[i].ID == id {
+			return cloneSession(f.listedSessions[i]), nil
+		}
 	}
 	if len(f.listedSessions) > 0 {
 		return cloneSession(f.listedSessions[0]), nil

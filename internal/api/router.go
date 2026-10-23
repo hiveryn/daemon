@@ -204,6 +204,9 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/notify", qh.notify)
 	mux.HandleFunc("POST /api/sessions/{id}/questions", qh.ask)
 	mux.HandleFunc("POST /api/sessions/{id}/questions/{questionID}/answer", qh.answer)
+	// The architect agent's answer to an escalated ticket-worker question,
+	// addressed by the architect's own session; authorized by the daemon.
+	mux.HandleFunc("POST /api/sessions/{id}/questions/{questionID}/architect-answer", qh.architectAnswer)
 	if deps.IngestHandler != nil {
 		mux.Handle(ingestRoutePrefix+"/", deps.IngestHandler)
 	}

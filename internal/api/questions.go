@@ -10,7 +10,9 @@ import (
 // Agent notifications and questions. notify and the question request are
 // agent-facing, addressed by the calling session; the question request BLOCKS
 // until the question resolves (at most domain.QuestionTimeout). The answer
-// route is the desktop's, addressed by session and question id.
+// route is the desktop's, addressed by session and question id. The
+// architect-answer route is the architect agent's, addressed by its own
+// session and the escalated worker question's id; the daemon authorizes it.
 type questionsHandler struct {
 	logger    *slog.Logger
 	questions domain.QuestionService
@@ -80,4 +82,24 @@ func (h *questionsHandler) answer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, r, http.StatusOK, question)
+}
+
+// architectAnswer returns 200 with an ArchitectAnswerResult for both outcomes
+// (answered, not_answerable): a settled question is a result the agent reads,
+// not an error it retries. Authorization failures are domain errors.
+func (h *questionsHandler) architectAnswer(w http.ResponseWriter, r *http.Request) {
+	if !h.ready(w, r) {
+		return
+	}
+	var input domain.AnswerQuestionRequest
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
+		return
+	}
+	result, err := h.questions.AnswerQuestionAsArchitect(r.Context(), r.PathValue("id"), r.PathValue("questionID"), input.Answer)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, result)
 }

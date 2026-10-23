@@ -72,6 +72,7 @@ port: 4201
 bind_address: 127.0.0.1
 log_level: info
 intent_wait_timeout: 20
+question_escalation_delay: 120
 archive_agent_events: false
 ```
 
@@ -82,6 +83,7 @@ archive_agent_events: false
 | `bind_address` | `127.0.0.1` (localhost only) |
 | `log_level` | `info` |
 | `intent_wait_timeout` | `20` (seconds) — how long a pending intent waits for the user before its tool's policy fires. Values `<= 0` are coerced back to the default. Must stay safely under the smallest agent-runtime tool-call ceiling (~60s). |
+| `question_escalation_delay` | `120` (seconds) — how long a ticket worker's `askQuestion` stays unanswered by the user before its project architect is told about it (below). Omit it for the default; `0` disables escalation; a negative value, or one at or above the one-hour question expiry (3600), is a configuration error that stops the daemon from starting. Read at startup like the rest of `config.yaml`. |
 | `archive_agent_events` | `false` — set `true` to archive every normalized agentruntime event to per-day JSONL files under `HIVERYN_HOME/archive/agent_events/`. Full `Raw` payloads are preserved unredacted; archival failures never block ingestion. |
 | `notifications.ntfy` | absent — phone notifications for agents' `notify` and `askQuestion` (below). |
 
@@ -106,6 +108,12 @@ notifications:
 3. Without the section, `notify` and `askQuestion` fail with an error telling the agent the user was not notified; nothing is ever reported as sent unless the ntfy server accepted it (which is publication, not proof of phone delivery). A refused or failed publication returns the server's reason, never the credentials.
 
 Alerts are titled with the project and session (`<project> · architect`, `<project> · <ticket title>`, `Action <name> · <execution>`). Pending questions belong to the daemon: they expire after one hour regardless of the agent's client, end when the session ends or the agent stops waiting, and are marked interrupted if the daemon stops — an answer is accepted only while the agent's call is still waiting for it.
+
+#### Escalating unanswered worker questions to the architect (`question_escalation_delay`)
+
+A ticket worker's question the user has not answered after `question_escalation_delay` seconds (default 120) is announced once to the project architect as an agent message (kind `question_escalated`, the same durable outbox as ticket-conclusion notices: delivered into the running architect session, or its next one, never by launching one). The notice names the ticket, the question id, the question, its choices and recommendation, how long it has waited and when it expires, and tells the architect it may answer with `answerQuestion(questionId, answer)` only if it is confident — otherwise nothing is expected, since the user was already alerted by phone. Architect and Action questions never escalate; escalation changes nothing about the question itself (phone-first alert, one-hour expiry, cancellation and restart interruption stay as they are), and a notice that cannot be recorded leaves the user's pending question untouched.
+
+`answerQuestion` is architect-only and authorized by the daemon from the calling session: a running architect session of the question's project, for an escalated ticket-worker question of that project. User and architect may race; exactly one answer wins, and a late, duplicate, expired or unescalated submission gets a `not_answerable` outcome naming what happened rather than overwriting anything. The answer's source travels with the resolution (`answered_by: user|architect`, shown in the desktop) and reaches the worker behind the prefix `Answered by the project architect, not the user:` — an architect answer is never presented as the user's answer or approval. A notice still undelivered when the question resolves is withdrawn.
 
 ### `variants.yaml` — agent variants
 

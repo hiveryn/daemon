@@ -80,6 +80,11 @@ func (s *Service) dispatchAgentMessages(ctx context.Context) error {
 			continue
 		}
 		before := *m
+		if stale := s.staleMessageReason(ctx, m); stale != "" {
+			s.markMessageFailed(m, stale)
+			s.persistMessageChange(ctx, before, *m)
+			continue
+		}
 		target := s.resolveMessageTarget(m.Recipient, sessions)
 		switch {
 		case target.failed != "":
@@ -101,6 +106,16 @@ func (s *Service) dispatchAgentMessages(ctx context.Context) error {
 		s.persistMessageChange(ctx, before, *m)
 	}
 	return nil
+}
+
+// staleMessageReason asks the kind's stale check whether a pending message is
+// still worth delivering. Kinds without a check are never stale.
+func (s *Service) staleMessageReason(ctx context.Context, m *domain.AgentMessage) string {
+	check := s.messages.staleChecks[m.Kind]
+	if check == nil {
+		return ""
+	}
+	return check(ctx, *m)
 }
 
 // upgradeAcknowledged records the agent's reply for messages that appeared

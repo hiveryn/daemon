@@ -1,12 +1,14 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -1021,5 +1023,57 @@ func writeYAML(t *testing.T, path string, v interface{}) {
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write %q: %v", path, err)
+	}
+}
+
+func TestQuestionEscalationDelay(t *testing.T) {
+	t.Parallel()
+
+	// Omitted: the default, serialized as nothing and read back as nothing.
+	cfg := Default()
+	if got := cfg.QuestionEscalationDelayDuration(); got != 120*time.Second {
+		t.Fatalf("default escalation delay = %s, want 120s", got)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, configFileName)
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), "question_escalation_delay") {
+		t.Fatalf("omitted delay was written: %s", data)
+	}
+
+	// Explicit values round-trip, including 0 (disabled).
+	for _, delay := range []int{0, 45, 3599} {
+		path := filepath.Join(t.TempDir(), configFileName)
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("question_escalation_delay: %d\n", delay)), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		loaded, err := Load(path)
+		if err != nil {
+			t.Fatalf("load delay %d: %v", delay, err)
+		}
+		if loaded.QuestionEscalationDelay == nil || *loaded.QuestionEscalationDelay != delay {
+			t.Fatalf("loaded delay = %v, want %d", loaded.QuestionEscalationDelay, delay)
+		}
+		if got := loaded.QuestionEscalationDelayDuration(); got != time.Duration(delay)*time.Second {
+			t.Fatalf("delay %d → %s", delay, got)
+		}
+		if cloned := loaded.Clone(); cloned.QuestionEscalationDelay == loaded.QuestionEscalationDelay {
+			t.Fatal("Clone shares the delay pointer")
+		}
+	}
+
+	// Negative, and at or beyond the one-hour expiry, are configuration errors.
+	for _, delay := range []int{-1, 3600, 7200} {
+		path := filepath.Join(t.TempDir(), configFileName)
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("question_escalation_delay: %d\n", delay)), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		_, err := Load(path)
+		if err == nil || !strings.Contains(err.Error(), "question_escalation_delay") {
+			t.Fatalf("delay %d: err = %v, want a question_escalation_delay error", delay, err)
+		}
 	}
 }

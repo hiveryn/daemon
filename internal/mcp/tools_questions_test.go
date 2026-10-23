@@ -143,3 +143,93 @@ func TestNotifyAndAskQuestionReturnExactText(t *testing.T) {
 		t.Fatalf("missing fields were invented: %+v", asked)
 	}
 }
+
+// Only architects get answerQuestion; a worker's askQuestion description
+// prepares it for an architect-prefixed reply, an architect's does not.
+func TestAnswerQuestionIsArchitectOnly(t *testing.T) {
+	t.Parallel()
+	for _, cfg := range []Config{
+		{DaemonURL: "http://127.0.0.1:1", ArchitectKey: "hiveryn", SessionID: "s", SessionType: SessionTypeArchitect},
+		{DaemonURL: "http://127.0.0.1:1", ArchitectKey: "hiveryn", SessionID: "s", SessionType: SessionTypeTicket},
+		{DaemonURL: "http://127.0.0.1:1", SessionID: "s", SessionType: SessionTypeAction},
+	} {
+		server, err := NewServer(cfg)
+		if err != nil {
+			t.Fatalf("NewServer(%s): %v", cfg.SessionType, err)
+		}
+		names := registeredToolNames(t, server)
+		if got, want := names["answerQuestion"], cfg.SessionType == SessionTypeArchitect; got != want {
+			t.Fatalf("%s session answerQuestion registered = %v, want %v", cfg.SessionType, got, want)
+		}
+		session := connectClient(t, server)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		tools, err := session.ListTools(ctx, nil)
+		cancel()
+		if err != nil {
+			t.Fatalf("ListTools: %v", err)
+		}
+		for _, tool := range tools.Tools {
+			if tool.Name != "askQuestion" {
+				continue
+			}
+			mentions := strings.Contains(tool.Description, domain.QuestionArchitectAnswerPrefix)
+			if mentions != (cfg.SessionType == SessionTypeTicket) {
+				t.Fatalf("%s askQuestion description mentions the architect prefix = %v", cfg.SessionType, mentions)
+			}
+		}
+	}
+}
+
+func TestAnswerQuestionReturnsTheOutcome(t *testing.T) {
+	t.Parallel()
+	var answered domain.AnswerQuestionRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "POST /api/sessions/arch-1/questions/q-1/architect-answer":
+			_ = json.NewDecoder(r.Body).Decode(&answered)
+			writeEnvelope(t, w, http.StatusOK, domain.ArchitectAnswerResult{Outcome: domain.ArchitectAnswerAnswered,
+				Question: domain.AgentQuestion{ID: "q-1", Status: domain.QuestionAnswered, Answer: answered.Answer, AnsweredBy: domain.QuestionAnsweredByArchitect}})
+		case "POST /api/sessions/arch-1/questions/q-2/architect-answer":
+			writeEnvelope(t, w, http.StatusOK, domain.ArchitectAnswerResult{Outcome: domain.ArchitectAnswerNotAnswerable, Reason: "no longer answerable: it was already answered by the user",
+				Question: domain.AgentQuestion{ID: "q-2", Status: domain.QuestionAnswered, Answer: "No", AnsweredBy: domain.QuestionAnsweredByUser}})
+		case "POST /api/sessions/arch-1/questions/q-3/architect-answer":
+			writeErrorEnvelope(t, w, http.StatusNotFound, &domain.ErrorBody{Code: string(domain.ErrCodeNotFound), Message: "question q-3 not found"})
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(ts.Close)
+	server, err := NewServer(Config{DaemonURL: ts.URL, ArchitectKey: "hiveryn", SessionID: "arch-1", SessionType: SessionTypeArchitect, HTTPClient: ts.Client(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	session := connectClient(t, server)
+
+	call := func(args map[string]any) (map[string]any, bool) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "answerQuestion", Arguments: args})
+		if err != nil {
+			t.Fatalf("call answerQuestion: %v", err)
+		}
+		out, _ := res.StructuredContent.(map[string]any)
+		return out, res.IsError
+	}
+	out, isErr := call(map[string]any{"questionId": "q-1", "answer": "Use staging"})
+	if isErr || out["outcome"] != "answered" || out["answered_by"] != "architect" || answered.Answer != "Use staging" {
+		t.Fatalf("answered call = %v (error=%v), daemon got %+v", out, isErr, answered)
+	}
+	out, isErr = call(map[string]any{"questionId": "q-2", "answer": "Use staging"})
+	if isErr || out["outcome"] != "not_answerable" || !strings.Contains(out["reason"].(string), "already answered by the user") || out["answered_by"] != "user" {
+		t.Fatalf("settled call = %v (error=%v)", out, isErr)
+	}
+	if _, isErr := call(map[string]any{"questionId": "q-3", "answer": "x"}); !isErr {
+		t.Fatal("a foreign question did not error")
+	}
+	// questionId is required by the schema itself.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "answerQuestion", Arguments: map[string]any{"answer": "x"}}); err == nil || !strings.Contains(err.Error(), "questionId") {
+		t.Fatalf("missing questionId err = %v", err)
+	}
+}

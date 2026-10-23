@@ -23,30 +23,40 @@ const (
 	DefaultLogLevel                  = "info"
 	DefaultDesktopHealthPollInterval = "1s"
 	DefaultIntentWaitTimeout         = 20
-	configFileName                   = "config.yaml"
-	variantsFileName                 = "variants.yaml"
-	architectsFileName               = "architects.yaml"
-	architectConfigFileName          = "hiveryn.yaml"
-	tabsFileName                     = "tabs.yaml"
-	shortcutsFileName                = "shortcuts.yaml"
+	// DefaultQuestionEscalationDelay is how long (seconds) a ticket worker's
+	// askQuestion stays unanswered by the user before its project architect
+	// is told about it. 0 disables escalation; see QuestionEscalationDelay.
+	DefaultQuestionEscalationDelay = 120
+	configFileName                 = "config.yaml"
+	variantsFileName               = "variants.yaml"
+	architectsFileName             = "architects.yaml"
+	architectConfigFileName        = "hiveryn.yaml"
+	tabsFileName                   = "tabs.yaml"
+	shortcutsFileName              = "shortcuts.yaml"
 )
 
 type Config struct {
-	Port                      int                           `yaml:"port"`
-	BindAddress               string                        `yaml:"bind_address"`
-	LogLevel                  string                        `yaml:"log_level"`
-	Shell                     string                        `yaml:"shell,omitempty"`
-	DesktopHealthPollInterval string                        `yaml:"desktop_health_poll_interval,omitempty"`
-	IntentWaitTimeout         int                           `yaml:"intent_wait_timeout,omitempty"`
-	ArchiveAgentEvents        bool                          `yaml:"archive_agent_events"`
-	Notifications             *NotificationsConfig          `yaml:"notifications,omitempty"`
-	ActionPackages            *ActionPackagesConfig         `yaml:"action_packages,omitempty"`
-	Machines                  map[string]MachineConfig      `yaml:"-"`
-	Actions                   map[string]ActionRegistration `yaml:"-"`
-	Variants                  map[string]VariantConfig      `yaml:"-"`
-	Architects                map[string]ArchitectConfig    `yaml:"-"`
-	Tabs                      map[string][]TabEntry         `yaml:"-"`
-	Shortcuts                 map[string]map[string]string  `yaml:"-"`
+	Port                      int    `yaml:"port"`
+	BindAddress               string `yaml:"bind_address"`
+	LogLevel                  string `yaml:"log_level"`
+	Shell                     string `yaml:"shell,omitempty"`
+	DesktopHealthPollInterval string `yaml:"desktop_health_poll_interval,omitempty"`
+	IntentWaitTimeout         int    `yaml:"intent_wait_timeout,omitempty"`
+	// QuestionEscalationDelay is the worker-question escalation delay in
+	// seconds (config.yaml question_escalation_delay). nil (omitted) means
+	// DefaultQuestionEscalationDelay; 0 disables escalation; it must stay
+	// under the one-hour question expiry, after which there is nothing left to
+	// answer. Read at startup like the rest of config.yaml.
+	QuestionEscalationDelay *int                          `yaml:"question_escalation_delay,omitempty"`
+	ArchiveAgentEvents      bool                          `yaml:"archive_agent_events"`
+	Notifications           *NotificationsConfig          `yaml:"notifications,omitempty"`
+	ActionPackages          *ActionPackagesConfig         `yaml:"action_packages,omitempty"`
+	Machines                map[string]MachineConfig      `yaml:"-"`
+	Actions                 map[string]ActionRegistration `yaml:"-"`
+	Variants                map[string]VariantConfig      `yaml:"-"`
+	Architects              map[string]ArchitectConfig    `yaml:"-"`
+	Tabs                    map[string][]TabEntry         `yaml:"-"`
+	Shortcuts               map[string]map[string]string  `yaml:"-"`
 }
 
 // Source is the daemon's view of the current configuration. Current never
@@ -284,6 +294,10 @@ func Load(path string) (Config, error) {
 
 func (c Config) Clone() Config {
 	cloned := c
+	if c.QuestionEscalationDelay != nil {
+		delay := *c.QuestionEscalationDelay
+		cloned.QuestionEscalationDelay = &delay
+	}
 	cloned.Machines = cloneMachines(c.Machines)
 	cloned.Actions = cloneActions(c.Actions)
 	cloned.ActionPackages = c.ActionPackages.clone()
@@ -558,6 +572,7 @@ type coreConfig struct {
 	Shell                     string                `yaml:"shell,omitempty"`
 	DesktopHealthPollInterval string                `yaml:"desktop_health_poll_interval,omitempty"`
 	IntentWaitTimeout         int                   `yaml:"intent_wait_timeout,omitempty"`
+	QuestionEscalationDelay   *int                  `yaml:"question_escalation_delay,omitempty"`
 	Notifications             *NotificationsConfig  `yaml:"notifications,omitempty"`
 	ActionPackages            *ActionPackagesConfig `yaml:"action_packages,omitempty"`
 }
@@ -587,6 +602,7 @@ func (c Config) Save(path string) error {
 		Shell:                     c.Shell,
 		DesktopHealthPollInterval: c.DesktopHealthPollInterval,
 		IntentWaitTimeout:         c.IntentWaitTimeout,
+		QuestionEscalationDelay:   c.QuestionEscalationDelay,
 		Notifications:             c.Notifications,
 		ActionPackages:            c.ActionPackages,
 	}
@@ -631,6 +647,15 @@ func (c Config) Validate() error {
 
 	if c.IntentWaitTimeout < 0 {
 		return fmt.Errorf("intent_wait_timeout must be >= 0")
+	}
+
+	if c.QuestionEscalationDelay != nil {
+		switch delay := *c.QuestionEscalationDelay; {
+		case delay < 0:
+			return fmt.Errorf("question_escalation_delay must be >= 0 seconds (0 disables escalation; omit it for the default %d)", DefaultQuestionEscalationDelay)
+		case time.Duration(delay)*time.Second >= questionExpiry:
+			return fmt.Errorf("question_escalation_delay must be under the question expiry of %s (got %d seconds): an escalation after the question expired could not be answered", questionExpiry, delay)
+		}
 	}
 
 	if err := c.Notifications.validate(); err != nil {
@@ -801,6 +826,20 @@ func (c *Config) normalize() {
 			}
 		}
 	}
+}
+
+// questionExpiry mirrors shared domain.QuestionTimeout without importing the
+// domain package into config: a question is answerable for one hour.
+const questionExpiry = time.Hour
+
+// QuestionEscalationDelayDuration is the configured worker-question
+// escalation delay, or zero when escalation is disabled
+// (question_escalation_delay: 0).
+func (c Config) QuestionEscalationDelayDuration() time.Duration {
+	if c.QuestionEscalationDelay == nil {
+		return DefaultQuestionEscalationDelay * time.Second
+	}
+	return time.Duration(*c.QuestionEscalationDelay) * time.Second
 }
 
 func (c Config) DesktopHealthPollIntervalDuration() time.Duration {

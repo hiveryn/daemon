@@ -83,6 +83,11 @@ func (s *Server) registerArchitectTools() {
 	// executeAction request (waits for approval) and its result/wait under the
 	// one execution id. Action agents cannot invoke Actions.
 	s.registerAgentActionTools()
+
+	// Escalated worker questions: the architect may answer a ticket worker's
+	// question the user left unanswered. Workers and Action agents never get
+	// this tool.
+	s.registerAnswerQuestionTool()
 }
 
 func (s *Server) handleReadTicketConclusion(

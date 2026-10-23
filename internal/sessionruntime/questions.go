@@ -30,6 +30,10 @@ import (
 // published as durable "question" session events, which the desktop replays on
 // reconnect. A restart cannot keep the agent's call alive, so
 // ReconcileQuestions resolves every question the log still shows pending.
+//
+// A ticket worker's question the user has not answered after the configured
+// delay is escalated to the project architect (questions_escalation.go),
+// which may answer it; the answer then carries its source.
 
 const (
 	sessionEventTypeQuestion     = "question"
@@ -51,11 +55,20 @@ type notificationPublisher interface {
 }
 
 // questionWaiter is one pending question and its single resolution. done is
-// closed once final is set; whoever closes it won.
+// closed once final is set; whoever closes it won. escalatedAt (guarded by
+// the store's lock) is set once the question has been escalated to the
+// project architect, which authorizes the architect's answer.
 type questionWaiter struct {
-	question domain.AgentQuestion
-	done     chan struct{}
-	final    domain.AgentQuestion
+	question    domain.AgentQuestion
+	done        chan struct{}
+	final       domain.AgentQuestion
+	escalatedAt time.Time
+}
+
+// questionAnswer is the winning answer and who gave it.
+type questionAnswer struct {
+	text string
+	by   domain.QuestionAnswerSource
 }
 
 // questionStore holds pending questions and, briefly, resolved ones so a late
@@ -81,7 +94,7 @@ func (st *questionStore) add(w *questionWaiter) {
 
 // resolve is the single-winner transition out of pending. It returns the final
 // question and true for the winner; a loser (already resolved) gets false.
-func (st *questionStore) resolve(id string, status domain.QuestionStatus, answer, reason string, at time.Time) (domain.AgentQuestion, bool) {
+func (st *questionStore) resolve(id string, status domain.QuestionStatus, answer questionAnswer, reason string, at time.Time) (domain.AgentQuestion, bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	w, ok := st.pending[id]
@@ -91,7 +104,8 @@ func (st *questionStore) resolve(id string, status domain.QuestionStatus, answer
 	delete(st.pending, id)
 	final := w.question
 	final.Status = status
-	final.Answer = answer
+	final.Answer = answer.text
+	final.AnsweredBy = answer.by
 	final.Reason = reason
 	w.final = final
 	close(w.done)
@@ -116,6 +130,38 @@ func (st *questionStore) lookup(id string) (domain.AgentQuestion, bool) {
 	}
 	q, ok := st.recent[id]
 	return q, ok
+}
+
+// markEscalated records that a still-pending question was escalated to its
+// architect at the given time; false when it is no longer pending (then no
+// escalation is sent) or was already escalated.
+func (st *questionStore) markEscalated(id string, at time.Time) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	w, ok := st.pending[id]
+	if !ok || !w.escalatedAt.IsZero() {
+		return false
+	}
+	w.escalatedAt = at
+	return true
+}
+
+// unmarkEscalated withdraws markEscalated after the escalation could not be
+// recorded, so the architect is not authorized for a notice it never gets.
+func (st *questionStore) unmarkEscalated(id string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if w, ok := st.pending[id]; ok {
+		w.escalatedAt = time.Time{}
+	}
+}
+
+// escalated reports whether a pending question has been escalated.
+func (st *questionStore) escalated(id string) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	w, ok := st.pending[id]
+	return ok && !w.escalatedAt.IsZero()
 }
 
 func (st *questionStore) pendingIDs(sessionID string) []string {
@@ -224,7 +270,7 @@ func (s *Service) AskQuestion(ctx context.Context, sessionID string, req domain.
 	waiter := &questionWaiter{question: question, done: make(chan struct{})}
 	s.questions.add(waiter)
 	if err := s.publishQuestionRequired(ctx, question); err != nil {
-		if final, won := s.questions.resolve(question.ID, domain.QuestionCancelled, "", "the question could not be shown in the desktop", time.Now().UTC()); won {
+		if final, won := s.questions.resolve(question.ID, domain.QuestionCancelled, questionAnswer{}, "the question could not be shown in the desktop", time.Now().UTC()); won {
 			s.publishQuestionResolved(ctx, final)
 		}
 		return domain.AskQuestionResult{}, fmt.Errorf("raise question in the desktop session: %w", err)
@@ -234,18 +280,35 @@ func (s *Service) AskQuestion(ctx context.Context, sessionID string, req domain.
 
 	timer := time.NewTimer(time.Until(question.ExpiresAt))
 	defer timer.Stop()
-	select {
-	case <-waiter.done:
-	case <-timer.C:
-		s.finishQuestion(ctx, question.ID, domain.QuestionExpired, "", questionReasonExpired)
-	case <-ctx.Done():
-		if _, won := s.finishQuestion(ctx, question.ID, domain.QuestionCancelled, "", questionReasonAbandoned); won {
-			return domain.AskQuestionResult{}, fmt.Errorf("agent stopped waiting for question %s: %w", question.ID, ctx.Err())
+	// The escalation timer fires at most once and only for a ticket worker's
+	// question; it changes nothing about the wait itself.
+	var escalate <-chan time.Time
+	if delay, ok := s.escalationDelayFor(question); ok {
+		escalation := time.NewTimer(delay)
+		defer escalation.Stop()
+		escalate = escalation.C
+	}
+wait:
+	for {
+		select {
+		case <-waiter.done:
+			break wait
+		case <-escalate:
+			escalate = nil
+			s.escalateQuestion(ctx, question)
+		case <-timer.C:
+			s.finishQuestion(ctx, question.ID, domain.QuestionExpired, questionAnswer{}, questionReasonExpired)
+			break wait
+		case <-ctx.Done():
+			if _, won := s.finishQuestion(ctx, question.ID, domain.QuestionCancelled, questionAnswer{}, questionReasonAbandoned); won {
+				return domain.AskQuestionResult{}, fmt.Errorf("agent stopped waiting for question %s: %w", question.ID, ctx.Err())
+			}
+			break wait
 		}
 	}
 	<-waiter.done
 	final := waiter.final
-	return domain.AskQuestionResult{QuestionID: final.ID, Status: final.Status, Text: questionResultText(final)}, nil
+	return domain.AskQuestionResult{QuestionID: final.ID, Status: final.Status, Text: questionResultText(final), AnsweredBy: final.AnsweredBy}, nil
 }
 
 // AnswerQuestion submits the user's answer. Only a question that is pending in
@@ -261,7 +324,7 @@ func (s *Service) AnswerQuestion(ctx context.Context, sessionID, questionID, ans
 	if !ok || current.Origin.SessionID != sessionID {
 		return domain.AgentQuestion{}, &domain.NotFoundError{Resource: "question", ID: questionID}
 	}
-	if final, won := s.finishQuestion(ctx, questionID, domain.QuestionAnswered, answer, ""); won {
+	if final, won := s.finishQuestion(ctx, questionID, domain.QuestionAnswered, questionAnswer{text: answer, by: domain.QuestionAnsweredByUser}, ""); won {
 		return final, nil
 	}
 	resolved, _ := s.questions.lookup(questionID)
@@ -273,13 +336,15 @@ func (s *Service) AnswerQuestion(ctx context.Context, sessionID, questionID, ans
 }
 
 // finishQuestion resolves a pending question and publishes its durable
-// resolved event. Only the winner publishes.
-func (s *Service) finishQuestion(ctx context.Context, id string, status domain.QuestionStatus, answer, reason string) (domain.AgentQuestion, bool) {
+// resolved event. Only the winner publishes. The dispatcher is kicked so an
+// escalation not yet delivered is withdrawn promptly.
+func (s *Service) finishQuestion(ctx context.Context, id string, status domain.QuestionStatus, answer questionAnswer, reason string) (domain.AgentQuestion, bool) {
 	final, won := s.questions.resolve(id, status, answer, reason, time.Now().UTC())
 	if won {
 		s.logger.Info("agent question resolved",
-			"session_id", final.Origin.SessionID, "question_id", id, "status", status, "reason", reason)
+			"session_id", final.Origin.SessionID, "question_id", id, "status", status, "answered_by", answer.by, "reason", reason)
 		s.publishQuestionResolved(ctx, final)
+		s.kickMessages()
 	}
 	return final, won
 }
@@ -288,7 +353,7 @@ func (s *Service) finishQuestion(ctx context.Context, id string, status domain.Q
 // session. Called from the single session-end funnel.
 func (s *Service) cancelSessionQuestions(ctx context.Context, sessionID string) {
 	for _, id := range s.questions.pendingIDs(sessionID) {
-		s.finishQuestion(ctx, id, domain.QuestionCancelled, "", questionReasonSessionEnd)
+		s.finishQuestion(ctx, id, domain.QuestionCancelled, questionAnswer{}, questionReasonSessionEnd)
 	}
 }
 
@@ -296,7 +361,7 @@ func (s *Service) cancelSessionQuestions(ctx context.Context, sessionID string) 
 // agents get an honest reply and the desktop stops offering them.
 func (s *Service) interruptQuestions(ctx context.Context) {
 	for _, id := range s.questions.pendingIDs("") {
-		s.finishQuestion(ctx, id, domain.QuestionInterrupted, "", questionReasonShutdown)
+		s.finishQuestion(ctx, id, domain.QuestionInterrupted, questionAnswer{}, questionReasonShutdown)
 	}
 }
 
@@ -318,7 +383,7 @@ func (s *Service) ReconcileQuestions(ctx context.Context) error {
 			if _, live := s.questions.lookup(orphan); live {
 				continue
 			}
-			if err := s.appendQuestionResolved(ctx, session.ID, orphan, domain.QuestionInterrupted, "", questionReasonRestarted); err != nil {
+			if err := s.appendQuestionResolved(ctx, session.ID, orphan, domain.QuestionInterrupted, questionAnswer{}, questionReasonRestarted); err != nil {
 				return fmt.Errorf("resolve orphaned question %s: %w", orphan, err)
 			}
 		}
@@ -382,16 +447,19 @@ func (s *Service) publishQuestionRequired(ctx context.Context, q domain.AgentQue
 // context (an abandoned call's ctx is already done), and a failure is logged:
 // the in-memory resolution has already happened and is authoritative.
 func (s *Service) publishQuestionResolved(ctx context.Context, q domain.AgentQuestion) {
-	if err := s.appendQuestionResolved(context.WithoutCancel(ctx), q.Origin.SessionID, q.ID, q.Status, q.Answer, q.Reason); err != nil {
+	if err := s.appendQuestionResolved(context.WithoutCancel(ctx), q.Origin.SessionID, q.ID, q.Status, questionAnswer{text: q.Answer, by: q.AnsweredBy}, q.Reason); err != nil {
 		s.logger.Error("publish question resolved",
 			"session_id", q.Origin.SessionID, "question_id", q.ID, "status", q.Status, "error", err)
 	}
 }
 
-func (s *Service) appendQuestionResolved(ctx context.Context, sessionID, questionID string, status domain.QuestionStatus, answer, reason string) error {
+func (s *Service) appendQuestionResolved(ctx context.Context, sessionID, questionID string, status domain.QuestionStatus, answer questionAnswer, reason string) error {
 	raw := map[string]any{"question_id": questionID, "status": string(status)}
-	if answer != "" {
-		raw["answer"] = answer
+	if answer.text != "" {
+		raw["answer"] = answer.text
+	}
+	if answer.by != "" {
+		raw["answered_by"] = string(answer.by)
 	}
 	if reason != "" {
 		raw["reason"] = reason
@@ -523,10 +591,15 @@ func questionAlertBody(q domain.AgentQuestion) string {
 	return b.String()
 }
 
-// questionResultText is what the agent's call returns for a final question.
+// questionResultText is what the agent's call returns for a final question:
+// the user's answer verbatim, or the architect's answer behind the prefix
+// that names its source.
 func questionResultText(q domain.AgentQuestion) string {
 	switch q.Status {
 	case domain.QuestionAnswered:
+		if q.AnsweredBy == domain.QuestionAnsweredByArchitect {
+			return domain.QuestionArchitectAnswerPrefix + q.Answer
+		}
 		return q.Answer
 	case domain.QuestionExpired:
 		return domain.QuestionTimeoutText
@@ -538,7 +611,10 @@ func questionResultText(q domain.AgentQuestion) string {
 func questionEndDescription(q domain.AgentQuestion) string {
 	switch q.Status {
 	case domain.QuestionAnswered:
-		return "it was already answered"
+		if q.AnsweredBy == domain.QuestionAnsweredByArchitect {
+			return "it was already answered by the project architect"
+		}
+		return "it was already answered by the user"
 	case domain.QuestionExpired:
 		return "it expired after 1 hour without an answer"
 	case "":

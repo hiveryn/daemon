@@ -14,8 +14,9 @@ import (
 )
 
 type fakeQuestionService struct {
-	asked    domain.AskQuestionRequest
-	answered string
+	asked             domain.AskQuestionRequest
+	answered          string
+	architectAnswered string
 }
 
 func (f *fakeQuestionService) Notify(_ context.Context, _ string, message string) (domain.NotifyResult, error) {
@@ -36,6 +37,22 @@ func (f *fakeQuestionService) AnswerQuestion(_ context.Context, sessionID, quest
 	}
 	f.answered = sessionID + "/" + questionID + "=" + answer
 	return domain.AgentQuestion{ID: questionID, Status: domain.QuestionAnswered, Answer: answer}, nil
+}
+
+func (f *fakeQuestionService) AnswerQuestionAsArchitect(_ context.Context, sessionID, questionID, answer string) (domain.ArchitectAnswerResult, error) {
+	if answer == "" {
+		return domain.ArchitectAnswerResult{}, &domain.ValidationError{Field: "answer", Message: "is required"}
+	}
+	switch questionID {
+	case "foreign":
+		return domain.ArchitectAnswerResult{}, &domain.NotFoundError{Resource: "question", ID: questionID}
+	case "settled":
+		return domain.ArchitectAnswerResult{Outcome: domain.ArchitectAnswerNotAnswerable, Reason: "no longer answerable: it was already answered by the user",
+			Question: domain.AgentQuestion{ID: questionID, Status: domain.QuestionAnswered, Answer: "Yes", AnsweredBy: domain.QuestionAnsweredByUser}}, nil
+	}
+	f.architectAnswered = sessionID + "/" + questionID + "=" + answer
+	return domain.ArchitectAnswerResult{Outcome: domain.ArchitectAnswerAnswered,
+		Question: domain.AgentQuestion{ID: questionID, Status: domain.QuestionAnswered, Answer: answer, AnsweredBy: domain.QuestionAnsweredByArchitect}}, nil
 }
 
 func TestQuestionRoutes(t *testing.T) {
@@ -68,5 +85,26 @@ func TestQuestionRoutes(t *testing.T) {
 	}
 	if rec := do("/api/sessions/s1/questions/stale/answer", `{"answer":"Yes"}`); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "no longer answerable") {
 		t.Fatalf("stale answer = %d %s", rec.Code, rec.Body)
+	}
+
+	// The architect's answer: both outcomes are 200 results; authorization
+	// failures are domain errors.
+	rec = do("/api/sessions/arch/questions/q1/architect-answer", `{"answer":"Use staging"}`)
+	var archEnv struct {
+		Data domain.ArchitectAnswerResult `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &archEnv); err != nil || rec.Code != http.StatusOK || archEnv.Data.Outcome != domain.ArchitectAnswerAnswered ||
+		archEnv.Data.Question.AnsweredBy != domain.QuestionAnsweredByArchitect || svc.architectAnswered != "arch/q1=Use staging" {
+		t.Fatalf("architect answer = %d %s (%s)", rec.Code, rec.Body, svc.architectAnswered)
+	}
+	rec = do("/api/sessions/arch/questions/settled/architect-answer", `{"answer":"Use staging"}`)
+	if err := json.Unmarshal(rec.Body.Bytes(), &archEnv); err != nil || rec.Code != http.StatusOK || archEnv.Data.Outcome != domain.ArchitectAnswerNotAnswerable || !strings.Contains(archEnv.Data.Reason, "already answered by the user") {
+		t.Fatalf("settled architect answer = %d %s", rec.Code, rec.Body)
+	}
+	if rec := do("/api/sessions/arch/questions/foreign/architect-answer", `{"answer":"x"}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("foreign architect answer = %d %s", rec.Code, rec.Body)
+	}
+	if rec := do("/api/sessions/arch/questions/q1/architect-answer", `{}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("blank architect answer = %d %s", rec.Code, rec.Body)
 	}
 }
