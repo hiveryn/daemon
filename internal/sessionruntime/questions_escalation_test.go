@@ -68,13 +68,14 @@ func newEscalationFixture(t *testing.T, delay time.Duration) *escalationFixture 
 	return &escalationFixture{service: service, repo: repo, publisher: publisher, messages: messages}
 }
 
-// waitEscalation polls the outbox for the question's escalation notice.
+// waitEscalation polls the outbox for the question's committed escalation
+// notice (EnqueueAgentMessage writes it as pending_commit first).
 func (f *escalationFixture) waitEscalation(t *testing.T, questionID string) domain.AgentMessage {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		m, err := f.messages.GetAgentMessageByDedupeKey(context.Background(), questionEscalationDedupeKey(questionID))
-		if err == nil {
+		if err == nil && m.State != domain.AgentMessagePendingCommit {
 			return m
 		}
 		time.Sleep(5 * time.Millisecond)
