@@ -328,8 +328,8 @@ func TestCheckTicketScanFailureIsSurfaced(t *testing.T) {
 	if !strings.Contains(diag.Message, "ticket.md is required for ticket t-7") {
 		t.Errorf("message %q dropped the underlying error", diag.Message)
 	}
-	if diag.Severity != domain.DiagnosticWarning {
-		t.Errorf("severity = %s; a ticket-system failure is not a workspace structural error", diag.Severity)
+	if diag.Severity != domain.DiagnosticError {
+		t.Errorf("severity = %s; ticket scan failure must be an error visible to automatic validation", diag.Severity)
 	}
 }
 
@@ -412,4 +412,24 @@ func snapshot(t *testing.T, root string) map[string][2]any {
 		t.Fatalf("walk %s: %v", root, err)
 	}
 	return out
+}
+
+func TestInvalidWorkflowDirectoryDoesNotHideOtherErrors(t *testing.T) {
+	f := newFixture(t)
+	if err := os.RemoveAll(filepath.Join(f.Workspace, WorkflowsDirName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.Workspace, WorkflowsDirName), []byte("not a directory"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.Workspace, ProjectOverviewFileName), []byte("missing metadata"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	report := f.check()
+	if report.Valid {
+		t.Fatal("broken workspace reported valid")
+	}
+	if len(node(t, report, WorkflowsDirName).Diagnostics) == 0 || len(node(t, report, ProjectOverviewFileName).Diagnostics) == 0 {
+		t.Fatal("one artifact hid the other artifact's errors")
+	}
 }

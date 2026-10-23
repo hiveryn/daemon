@@ -230,7 +230,7 @@ func checkWorkflows(workspacePath string) (domain.WorkspaceNode, error) {
 
 	workflows, err := discoverWorkflows(workspacePath, diags)
 	if err != nil {
-		return domain.WorkspaceNode{}, err
+		diags.errorf(domain.DiagUnreadable, 0, "cannot inspect workflows: %v", err)
 	}
 	for _, workflow := range workflows {
 		node.Children = append(node.Children, domain.WorkspaceEntry{
@@ -269,8 +269,9 @@ func (s *Service) checkTickets(ctx context.Context, workspacePath string, report
 	if err != nil {
 		return tickets, append(reportDiags, domain.WorkspaceDiagnostic{
 			Code:     domain.DiagTicketScanFailed,
-			Severity: domain.DiagnosticWarning,
-			Message:  fmt.Sprintf("ticket totals are unavailable: %v", err),
+			Severity: domain.DiagnosticError,
+			Path:     "tickets",
+			Message:  fmt.Sprintf("ticket scan failed: %v", err),
 		})
 	}
 
