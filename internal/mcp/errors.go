@@ -27,10 +27,6 @@ func newValidationError(field, message string) *ToolError {
 	}
 }
 
-func newNotFoundError(message string) *ToolError {
-	return &ToolError{Code: ErrorCodeNotFound, Message: message}
-}
-
 func newInternalError(message string) *ToolError {
 	return &ToolError{Code: ErrorCodeInternal, Message: message}
 }

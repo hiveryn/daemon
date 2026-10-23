@@ -27,9 +27,7 @@ func newWorkspaceTestHandler(t *testing.T) (http.Handler, string) {
 		"hiveryn": {Name: "Hiveryn", Path: workspace, Repos: map[string]string{"api": apiRepo}},
 	})
 
-	writeWorkspaceFile(t, workspace, workspacefs.ProjectOverviewFileName, "---\nlastUpdatedAt: \"2026-01-15T09:30:00Z\"\n---\n\n# Overview\n")
-	writeWorkspaceFile(t, workspace, workspacefs.ProjectStateFileName, "---\nlastUpdatedAt: \"2026-01-15T09:30:00Z\"\n---\n\n# State\n")
-	writeWorkspaceFile(t, workspace, workspacefs.RoadmapCurrentFileName, "---\nlastUpdatedAt: \"2026-01-15T09:30:00Z\"\n---\n\n# Roadmap\n")
+	writeWorkspaceFile(t, workspace, workspacefs.ProjectOverviewFileName, "---\nupdated_at: \"2026-01-15T09:30:00Z\"\n---\n\n# Overview\n")
 	mkdirWorkspace(t, workspace, workspacefs.WorkflowsDirName)
 
 	cfg, err := config.Load(cfgPath)
@@ -84,7 +82,7 @@ func TestWorkspaceCheckReturnsReport(t *testing.T) {
 	if report.ArchitectKey != "hiveryn" || report.WorkspacePath != workspace {
 		t.Errorf("identity = %q %q", report.ArchitectKey, report.WorkspacePath)
 	}
-	if len(report.Nodes) != 6 {
+	if len(report.Nodes) != 3 {
 		t.Errorf("nodes = %d, want the 6 expected entries", len(report.Nodes))
 	}
 	if report.CheckedAt.IsZero() {
@@ -96,7 +94,7 @@ func TestWorkspaceCheckReturnsReport(t *testing.T) {
 // breakage — not an HTTP error.
 func TestWorkspaceCheckBrokenWorkspaceStillReturns200(t *testing.T) {
 	handler, workspace := newWorkspaceTestHandler(t)
-	if err := os.Remove(filepath.Join(workspace, workspacefs.ProjectStateFileName)); err != nil {
+	if err := os.Remove(filepath.Join(workspace, workspacefs.ProjectOverviewFileName)); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 
@@ -151,7 +149,7 @@ func TestWorkspaceDescribeArtifactRejectsUnknownKind(t *testing.T) {
 		if status != http.StatusBadRequest {
 			t.Errorf("%s: status = %d, want 400", kind, status)
 		}
-		if !strings.Contains(string(body), "PROJECT_OVERVIEW") {
+		if !strings.Contains(string(body), "OVERVIEW") {
 			t.Errorf("%s: error does not list the valid kinds: %s", kind, body)
 		}
 	}
@@ -159,8 +157,8 @@ func TestWorkspaceDescribeArtifactRejectsUnknownKind(t *testing.T) {
 
 func TestWorkspaceListWorkflows(t *testing.T) {
 	handler, workspace := newWorkspaceTestHandler(t)
-	writeWorkspaceFile(t, workspace, workspacefs.WorkflowsDirName+"/DELIVER.md", "---\nattach: suggested\nrepos:\n- api\n---\n\n# Deliver\n")
-	writeWorkspaceFile(t, workspace, workspacefs.WorkflowsDirName+"/MANUAL.md", "---\nattach: manual\n---\n\n# Manual\n")
+	writeWorkspaceFile(t, workspace, workspacefs.WorkflowsDirName+"/DELIVER.md", "# Deliver\n")
+	writeWorkspaceFile(t, workspace, workspacefs.WorkflowsDirName+"/MANUAL.md", "# Manual\n")
 
 	status, body := request(t, handler, http.MethodGet, "/api/architects/hiveryn/workflows?repos=api", nil)
 	if status != http.StatusOK {
@@ -172,19 +170,10 @@ func TestWorkspaceListWorkflows(t *testing.T) {
 	if len(list.Workflows) != 2 {
 		t.Fatalf("workflows = %d, want 2", len(list.Workflows))
 	}
-	if strings.Join(list.ScopeRepos, ",") != "api" {
-		t.Errorf("scope_repos = %v", list.ScopeRepos)
-	}
 
 	byName := map[string]domain.Workflow{}
 	for _, w := range list.Workflows {
 		byName[w.Name] = w
-	}
-	if !byName["DELIVER"].Suggested {
-		t.Error("DELIVER should be suggested for the api scope")
-	}
-	if byName["MANUAL"].Suggested {
-		t.Error("a manual workflow is never suggested")
 	}
 	if !filepath.IsAbs(byName["DELIVER"].Path) {
 		t.Errorf("path %q is not canonical/absolute", byName["DELIVER"].Path)
@@ -193,7 +182,7 @@ func TestWorkspaceListWorkflows(t *testing.T) {
 
 func TestWorkspaceListWorkflowsWithoutScope(t *testing.T) {
 	handler, workspace := newWorkspaceTestHandler(t)
-	writeWorkspaceFile(t, workspace, workspacefs.WorkflowsDirName+"/DELIVER.md", "---\nattach: suggested\nrepos:\n- api\n---\n\n# Deliver\n")
+	writeWorkspaceFile(t, workspace, workspacefs.WorkflowsDirName+"/DELIVER.md", "# Deliver\n")
 
 	status, body := request(t, handler, http.MethodGet, "/api/architects/hiveryn/workflows", nil)
 	if status != http.StatusOK {
@@ -202,18 +191,12 @@ func TestWorkspaceListWorkflowsWithoutScope(t *testing.T) {
 
 	var list domain.WorkflowList
 	decodeEnvelopeData(t, body, &list)
-	if len(list.ScopeRepos) != 0 {
-		t.Errorf("scope_repos = %v, want empty", list.ScopeRepos)
-	}
-	if list.Workflows[0].Suggested {
-		t.Error("no scope means no suggestions")
-	}
 }
 
 // An invalid workflow is listed with its diagnostics rather than dropped.
 func TestWorkspaceListWorkflowsReportsInvalid(t *testing.T) {
 	handler, workspace := newWorkspaceTestHandler(t)
-	writeWorkspaceFile(t, workspace, workspacefs.WorkflowsDirName+"/BROKEN.md", "---\nattach: suggested\nrepos:\n- ghost\n---\n\n# Broken\n")
+	writeWorkspaceFile(t, workspace, workspacefs.WorkflowsDirName+"/BROKEN.md", "")
 
 	status, body := request(t, handler, http.MethodGet, "/api/architects/hiveryn/workflows?repos=api", nil)
 	if status != http.StatusOK {
@@ -252,8 +235,8 @@ func TestWorkspaceWorkerPreflight(t *testing.T) {
 
 func TestWorkspaceWorkerPreflightReportsBlockers(t *testing.T) {
 	handler, workspace := newWorkspaceTestHandler(t)
-	if err := os.Remove(filepath.Join(workspace, workspacefs.ProjectStateFileName)); err != nil {
-		t.Fatalf("remove PROJECT_STATE.md: %v", err)
+	if err := os.Remove(filepath.Join(workspace, workspacefs.ProjectOverviewFileName)); err != nil {
+		t.Fatalf("remove OVERVIEW.md: %v", err)
 	}
 
 	status, body := request(t, handler, http.MethodGet, "/api/architects/hiveryn/workspace/worker-preflight", nil)
@@ -264,9 +247,9 @@ func TestWorkspaceWorkerPreflightReportsBlockers(t *testing.T) {
 	var preflight domain.WorkerPreflight
 	decodeEnvelopeData(t, body, &preflight)
 	if preflight.Launchable {
-		t.Fatalf("missing PROJECT_STATE.md reported as launchable: %+v", preflight)
+		t.Fatalf("missing OVERVIEW.md reported as launchable: %+v", preflight)
 	}
-	if !strings.Contains(strings.Join(preflight.Problems, "\n"), workspacefs.ProjectStateFileName) {
+	if !strings.Contains(strings.Join(preflight.Problems, "\n"), workspacefs.ProjectOverviewFileName) {
 		t.Errorf("problems do not name the missing document: %v", preflight.Problems)
 	}
 }
@@ -279,29 +262,6 @@ func TestWorkspaceWorkerPreflightUnknownArchitect(t *testing.T) {
 	}
 }
 
-func TestParseRepoScope(t *testing.T) {
-	tests := []struct {
-		raw  string
-		want []string
-	}{
-		{raw: "", want: nil},
-		{raw: "   ", want: nil},
-		{raw: "api", want: []string{"api"}},
-		{raw: "api,web", want: []string{"api", "web"}},
-		{raw: " api , web ", want: []string{"api", "web"}},
-		{raw: "api,,web,", want: []string{"api", "web"}},
-	}
-
-	for _, test := range tests {
-		got := parseRepoScope(test.raw)
-		if strings.Join(got, ",") != strings.Join(test.want, ",") {
-			t.Errorf("parseRepoScope(%q) = %v, want %v", test.raw, got, test.want)
-		}
-	}
-}
-
-// writeGitRepo is a temp dir with a .git directory, which is what the daemon's
-// repo-path check requires before a session may be scoped to it.
 func writeGitRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

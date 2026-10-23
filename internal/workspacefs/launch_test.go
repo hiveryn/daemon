@@ -12,7 +12,7 @@ import (
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
-const validManualWorkflow = "---\nattach: manual\n---\n\n# Manual\n\nDo the thing.\n"
+const validManualWorkflow = "# Manual\n\nDo the thing.\n"
 
 func (f *fixture) workflowPath(name string) string {
 	f.t.Helper()
@@ -42,55 +42,6 @@ func mustValidationError(t *testing.T, err error, field string, fragments ...str
 	}
 }
 
-func TestReadArchitectSystemAbsentIsNotPresent(t *testing.T) {
-	f := newFixture(t)
-	doc := ReadArchitectSystem(f.Workspace)
-	if doc.Present || doc.Loaded || doc.Content != "" {
-		t.Fatalf("absent file reported as %+v", doc)
-	}
-	if len(doc.Diagnostics) != 0 {
-		t.Fatalf("absent optional file produced diagnostics: %+v", doc.Diagnostics)
-	}
-}
-
-func TestReadArchitectSystemLoadsContent(t *testing.T) {
-	f := newFixture(t)
-	f.write(ArchitectSystemFileName, "Work as a peer.\n")
-	doc := ReadArchitectSystem(f.Workspace)
-	if !doc.Present || !doc.Loaded {
-		t.Fatalf("valid file not loaded: %+v", doc)
-	}
-	if doc.Content != "Work as a peer.\n" {
-		t.Fatalf("content = %q", doc.Content)
-	}
-}
-
-// A present-but-broken file must be reported as not loaded with the reason,
-// never silently treated as applied.
-func TestReadArchitectSystemBrokenIsPresentButNotLoaded(t *testing.T) {
-	cases := map[string]func(f *fixture){
-		"empty":        func(f *fixture) { f.write(ArchitectSystemFileName, "") },
-		"directory":    func(f *fixture) { f.mkdir(ArchitectSystemFileName) },
-		"invalid utf8": func(f *fixture) { f.writeBytes(ArchitectSystemFileName, []byte{0xff, 0xfe, 'x'}) },
-	}
-	for name, breakIt := range cases {
-		t.Run(name, func(t *testing.T) {
-			f := newFixture(t)
-			breakIt(f)
-			doc := ReadArchitectSystem(f.Workspace)
-			if !doc.Present {
-				t.Fatalf("file exists but was reported absent: %+v", doc)
-			}
-			if doc.Loaded || doc.Content != "" {
-				t.Fatalf("broken file reported as loaded: %+v", doc)
-			}
-			if len(doc.Diagnostics) == 0 {
-				t.Fatal("broken file produced no diagnostics")
-			}
-		})
-	}
-}
-
 func TestValidateWorkerContextEmptySelectionIsValid(t *testing.T) {
 	f := newFixture(t)
 	ctx, err := ValidateWorkerContext(f.Workspace, "example", nil)
@@ -104,8 +55,6 @@ func TestValidateWorkerContextEmptySelectionIsValid(t *testing.T) {
 	// fixed order, labelled by file name.
 	want := []ProjectDocument{
 		{Name: ProjectOverviewFileName, Content: validOverview},
-		{Name: ProjectStateFileName, Content: validState},
-		{Name: RoadmapCurrentFileName, Content: validRoadmap},
 	}
 	if !reflect.DeepEqual(ctx.Documents, want) {
 		t.Fatalf("documents = %+v, want %+v", ctx.Documents, want)
@@ -118,7 +67,7 @@ func TestValidateWorkerContextKeepsSelectionOrderAndAddsNothing(t *testing.T) {
 	f := newFixture(t)
 	f.write(WorkflowsDirName+"/b.md", validManualWorkflow)
 	f.write(WorkflowsDirName+"/a.md", validManualWorkflow)
-	f.write(WorkflowsDirName+"/suggested.md", "---\nattach: suggested\nrepos:\n- api\n---\n\nBody.\n")
+	f.write(WorkflowsDirName+"/suggested.md", "Body.\n")
 
 	ctx, err := ValidateWorkerContext(f.Workspace, "example", []string{f.workflowPath("b.md"), f.workflowPath("a.md")})
 	if err != nil {
@@ -135,7 +84,7 @@ func TestValidateWorkerContextKeepsSelectionOrderAndAddsNothing(t *testing.T) {
 func TestValidateWorkerContextCarriesSelectedWorkflowBodies(t *testing.T) {
 	f := newFixture(t)
 	body := "# Deliver\n\nStep one.\n\n---\n\n```yaml\nattach: manual\n---\n```\n\n  indented line\n"
-	f.write(WorkflowsDirName+"/deliver.md", "---\nattach: manual\n---\n\n"+body)
+	f.write(WorkflowsDirName+"/deliver.md", ""+body)
 
 	ctx, err := ValidateWorkerContext(f.Workspace, "example", []string{f.workflowPath("deliver.md")})
 	if err != nil {
@@ -156,7 +105,7 @@ func TestValidateWorkerContextCarriesSelectedWorkflowBodies(t *testing.T) {
 // Problems in files a worker never reads must not stop the launch.
 func TestValidateWorkerContextIgnoresArchitectOnlyArtifactsAndUnselectedWorkflows(t *testing.T) {
 	f := newFixture(t)
-	f.write(ArchitectSystemFileName, "")                                 // invalid, architect-only
+	f.write("ARCHITECT_SYSTEM.md", "")                                   // invalid, architect-only
 	f.write(WorkflowsDirName+"/broken.md", "---\nattach: nope\n---\n\n") // invalid, not selected
 	f.mkdir(WorkflowsDirName + "/nested")                                // structural error, not selected
 	f.write(WorkflowsDirName+"/ok.md", validManualWorkflow)
@@ -172,28 +121,15 @@ func TestValidateWorkerContextIgnoresArchitectOnlyArtifactsAndUnselectedWorkflow
 
 // The roadmap is optional: absent, it is left out of the worker context; when
 // present, it has to be valid like the other documents.
-func TestValidateWorkerContextRoadmapIsOptional(t *testing.T) {
-	f := newFixture(t)
-	f.remove(RoadmapCurrentFileName)
-	ctx, err := ValidateWorkerContext(f.Workspace, "example", nil)
-	if err != nil {
-		t.Fatalf("absent roadmap must not block a worker: %v", err)
-	}
-	if len(ctx.Documents) != 2 || ctx.Documents[0].Name != ProjectOverviewFileName || ctx.Documents[1].Name != ProjectStateFileName {
-		t.Fatalf("absent roadmap must leave only the required documents: %+v", ctx.Documents)
-	}
-}
-
 func TestValidateWorkerContextRequiredDocumentsBlockLaunch(t *testing.T) {
 	cases := map[string]struct {
 		breakIt  func(f *fixture)
 		fragment string
 	}{
-		"missing state":     {func(f *fixture) { f.remove(ProjectStateFileName) }, "PROJECT_STATE.md MISSING_REQUIRED_FILE"},
-		"bad roadmap stamp": {func(f *fixture) { f.write(RoadmapCurrentFileName, "---\nlastUpdatedAt: yesterday\n---\n\nBody.\n") }, "ROADMAP_CURRENT.md:2 INVALID_TIMESTAMP"},
+		"missing state": {func(f *fixture) { f.remove(ProjectOverviewFileName) }, "OVERVIEW.md MISSING_REQUIRED_FILE"},
 		"empty overview body": {func(f *fixture) {
-			f.write(ProjectOverviewFileName, "---\nlastUpdatedAt: \"2026-01-15T09:30:00Z\"\n---\n")
-		}, "PROJECT_OVERVIEW.md"},
+			f.write(ProjectOverviewFileName, "---\nupdated_at: \"2026-01-15T09:30:00Z\"\n---\n")
+		}, "OVERVIEW.md"},
 		"invalid config":   {func(f *fixture) { f.write(ConfigFileName, "name: X\nrepos:\n  api: \"\"\n") }, "hiveryn.yaml"},
 		"leftover prompts": {func(f *fixture) { f.write(ConfigFileName, "name: X\nrepos:\n  api: /tmp\nprompts:\n  architect: {}\n") }, "prompt overrides were removed"},
 	}
@@ -210,7 +146,7 @@ func TestValidateWorkerContextRequiredDocumentsBlockLaunch(t *testing.T) {
 func TestValidateWorkerContextSelectedWorkflowFailuresAreActionable(t *testing.T) {
 	f := newFixture(t)
 	f.write(WorkflowsDirName+"/ok.md", validManualWorkflow)
-	f.write(WorkflowsDirName+"/broken.md", "---\nattach: suggested\nrepos:\n- nope\n---\n\nBody.\n")
+	f.write(WorkflowsDirName+"/broken.md", "")
 	f.write("notes.md", validManualWorkflow)
 	ok := f.workflowPath("ok.md")
 	workflowsDir := filepath.Dir(ok)
@@ -232,7 +168,7 @@ func TestValidateWorkerContextSelectedWorkflowFailuresAreActionable(t *testing.T
 		"not clean":        {[]string{workflowsDir + "/./ok.md"}, "not in canonical form"},
 		"duplicate":        {[]string{ok, ok}, "already selected"},
 		"missing":          {[]string{filepath.Join(workflowsDir, "renamed.md")}, "does not exist"},
-		"invalid selected": {[]string{filepath.Join(workflowsDir, "broken.md")}, "WORKFLOW_UNKNOWN_REPO"},
+		"invalid selected": {[]string{filepath.Join(workflowsDir, "broken.md")}, "EMPTY_BODY"},
 		"outside dir":      {[]string{filepath.Join(filepath.Dir(workflowsDir), "notes.md")}, "not directly inside"},
 		"symlink escape":   {[]string{filepath.Join(workflowsDir, "escape.md")}, "outside the architect workspace"},
 		"not markdown":     {[]string{filepath.Join(workflowsDir, "ok.txt")}, "not a markdown"},
@@ -281,34 +217,14 @@ func TestPreflightWorkerReadyWorkspaceIsLaunchable(t *testing.T) {
 
 // The optional roadmap is absent in the same run that is launchable, so its
 // absence is proven not to block a worker.
-func TestPreflightWorkerAbsentRoadmapDoesNotBlock(t *testing.T) {
-	f := newFixture(t)
-	f.remove(RoadmapCurrentFileName)
-	if preflight := f.preflight(); !preflight.Launchable {
-		t.Fatalf("absent optional roadmap blocked a worker: %+v", preflight)
-	}
-}
-
-func TestPreflightWorkerInvalidRoadmapBlocks(t *testing.T) {
-	f := newFixture(t)
-	f.write(RoadmapCurrentFileName, "# Roadmap\n\nNo frontmatter.\n")
-	preflight := f.preflight()
-	if preflight.Launchable {
-		t.Fatalf("invalid roadmap did not block a worker: %+v", preflight)
-	}
-	if !strings.Contains(strings.Join(preflight.Problems, "\n"), RoadmapCurrentFileName) {
-		t.Fatalf("problems do not name the roadmap: %+v", preflight.Problems)
-	}
-}
-
 func TestPreflightWorkerMissingRequiredDocumentBlocks(t *testing.T) {
 	f := newFixture(t)
-	f.remove(ProjectStateFileName)
+	f.remove(ProjectOverviewFileName)
 	preflight := f.preflight()
 	if preflight.Launchable {
-		t.Fatalf("missing PROJECT_STATE.md did not block a worker: %+v", preflight)
+		t.Fatalf("missing OVERVIEW.md did not block a worker: %+v", preflight)
 	}
-	if !strings.Contains(strings.Join(preflight.Problems, "\n"), ProjectStateFileName) {
+	if !strings.Contains(strings.Join(preflight.Problems, "\n"), ProjectOverviewFileName) {
 		t.Fatalf("problems do not name the missing document: %+v", preflight.Problems)
 	}
 }
@@ -317,8 +233,8 @@ func TestPreflightWorkerMissingRequiredDocumentBlocks(t *testing.T) {
 // separates this answer from the workspace check's aggregate verdict.
 func TestPreflightWorkerIgnoresArchitectOnlyAndUnselectedWorkflows(t *testing.T) {
 	f := newFixture(t)
-	f.write(ArchitectSystemFileName, "")
-	f.write(WorkflowsDirName+"/broken.md", "no frontmatter at all\n")
+	f.write("ARCHITECT_SYSTEM.md", "")
+	f.write(WorkflowsDirName+"/broken.md", "")
 
 	if report := f.check(); report.Valid {
 		t.Fatal("fixture should be an invalid workspace for the aggregate check")

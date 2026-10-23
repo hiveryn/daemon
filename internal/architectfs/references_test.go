@@ -306,6 +306,9 @@ func TestUnlocatableRepoLeavesPathsUnverified(t *testing.T) {
 	refTicket(t, root, "target", "daemon")
 	refTicket(t, root, "gone-repo", "removed", "target", existsLocally)
 	refTicket(t, root, "no-repo", "", existsLocally)
+	if err := os.WriteFile(filepath.Join(root, "tickets/backlog/no-repo/ticket.md"), []byte("---\ntitle: No repo\n---\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	board, err := service.ListTickets(context.Background(), root)
 	if err != nil {
@@ -324,7 +327,7 @@ func TestUnlocatableRepoLeavesPathsUnverified(t *testing.T) {
 		t.Fatalf("gone-repo warnings = %#v", gone.Warnings)
 	}
 	noRepo := boardTicket(t, board, "no-repo")
-	if codes := warningCodes(noRepo); !slices.Equal(codes, []string{warningUnverifiedPathReference}) || !strings.Contains(noRepo.Warnings[0].Message, "no primary repo") {
+	if codes := warningCodes(noRepo); !slices.Equal(codes, []string{"INVALID_TICKET"}) || !strings.Contains(noRepo.Warnings[0].Message, "repo") {
 		t.Fatalf("no-repo warnings = %#v", noRepo.Warnings)
 	}
 	if calls := remote.takeCalls(); len(calls) != 0 {

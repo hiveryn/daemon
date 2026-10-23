@@ -25,6 +25,7 @@ var migrationFiles = []string{
 	"migrations/0011_agent_messages.sql",
 	"migrations/0012_action_artifact_mode.sql",
 	"migrations/0013_action_notification_obligation.sql",
+	"migrations/0014_workspace_records.sql",
 }
 
 func runMigrations(ctx context.Context, db *sql.DB) error {

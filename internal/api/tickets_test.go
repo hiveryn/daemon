@@ -132,9 +132,9 @@ func TestTicketsAPIListSearchQuery(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	writeTicketFixture(t, root, domain.TicketStatusBacklog, "2026-05-11-0900-match-title", "---\ntitle: Kanban Search\ncreated: 2026-05-11T09:00:00Z\n---\n\nbody\n")
-	writeTicketFixture(t, root, domain.TicketStatusBacklog, "2026-05-11-0910-match-body", "---\ntitle: Other\ncreated: 2026-05-11T09:10:00Z\n---\n\nMentions kanban in the body.\n")
-	writeTicketFixture(t, root, domain.TicketStatusBacklog, "2026-05-11-0920-no-match", "---\ntitle: Unrelated\ncreated: 2026-05-11T09:20:00Z\n---\n\nnothing\n")
+	writeTicketFixture(t, root, domain.TicketStatusBacklog, "2026-05-11-0900-match-title", "---\ntitle: Kanban Search\ncreated_at: 2026-05-11T09:00:00Z\n---\n\nbody\n")
+	writeTicketFixture(t, root, domain.TicketStatusBacklog, "2026-05-11-0910-match-body", "---\ntitle: Other\ncreated_at: 2026-05-11T09:10:00Z\n---\n\nMentions kanban in the body.\n")
+	writeTicketFixture(t, root, domain.TicketStatusBacklog, "2026-05-11-0920-no-match", "---\ntitle: Unrelated\ncreated_at: 2026-05-11T09:20:00Z\n---\n\nnothing\n")
 	handler := newTicketTestHandler(t, root)
 
 	status, body := request(t, handler, http.MethodGet, "/api/architects/hiveryn/tickets?q=KANBAN", nil)
@@ -436,6 +436,19 @@ func cloneArchitects(input map[string]config.ArchitectConfig) map[string]config.
 }
 
 func writeTicketFixture(t *testing.T, root string, status domain.TicketStatus, id, content string) {
+	if strings.HasPrefix(content, "---\n") {
+		additions := ""
+		if !strings.Contains(content, "\nrepo:") {
+			additions += "repo: daemon\n"
+		}
+		if !strings.Contains(content, "\ncreated_at:") {
+			additions += "created_at: 2026-01-01T00:00:00Z\n"
+		}
+		if !strings.Contains(content, "\nupdated_at:") {
+			additions += "updated_at: 2026-01-01T00:00:00Z\n"
+		}
+		content = "---\n" + additions + strings.TrimPrefix(content, "---\n")
+	}
 	t.Helper()
 	dir := filepath.Join(root, "tickets", string(status), id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

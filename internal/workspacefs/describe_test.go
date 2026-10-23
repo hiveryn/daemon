@@ -82,32 +82,18 @@ func TestDescribeTimestampFieldsAreEnforced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Describe: %v", err)
 	}
-	if got := overview.Fields[0]; got.Name != "lastUpdatedAt" || got.Type != domain.ArtifactFieldTimestampUTC || !got.Required {
+	if got := overview.Fields[0]; got.Name != "updated_at" || got.Type != domain.ArtifactFieldTimestampUTC || !got.Required {
 		t.Fatalf("overview field = %+v", got)
 	}
 }
 
-func TestDescribeWorkflowAttachEnum(t *testing.T) {
+func TestDescribePlainWorkflow(t *testing.T) {
 	schema, err := Describe(domain.ArtifactWorkflow)
-	if err != nil {
-		t.Fatalf("Describe: %v", err)
-	}
-
-	attach := schema.Fields[0]
-	if attach.Name != "attach" || attach.Type != domain.ArtifactFieldEnum {
-		t.Fatalf("attach field = %+v", attach)
-	}
-	if strings.Join(attach.Enum, ",") != "manual,suggested" {
-		t.Errorf("enum = %v", attach.Enum)
-	}
-	if len(schema.Fields) != 2 || schema.Fields[1].Name != "repos" {
-		t.Errorf("fields = %+v; a workflow declares attach and repos, and nothing else", schema.Fields)
+	if err != nil || len(schema.Fields) != 0 {
+		t.Fatalf("%+v %v", schema, err)
 	}
 }
 
-// Every example must survive the validator that the same definition drives —
-// otherwise describeArtifact would hand the agent a template that fails the
-// check it is meant to satisfy.
 func TestDescribeExamplesPassTheirOwnValidator(t *testing.T) {
 	for kind, def := range definitions {
 		if def.Format != "markdown" {
@@ -154,12 +140,6 @@ func exampleFixturePath(t *testing.T, kind domain.ArtifactKind) string {
 	switch kind {
 	case domain.ArtifactProjectOverview:
 		return ProjectOverviewFileName
-	case domain.ArtifactProjectState:
-		return ProjectStateFileName
-	case domain.ArtifactRoadmapCurrent:
-		return RoadmapCurrentFileName
-	case domain.ArtifactArchitectSystem:
-		return ArchitectSystemFileName
 	case domain.ArtifactWorkflow:
 		return WorkflowsDirName + "/EXAMPLE.md"
 	default:

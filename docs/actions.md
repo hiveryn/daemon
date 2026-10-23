@@ -28,7 +28,7 @@ are never inspected on the laptop. `action.yaml`'s `name` must equal the
 registered name. A project's `hiveryn.yaml` `availableActions` lists the names
 its architect and workers may request; that is permission, not installation.
 Architects update that list by editing `hiveryn.yaml` directly and checking the
-workspace with `checkWorkspace`; valid edits are visible without a restart.
+workspace through automatic validation; valid edits are visible without a restart.
 
 ## Where an Action runs
 

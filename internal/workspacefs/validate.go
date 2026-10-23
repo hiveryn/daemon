@@ -37,10 +37,6 @@ func (d *diagnostics) errorf(code string, line int, format string, args ...any) 
 	d.add(domain.DiagnosticError, code, line, format, args...)
 }
 
-func (d *diagnostics) warnf(code string, line int, format string, args ...any) {
-	d.add(domain.DiagnosticWarning, code, line, format, args...)
-}
-
 // hasErrors reports whether any finding blocks validity. Warnings never do.
 func (d *diagnostics) hasErrors() bool {
 	for _, item := range d.items {
@@ -64,7 +60,7 @@ type documentResult struct {
 	FrontmatterLine int
 	// Data is the file's full content once it has been read stably and passed
 	// the UTF-8 check; empty otherwise. Callers that load a document (the
-	// architect's ARCHITECT_SYSTEM.md) take it from here rather than reading
+	// worker's Overview) take it from here rather than reading
 	// the file a second time, so what was validated is what is used.
 	Data string
 	// Body is the markdown below the frontmatter, verbatim, once the file has

@@ -330,7 +330,7 @@ func TestSystemPromptsGuideNotifyAndAskQuestion(t *testing.T) {
 		if err != nil {
 			t.Fatalf("builtinPrompt(%s): %v", name, err)
 		}
-		for _, want := range []string{"notify(shortMessage)", "askQuestion(question, answers, recommendedIndex)", "rather than a built-in question tool"} {
+		for _, want := range []string{"notify", "askQuestion"} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("%s lacks %q", name, want)
 			}

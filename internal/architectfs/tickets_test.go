@@ -17,7 +17,7 @@ func TestTicketServiceListAndGet(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-backlog-ticket", "---\ntitle: Backlog ticket\nrepo: daemon\ncreated: 2026-05-12T09:00:00Z\nupdated: 2026-05-12T09:01:00Z\nreferences:\n  - abc\n---\n\nBacklog body\n")
+	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-backlog-ticket", "---\ntitle: Backlog ticket\nrepo: daemon\ncreated_at: 2026-05-12T09:00:00Z\nupdated_at: 2026-05-12T09:01:00Z\nreferences:\n  - abc\n---\n\nBacklog body\n")
 	writeTicketFile(t, root, domain.TicketStatusBacklog, "abc", "---\ntitle: Referenced ticket\n---\n\nReference target\n")
 	writeTicketFile(t, root, domain.TicketStatusDone, "2026-05-12-1000-done-ticket", "---\ntitle: Done ticket\nrepo: daemon\n---\n\nDone body\n")
 	writeConclusionFile(t, root, domain.TicketStatusDone, "2026-05-12-1000-done-ticket", "---\nstarted_at: 2026-05-12T10:00:00Z\nconcluded_at: 2026-05-12T10:30:00Z\nagent: codex\nprofile: codex-default\nrejected: false\ncommits:\n  - abc1234\n---\n\nSummary\n")
@@ -197,7 +197,7 @@ func TestTicketServiceCreateCollisionAndEditPreservesUnknownFrontmatter(t *testi
 
 	root := t.TempDir()
 	now := time.Date(2026, 5, 12, 9, 15, 0, 0, time.UTC)
-	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0915-same-title", "---\ntitle: Same title\nrepo: daemon\ncreated: 2026-05-12T09:15:00Z\nupdated: 2026-05-12T09:15:00Z\ncustom_field: keep-me\n---\n\nalpha\nrepeat\nrepeat\n")
+	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0915-same-title", "---\ntitle: Same title\nrepo: daemon\ncreated_at: 2026-05-12T09:15:00Z\nupdated_at: 2026-05-12T09:15:00Z\ncustom_field: keep-me\n---\n\nalpha\nrepeat\nrepeat\n")
 
 	service := newLocalTicketService()
 	created, err := service.CreateTicket(context.Background(), root, domain.CreateTicketParams{
@@ -343,10 +343,9 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-duplicate", "---\ntitle: One\n---\n\nbody\n")
 		writeTicketFile(t, root, domain.TicketStatusDone, "2026-05-12-0900-duplicate", "---\ntitle: Two\n---\n\nbody\n")
 
-		_, err := newLocalTicketService().ListTickets(context.Background(), root)
-		var conflictErr *domain.ConflictError
-		if !errors.As(err, &conflictErr) {
-			t.Fatalf("expected conflict error, got %v", err)
+		board, err := newLocalTicketService().ListTickets(context.Background(), root)
+		if err != nil || len(board.Done) != 1 || len(board.Done[0].Warnings) == 0 {
+			t.Fatalf("%+v %v", board, err)
 		}
 	})
 
@@ -356,10 +355,9 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 			t.Fatalf("mkdir: %v", err)
 		}
 
-		_, err := newLocalTicketService().ListTickets(context.Background(), root)
-		var validationErr *domain.ValidationError
-		if !errors.As(err, &validationErr) || validationErr.Field != "ticket.md" {
-			t.Fatalf("expected ticket.md validation error, got %v", err)
+		board, err := newLocalTicketService().ListTickets(context.Background(), root)
+		if err != nil || len(board.Backlog) != 1 || board.Backlog[0].Warnings[0].Code != "INVALID_TICKET" {
+			t.Fatalf("%+v %v", board, err)
 		}
 	})
 
@@ -368,10 +366,9 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		writeTicketFile(t, root, domain.TicketStatusDone, "2026-05-12-0900-rejected", "---\ntitle: Rejected\n---\n\nbody\n")
 		writeConclusionFile(t, root, domain.TicketStatusDone, "2026-05-12-0900-rejected", "---\nstarted_at: 2026-05-12T09:00:00Z\nconcluded_at: 2026-05-12T09:05:00Z\nrejected: true\nrejection_reason: \"\"\n---\n\nnope\n")
 
-		_, err := newLocalTicketService().GetTicket(context.Background(), root, "2026-05-12-0900-rejected")
-		var validationErr *domain.ValidationError
-		if !errors.As(err, &validationErr) || validationErr.Field != "rejection_reason" {
-			t.Fatalf("expected rejection_reason validation error, got %v", err)
+		ticket, err := newLocalTicketService().GetTicket(context.Background(), root, "2026-05-12-0900-rejected")
+		if err != nil || len(ticket.Warnings) != 1 || !strings.Contains(ticket.Warnings[0].Message, "rejection_reason") {
+			t.Fatalf("%+v %v", ticket, err)
 		}
 	})
 
@@ -398,7 +395,7 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 	t.Run("broken references on create", func(t *testing.T) {
 		root := t.TempDir()
 		ticket, err := newLocalTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{
-			Title:      "Bad refs",
+			Title: "Bad refs", Repo: "daemon",
 			References: []string{"missing-ticket"},
 		})
 		if err != nil {
@@ -525,7 +522,7 @@ func TestMixedTicketAndPathReferences(t *testing.T) {
 	}
 	missing := filepath.Join(pathDir, "missing")
 	writeTicketFile(t, root, domain.TicketStatusBacklog, "target", "---\ntitle: Target\n---\n")
-	ticket, err := newLocalTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{Title: "Mixed", References: []string{"target", pathDir + "/.", pathFile, missing}})
+	ticket, err := newLocalTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{Title: "Mixed", Repo: "daemon", References: []string{"target", pathDir + "/.", pathFile, missing}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -603,6 +600,19 @@ func TestTicketServiceEmptySlicesAreNonNull(t *testing.T) {
 }
 
 func writeTicketFile(t *testing.T, root string, status domain.TicketStatus, id, content string) {
+	if strings.HasPrefix(content, "---\n") {
+		additions := ""
+		if !strings.Contains(content, "\nrepo:") {
+			additions += "repo: daemon\n"
+		}
+		if !strings.Contains(content, "\ncreated_at:") {
+			additions += "created_at: 2026-01-01T00:00:00Z\n"
+		}
+		if !strings.Contains(content, "\nupdated_at:") {
+			additions += "updated_at: 2026-01-01T00:00:00Z\n"
+		}
+		content = "---\n" + additions + strings.TrimPrefix(content, "---\n")
+	}
 	t.Helper()
 	dir := filepath.Join(root, ticketsDirName, string(status), id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -645,9 +655,9 @@ func TestTicketServiceSearchTickets(t *testing.T) {
 	root := t.TempDir()
 	// Two backlog tickets, newest first by created; the older one matches on
 	// its body only.
-	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-older", "---\ntitle: Older ticket\ncreated: 2026-05-12T09:00:00Z\n---\n\nMentions the Palette window.\n")
-	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0930-newer", "---\ntitle: Newer PALETTE ticket\ncreated: 2026-05-12T09:30:00Z\n---\n\nNothing else.\n")
-	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0945-unrelated", "---\ntitle: Unrelated\ncreated: 2026-05-12T09:45:00Z\n---\n\nNo match here.\n")
+	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-older", "---\ntitle: Older ticket\ncreated_at: 2026-05-12T09:00:00Z\n---\n\nMentions the Palette window.\n")
+	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0930-newer", "---\ntitle: Newer PALETTE ticket\ncreated_at: 2026-05-12T09:30:00Z\n---\n\nNothing else.\n")
+	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0945-unrelated", "---\ntitle: Unrelated\ncreated_at: 2026-05-12T09:45:00Z\n---\n\nNo match here.\n")
 	writeTicketFile(t, root, domain.TicketStatusProgress, "2026-05-12-1000-progress", "---\ntitle: Progress work\n---\n\nStill no match.\n")
 	// A done ticket matching only through its conclusion body.
 	writeTicketFile(t, root, domain.TicketStatusDone, "2026-05-12-1100-done", "---\ntitle: Done work\n---\n\nTicket body without the word.\n")

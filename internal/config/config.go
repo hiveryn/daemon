@@ -500,7 +500,7 @@ func decodeArchitectFile(data []byte) (architectFile, error) {
 			// name, which is the actionable message.
 			return architectFile{}, nil
 		}
-		return architectFile{}, fmt.Errorf("%w (hiveryn.yaml holds only `name`, `repos` and the optional `availableActions`; prompt overrides were removed — architect and worker instructions are built into the daemon, and ARCHITECT_SYSTEM.md carries per-architect preferences)", err)
+		return architectFile{}, fmt.Errorf("%w (hiveryn.yaml holds only `name`, `repos` and the optional `availableActions`; prompt overrides were removed — architect and worker instructions are built into the daemon, and project instructions belong in AGENTS.md)", err)
 	}
 	return file, nil
 }

@@ -347,7 +347,7 @@ func TestSystemPromptsGuideQuestionEscalation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"answerQuestion(questionId, answer)", "never as the user's answer or approval", "not_answerable"} {
+	for _, want := range []string{"answerQuestion", "does not substitute for explicit user approval", "first answer resolves"} {
 		if !strings.Contains(architect, want) {
 			t.Fatalf("architect prompt lacks %q", want)
 		}

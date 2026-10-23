@@ -72,7 +72,7 @@ type deferredFixture struct {
 
 func newDeferredFixture(t *testing.T, waitSeconds int) *deferredFixture {
 	t.Helper()
-	service, repo, _ := newCreateTicketService(t)
+	service, repo, _ := newIntentTestService(t)
 	service.cfg.IntentWaitTimeout = waitSeconds
 	f := &deferredFixture{service: service, repo: repo, dbPath: filepath.Join(t.TempDir(), "hiveryn.db")}
 	f.attachStore(t, service)
@@ -590,7 +590,7 @@ func TestDeferredRestartFailsOpenRecords(t *testing.T) {
 		logged = append(logged, domain.SessionEvent{SessionID: e.SessionID, Type: e.Type, Status: e.Status, Message: e.Message, Raw: e.Raw, At: e.At})
 	}
 
-	restarted, repo, _ := newCreateTicketService(t)
+	restarted, repo, _ := newIntentTestService(t)
 	repo.sessionEvents = map[string][]domain.SessionEvent{"session-1": logged}
 	f.attachStore(t, restarted)
 	if err := restarted.ReconcileIntents(context.Background()); err != nil {
@@ -646,7 +646,7 @@ func TestIntentPathsRefuseTheWrongShape(t *testing.T) {
 		t.Fatalf("malformed schema err = %v", err)
 	}
 
-	unwired, _, _ := newCreateTicketService(t)
+	unwired, _, _ := newIntentTestService(t)
 	if _, err := submitDeferredIntent(ctx, unwired, f.spec(testDeferred, nil)); err == nil || !strings.Contains(err.Error(), "not configured") {
 		t.Fatalf("submit without a repository err = %v", err)
 	}

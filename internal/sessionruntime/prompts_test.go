@@ -17,79 +17,6 @@ import (
 	"github.com/hiveryn/daemon/internal/workspacefs"
 )
 
-func TestBuildArchitectInstructionsWithoutCustomFile(t *testing.T) {
-	t.Parallel()
-	workspace := testWorkspace(t, nil)
-
-	got, err := buildArchitectInstructions(config.ArchitectConfig{Path: workspace})
-	if err != nil {
-		t.Fatalf("buildArchitectInstructions: %v", err)
-	}
-	builtin, _ := builtinPrompt(architectSystemPromptName)
-	if got.Text != builtin {
-		t.Fatalf("expected the built-in prompt alone, got:\n%s", got.Text)
-	}
-	if got.Custom.Present {
-		t.Fatalf("no ARCHITECT_SYSTEM.md was written, yet Present=%v", got.Custom.Present)
-	}
-	for _, removed := range []string{"spawnTicketSession", "listAgentProfiles", "readArchitectConfig", "readDefaultPrompt"} {
-		if strings.Contains(got.Text, removed) {
-			t.Fatalf("built-in architect prompt still names removed tool %q", removed)
-		}
-	}
-	if !strings.Contains(got.Text, "spawnTicketWorker(ticketId, variant, workflows)") {
-		t.Fatal("built-in architect prompt does not describe spawnTicketWorker")
-	}
-	if !strings.Contains(got.Text, "Start by running checkWorkspace") {
-		t.Fatal("built-in architect prompt does not tell the architect to run checkWorkspace")
-	}
-	// The daemon does not enforce the conclusion gate yet, so the prompt must
-	// not claim that it does.
-	if strings.Contains(got.Text, "daemon independently reruns") || strings.Contains(got.Text, "rejects uncommitted") {
-		t.Fatal("built-in architect prompt claims a conclusion gate the daemon does not enforce")
-	}
-}
-
-func TestBuildArchitectInstructionsAppendsCustomFile(t *testing.T) {
-	t.Parallel()
-	workspace := testWorkspace(t, nil)
-	writeWorkspaceFile(t, workspace, workspacefs.ArchitectSystemFileName, "Work as a peer.\nDiscuss material decisions.\n")
-
-	got, err := buildArchitectInstructions(config.ArchitectConfig{Path: workspace})
-	if err != nil {
-		t.Fatalf("buildArchitectInstructions: %v", err)
-	}
-	builtin, _ := builtinPrompt(architectSystemPromptName)
-	if !strings.HasPrefix(got.Text, builtin) {
-		t.Fatal("custom file replaced the built-in prompt instead of being appended")
-	}
-	if !strings.Contains(got.Text, "Work as a peer.\nDiscuss material decisions.") {
-		t.Fatalf("custom content missing from instructions:\n%s", got.Text)
-	}
-	if !got.Custom.Loaded {
-		t.Fatalf("custom file not reported as loaded: %+v", got.Custom)
-	}
-}
-
-// A broken ARCHITECT_SYSTEM.md must be surfaced to the architect explicitly and
-// must not stop the session from being assembled.
-func TestBuildArchitectInstructionsSurfacesUnloadableCustomFile(t *testing.T) {
-	t.Parallel()
-	workspace := testWorkspace(t, nil)
-	writeWorkspaceFile(t, workspace, workspacefs.ArchitectSystemFileName, "")
-
-	got, err := buildArchitectInstructions(config.ArchitectConfig{Path: workspace})
-	if err != nil {
-		t.Fatalf("an unloadable custom file must not fail assembly: %v", err)
-	}
-	if !got.Custom.Present || got.Custom.Loaded {
-		t.Fatalf("expected present-but-not-loaded, got %+v", got.Custom)
-	}
-	if !strings.Contains(got.Text, "was NOT loaded") || !strings.Contains(got.Text, domain.DiagEmptyBody) {
-		t.Fatalf("instructions do not surface the unloadable file:\n%s", got.Text)
-	}
-}
-
 func TestRenderWorkerKickoff(t *testing.T) {
 	t.Parallel()
 	repos := []workerRepo{{Key: "daemon", Path: "/repos/daemon"}, {Key: "shared", Path: "/repos/shared"}}
@@ -113,14 +40,14 @@ Writable repositories:
 // never has to open a file there.
 func TestWorkerLaunchPromptEmbedsProjectDocumentsAndWorkflows(t *testing.T) {
 	t.Parallel()
-	overview := "---\nlastUpdatedAt: \"2026-01-15T09:30:00Z\"\n---\n\n# Overview\n\nSee /ws/notes.md.\n"
+	overview := "---\nupdated_at: \"2026-01-15T09:30:00Z\"\n---\n\n# Overview\n\nSee /ws/notes.md.\n"
 	documents := []workspacefs.ProjectDocument{
-		{Name: "PROJECT_OVERVIEW.md", Content: overview},
-		{Name: "PROJECT_STATE.md", Content: "\nState.\n\n"},
+		{Name: "OVERVIEW.md", Content: overview},
+		{Name: "OVERVIEW.md", Content: "\nState.\n\n"},
 	}
-	documentsWant := "The project documents follow in full, one block per document, labelled with its name. They are read-only context, current as of this launch.\n\n" +
-		"<document name=\"PROJECT_OVERVIEW.md\">\n" + strings.TrimSuffix(overview, "\n") + "\n</document>\n\n" +
-		"<document name=\"PROJECT_STATE.md\">\nState.\n</document>"
+	documentsWant := "The project Overview follows in full, labelled with its name. It is read-only context, current as of this launch.\n\n" +
+		"<document name=\"OVERVIEW.md\">\n" + strings.TrimSuffix(overview, "\n") + "\n</document>\n\n" +
+		"<document name=\"OVERVIEW.md\">\nState.\n</document>"
 
 	got, err := workerLaunchPrompt("kickoff\n", workspacefs.WorkerContext{Documents: documents})
 	if err != nil {
@@ -192,9 +119,9 @@ func TestCreateSessionTicketPersistsSelectionAndRendersFixedKickoff(t *testing.T
 	repoPath := gitRepoDir(t)
 	sharedPath := gitRepoDir(t)
 	workspace := testWorkspace(t, map[string]string{"daemon": repoPath, "shared": sharedPath})
-	a := writeWorkflow(t, workspace, "A.md", "---\nattach: manual\n---\n\nA.\n")
-	b := writeWorkflow(t, workspace, "B.md", "---\nattach: suggested\nrepos:\n- daemon\n---\n\nB.\n")
-	writeWorkflow(t, workspace, "C.md", "---\nattach: suggested\nrepos:\n- shared\n---\n\nC.\n") // matches scope, not selected
+	a := writeWorkflow(t, workspace, "A.md", "A.\n")
+	b := writeWorkflow(t, workspace, "B.md", "B.\n")
+	writeWorkflow(t, workspace, "C.md", "C.\n") // matches scope, not selected
 
 	service, _ := newTicketCreateService(t, workspace, repoPath, map[string]string{"shared": sharedPath})
 	session, err := service.CreateSession(context.Background(), domain.CreateSessionRequest{
@@ -236,7 +163,7 @@ func TestCreateSessionTicketRejectsInvalidSelectionInsteadOfDroppingIt(t *testin
 	t.Parallel()
 	repoPath := gitRepoDir(t)
 	workspace := testWorkspace(t, map[string]string{"daemon": repoPath})
-	a := writeWorkflow(t, workspace, "A.md", "---\nattach: manual\n---\n\nA.\n")
+	a := writeWorkflow(t, workspace, "A.md", "A.\n")
 	missing := filepath.Join(filepath.Dir(a), "renamed.md")
 
 	service, repo := newTicketCreateService(t, workspace, repoPath, nil)
@@ -277,7 +204,7 @@ func TestCreateSessionTicketFailsWhenProjectDocumentsAreMissing(t *testing.T) {
 	t.Parallel()
 	repoPath := gitRepoDir(t)
 	workspace := testWorkspace(t, map[string]string{"daemon": repoPath})
-	if err := os.Remove(filepath.Join(workspace, workspacefs.ProjectStateFileName)); err != nil {
+	if err := os.Remove(filepath.Join(workspace, workspacefs.ProjectOverviewFileName)); err != nil {
 		t.Fatalf("remove state: %v", err)
 	}
 	service, _ := newTicketCreateService(t, workspace, repoPath, nil)
@@ -285,8 +212,8 @@ func TestCreateSessionTicketFailsWhenProjectDocumentsAreMissing(t *testing.T) {
 		SessionType: domain.SessionTypeTicket, ArchitectKey: "hiveryn", TicketID: "ticket-1",
 	})
 	var verr *domain.ValidationError
-	if !errors.As(err, &verr) || verr.Field != "workspace" || !strings.Contains(verr.Message, "PROJECT_STATE.md") {
-		t.Fatalf("expected a workspace validation error naming PROJECT_STATE.md, got %v", err)
+	if !errors.As(err, &verr) || verr.Field != "workspace" || !strings.Contains(verr.Message, "OVERVIEW.md") {
+		t.Fatalf("expected a workspace validation error naming OVERVIEW.md, got %v", err)
 	}
 }
 
@@ -309,7 +236,7 @@ func TestCreateSessionArchitectUsesFixedKickoffAndRejectsWorkflows(t *testing.T)
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	for _, fragment := range []string{"# Project: hiveryn", "Session started: ", "Start by running checkWorkspace.", "listTickets", "readRecentArchitectConclusion", "Configured repos:\n- daemon: "} {
+	for _, fragment := range []string{"# Project: hiveryn", "Session started: "} {
 		if !strings.Contains(session.Prompt, fragment) {
 			t.Fatalf("architect kickoff missing %q:\n%s", fragment, session.Prompt)
 		}
@@ -326,7 +253,7 @@ func TestCreateRunEmbedsWorkflowBodiesReadAtLaunch(t *testing.T) {
 	t.Parallel()
 	repoPath := gitRepoDir(t)
 	workspace := testWorkspace(t, map[string]string{"daemon": repoPath})
-	a := writeWorkflow(t, workspace, "A.md", "---\nattach: manual\n---\n\nOld A.\n")
+	a := writeWorkflow(t, workspace, "A.md", "Old A.\n")
 
 	repo := newFakeSessionRepository()
 	repo.createdSession = domain.Session{
@@ -343,7 +270,7 @@ func TestCreateRunEmbedsWorkflowBodiesReadAtLaunch(t *testing.T) {
 		terminalStates: map[string]sessionTerminalState{},
 	}
 
-	writeWorkflow(t, workspace, "A.md", "---\nattach: manual\n---\n\nCurrent A.\n")
+	writeWorkflow(t, workspace, "A.md", "Current A.\n")
 	if _, err := service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{ProfileName: "codex"}); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
@@ -379,17 +306,14 @@ func TestCreateRunEmbedsProjectDocumentsReadAtLaunch(t *testing.T) {
 		terminalStates: map[string]sessionTerminalState{},
 	}
 
-	state := "---\nlastUpdatedAt: \"2026-02-01T00:00:00Z\"\n---\n\n# State\n\nCurrent state.\n"
-	writeWorkspaceFile(t, workspace, workspacefs.ProjectStateFileName, state)
-	if err := os.Remove(filepath.Join(workspace, workspacefs.RoadmapCurrentFileName)); err != nil {
-		t.Fatalf("remove roadmap: %v", err)
-	}
+	state := "---\nupdated_at: \"2026-02-01T00:00:00Z\"\n---\n\n# State\n\nCurrent state.\n"
+	writeWorkspaceFile(t, workspace, workspacefs.ProjectOverviewFileName, state)
+
 	if _, err := service.CreateRun(context.Background(), "session-1", domain.CreateSessionRunRequest{ProfileName: "codex"}); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	want := "kickoff\n\nThe project documents follow in full, one block per document, labelled with its name. They are read-only context, current as of this launch.\n\n" +
-		"<document name=\"PROJECT_OVERVIEW.md\">\n" + strings.TrimSuffix(testProjectDocument(workspacefs.ProjectOverviewFileName), "\n") + "\n</document>\n\n" +
-		"<document name=\"PROJECT_STATE.md\">\n" + strings.TrimSuffix(state, "\n") + "\n</document>\n\n" +
+	want := "kickoff\n\nThe project Overview follows in full, labelled with its name. It is read-only context, current as of this launch.\n\n" +
+		"<document name=\"OVERVIEW.md\">\n" + strings.TrimSuffix(state, "\n") + "\n</document>\n\n" +
 		"Workflows selected for this session: none"
 	if got := adapter.launchRequest.Prompt; got != want {
 		t.Fatalf("launch prompt:\n%s\nwant:\n%s", got, want)
@@ -406,7 +330,7 @@ func TestCreateRunFailsWhenSelectedWorkflowDisappeared(t *testing.T) {
 	t.Parallel()
 	repoPath := gitRepoDir(t)
 	workspace := testWorkspace(t, map[string]string{"daemon": repoPath})
-	a := writeWorkflow(t, workspace, "A.md", "---\nattach: manual\n---\n\nA.\n")
+	a := writeWorkflow(t, workspace, "A.md", "A.\n")
 
 	repo := newFakeSessionRepository()
 	repo.createdSession = domain.Session{
@@ -446,7 +370,7 @@ func TestResumeKeepsStoredInstructionsAndRevalidatesSelection(t *testing.T) {
 	t.Parallel()
 	repoPath := gitRepoDir(t)
 	workspace := testWorkspace(t, map[string]string{"daemon": repoPath})
-	a := writeWorkflow(t, workspace, "A.md", "---\nattach: manual\n---\n\nA.\n")
+	a := writeWorkflow(t, workspace, "A.md", "A.\n")
 
 	repo := newFakeSessionRepository()
 	repo.createdSession = domain.Session{

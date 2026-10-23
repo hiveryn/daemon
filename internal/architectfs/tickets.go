@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
 	"gopkg.in/yaml.v3"
 )
@@ -34,6 +36,7 @@ const (
 // references are resolved on the machine of each ticket's primary repo, as
 // located by locate.
 type TicketService struct {
+	protection    *Protection
 	locate        RepoLocator
 	inspectRemote remoteInspector
 	now           func() time.Time
@@ -71,6 +74,22 @@ func (s *TicketService) listBoard(ctx context.Context, architectPath string, kee
 	entries, err := scanTickets(architectPath)
 	if err != nil {
 		return domain.TicketBoard{}, err
+	}
+	if s.protection != nil {
+		_, diags, e := s.protection.Inspect(ctx, architectPath)
+		if e != nil {
+			return domain.TicketBoard{}, e
+		}
+		for status, items := range entries {
+			for i := range items {
+				for _, d := range diags {
+					if strings.Contains(d.Path, "/"+items[i].id+"/") {
+						items[i].warnings = append(items[i].warnings, domain.TicketWarning{Code: d.Code, Message: d.Path + ": " + d.Message})
+					}
+				}
+			}
+			entries[status] = items
+		}
 	}
 	kept := map[domain.TicketStatus][]*ticketEntry{}
 	var targets []*ticketEntry
@@ -118,7 +137,22 @@ func (e *ticketEntry) matches(needle string) bool {
 }
 
 func (s *TicketService) GetTicket(ctx context.Context, architectPath, id string) (domain.Ticket, error) {
-	return s.loadTicket(ctx, architectPath, id)
+	ticket, err := s.loadTicket(ctx, architectPath, id)
+	if err != nil {
+		return ticket, err
+	}
+	if s.protection != nil {
+		_, diags, e := s.protection.Inspect(ctx, architectPath)
+		if e != nil {
+			return domain.Ticket{}, e
+		}
+		for _, d := range diags {
+			if strings.Contains(d.Path, "/"+id+"/") {
+				ticket.Warnings = append(ticket.Warnings, domain.TicketWarning{Code: d.Code, Message: d.Path + ": " + d.Message})
+			}
+		}
+	}
+	return ticket, nil
 }
 
 // loadTicket reads one ticket with its references resolved. Only this
@@ -136,7 +170,10 @@ func (s *TicketService) loadTicket(ctx context.Context, architectPath, id string
 	return entry.ticket(), nil
 }
 
-func (s *TicketService) CreateTicket(ctx context.Context, architectPath string, params domain.CreateTicketParams) (domain.Ticket, error) {
+func (s *TicketService) createTicket(ctx context.Context, architectPath string, params domain.CreateTicketParams) (domain.Ticket, error) {
+	if strings.TrimSpace(params.Repo) == "" {
+		return domain.Ticket{}, &domain.ValidationError{Field: "repo", Message: "is required"}
+	}
 	if strings.TrimSpace(params.Title) == "" {
 		return domain.Ticket{}, &domain.ValidationError{Field: "title", Message: "is required"}
 	}
@@ -176,7 +213,7 @@ func (s *TicketService) CreateTicket(ctx context.Context, architectPath string, 
 	return s.loadTicket(ctx, architectPath, id)
 }
 
-func (s *TicketService) EditTicket(ctx context.Context, architectPath, id string, params domain.EditTicketParams) (domain.Ticket, error) {
+func (s *TicketService) editTicket(ctx context.Context, architectPath, id string, params domain.EditTicketParams) (domain.Ticket, error) {
 	if params.OldString == "" {
 		return domain.Ticket{}, &domain.ValidationError{Field: "oldString", Message: "cannot be empty"}
 	}
@@ -205,7 +242,7 @@ func (s *TicketService) EditTicket(ctx context.Context, architectPath, id string
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	setNodeTime(entry.document.Metadata, "updated", now)
+	setNodeTime(entry.document.Metadata, "updated_at", now)
 
 	if err := writeMarkdownDocument(filepath.Join(entry.dir, ticketFileName), entry.document); err != nil {
 		return domain.Ticket{}, err
@@ -214,7 +251,7 @@ func (s *TicketService) EditTicket(ctx context.Context, architectPath, id string
 	return s.loadTicket(ctx, architectPath, id)
 }
 
-func (s *TicketService) UpdateTicketMetadata(ctx context.Context, architectPath, id string, params domain.UpdateTicketMetadataParams) (domain.Ticket, error) {
+func (s *TicketService) updateTicketMetadata(ctx context.Context, architectPath, id string, params domain.UpdateTicketMetadataParams) (domain.Ticket, error) {
 	entry, err := getTicketEntry(architectPath, id)
 	if err != nil {
 		return domain.Ticket{}, err
@@ -255,7 +292,7 @@ func (s *TicketService) UpdateTicketMetadata(ctx context.Context, architectPath,
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	setNodeTime(entry.document.Metadata, "updated", now)
+	setNodeTime(entry.document.Metadata, "updated_at", now)
 
 	if err := writeMarkdownDocument(filepath.Join(entry.dir, ticketFileName), entry.document); err != nil {
 		return domain.Ticket{}, err
@@ -264,7 +301,7 @@ func (s *TicketService) UpdateTicketMetadata(ctx context.Context, architectPath,
 	return s.loadTicket(ctx, architectPath, id)
 }
 
-func (s *TicketService) DeleteTicket(_ context.Context, architectPath, id string) error {
+func (s *TicketService) deleteTicket(_ context.Context, architectPath, id string) error {
 	entry, err := getTicketEntry(architectPath, id)
 	if err != nil {
 		return err
@@ -278,7 +315,7 @@ func (s *TicketService) DeleteTicket(_ context.Context, architectPath, id string
 	return nil
 }
 
-func (s *TicketService) ConcludeTicket(ctx context.Context, architectPath, id string, conclusion domain.TicketConclusion) (domain.Ticket, error) {
+func (s *TicketService) concludeTicket(ctx context.Context, architectPath, id string, conclusion domain.TicketConclusion) (domain.Ticket, error) {
 	entry, err := getTicketEntry(architectPath, id)
 	if err != nil {
 		return domain.Ticket{}, err
@@ -293,12 +330,12 @@ func (s *TicketService) ConcludeTicket(ctx context.Context, architectPath, id st
 	}
 
 	now := time.Now().UTC()
-	setNodeTime(entry.document.Metadata, "updated", now)
+	setNodeTime(entry.document.Metadata, "updated_at", now)
 	if err := writeMarkdownDocument(filepath.Join(entry.dir, ticketFileName), entry.document); err != nil {
 		return domain.Ticket{}, err
 	}
 
-	moved, err := s.MoveTicket(ctx, architectPath, id, domain.MoveTicketParams{To: domain.TicketStatusDone})
+	moved, err := s.moveTicket(ctx, architectPath, id, domain.MoveTicketParams{To: domain.TicketStatusDone})
 	if err != nil {
 		return domain.Ticket{}, err
 	}
@@ -336,7 +373,7 @@ func setNodeCommitRefs(node *yaml.Node, key string, commits []domain.CommitRef) 
 	setMappingValue(node, key, sequence)
 }
 
-func (s *TicketService) MoveTicket(ctx context.Context, architectPath, id string, params domain.MoveTicketParams) (domain.Ticket, error) {
+func (s *TicketService) moveTicket(ctx context.Context, architectPath, id string, params domain.MoveTicketParams) (domain.Ticket, error) {
 	if !params.To.Valid() {
 		return domain.Ticket{}, &domain.ValidationError{Field: "to", Message: "must be backlog, progress, or done"}
 	}
@@ -407,6 +444,8 @@ func (e ticketEntry) ticket() domain.Ticket {
 	return t
 }
 
+var ticketIDPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}-\d{4}-.+$`)
+
 func scanTickets(architectPath string) (map[domain.TicketStatus][]ticketEntry, error) {
 	entries := map[domain.TicketStatus][]ticketEntry{
 		domain.TicketStatusBacklog:  {},
@@ -420,6 +459,39 @@ func scanTickets(architectPath string) (map[domain.TicketStatus][]ticketEntry, e
 			return nil, err
 		}
 		entries[status] = statusEntries
+	}
+	cfg, configErr := config.ValidateArchitectConfig(architectPath, filepath.Base(architectPath))
+	counts := map[string]int{}
+	for _, items := range entries {
+		for _, item := range items {
+			counts[item.id]++
+		}
+	}
+	for status, items := range entries {
+		for i := range items {
+			if configErr == nil {
+				item := &items[i]
+				if !ticketIDPattern.MatchString(item.id) {
+					item.warnings = append(item.warnings, domain.TicketWarning{Code: "INVALID_TICKET_ID", Message: "Ticket identity must use YYYY-MM-DD-HHMM-readable-slug."})
+				}
+				seenRepos := map[string]bool{}
+				for _, key := range append([]string{item.metadata.Repo}, item.metadata.AdditionalRepos...) {
+					_, exists := cfg.Repos[key]
+					if item.status == domain.TicketStatusDone {
+						if key != "" && !exists {
+							item.warnings = append(item.warnings, domain.TicketWarning{Code: "HISTORICAL_SCOPE_RETIRED", Message: "Completed record retains retired repository " + key + "; its original scope is preserved."})
+						}
+					} else if !exists || seenRepos[key] || cfg.RepoMachines[key] != cfg.RepoMachines[item.metadata.Repo] {
+						item.warnings = append(item.warnings, domain.TicketWarning{Code: "INVALID_TICKET_SCOPE", Message: "Repository " + key + " is unknown, duplicated or on a different machine; correct the writable scope using hiveryn.yaml."})
+					}
+					seenRepos[key] = true
+				}
+			}
+			if counts[items[i].id] > 1 {
+				items[i].warnings = append(items[i].warnings, domain.TicketWarning{Code: "INVALID_TICKET", Message: "Duplicate ticket identity " + items[i].id + " across status directories; restore one authoritative folder."})
+			}
+		}
+		entries[status] = items
 	}
 	return entries, nil
 }
@@ -436,18 +508,19 @@ func scanStatusTickets(architectPath string, status domain.TicketStatus, seen ma
 
 	entries := make([]ticketEntry, 0, len(items))
 	for _, item := range items {
-		if !item.IsDir() {
+		if !item.IsDir() && item.Type()&os.ModeSymlink == 0 {
 			continue
 		}
 		id := item.Name()
-		if prior, ok := seen[id]; ok {
-			return nil, &domain.ConflictError{Resource: "ticket", Field: "id", Message: id + " exists in both " + string(prior) + " and " + string(status)}
-		}
+		prior, duplicate := seen[id]
 		seen[id] = status
-
 		entry, err := loadTicketEntry(architectPath, status, id)
+		if duplicate {
+			err = fmt.Errorf("ticket identity %s exists in both %s and %s", id, prior, status)
+		}
 		if err != nil {
-			return nil, err
+			entry = ticketEntry{id: id, status: status, dir: ticketDir(architectPath, status, id), metadata: ticketMetadata{Title: id}}
+			entry.warnings = []domain.TicketWarning{{Code: "INVALID_TICKET", Message: filepath.Join(entry.dir, ticketFileName) + ": " + err.Error()}}
 		}
 		entries = append(entries, entry)
 	}
@@ -469,7 +542,16 @@ func getTicketEntry(architectPath, id string) (ticketEntry, error) {
 	if err != nil {
 		return ticketEntry{}, err
 	}
-	return findTicketEntry(entries, id)
+	entry, err := findTicketEntry(entries, id)
+	if err != nil {
+		return entry, err
+	}
+	for _, w := range entry.warnings {
+		if w.Code == "INVALID_TICKET" {
+			return entry, &domain.ValidationError{Field: "ticket", Message: w.Message}
+		}
+	}
+	return entry, nil
 }
 
 func findTicketEntry(entries map[domain.TicketStatus][]ticketEntry, id string) (ticketEntry, error) {
@@ -485,6 +567,16 @@ func findTicketEntry(entries map[domain.TicketStatus][]ticketEntry, id string) (
 
 func loadTicketEntry(architectPath string, status domain.TicketStatus, id string) (ticketEntry, error) {
 	dir := ticketDir(architectPath, status, id)
+	for _, path := range []string{filepath.Join(architectPath, ticketsDirName), filepath.Join(architectPath, ticketsDirName, string(status)), dir, filepath.Join(dir, ticketFileName)} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return ticketEntry{}, fmt.Errorf("inspect ticket path %s: %w", path, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return ticketEntry{}, fmt.Errorf("ticket path %s must not be a symlink", path)
+		}
+	}
+
 	document, err := ReadMarkdownDocument(filepath.Join(dir, ticketFileName))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -497,8 +589,14 @@ func loadTicketEntry(architectPath string, status domain.TicketStatus, id string
 	if err != nil {
 		return ticketEntry{}, err
 	}
-	if strings.TrimSpace(metadata.Title) == "" {
-		return ticketEntry{}, &domain.ValidationError{Field: "title", Message: "is required in ticket " + id}
+	if strings.TrimSpace(metadata.Title) == "" || (status != domain.TicketStatusDone && strings.TrimSpace(metadata.Repo) == "") || metadata.Created == nil || metadata.Updated == nil {
+		return ticketEntry{}, fmt.Errorf("title, repo, created_at and updated_at are required in ticket %s", id)
+	}
+	for _, key := range []string{"created_at", "updated_at"} {
+		n := mappingValue(document.Metadata, key)
+		if n == nil || !strings.HasSuffix(n.Value, "Z") {
+			return ticketEntry{}, fmt.Errorf("%s must be an RFC3339 UTC timestamp ending in Z", key)
+		}
 	}
 
 	entry := ticketEntry{
@@ -507,6 +605,10 @@ func loadTicketEntry(architectPath string, status domain.TicketStatus, id string
 		dir:      dir,
 		document: document,
 		metadata: metadata,
+	}
+
+	if status == domain.TicketStatusDone && strings.TrimSpace(metadata.Repo) == "" {
+		entry.warnings = append(entry.warnings, domain.TicketWarning{Code: "HISTORICAL_SCOPE_UNRECORDED", Message: "This completed historical ticket did not record repository scope. It is preserved without inventing ownership; new and active tickets require a configured repository."})
 	}
 
 	conclusionPath := filepath.Join(dir, conclusionFileName)
@@ -656,8 +758,8 @@ func decodeTicketMetadata(node *yaml.Node) (ticketMetadata, error) {
 		Title           string    `yaml:"title"`
 		Repo            string    `yaml:"repo"`
 		AdditionalRepos []string  `yaml:"additional_repos"`
-		Created         time.Time `yaml:"created"`
-		Updated         time.Time `yaml:"updated"`
+		Created         time.Time `yaml:"created_at"`
+		Updated         time.Time `yaml:"updated_at"`
 		References      []string  `yaml:"references"`
 	}
 	if err := node.Decode(&raw); err != nil {
@@ -666,7 +768,7 @@ func decodeTicketMetadata(node *yaml.Node) (ticketMetadata, error) {
 	metadata := ticketMetadata{
 		Title:           raw.Title,
 		Repo:            raw.Repo,
-		AdditionalRepos: normalizeRepoKeys(raw.AdditionalRepos),
+		AdditionalRepos: append([]string(nil), raw.AdditionalRepos...),
 		References:      append([]string(nil), raw.References...),
 	}
 	var err error
@@ -693,10 +795,10 @@ func newTicketDocument(metadata ticketMetadata, body string) MarkdownDocument {
 	}
 	setNodeStrings(meta, "additional_repos", nonNilStrings(metadata.AdditionalRepos))
 	if metadata.Created != nil {
-		setNodeTime(meta, "created", metadata.Created.UTC())
+		setNodeTime(meta, "created_at", metadata.Created.UTC())
 	}
 	if metadata.Updated != nil {
-		setNodeTime(meta, "updated", metadata.Updated.UTC())
+		setNodeTime(meta, "updated_at", metadata.Updated.UTC())
 	}
 	if metadata.References != nil {
 		setNodeStrings(meta, "references", metadata.References)
@@ -848,4 +950,51 @@ func normalizeReferences(references []string) ([]string, error) {
 		normalized = append(normalized, reference)
 	}
 	return normalized, nil
+}
+
+func (s *TicketService) SetProtection(p *Protection) { s.protection = p }
+func (s *TicketService) mutate(ctx context.Context, root string, id string, fn func() error) error {
+	if s.protection == nil {
+		return fn()
+	}
+	var allowed []string
+	if id != "" {
+		for _, status := range []string{"backlog", "progress", "done"} {
+			allowed = append(allowed, "tickets/"+status+"/"+id+"/")
+		}
+	}
+	return s.protection.Mutate(ctx, root, allowed, fn)
+}
+
+func (s *TicketService) CreateTicket(ctx context.Context, architectPath string, params domain.CreateTicketParams) (ticket domain.Ticket, err error) {
+	err = s.mutate(ctx, architectPath, "", func() error { var e error; ticket, e = s.createTicket(ctx, architectPath, params); return e })
+	return
+}
+
+func (s *TicketService) EditTicket(ctx context.Context, architectPath, id string, params domain.EditTicketParams) (ticket domain.Ticket, err error) {
+	err = s.mutate(ctx, architectPath, id, func() error { var e error; ticket, e = s.editTicket(ctx, architectPath, id, params); return e })
+	return
+}
+
+func (s *TicketService) UpdateTicketMetadata(ctx context.Context, architectPath, id string, params domain.UpdateTicketMetadataParams) (ticket domain.Ticket, err error) {
+	err = s.mutate(ctx, architectPath, id, func() error {
+		var e error
+		ticket, e = s.updateTicketMetadata(ctx, architectPath, id, params)
+		return e
+	})
+	return
+}
+
+func (s *TicketService) ConcludeTicket(ctx context.Context, architectPath, id string, conclusion domain.TicketConclusion) (ticket domain.Ticket, err error) {
+	err = s.mutate(ctx, architectPath, id, func() error { var e error; ticket, e = s.concludeTicket(ctx, architectPath, id, conclusion); return e })
+	return
+}
+
+func (s *TicketService) MoveTicket(ctx context.Context, architectPath, id string, params domain.MoveTicketParams) (ticket domain.Ticket, err error) {
+	err = s.mutate(ctx, architectPath, id, func() error { var e error; ticket, e = s.moveTicket(ctx, architectPath, id, params); return e })
+	return
+}
+
+func (s *TicketService) DeleteTicket(ctx context.Context, architectPath, id string) error {
+	return s.mutate(ctx, architectPath, id, func() error { return s.deleteTicket(ctx, architectPath, id) })
 }

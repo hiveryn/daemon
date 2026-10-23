@@ -54,7 +54,7 @@ func TestRemoteGatewayScopesToolsAndHooks(t *testing.T) {
 	if status != 200 {
 		t.Fatalf("%d %s", status, result)
 	}
-	for _, name := range []string{"readTicket", "createWorkTicket", "concludeTicketSession", "notify", "askQuestion", "executeAction"} {
+	for _, name := range []string{"readTicket", "concludeTicketSession", "notify", "askQuestion", "executeAction"} {
 		if !strings.Contains(result, `"name":"`+name+`"`) {
 			t.Fatalf("missing %s: %s", name, result)
 		}

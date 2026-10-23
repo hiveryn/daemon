@@ -21,7 +21,7 @@ type fixture struct {
 
 const (
 	validOverview = `---
-lastUpdatedAt: "2026-01-15T09:30:00Z"
+updated_at: "2026-01-15T09:30:00Z"
 ---
 
 # Example
@@ -29,7 +29,7 @@ lastUpdatedAt: "2026-01-15T09:30:00Z"
 Purpose and architecture.
 `
 	validState = `---
-lastUpdatedAt: "2026-01-16T11:00:00Z"
+updated_at: "2026-01-16T11:00:00Z"
 ---
 
 # State
@@ -37,7 +37,7 @@ lastUpdatedAt: "2026-01-16T11:00:00Z"
 What is deployed today.
 `
 	validRoadmap = `---
-lastUpdatedAt: "2026-01-17T08:15:00Z"
+updated_at: "2026-01-17T08:15:00Z"
 ---
 
 # Roadmap
@@ -59,8 +59,6 @@ func newFixture(t *testing.T) *fixture {
 
 	f.writeConfig("Example Project", f.Repos)
 	f.write(ProjectOverviewFileName, validOverview)
-	f.write(ProjectStateFileName, validState)
-	f.write(RoadmapCurrentFileName, validRoadmap)
 	f.mkdir(WorkflowsDirName)
 	return f
 }
@@ -130,7 +128,7 @@ func (f *fixture) checkWith(tickets domain.TicketService) domain.WorkspaceReport
 
 func (f *fixture) workflows(scope ...string) domain.WorkflowList {
 	f.t.Helper()
-	list, err := NewService(nil).ListWorkflows(context.Background(), "example", f.Workspace, scope)
+	list, err := NewService(nil).ListWorkflows(context.Background(), "example", f.Workspace)
 	if err != nil {
 		f.t.Fatalf("ListWorkflows: %v", err)
 	}

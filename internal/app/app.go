@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hiveryn/daemon/internal/api"
 	"github.com/hiveryn/daemon/internal/archevents"
 	"github.com/hiveryn/daemon/internal/architectfs"
@@ -25,6 +26,7 @@ import (
 	"github.com/hiveryn/daemon/internal/sessionruntime"
 	"github.com/hiveryn/daemon/internal/store"
 	"github.com/hiveryn/daemon/internal/workspacefs"
+	"github.com/hiveryn/daemon/internal/workspacewatch"
 )
 
 func Run(configPath, databasePath string, portOverride int) error {
@@ -90,6 +92,8 @@ func Run(configPath, databasePath string, portOverride int) error {
 
 	sessionStore := store.NewSessionStore(db)
 	ticketService := architectfs.NewTicketService(architectfs.ConfigLocator(configSource))
+	protection := architectfs.NewProtection(store.NewWorkspaceRecordStore(db))
+	ticketService.SetProtection(protection)
 	workspaceService := workspacefs.NewService(ticketService)
 	service, err := sessionruntime.New(ctx, cfg, configSource, sessionStore, ticketService, logger, resolvedBaseURL)
 	if err != nil {
@@ -161,6 +165,18 @@ func Run(configPath, databasePath string, portOverride int) error {
 		}
 	})
 
+	watcher := &workspacewatch.Watcher{Source: configSource, Protection: protection, Workspaces: workspaceService, Publish: architectHub.Publish, Logger: logger,
+		Notify: func(ctx context.Context, key, body string) error {
+			_, err := service.EnqueueAgentMessage(ctx, sessionruntime.AgentMessageParams{Kind: "workspace_validation", ArchitectKey: key, Recipient: "architect:" + key, DedupeKey: "workspace_validation:" + uuid.NewString(), Body: body})
+			return err
+		},
+	}
+	service.SetWorkspaceLifecycle(protection.Mutate, watcher.Reconcile)
+	watchCtx, cancelWatch := context.WithCancel(ctx)
+	watchDone := make(chan struct{})
+	go func() { defer close(watchDone); watcher.Run(watchCtx) }()
+	defer func() { cancelWatch(); <-watchDone }()
+
 	handler := api.NewHandler(api.Dependencies{
 		Config:          cfg,
 		ConfigSource:    configSource,
@@ -195,6 +211,8 @@ func Run(configPath, databasePath string, portOverride int) error {
 	case <-sigCtx.Done():
 	}
 
+	cancelWatch()
+	<-watchDone
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := service.Shutdown(shutdownCtx); err != nil {

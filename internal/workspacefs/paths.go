@@ -19,10 +19,7 @@ import (
 
 const (
 	ConfigFileName          = "hiveryn.yaml"
-	ProjectOverviewFileName = "PROJECT_OVERVIEW.md"
-	ProjectStateFileName    = "PROJECT_STATE.md"
-	RoadmapCurrentFileName  = "ROADMAP_CURRENT.md"
-	ArchitectSystemFileName = "ARCHITECT_SYSTEM.md"
+	ProjectOverviewFileName = "OVERVIEW.md"
 
 	WorkflowsDirName = "workflows"
 

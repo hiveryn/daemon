@@ -107,46 +107,6 @@ func (h *sessionsHandler) concludeSessionIntent(w http.ResponseWriter, r *http.R
 	})
 }
 
-// createWorkTicketIntent is the agent's ticket-create path. It blocks, and the
-// ticket is written only if the intent resolves approved. Session-scoped rather
-// than architect-scoped on purpose: the architect key is read from the stored
-// session, so an agent cannot create tickets in an architect it wasn't spawned
-// for.
-func (h *sessionsHandler) createWorkTicketIntent(w http.ResponseWriter, r *http.Request) {
-	if h.sessions == nil {
-		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
-		return
-	}
-
-	var input struct {
-		Title           string   `json:"title"`
-		Repo            string   `json:"repo"`
-		AdditionalRepos []string `json:"additional_repos"`
-		Body            string   `json:"body,omitempty"`
-		References      []string `json:"references,omitempty"`
-	}
-	if err := decodeJSON(r, &input); err != nil {
-		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
-		return
-	}
-
-	res, err := h.sessions.RequestCreateWorkTicket(r.Context(), r.PathValue("id"), domain.CreateTicketParams{
-		Title:           input.Title,
-		Repo:            input.Repo,
-		AdditionalRepos: input.AdditionalRepos,
-		Body:            input.Body,
-		References:      input.References,
-		// Now is deliberately not set here: it is stamped at write time inside
-		// the intent's Exec, so it never enters the dedup hash.
-	})
-	if err != nil {
-		writeDomainError(w, r, err)
-		return
-	}
-
-	writeIntentResolution(w, r, res, res.Result)
-}
-
 // approveIntent resolves an intent as approved and runs its side effect. The
 // body is optional ({"inputs": {...}}); an intent without inputs is approved
 // with none. Invalid inputs are a 400 that leaves the intent pending, so the

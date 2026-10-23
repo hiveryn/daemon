@@ -53,7 +53,7 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	// Every session type's tools are addressed by session id (intent-routed
-	// createWorkTicket and conclude tools, and the action tools), so this is
+	// worker-spawn and conclude tools, and the action tools), so this is
 	// required up front rather than checked lazily per handler. Not
 	// role-conditional on purpose.
 	if strings.TrimSpace(cfg.SessionID) == "" {

@@ -1,4 +1,4 @@
-The project documents follow in full, one block per document, labelled with its name. They are read-only context, current as of this launch.
+The project Overview follows in full, labelled with its name. It is read-only context, current as of this launch.
 {{- range .Documents}}
 
 <document name="{{.Name}}">

@@ -77,7 +77,7 @@ func lastResolvedRaw(t *testing.T, repo *fakeSessionRepository, intentID string)
 // event's own write, stranding the intent as "resolving". Once approval is
 // accepted the operation and its outcome belong to the daemon.
 func TestApprovedIntentOutlivesTheApprovingRequest(t *testing.T) {
-	service, repo, _ := newCreateTicketService(t)
+	service, repo, _ := newIntentTestService(t)
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var execCtxErr error
@@ -134,7 +134,7 @@ func TestApprovedIntentOutlivesTheApprovingRequest(t *testing.T) {
 
 // A denial whose requester gives up right after the claim is still recorded.
 func TestDenialIsRecordedAfterRequesterLeaves(t *testing.T) {
-	service, repo, _ := newCreateTicketService(t)
+	service, repo, _ := newIntentTestService(t)
 	id, results := slowIntent(t, service, map[string]any{"n": 2}, func(context.Context) (string, error) {
 		t.Error("a denied intent ran")
 		return "", nil
@@ -157,7 +157,7 @@ func TestDenialIsRecordedAfterRequesterLeaves(t *testing.T) {
 // approval is never reused as authorization — while an approved outcome still
 // replays so a retry after response loss never repeats the effect.
 func TestFailedApprovalIsNotReplayedButSuccessIs(t *testing.T) {
-	service, repo, _ := newCreateTicketService(t)
+	service, repo, _ := newIntentTestService(t)
 	payload := map[string]any{"n": 3}
 	fail := errors.New("remote termination not confirmed on bk; session retained: ssh: killed")
 	id, results := slowIntent(t, service, payload, func(context.Context) (string, error) { return "", fail })

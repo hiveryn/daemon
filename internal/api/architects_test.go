@@ -214,8 +214,8 @@ func TestArchitectsStatusAPI(t *testing.T) {
 
 	ticketService := architectfs.NewTicketService(nil)
 	ticket, err := ticketService.CreateTicket(context.Background(), hiverynPath, domain.CreateTicketParams{
-		Title: "Add status endpoint",
-		Body:  "Describe the endpoint.",
+		Title: "Add status endpoint", Repo: "daemon",
+		Body: "Describe the endpoint.",
 	})
 	if err != nil {
 		t.Fatalf("create ticket: %v", err)

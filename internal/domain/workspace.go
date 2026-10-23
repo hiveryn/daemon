@@ -25,16 +25,12 @@ type (
 	WorkspaceTickets       = sd.WorkspaceTickets
 	WorkerPreflight        = sd.WorkerPreflight
 
-	Workflow       = sd.Workflow
-	WorkflowAttach = sd.WorkflowAttach
-	WorkflowList   = sd.WorkflowList
+	Workflow     = sd.Workflow
+	WorkflowList = sd.WorkflowList
 )
 
 const (
 	ArtifactProjectOverview = sd.ArtifactProjectOverview
-	ArtifactProjectState    = sd.ArtifactProjectState
-	ArtifactRoadmapCurrent  = sd.ArtifactRoadmapCurrent
-	ArtifactArchitectSystem = sd.ArtifactArchitectSystem
 	ArtifactWorkflow        = sd.ArtifactWorkflow
 	ArtifactHiverynYAML     = sd.ArtifactHiverynYAML
 )
@@ -57,11 +53,6 @@ const (
 const (
 	WorkspaceNodeFile      = sd.WorkspaceNodeFile
 	WorkspaceNodeDirectory = sd.WorkspaceNodeDirectory
-)
-
-const (
-	WorkflowAttachManual    = sd.WorkflowAttachManual
-	WorkflowAttachSuggested = sd.WorkflowAttachSuggested
 )
 
 const (
@@ -103,7 +94,7 @@ type WorkspaceService interface {
 	CheckWorkspace(ctx context.Context, architectKey, workspacePath string) (WorkspaceReport, error)
 	// ListWorkflows discovers workflows/*.md and marks which are suggested for
 	// the given writable repo scope. An empty scope suggests nothing.
-	ListWorkflows(ctx context.Context, architectKey, workspacePath string, scopeRepos []string) (WorkflowList, error)
+	ListWorkflows(ctx context.Context, architectKey, workspacePath string) (WorkflowList, error)
 	// PreflightWorker reports whether the workspace's required project context
 	// is ready for a worker session right now, running the same validation the
 	// launch runs rather than a second opinion about it.

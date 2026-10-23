@@ -19,8 +19,8 @@ func TestCheckValidWorkspace(t *testing.T) {
 		t.Fatalf("expected valid workspace, diagnostics: %v", allDiagnostics(report))
 	}
 	for _, path := range []string{
-		ConfigFileName, ProjectOverviewFileName, ProjectStateFileName,
-		RoadmapCurrentFileName, ArchitectSystemFileName, WorkflowsDirName,
+		ConfigFileName, ProjectOverviewFileName,
+		WorkflowsDirName,
 	} {
 		n := node(t, report, path)
 		if len(n.Diagnostics) != 0 {
@@ -36,7 +36,7 @@ func TestCheckReportsDocumentTimeAndMtimeSeparately(t *testing.T) {
 	overview := node(t, f.check(), ProjectOverviewFileName)
 
 	if overview.DocumentUpdatedAt == nil {
-		t.Fatal("expected document_updated_at from lastUpdatedAt")
+		t.Fatal("expected document_updated_at from updated_at")
 	}
 	if got := overview.DocumentUpdatedAt.Format("2006-01-02T15:04:05Z"); got != "2026-01-15T09:30:00Z" {
 		t.Errorf("document_updated_at = %s", got)
@@ -54,8 +54,8 @@ func TestCheckReportsDocumentTimeAndMtimeSeparately(t *testing.T) {
 func TestCheckMissingWorkspaceStaysInspectable(t *testing.T) {
 	f := newFixture(t)
 	for _, rel := range []string{
-		ConfigFileName, ProjectOverviewFileName, ProjectStateFileName,
-		RoadmapCurrentFileName, WorkflowsDirName,
+		ConfigFileName, ProjectOverviewFileName,
+		WorkflowsDirName,
 	} {
 		f.remove(rel)
 	}
@@ -64,16 +64,13 @@ func TestCheckMissingWorkspaceStaysInspectable(t *testing.T) {
 	if report.Valid {
 		t.Fatal("expected an empty workspace to be invalid")
 	}
-	if len(report.Nodes) != 6 {
-		t.Fatalf("expected all 6 expected nodes to be reported, got %d: %s", len(report.Nodes), nodePaths(report))
+	if len(report.Nodes) != 3 {
+		t.Fatalf("expected all 3 expected nodes to be reported, got %d: %s", len(report.Nodes), nodePaths(report))
 	}
 
 	requireCode(t, node(t, report, ConfigFileName).Diagnostics, domain.DiagMissingRequiredFile)
 	requireCode(t, node(t, report, ProjectOverviewFileName).Diagnostics, domain.DiagMissingRequiredFile)
-	requireCode(t, node(t, report, ProjectStateFileName).Diagnostics, domain.DiagMissingRequiredFile)
-	if diags := node(t, report, RoadmapCurrentFileName).Diagnostics; len(diags) != 0 {
-		t.Fatalf("optional %s reported as a problem when absent: %v", RoadmapCurrentFileName, codes(diags))
-	}
+
 	requireCode(t, node(t, report, WorkflowsDirName).Diagnostics, domain.DiagMissingRequiredDirectory)
 }
 
@@ -101,34 +98,6 @@ func TestCheckIgnoresLegacyRoadmapArchives(t *testing.T) {
 
 // ARCHITECT_SYSTEM.md is the only optional root document, and its absence must
 // not be reported as a problem.
-func TestCheckOptionalArchitectSystemAbsentIsValid(t *testing.T) {
-	f := newFixture(t)
-	n := node(t, f.check(), ArchitectSystemFileName)
-
-	if n.Exists {
-		t.Fatal("fixture should not write ARCHITECT_SYSTEM.md")
-	}
-	if n.Required {
-		t.Error("ARCHITECT_SYSTEM.md must be optional")
-	}
-	if !n.Valid || len(n.Diagnostics) != 0 {
-		t.Errorf("absent optional file reported as a problem: %v", codes(n.Diagnostics))
-	}
-}
-
-// An unreadable custom personality file must be surfaced, never silently
-// treated as loaded.
-func TestCheckEmptyArchitectSystemIsReported(t *testing.T) {
-	f := newFixture(t)
-	f.write(ArchitectSystemFileName, "\n   \n")
-
-	n := node(t, f.check(), ArchitectSystemFileName)
-	if n.Valid {
-		t.Fatal("expected an empty ARCHITECT_SYSTEM.md to be invalid")
-	}
-	requireCode(t, n.Diagnostics, domain.DiagEmptyBody)
-}
-
 func TestCheckMalformedDocuments(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -142,32 +111,32 @@ func TestCheckMalformedDocuments(t *testing.T) {
 		},
 		{
 			name:    "frontmatter never closed",
-			content: "---\nlastUpdatedAt: \"2026-01-15T09:30:00Z\"\n\n# Overview\n",
+			content: "---\nupdated_at: \"2026-01-15T09:30:00Z\"\n\n# Overview\n",
 			code:    domain.DiagInvalidFrontmatter,
 		},
 		{
 			name:    "unparseable yaml",
-			content: "---\nlastUpdatedAt: \"unterminated\n---\n\n# Overview\n",
+			content: "---\nupdated_at: \"unterminated\n---\n\n# Overview\n",
 			code:    domain.DiagInvalidFrontmatter,
 		},
 		{
-			name:    "missing lastUpdatedAt",
+			name:    "missing updated_at",
 			content: "---\nauthor: someone\n---\n\n# Overview\n",
 			code:    domain.DiagMissingField,
 		},
 		{
-			name:    "lastUpdatedAt is not RFC3339",
-			content: "---\nlastUpdatedAt: \"15 January 2026\"\n---\n\n# Overview\n",
+			name:    "updated_at is not RFC3339",
+			content: "---\nupdated_at: \"15 January 2026\"\n---\n\n# Overview\n",
 			code:    domain.DiagInvalidTimestamp,
 		},
 		{
-			name:    "lastUpdatedAt is not UTC",
-			content: "---\nlastUpdatedAt: \"2026-01-15T09:30:00+11:00\"\n---\n\n# Overview\n",
+			name:    "updated_at is not UTC",
+			content: "---\nupdated_at: \"2026-01-15T09:30:00+11:00\"\n---\n\n# Overview\n",
 			code:    domain.DiagInvalidTimestamp,
 		},
 		{
 			name:    "empty body",
-			content: "---\nlastUpdatedAt: \"2026-01-15T09:30:00Z\"\n---\n\n   \n",
+			content: "---\nupdated_at: \"2026-01-15T09:30:00Z\"\n---\n\n   \n",
 			code:    domain.DiagEmptyBody,
 		},
 		{
@@ -196,12 +165,12 @@ func TestCheckMalformedDocuments(t *testing.T) {
 }
 
 // Other frontmatter keys are allowed on the current documents: the rule is
-// "contains lastUpdatedAt", not "contains only lastUpdatedAt".
+// "contains updated_at", not "contains only updated_at".
 func TestCheckCurrentDocumentAllowsExtraFrontmatterKeys(t *testing.T) {
 	f := newFixture(t)
-	f.write(ProjectStateFileName, "---\nlastUpdatedAt: \"2026-01-15T09:30:00Z\"\nreviewer: someone\n---\n\n# State\n\nBody.\n")
+	f.write(ProjectOverviewFileName, "---\nupdated_at: \"2026-01-15T09:30:00Z\"\nreviewer: someone\n---\n\n# State\n\nBody.\n")
 
-	n := node(t, f.check(), ProjectStateFileName)
+	n := node(t, f.check(), ProjectOverviewFileName)
 	if !n.Valid {
 		t.Fatalf("extra frontmatter keys rejected: %v", codes(n.Diagnostics))
 	}
@@ -210,11 +179,11 @@ func TestCheckCurrentDocumentAllowsExtraFrontmatterKeys(t *testing.T) {
 // A malformed document points at the line to fix.
 func TestCheckDiagnosticsCarryLineNumbers(t *testing.T) {
 	f := newFixture(t)
-	f.write(ProjectOverviewFileName, "---\ntitle: Example\nlastUpdatedAt: \"nope\"\n---\n\n# Overview\n")
+	f.write(ProjectOverviewFileName, "---\ntitle: Example\nupdated_at: \"nope\"\n---\n\n# Overview\n")
 
 	diag := findCode(t, node(t, f.check(), ProjectOverviewFileName).Diagnostics, domain.DiagInvalidTimestamp)
 	if diag.Line != 3 {
-		t.Errorf("line = %d, want 3 (the lastUpdatedAt line in the file)", diag.Line)
+		t.Errorf("line = %d, want 3 (the updated_at line in the file)", diag.Line)
 	}
 	if diag.Path != ProjectOverviewFileName {
 		t.Errorf("path = %q", diag.Path)
@@ -223,9 +192,9 @@ func TestCheckDiagnosticsCarryLineNumbers(t *testing.T) {
 
 func TestCheckInvalidUTF8(t *testing.T) {
 	f := newFixture(t)
-	f.writeBytes(ProjectStateFileName, []byte{'-', '-', '-', '\n', 0xff, 0xfe, '\n', '-', '-', '-', '\n'})
+	f.writeBytes(ProjectOverviewFileName, []byte{'-', '-', '-', '\n', 0xff, 0xfe, '\n', '-', '-', '-', '\n'})
 
-	requireCode(t, node(t, f.check(), ProjectStateFileName).Diagnostics, domain.DiagInvalidUTF8)
+	requireCode(t, node(t, f.check(), ProjectOverviewFileName).Diagnostics, domain.DiagInvalidUTF8)
 }
 
 func TestCheckInvalidConfigIsReportedNotFatal(t *testing.T) {
@@ -310,15 +279,15 @@ func TestCheckTicketTotalsAndBacklogWarnings(t *testing.T) {
 	f := newFixture(t)
 	tickets := stubTickets{board: domain.TicketBoard{
 		Backlog: []domain.TicketSummary{
-			{ID: "t-1", Warnings: []domain.TicketWarning{{Code: "BROKEN_REFERENCE", Message: "references t-9, which does not exist"}}},
-			{ID: "t-2"},
+			{ID: "2026-01-01-0000-t-1", Repo: "api", Status: domain.TicketStatusBacklog, Warnings: []domain.TicketWarning{{Code: "BROKEN_REFERENCE", Message: "references t-9, which does not exist"}}},
+			{ID: "2026-01-01-0000-t-2", Repo: "api", Status: domain.TicketStatusBacklog},
 		},
-		Progress: []domain.TicketSummary{{ID: "t-3"}},
+		Progress: []domain.TicketSummary{{ID: "2026-01-01-0000-t-3", Repo: "api", Status: domain.TicketStatusProgress}},
 		Done: []domain.TicketSummary{
 			// A done-ticket warning must not appear: only backlog warnings do.
-			{ID: "t-4", Warnings: []domain.TicketWarning{{Code: "DONE_WITHOUT_CONCLUSION", Message: "no conclusion.md"}}},
-			{ID: "t-5"},
-			{ID: "t-6"},
+			{ID: "2026-01-01-0000-t-4", Repo: "api", Status: domain.TicketStatusDone, Warnings: []domain.TicketWarning{{Code: "DONE_WITHOUT_CONCLUSION", Message: "no conclusion.md"}}},
+			{ID: "2026-01-01-0000-t-5", Repo: "api", Status: domain.TicketStatusDone},
+			{ID: "2026-01-01-0000-t-6", Repo: "api", Status: domain.TicketStatusBacklog},
 		},
 	}}
 
@@ -330,7 +299,7 @@ func TestCheckTicketTotalsAndBacklogWarnings(t *testing.T) {
 	if len(report.Tickets.Warnings) != 1 {
 		t.Fatalf("warnings = %+v, want exactly the one backlog warning", report.Tickets.Warnings)
 	}
-	if got := report.Tickets.Warnings[0]; got.TicketID != "t-1" || got.Code != "BROKEN_REFERENCE" {
+	if got := report.Tickets.Warnings[0]; got.TicketID != "2026-01-01-0000-t-1" || got.Code != "BROKEN_REFERENCE" {
 		t.Errorf("warning = %+v", got)
 	}
 }
@@ -340,7 +309,7 @@ func TestCheckTicketWarningsDoNotInvalidateWorkspace(t *testing.T) {
 	f := newFixture(t)
 	tickets := stubTickets{board: domain.TicketBoard{
 		Backlog: []domain.TicketSummary{
-			{ID: "t-1", Warnings: []domain.TicketWarning{{Code: "BROKEN_REFERENCE", Message: "broken"}}},
+			{ID: "2026-01-01-0000-t-1", Repo: "api", Status: domain.TicketStatusBacklog, Warnings: []domain.TicketWarning{{Code: "BROKEN_REFERENCE", Message: "broken"}}},
 		},
 	}}
 
@@ -380,7 +349,7 @@ func TestCheckUnreadableWorkspaceRoot(t *testing.T) {
 // The check is read-only: nothing it does may change the workspace.
 func TestCheckDoesNotMutateWorkspace(t *testing.T) {
 	f := newFixture(t)
-	f.write(WorkflowsDirName+"/REVIEW.md", "---\nattach: manual\n---\n\n# Review\n")
+	f.write(WorkflowsDirName+"/REVIEW.md", "# Review\n")
 	before := snapshot(t, f.Workspace)
 
 	f.check()
@@ -394,8 +363,8 @@ func TestCheckDoesNotMutateWorkspace(t *testing.T) {
 // Two checks over unchanged files must produce identical reports.
 func TestCheckIsDeterministic(t *testing.T) {
 	f := newFixture(t)
-	f.write(WorkflowsDirName+"/ZED.md", "---\nattach: manual\n---\n\n# Zed\n")
-	f.write(WorkflowsDirName+"/ALPHA.md", "---\nattach: suggested\nrepos:\n- api\n---\n\n# Alpha\n")
+	f.write(WorkflowsDirName+"/ZED.md", "# Zed\n")
+	f.write(WorkflowsDirName+"/ALPHA.md", "# Alpha\n")
 
 	first, second := f.check(), f.check()
 	// checked_at is the one field that legitimately differs between runs.

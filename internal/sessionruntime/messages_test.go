@@ -570,7 +570,7 @@ func TestReconcilePendingCommitAgainstTheTicket(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if m.Body != "Ticket T-1 has been concluded. Outcome: completed. Use readTicket to review its conclusion." || m.Recipient != "architect:hiveryn" ||
+			if m.Body != "Ticket T-1 has been concluded. Outcome: completed. Read its files in tickets/done/ to review the result." || m.Recipient != "architect:hiveryn" ||
 				m.DedupeKey != "ticket_concluded:hiveryn:T-1:2026-10-20T11:00:00.123456789Z" || m.Payload["ticket_id"] != "T-1" {
 				t.Fatalf("notice = %+v", m)
 			}
@@ -620,7 +620,7 @@ func TestConcludeTicketSessionRecordsTheNoticeAroundTheConclusionWrite(t *testin
 	}
 	notice := listed[0]
 	if notice.State != domain.AgentMessagePending || notice.Kind != domain.AgentMessageTicketConcluded || notice.Recipient != "architect:hiveryn" ||
-		notice.Body != "Ticket ticket-1 has been concluded. Outcome: exploratory. Use readTicket to review its conclusion." || notice.CommittedAt == nil {
+		notice.Body != "Ticket ticket-1 has been concluded. Outcome: exploratory. Read its files in tickets/done/ to review the result." || notice.CommittedAt == nil {
 		t.Fatalf("notice = %+v", notice)
 	}
 	if !strings.HasPrefix(notice.DedupeKey, "ticket_concluded:hiveryn:ticket-1:") {

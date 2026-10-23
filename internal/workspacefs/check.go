@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -38,36 +39,15 @@ func (s *Service) DescribeArtifact(_ context.Context, kind domain.ArtifactKind) 
 	return schema, nil
 }
 
-// ListWorkflows discovers the workspace's workflows and marks the ones
-// suggested for scopeRepos.
-func (s *Service) ListWorkflows(_ context.Context, architectKey, workspacePath string, scopeRepos []string) (domain.WorkflowList, error) {
-	listDiags := newDiagnostics(WorkflowsDirName)
-
-	// A broken config does not stop workflow discovery: the workflows are
-	// still there to read and repair. It only turns off the repo-key check,
-	// with the config problem reported alongside so the gap is visible.
-	configured, configErr := loadRepoScope(workspacePath, architectKey)
-	if configErr != nil {
-		listDiags.warnf(domain.DiagConfigInvalid, 0,
-			"%s could not be read, so workflow repo keys were not checked: %v", ConfigFileName, configErr)
-	}
-
-	validateDirectory(joinWorkspace(workspacePath, WorkflowsDirName), listDiags)
-
-	workflows, err := discoverWorkflows(workspacePath, configured, listDiags)
+// ListWorkflows discovers plain Markdown workflows. Selection is explicit.
+func (s *Service) ListWorkflows(_ context.Context, architectKey, workspacePath string) (domain.WorkflowList, error) {
+	diags := newDiagnostics(WorkflowsDirName)
+	validateDirectory(joinWorkspace(workspacePath, WorkflowsDirName), diags)
+	workflows, err := discoverWorkflows(workspacePath, diags)
 	if err != nil {
 		return domain.WorkflowList{}, err
 	}
-
-	writable := normalizeScopeRepos(scopeRepos)
-	markSuggested(workflows, writable)
-
-	return domain.WorkflowList{
-		ArchitectKey: architectKey,
-		ScopeRepos:   writable,
-		Workflows:    workflows,
-		Diagnostics:  listDiags.items,
-	}, nil
+	return domain.WorkflowList{ArchitectKey: architectKey, Workflows: workflows, Diagnostics: diags.items}, nil
 }
 
 // PreflightWorker reports whether the workspace's required project context is
@@ -125,19 +105,16 @@ func (s *Service) CheckWorkspace(ctx context.Context, architectKey, workspacePat
 		return report, nil
 	}
 
-	scope, configNode := checkConfig(workspacePath, architectKey)
+	configNode := checkConfig(workspacePath, architectKey)
 	report.Nodes = append(report.Nodes, configNode)
 
 	for _, kind := range []domain.ArtifactKind{
 		domain.ArtifactProjectOverview,
-		domain.ArtifactProjectState,
-		domain.ArtifactRoadmapCurrent,
-		domain.ArtifactArchitectSystem,
 	} {
 		report.Nodes = append(report.Nodes, checkRootDocument(workspacePath, kind))
 	}
 
-	workflowsNode, err := checkWorkflows(workspacePath, scope)
+	workflowsNode, err := checkWorkflows(workspacePath)
 	if err != nil {
 		return domain.WorkspaceReport{}, err
 	}
@@ -148,15 +125,8 @@ func (s *Service) CheckWorkspace(ctx context.Context, architectKey, workspacePat
 	return report, nil
 }
 
-// checkConfig validates hiveryn.yaml through the loader's own ruleset, so the
-// check agrees with what the daemon will actually accept, and returns the repo
-// keys the rest of the check validates against.
-//
-// A config that fails to load yields no repo keys, which would make every
-// workflow's repos look unknown. So the workflow repo check is skipped in that
-// case: the config error is the real finding, and a pile of derived
-// WORKFLOW_UNKNOWN_REPO noise would bury it.
-func checkConfig(workspacePath, architectKey string) (scope repoScope, node domain.WorkspaceNode) {
+// checkConfig uses the config loader's rules and checks local repo paths.
+func checkConfig(workspacePath, architectKey string) (node domain.WorkspaceNode) {
 	def := definitions[domain.ArtifactHiverynYAML]
 	diags := newDiagnostics(ConfigFileName)
 	absPath := joinWorkspace(workspacePath, ConfigFileName)
@@ -173,15 +143,15 @@ func checkConfig(workspacePath, architectKey string) (scope repoScope, node doma
 	case os.IsNotExist(err):
 		diags.errorf(domain.DiagMissingRequiredFile, 0, "%s is required but does not exist; the workspace has no repo map without it", ConfigFileName)
 		node.Diagnostics = diags.items
-		return repoScope{}, node
+		return node
 	case err != nil:
 		diags.errorf(domain.DiagUnreadable, 0, "cannot inspect %s: %v", ConfigFileName, err)
 		node.Diagnostics = diags.items
-		return repoScope{}, node
+		return node
 	case info.IsDir():
 		diags.errorf(domain.DiagNotAFile, 0, "%s is a directory; a YAML file is expected", ConfigFileName)
 		node.Diagnostics = diags.items
-		return repoScope{}, node
+		return node
 	}
 
 	node.Exists = true
@@ -192,7 +162,7 @@ func checkConfig(workspacePath, architectKey string) (scope repoScope, node doma
 	if err != nil {
 		diags.errorf(domain.DiagConfigInvalid, 0, "%s is invalid: %v", ConfigFileName, err)
 		node.Diagnostics = diags.items
-		return repoScope{}, node
+		return node
 	}
 
 	// Repo paths are checked here and nowhere else at load time: a repo
@@ -216,7 +186,7 @@ func checkConfig(workspacePath, architectKey string) (scope repoScope, node doma
 
 	node.Diagnostics = diags.items
 	node.Valid = !diags.hasErrors()
-	return scopeFromRepos(resolved.Repos), node
+	return node
 }
 
 // checkRootDocument validates one workspace-root markdown document.
@@ -244,7 +214,7 @@ func checkRootDocument(workspacePath string, kind domain.ArtifactKind) domain.Wo
 }
 
 // checkWorkflows validates workflows/ and every workflow inside it.
-func checkWorkflows(workspacePath string, scope repoScope) (domain.WorkspaceNode, error) {
+func checkWorkflows(workspacePath string) (domain.WorkspaceNode, error) {
 	diags := newDiagnostics(WorkflowsDirName)
 	exists, modTime := validateDirectory(joinWorkspace(workspacePath, WorkflowsDirName), diags)
 
@@ -258,7 +228,7 @@ func checkWorkflows(workspacePath string, scope repoScope) (domain.WorkspaceNode
 		Children:   []domain.WorkspaceEntry{},
 	}
 
-	workflows, err := discoverWorkflows(workspacePath, scope, diags)
+	workflows, err := discoverWorkflows(workspacePath, diags)
 	if err != nil {
 		return domain.WorkspaceNode{}, err
 	}
@@ -309,8 +279,31 @@ func (s *Service) checkTickets(ctx context.Context, workspacePath string, report
 		Progress: len(board.Progress),
 		Done:     len(board.Done),
 	}
-	for _, summary := range board.Backlog {
+	cfg, cfgErr := config.ValidateArchitectConfig(workspacePath, filepath.Base(workspacePath))
+	for _, summary := range append(append(board.Backlog, board.Progress...), board.Done...) {
+		if !regexp.MustCompile(`^\d{4}-\d{2}-\d{2}-\d{4}-.+$`).MatchString(summary.ID) {
+			reportDiags = append(reportDiags, domain.WorkspaceDiagnostic{Code: "INVALID_TICKET_ID", Severity: domain.DiagnosticError, Path: "tickets/" + string(summary.Status) + "/" + summary.ID, Message: "Use a stable YYYY-MM-DD-HHMM-readable-slug ticket folder name."})
+		}
+
+		if cfgErr == nil && summary.Status != domain.TicketStatusDone {
+			keys := append([]string{summary.Repo}, summary.AdditionalRepos...)
+			seen := map[string]bool{}
+			for _, key := range keys {
+				_, exists := cfg.Repos[key]
+				if !exists || seen[key] || cfg.RepoMachines[key] != cfg.RepoMachines[summary.Repo] {
+					reportDiags = append(reportDiags, domain.WorkspaceDiagnostic{Code: "INVALID_TICKET_SCOPE", Severity: domain.DiagnosticError, Path: "tickets/" + string(summary.Status) + "/" + summary.ID + "/ticket.md", Message: "Repository " + key + " is unknown, duplicated or on a different machine; correct the writable scope using hiveryn.yaml."})
+				}
+				seen[key] = true
+			}
+		}
+
 		for _, warning := range summary.Warnings {
+			if warning.Code == "INVALID_TICKET" {
+				reportDiags = append(reportDiags, domain.WorkspaceDiagnostic{Code: warning.Code, Severity: domain.DiagnosticError, Path: "tickets/" + string(summary.Status) + "/" + summary.ID + "/ticket.md", Message: warning.Message})
+			}
+			if summary.Status != domain.TicketStatusBacklog {
+				continue
+			}
 			tickets.Warnings = append(tickets.Warnings, domain.WorkspaceTicketWarning{
 				TicketID: summary.ID,
 				Code:     warning.Code,
@@ -356,35 +349,10 @@ func hasError(diags []domain.WorkspaceDiagnostic) bool {
 	return false
 }
 
-// loadRepoScope loads the architect's configured repo keys through the loader's
-// own ruleset. A returned error leaves the scope unknown, which switches off
-// repo-key checks instead of declaring every key unknown.
-func loadRepoScope(workspacePath, architectKey string) (repoScope, error) {
-	resolved, err := config.ValidateArchitectConfig(workspacePath, architectKey)
-	if err != nil {
-		return repoScope{}, err
-	}
-	return scopeFromRepos(resolved.Repos), nil
-}
-
-func scopeFromRepos(repos map[string]string) repoScope {
-	keys := make(map[string]struct{}, len(repos))
-	for key := range repos {
-		keys[key] = struct{}{}
-	}
-	return repoScope{Keys: keys, Known: true}
-}
-
 func rootDocumentFileName(kind domain.ArtifactKind) string {
 	switch kind {
 	case domain.ArtifactProjectOverview:
 		return ProjectOverviewFileName
-	case domain.ArtifactProjectState:
-		return ProjectStateFileName
-	case domain.ArtifactRoadmapCurrent:
-		return RoadmapCurrentFileName
-	case domain.ArtifactArchitectSystem:
-		return ArchitectSystemFileName
 	default:
 		return string(kind)
 	}

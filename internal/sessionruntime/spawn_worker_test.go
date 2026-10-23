@@ -135,9 +135,9 @@ func wait(t *testing.T, done chan spawnOutcome) spawnOutcome {
 
 func TestSpawnTicketWorkerApprovalLaunchesWorkerWithNamedWorkflows(t *testing.T) {
 	f := newSpawnFixture(t)
-	a := writeWorkflow(t, f.workspace, "AUTONOMOUS_COMMIT.md", "---\nattach: manual\n---\n\nCommit body.\n")
-	b := writeWorkflow(t, f.workspace, "ISOLATED_VERIFICATION.md", "---\nattach: suggested\nrepos:\n- daemon\n---\n\nVerify body.\n")
-	writeWorkflow(t, f.workspace, "UNSELECTED.md", "---\nattach: suggested\nrepos:\n- daemon\n---\n\nNot me.\n")
+	a := writeWorkflow(t, f.workspace, "AUTONOMOUS_COMMIT.md", "Commit body.\n")
+	b := writeWorkflow(t, f.workspace, "ISOLATED_VERIFICATION.md", "Verify body.\n")
+	writeWorkflow(t, f.workspace, "UNSELECTED.md", "Not me.\n")
 	ticket := f.backlogTicket(t, "Ship spawn")
 
 	in, done := f.spawn(t, domain.SpawnTicketWorkerRequest{
@@ -206,7 +206,7 @@ func TestSpawnTicketWorkerApprovalLaunchesWorkerWithNamedWorkflows(t *testing.T)
 func TestSpawnTicketWorkerEmptySelectionAndAutoApproval(t *testing.T) {
 	f := newSpawnFixture(t)
 	f.service.cfg.IntentWaitTimeout = 1
-	writeWorkflow(t, f.workspace, "SUGGESTED.md", "---\nattach: suggested\nrepos:\n- daemon\n---\n\nSuggested.\n")
+	writeWorkflow(t, f.workspace, "SUGGESTED.md", "Suggested.\n")
 	ticket := f.backlogTicket(t, "No workflows")
 
 	// Policy execution wakes the tool waiter before persisting its resolved
@@ -266,8 +266,8 @@ func TestSpawnTicketWorkerDenialLaunchesNothing(t *testing.T) {
 // Everything the launch would refuse is refused before the user is asked.
 func TestSpawnTicketWorkerValidatesBeforeApproval(t *testing.T) {
 	f := newSpawnFixture(t)
-	writeWorkflow(t, f.workspace, "AUTONOMOUS_COMMIT.md", "---\nattach: manual\n---\n\nA.\n")
-	writeWorkflow(t, f.workspace, "BROKEN.md", "no frontmatter\n")
+	writeWorkflow(t, f.workspace, "AUTONOMOUS_COMMIT.md", "A.\n")
+	writeWorkflow(t, f.workspace, "BROKEN.md", "")
 	ticket := f.backlogTicket(t, "Validate")
 	done := f.backlogTicket(t, "Already done")
 	if _, err := f.tickets.MoveTicket(context.Background(), f.workspace, done.ID, domain.MoveTicketParams{To: domain.TicketStatusProgress}); err != nil {
@@ -327,7 +327,7 @@ func TestSpawnTicketWorkerValidatesBeforeApproval(t *testing.T) {
 // and a launch that cannot happen is an error with its cause — never success.
 func TestSpawnTicketWorkerRevalidatesOnApproval(t *testing.T) {
 	f := newSpawnFixture(t)
-	path := writeWorkflow(t, f.workspace, "AUTONOMOUS_COMMIT.md", "---\nattach: manual\n---\n\nA.\n")
+	path := writeWorkflow(t, f.workspace, "AUTONOMOUS_COMMIT.md", "A.\n")
 	ticket := f.backlogTicket(t, "Revalidate")
 
 	in, done := f.spawn(t, domain.SpawnTicketWorkerRequest{TicketID: ticket.ID, Variant: "codex", Workflows: []string{"AUTONOMOUS_COMMIT"}})
@@ -368,7 +368,7 @@ func TestSpawnTicketWorkerLaunchFailureKeepsCauseAndRemovesSession(t *testing.T)
 // worker; another request for a ticket that already has one is refused.
 func TestSpawnTicketWorkerNeverDuplicatesWorkers(t *testing.T) {
 	f := newSpawnFixture(t)
-	writeWorkflow(t, f.workspace, "AUTONOMOUS_COMMIT.md", "---\nattach: manual\n---\n\nA.\n")
+	writeWorkflow(t, f.workspace, "AUTONOMOUS_COMMIT.md", "A.\n")
 	ticket := f.backlogTicket(t, "Once")
 	ctx := context.Background()
 

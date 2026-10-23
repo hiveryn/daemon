@@ -45,8 +45,10 @@ var defaultTabsBySessionType = map[string][]config.TabEntry{
 }
 
 type Service struct {
-	remoteStop     chan struct{}
-	remoteStopOnce sync.Once
+	workspaceMutation  func(context.Context, string, []string, func() error) error
+	workspaceReconcile func(context.Context, string) error
+	remoteStop         chan struct{}
+	remoteStopOnce     sync.Once
 
 	remoteMu sync.Mutex
 	remotes  map[string]*remoteWorker
@@ -245,18 +247,14 @@ func (s *Service) CreateSession(ctx context.Context, req domain.CreateSessionReq
 		if err := validateArchitectCreateRequest(req); err != nil {
 			return domain.Session{}, err
 		}
+		if s.workspaceReconcile != nil {
+			if err := s.workspaceReconcile(ctx, req.ArchitectKey); err != nil {
+				s.logger.Error("reconcile architect workspace", "architect_key", req.ArchitectKey, "error", err)
+			}
+		}
 		instructions, err := buildArchitectInstructions(architect)
 		if err != nil {
 			return domain.Session{}, err
-		}
-		if instructions.Custom.Present && !instructions.Custom.Loaded {
-			// Startup continues — the architect is the one who can repair the
-			// file — but the failure is recorded, not just embedded in the prompt.
-			s.logger.Error("architect custom instructions present but not loaded; starting without them",
-				"architect_key", req.ArchitectKey,
-				"path", instructions.Custom.Path,
-				"diagnostics", instructions.Custom.Diagnostics,
-			)
 		}
 		now := time.Now().UTC()
 		kickoff, err := renderArchitectKickoff(req.ArchitectKey, architect, now)
@@ -314,6 +312,11 @@ func (s *Service) ticketSessionParams(ctx context.Context, architectKey string, 
 	ticket, err := s.tickets.GetTicket(ctx, architect.Path, ticketID)
 	if err != nil {
 		return domain.CreateSessionParams{}, err
+	}
+	for _, warning := range ticket.Warnings {
+		if strings.HasPrefix(warning.Code, "INVALID_TICKET") || warning.Code == "PROTECTED_RECORD_CONFLICT" {
+			return domain.CreateSessionParams{}, &domain.ValidationError{Field: "ticket", Message: warning.Message}
+		}
 	}
 	if ticket.Status != domain.TicketStatusBacklog {
 		return domain.CreateSessionParams{}, &domain.ValidationError{Field: "ticket_id", Message: "ticket must be in backlog to create a ticket session"}
@@ -1374,19 +1377,32 @@ func (s *Service) concludeArchitectSession(ctx context.Context, session domain.S
 	if err := s.stopRemote(ctx, session); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
-	if strings.TrimSpace(params.Body) != "" {
-		folderName := session.ContextID
-		dir := filepath.Join(architect.Path, "architect-sessions", folderName)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return domain.ConcludeSessionResult{}, fmt.Errorf("create architect session directory: %w", err)
+	write := func() error {
+		if strings.TrimSpace(params.Body) != "" {
+			folderName := session.ContextID
+			dir := filepath.Join(architect.Path, "architect-sessions", folderName)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return fmt.Errorf("create architect session directory: %w", err)
+			}
+
+			now := time.Now().UTC()
+			conclusionPath := filepath.Join(dir, conclusionFileName)
+			doc := newArchitectConclusionDocument(session.CreatedAt, now, run.ProfileName, params.Body)
+			if err := writeConclusionFile(conclusionPath, doc); err != nil {
+				return err
+			}
 		}
 
-		now := time.Now().UTC()
-		conclusionPath := filepath.Join(dir, conclusionFileName)
-		doc := newArchitectConclusionDocument(session.CreatedAt, now, run.ProfileName, params.Body)
-		if err := writeConclusionFile(conclusionPath, doc); err != nil {
-			return domain.ConcludeSessionResult{}, err
-		}
+		return nil
+	}
+	var writeErr error
+	if s.workspaceMutation != nil {
+		writeErr = s.workspaceMutation(ctx, architect.Path, []string{"architect-sessions/" + session.ContextID + "/"}, write)
+	} else {
+		writeErr = write()
+	}
+	if writeErr != nil {
+		return domain.ConcludeSessionResult{}, writeErr
 	}
 
 	if err := s.repo.MarkRunCompleted(ctx, run.ID); err != nil {
@@ -3035,4 +3051,9 @@ func errorString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func (s *Service) SetWorkspaceLifecycle(mutate func(context.Context, string, []string, func() error) error, reconcile func(context.Context, string) error) {
+	s.workspaceMutation = mutate
+	s.workspaceReconcile = reconcile
 }

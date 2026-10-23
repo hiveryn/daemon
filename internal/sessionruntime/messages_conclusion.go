@@ -20,7 +20,7 @@ func ticketConcludedDedupeKey(architectKey, ticketID string, concludedAt time.Ti
 }
 
 func ticketConcludedBody(ticketID string, outcome domain.TicketOutcome) string {
-	return fmt.Sprintf("Ticket %s has been concluded. Outcome: %s. Use readTicket to review its conclusion.", ticketID, outcome)
+	return fmt.Sprintf("Ticket %s has been concluded. Outcome: %s. Read its files in tickets/done/ to review the result.", ticketID, outcome)
 }
 
 // beginTicketConcludedMessage records the pending_commit notice for a

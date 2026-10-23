@@ -12,45 +12,6 @@ import (
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
-// ArchitectSystemDocument is the optional ARCHITECT_SYSTEM.md as loaded for an
-// architect session.
-//
-// Present says the file exists. Loaded says its content passed the artifact's
-// own structural check and Content carries it. A file that exists but could
-// not be loaded is reported through Diagnostics so the session can be told
-// exactly what is wrong instead of being told its preferences were applied.
-type ArchitectSystemDocument struct {
-	Path        string
-	Present     bool
-	Loaded      bool
-	Content     string
-	Diagnostics []domain.WorkspaceDiagnostic
-}
-
-// ReadArchitectSystem loads the workspace's optional ARCHITECT_SYSTEM.md
-// through the same definition the workspace check executes. It never fails:
-// an absent file is a valid workspace, and a broken one is described rather
-// than treated as loaded. Architect startup must stay possible either way so
-// the file can be repaired.
-func ReadArchitectSystem(workspacePath string) ArchitectSystemDocument {
-	def := definitions[domain.ArtifactArchitectSystem]
-	diags := newDiagnostics(ArchitectSystemFileName)
-	absPath := joinWorkspace(workspacePath, ArchitectSystemFileName)
-
-	result := validateMarkdownArtifact(def, absPath, false, diags)
-	doc := ArchitectSystemDocument{
-		Path:        absPath,
-		Present:     result.Exists,
-		Diagnostics: diags.items,
-	}
-	if !result.Exists || diags.hasErrors() {
-		return doc
-	}
-	doc.Loaded = true
-	doc.Content = result.Data
-	return doc
-}
-
 // WorkerContext is the validated read-only context a ticket session is
 // launched with: the project documents (the required overview and state, then
 // the optional roadmap when present) and the explicitly selected workflows, in
@@ -98,20 +59,16 @@ func (c WorkerContext) WorkflowPaths() []string {
 // resumed) against the workspace as it is on disk right now, and returns the
 // content the worker's first message carries.
 //
-// It enforces the worker-launch column of VALIDATORS_RULES: hiveryn.yaml must
-// load; PROJECT_OVERVIEW.md and PROJECT_STATE.md must be valid; ROADMAP_CURRENT.md
-// is optional but must be valid when present; and every selected workflow must be a unique canonical path to a
-// readable, valid file directly inside this workspace's workflows/ directory.
-// The architect-only ARCHITECT_SYSTEM.md and
-// workflows that were not selected are not consulted, so their problems never
-// stop a worker.
+// hiveryn.yaml and OVERVIEW.md must be valid. Each selected workflow must be
+// a unique canonical path to plain Markdown directly in workflows/. Unselected
+// workflows are not consulted.
 //
 // A failure is a *domain.ValidationError carrying every finding, so the
 // selection or workspace can be repaired in one pass. A selected file that is
 // missing, renamed, invalid, a symlink out of the workspace, or not in
 // canonical form is an error; it is never dropped or replaced by a guess.
 func ValidateWorkerContext(workspacePath, architectKey string, selected []string) (WorkerContext, error) {
-	ctx, scope, findings := validateWorkerProjectContext(workspacePath, architectKey)
+	ctx, findings := validateWorkerProjectContext(workspacePath, architectKey)
 	if len(findings) > 0 {
 		return WorkerContext{}, &domain.ValidationError{
 			Field:   "workspace",
@@ -119,7 +76,7 @@ func ValidateWorkerContext(workspacePath, architectKey string, selected []string
 		}
 	}
 
-	workflows, findings := validateSelectedWorkflows(workspacePath, scope, selected)
+	workflows, findings := validateSelectedWorkflows(workspacePath, selected)
 	if len(findings) > 0 {
 		return WorkerContext{}, &domain.ValidationError{
 			Field:   "workflows",
@@ -142,39 +99,29 @@ const workspaceNotReadyMessage = "the architect workspace is not ready for a wor
 // blockers before creating a session without carrying a second opinion about
 // what blocks a worker.
 func PreflightWorkerContext(workspacePath, architectKey string) []string {
-	_, _, findings := validateWorkerProjectContext(workspacePath, architectKey)
+	_, findings := validateWorkerProjectContext(workspacePath, architectKey)
 	return findings
 }
 
-// validateWorkerProjectContext enforces the project-context half of the
-// worker-launch column of VALIDATORS_RULES: hiveryn.yaml must load;
-// PROJECT_OVERVIEW.md and PROJECT_STATE.md must be valid; ROADMAP_CURRENT.md is
-// optional but must be valid when present. It returns the documents' content
-// from the validated read and the repo scope selected workflows are checked
-// against.
-//
-// The architect-only ARCHITECT_SYSTEM.md is never
-// consulted, so their problems never stop a worker.
-func validateWorkerProjectContext(workspacePath, architectKey string) (WorkerContext, repoScope, []string) {
+// validateWorkerProjectContext validates hiveryn.yaml and the sole required
+// project document, OVERVIEW.md, and returns its stable content.
+func validateWorkerProjectContext(workspacePath, architectKey string) (WorkerContext, []string) {
 	if strings.TrimSpace(workspacePath) == "" {
-		return WorkerContext{}, repoScope{}, []string{"architect workspace path is required"}
+		return WorkerContext{}, []string{"architect workspace path is required"}
 	}
 	if info, err := os.Stat(workspacePath); err != nil || !info.IsDir() {
-		return WorkerContext{}, repoScope{}, []string{fmt.Sprintf("architect workspace %s is not a readable directory", workspacePath)}
+		return WorkerContext{}, []string{fmt.Sprintf("architect workspace %s is not a readable directory", workspacePath)}
 	}
 
 	var findings []string
 
-	resolved, err := config.ValidateArchitectConfig(workspacePath, architectKey)
-	scope := repoScope{}
+	_, err := config.ValidateArchitectConfig(workspacePath, architectKey)
 	if err != nil {
 		findings = append(findings, fmt.Sprintf("%s: %v", ConfigFileName, err))
-	} else {
-		scope = scopeFromRepos(resolved.Repos)
 	}
 
 	ctx := WorkerContext{Documents: []ProjectDocument{}, Workflows: []SelectedWorkflow{}}
-	for _, kind := range []domain.ArtifactKind{domain.ArtifactProjectOverview, domain.ArtifactProjectState, domain.ArtifactRoadmapCurrent} {
+	for _, kind := range []domain.ArtifactKind{domain.ArtifactProjectOverview} {
 		def := definitions[kind]
 		name := rootDocumentFileName(kind)
 		diags := newDiagnostics(name)
@@ -196,13 +143,13 @@ func validateWorkerProjectContext(workspacePath, architectKey string) (WorkerCon
 			ctx.Documents = append(ctx.Documents, ProjectDocument{Name: name, Content: result.Data})
 		}
 	}
-	return ctx, scope, findings
+	return ctx, findings
 }
 
 // validateSelectedWorkflows checks each selected path and returns the
 // canonical paths and bodies in selection order, or every finding when any
 // path fails.
-func validateSelectedWorkflows(workspacePath string, scope repoScope, selected []string) ([]SelectedWorkflow, []string) {
+func validateSelectedWorkflows(workspacePath string, selected []string) ([]SelectedWorkflow, []string) {
 	workflows := make([]SelectedWorkflow, 0, len(selected))
 	if len(selected) == 0 {
 		return workflows, nil
@@ -272,7 +219,7 @@ func validateSelectedWorkflows(workspacePath string, scope repoScope, selected [
 			continue
 		}
 
-		workflow, body := validateWorkflowDocument(workspacePath, realWorkflowsDir, name, scope)
+		workflow, body := validateWorkflowDocument(workspacePath, realWorkflowsDir, name)
 		if !workflow.Valid {
 			for _, line := range formatDiagnostics(workflow.Diagnostics) {
 				findings = append(findings, label+": "+line)
@@ -335,8 +282,7 @@ func ResolveWorkflowNames(workspacePath, architectKey string, names []string) ([
 
 	// A broken config only turns off the repo-key check inside each workflow's
 	// validation, which is not consulted here; the launch reports it.
-	scope, _ := loadRepoScope(workspacePath, architectKey)
-	available, err := discoverWorkflows(workspacePath, scope, newDiagnostics(WorkflowsDirName))
+	available, err := discoverWorkflows(workspacePath, newDiagnostics(WorkflowsDirName))
 	if err != nil {
 		return nil, err
 	}

@@ -4,12 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
@@ -452,111 +449,5 @@ func (s *Service) emitArchitectEvent(architectKey string, reason domain.Architec
 		TicketID:     ticketID,
 		SessionID:    sessionID,
 		At:           time.Now().UTC(),
-	})
-}
-
-// RequestCreateWorkTicket routes an agent's createWorkTicket through approval.
-// The ticket is written only if the intent resolves approved, and the write
-// happens here in the daemon — the agent has no unapproved path to it.
-func (s *Service) RequestCreateWorkTicket(
-	ctx context.Context, sessionID string, params domain.CreateTicketParams,
-) (domain.IntentResolution[domain.Ticket], error) {
-	var zero domain.IntentResolution[domain.Ticket]
-
-	session, err := s.repo.GetSession(ctx, sessionID)
-	if err != nil {
-		return zero, err
-	}
-	if session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
-		return zero, &domain.ValidationError{Field: "session_id", Message: "session run is not running"}
-	}
-
-	// The architect key comes from the stored session, never from the request:
-	// an agent cannot create tickets in an architect it wasn't spawned for.
-	architect, err := s.currentArchitect(session.ArchitectKey)
-	if err != nil {
-		return zero, err
-	}
-
-	// Validate before the popup, mirroring RequestConclusion: bad input goes
-	// straight back to the agent and the user is never shown a doomed dialog.
-	params.Title = strings.TrimSpace(params.Title)
-	if params.Title == "" {
-		return zero, &domain.ValidationError{Field: "title", Message: "is required"}
-	}
-	params.Repo = strings.TrimSpace(params.Repo)
-	if params.Repo == "" {
-		return zero, &domain.ValidationError{Field: "repo", Message: "is required"}
-	}
-	if _, ok := architect.Repos[params.Repo]; !ok {
-		return zero, &domain.ValidationError{
-			Field:   "repo",
-			Message: fmt.Sprintf("repo key %q is not configured for architect %s", params.Repo, session.ArchitectKey),
-		}
-	}
-	seen := map[string]struct{}{params.Repo: {}}
-	for i, raw := range params.AdditionalRepos {
-		key := strings.TrimSpace(raw)
-		if key == "" {
-			return zero, &domain.ValidationError{Field: "additional_repos", Message: "repo keys cannot be blank"}
-		}
-		if _, exists := seen[key]; exists {
-			return zero, &domain.ValidationError{Field: "additional_repos", Message: fmt.Sprintf("repo key %q is duplicated or overlaps primary repo", key)}
-		}
-		if _, ok := architect.Repos[key]; !ok {
-			return zero, &domain.ValidationError{Field: "additional_repos", Message: fmt.Sprintf("repo key %q is not configured for architect %s", key, session.ArchitectKey)}
-		}
-		seen[key] = struct{}{}
-		params.AdditionalRepos[i] = key
-	}
-	cfg, err := config.WritableConfig(s.cfg, s.configSource)
-	if err != nil {
-		return zero, err
-	}
-	if _, err := cfg.ScopeMachine(architect, params.Repo, params.AdditionalRepos); err != nil {
-		return zero, &domain.ValidationError{Field: "repos", Message: err.Error()}
-	}
-	sort.Strings(params.AdditionalRepos)
-
-	payload := map[string]any{
-		"title":            params.Title,
-		"repo":             params.Repo,
-		"additional_repos": params.AdditionalRepos,
-		"body":             params.Body,
-		"references":       params.References,
-	}
-
-	return awaitIntent(ctx, s, intentSpec[domain.Ticket]{
-		SessionID: sessionID,
-		Type:      domain.IntentTypeCreateWorkTicket,
-		Summary:   params.Title,
-		Payload:   payload,
-		Origin:    intentOrigin(session),
-		Exec: func(ctx context.Context, _ domain.IntentInputValues) (domain.Ticket, error) {
-			p := params
-			// Stamped here, NOT before the dedup hash. A per-call timestamp in
-			// the hashed payload would make every retry hash differently and
-			// silently disable dedup — the one bug that would quietly reinstate
-			// duplicate tickets.
-			p.Now = time.Now().UTC()
-			live, err := config.WritableConfig(s.cfg, s.configSource)
-			if err != nil {
-				return domain.Ticket{}, err
-			}
-			a, ok := live.Architects[session.ArchitectKey]
-			if !ok {
-				return domain.Ticket{}, fmt.Errorf("architect no longer configured")
-			}
-			if _, err := live.ScopeMachine(a, p.Repo, p.AdditionalRepos); err != nil {
-				return domain.Ticket{}, &domain.ValidationError{Field: "repos", Message: err.Error()}
-			}
-
-			ticket, err := s.tickets.CreateTicket(ctx, a.Path, p)
-			if err != nil {
-				return domain.Ticket{}, err
-			}
-			s.emitArchitectEvent(session.ArchitectKey, domain.ArchitectEventTicketCreated, ticket.ID, "")
-			return ticket, nil
-		},
 	})
 }

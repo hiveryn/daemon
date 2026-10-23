@@ -109,7 +109,6 @@ type SessionService interface {
 	// Agent-facing intent requests. Each blocks until the user answers or the
 	// tool's policy fires, and performs its write only on approval.
 	RequestConclusion(context.Context, string, ConcludeSessionParams) (IntentResolution[ConcludeSessionResult], error)
-	RequestCreateWorkTicket(context.Context, string, CreateTicketParams) (IntentResolution[Ticket], error)
 	// RequestSpawnTicketWorker returns the resolution with the launched
 	// worker; an approval whose launch failed is outcome error, never success.
 	RequestSpawnTicketWorker(context.Context, string, SpawnTicketWorkerRequest) (SpawnTicketWorkerResponse, error)

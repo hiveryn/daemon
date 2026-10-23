@@ -95,56 +95,12 @@ func renderRepos(repos map[string]string, machines ...map[string]string) string 
 	return strings.Join(lines, "\n")
 }
 
-// architectInstructions is the assembled architect system prompt plus what
-// happened with the workspace's optional ARCHITECT_SYSTEM.md, so the caller can
-// log a file that exists but was not applied.
-type architectInstructions struct {
-	Text   string
-	Custom workspacefs.ArchitectSystemDocument
-}
+// architectInstructions contains the approved built-in instructions only.
+type architectInstructions struct{ Text string }
 
-// buildArchitectInstructions assembles the built-in architect system prompt and
-// the architect workspace's optional ARCHITECT_SYSTEM.md.
-//
-// A present-but-unloadable file is surfaced inside the instructions themselves:
-// the architect is told exactly which file failed and why, and that no project
-// preferences are in effect, rather than being told nothing (which would read as
-// "loaded"). Startup is never blocked by it — the architect is the one who can
-// repair the file, so it has to be able to start.
-func buildArchitectInstructions(architect config.ArchitectConfig) (architectInstructions, error) {
+func buildArchitectInstructions(_ config.ArchitectConfig) (architectInstructions, error) {
 	system, err := builtinPrompt(architectSystemPromptName)
-	if err != nil {
-		return architectInstructions{}, err
-	}
-
-	custom := workspacefs.ReadArchitectSystem(architect.Path)
-	var b strings.Builder
-	b.WriteString(system)
-
-	switch {
-	case custom.Loaded:
-		b.WriteString("\n\n## Project collaboration preferences\n\n")
-		b.WriteString("The following comes from this workspace's ")
-		b.WriteString(workspacefs.ArchitectSystemFileName)
-		b.WriteString(". It sets how to collaborate on this project; Hiveryn's own rules above still apply.\n\n")
-		b.WriteString(strings.TrimSpace(custom.Content))
-	case custom.Present:
-		b.WriteString("\n\n## Project collaboration preferences\n\n")
-		b.WriteString(workspacefs.ArchitectSystemFileName)
-		b.WriteString(" exists at ")
-		b.WriteString(custom.Path)
-		b.WriteString(" but was NOT loaded, so no project-specific preferences are in effect for this session:\n")
-		for _, diag := range custom.Diagnostics {
-			b.WriteString("- ")
-			b.WriteString(diag.Code)
-			b.WriteString(": ")
-			b.WriteString(diag.Message)
-			b.WriteString("\n")
-		}
-		b.WriteString("Repair the file (checkWorkspace reports it too); it is read again at the next session start.")
-	}
-
-	return architectInstructions{Text: b.String(), Custom: custom}, nil
+	return architectInstructions{Text: system}, err
 }
 
 // workerInstructions returns the built-in WORKER_SYSTEM text. It is additive to

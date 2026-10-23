@@ -76,7 +76,7 @@ func (h *workspaceHandler) listWorkflows(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	list, err := h.workspaces.ListWorkflows(r.Context(), key, workspace, parseRepoScope(r.URL.Query().Get("repos")))
+	list, err := h.workspaces.ListWorkflows(r.Context(), key, workspace)
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
@@ -107,23 +107,6 @@ func (h *workspaceHandler) describeArtifact(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, r, http.StatusOK, schema)
-}
-
-// parseRepoScope splits the comma-separated `repos` query parameter into the
-// writable repo scope suggestions are matched against. An absent or empty
-// parameter is an empty scope, which suggests nothing.
-func parseRepoScope(raw string) []string {
-	if strings.TrimSpace(raw) == "" {
-		return nil
-	}
-	parts := strings.Split(raw, ",")
-	repos := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if trimmed := strings.TrimSpace(part); trimmed != "" {
-			repos = append(repos, trimmed)
-		}
-	}
-	return repos
 }
 
 func artifactKindNames() []string {
