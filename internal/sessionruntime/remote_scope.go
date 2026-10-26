@@ -27,19 +27,6 @@ func newRemoteCredentials(machine string) (string, int, error) {
 	return hex.EncodeToString(b), 20000 + int(n.Int64()), nil
 }
 func (s *Service) validateSessionLocation(ctx context.Context, cfg config.Config, a config.ArchitectConfig, session domain.Session) error {
-	if session.SessionType == domain.SessionTypeAction && session.Machine != "" {
-		// The checkout and the output directory were resolved when the
-		// execution launched; they must still exist where it runs.
-		if machine, ok := cfg.Machines[session.Machine]; !ok || machine.SSH != session.SSH {
-			return &domain.ValidationError{Field: "machine", Message: "the Action's machine changed since the execution launched"}
-		}
-		for _, p := range append([]string{session.Workdir}, session.AdditionalWorkdirs...) {
-			if _, err := remoteexec.Run(ctx, session.SSH, "test -d "+remoteexec.Quote(p), nil); err != nil {
-				return fmt.Errorf("remote Action directory %s: %w", p, err)
-			}
-		}
-		return nil
-	}
 	if session.SessionType != domain.SessionTypeTicket {
 		return nil
 	}

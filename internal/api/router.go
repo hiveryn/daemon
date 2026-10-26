@@ -25,7 +25,6 @@ type Dependencies struct {
 	Sessions        domain.SessionService
 	Tickets         domain.TicketService
 	Workspaces      domain.WorkspaceService
-	Actions         domain.ActionService
 	Questions       domain.QuestionService
 	IngestHandler   http.Handler
 	ArchitectEvents *archevents.Hub
@@ -114,7 +113,6 @@ func NewHandler(deps Dependencies) http.Handler {
 	th := &ticketsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
 	eh := &architectEventsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, hub: deps.ArchitectEvents}
 	wh := &workspaceHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, workspaces: deps.Workspaces}
-	ach := &actionsHandler{logger: deps.Logger, actions: deps.Actions}
 	qh := &questionsHandler{logger: deps.Logger, questions: deps.Questions}
 
 	if deps.ArchitectEvents != nil {
@@ -176,27 +174,6 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}/terminals", sh.listTerminals)
 	mux.HandleFunc("DELETE /api/sessions/{id}/terminals/{uuid}", sh.killTerminal)
 	mux.HandleFunc("GET /ws/session/{id}/terminal/{uuid}", sh.wsTerminal)
-	// Actions: global definitions, manual launches and the durable execution
-	// records. Executions live under /api/action-runs so no action name can
-	// collide with a route segment.
-	mux.HandleFunc("GET /api/actions", ach.list)
-	mux.HandleFunc("GET /api/actions/events", ach.events)
-	mux.HandleFunc("GET /api/actions/{name}", ach.get)
-	mux.HandleFunc("POST /api/actions/{name}/runs", ach.launch)
-	mux.HandleFunc("GET /api/action-runs", ach.listRuns)
-	mux.HandleFunc("GET /api/action-runs/{id}", ach.getRun)
-	mux.HandleFunc("POST /api/action-runs/{id}/cancel", ach.cancelRun)
-	// Agent-facing action tools, addressed by the calling action session.
-	mux.HandleFunc("GET /api/sessions/{id}/action/conclusions", ach.recentConclusions)
-	mux.HandleFunc("POST /api/sessions/{id}/action/artifacts", ach.deliverArtifacts)
-	mux.HandleFunc("POST /api/sessions/{id}/intents/conclude-action", ach.concludeIntent)
-	// Architect- and worker-facing Actions, addressed by the calling session:
-	// discovery, the execute request (blocks until approved) and the
-	// project-scoped result under the one execution id. The end of an
-	// execution is announced through the agent-message outbox, not polled.
-	mux.HandleFunc("GET /api/sessions/{id}/available-actions", ach.available)
-	mux.HandleFunc("POST /api/sessions/{id}/intents/execute-action", ach.executeIntent)
-	mux.HandleFunc("GET /api/sessions/{id}/action-results/{executionID}", ach.result)
 	// Agent notifications and questions (every session type). The question
 	// request blocks until answered, expired or cancelled; the answer is the
 	// desktop's.

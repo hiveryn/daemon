@@ -38,22 +38,17 @@ func NewServer(cfg Config) (*Server, error) {
 	if sessionType == "" {
 		sessionType = SessionTypeArchitect
 	}
-	if sessionType != SessionTypeArchitect && sessionType != SessionTypeTicket && sessionType != SessionTypeAction {
+	if sessionType != SessionTypeArchitect && sessionType != SessionTypeTicket {
 		return nil, fmt.Errorf("unsupported HIVERYN_SESSION_TYPE %q", sessionType)
 	}
 
-	// Action sessions belong to no architect; every other role is scoped by one.
 	architectKey := strings.TrimSpace(cfg.ArchitectKey)
-	if sessionType == SessionTypeAction {
-		if architectKey != "" {
-			return nil, fmt.Errorf("action sessions do not take an architect key (got %q)", architectKey)
-		}
-	} else if architectKey == "" {
+	if architectKey == "" {
 		return nil, fmt.Errorf("mcp server requires HIVERYN_ARCHITECT_KEY to be set")
 	}
 
 	// Every session type's tools are addressed by session id (intent-routed
-	// worker-spawn and conclude tools, and the action tools), so this is
+	// worker-spawn and conclude tools, questions and notifications), so this is
 	// required up front rather than checked lazily per handler. Not
 	// role-conditional on purpose.
 	if strings.TrimSpace(cfg.SessionID) == "" {
@@ -81,8 +76,6 @@ func NewServer(cfg Config) (*Server, error) {
 		server.registerArchitectTools()
 	case SessionTypeTicket:
 		server.registerTicketTools()
-	case SessionTypeAction:
-		server.registerActionTools()
 	}
 	server.registerUserTools()
 

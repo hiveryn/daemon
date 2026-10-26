@@ -22,7 +22,7 @@ import (
 // launches an architect session for it; an architect with no running session
 // gets the notice in its next one — unless the question has resolved by then,
 // in which case the dispatcher withdraws the undelivered notice. Only
-// ticket-worker questions escalate; architect and Action questions never do.
+// ticket-worker questions escalate; architect questions never do.
 //
 // The architect answers with answerQuestion, authorized here: the caller must
 // be a running architect session of the question's project and the question

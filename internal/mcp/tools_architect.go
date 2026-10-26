@@ -18,14 +18,8 @@ func (s *Server) registerArchitectTools() {
 	// spawnTicketWorker request, which the user approves (or lets expire).
 	s.registerSpawnTicketWorkerTool()
 
-	// Actions: discovery of this architect's availableActions, the
-	// executeAction request (waits for approval) and its result/wait under the
-	// one execution id. Action agents cannot invoke Actions.
-	s.registerAgentActionTools()
-
 	// Escalated worker questions: the architect may answer a ticket worker's
-	// question the user left unanswered. Workers and Action agents never get
-	// this tool.
+	// question the user left unanswered. Workers never get this tool.
 	s.registerAnswerQuestionTool()
 }
 

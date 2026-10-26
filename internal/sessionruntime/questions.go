@@ -530,18 +530,6 @@ func (s *Service) questionSubject(ctx context.Context, sessionID string) (questi
 	}
 	var title string
 	switch session.SessionType {
-	case domain.SessionTypeAction:
-		origin.ExecutionID = session.ContextID
-		name := "Action"
-		if s.actions != nil {
-			if run, err := s.actions.runs.GetActionRun(ctx, session.ContextID); err == nil {
-				origin.Action = run.Action
-				name = "Action " + run.Action
-			} else {
-				s.logger.Warn("resolve action for notification title", "session_id", sessionID, "error", err)
-			}
-		}
-		title = name + " · " + shortID(session.ContextID)
 	case domain.SessionTypeTicket:
 		origin.TicketID = session.ContextID
 		project, path := s.projectName(session.ArchitectKey)
@@ -625,13 +613,6 @@ func questionEndDescription(q domain.AgentQuestion) string {
 		}
 		return string(q.Status)
 	}
-}
-
-func shortID(id string) string {
-	if len(id) > 8 {
-		return id[:8]
-	}
-	return id
 }
 
 func truncateRunes(s string, max int) string {

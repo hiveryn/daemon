@@ -128,25 +128,3 @@ func TestStoredRunRefusesSnapshotForAnotherMachine(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-
-// Actions run locally whoever requests them, so only local variants qualify.
-func TestActionsUseLocalVariants(t *testing.T) {
-	f := newActionFixture(t)
-	withRemoteVariant(&f.service.cfg)
-	f.writeValidAction(t, "demo")
-	arch := f.architect(t, "alpha", "demo")
-	ctx := context.Background()
-
-	_, err := f.service.LaunchAction(ctx, "demo", domain.LaunchActionRequest{Prompt: "go", ProfileName: "bk-codex"})
-	requireErr(t, "manual", err, "configured for machine bk", "Action runs on local", "codex (codex)")
-	_, err = f.service.RequestExecuteAction(ctx, arch.ID, domain.ExecuteActionRequest{Name: "demo", Prompt: "x", Variant: "bk-codex"})
-	requireErr(t, "requested", err, "configured for machine bk", "Variants configured for local: codex (codex)")
-	_, err = f.service.RequestExecuteAction(ctx, arch.ID, domain.ExecuteActionRequest{Name: "demo", Prompt: "x"})
-	requireErr(t, "missing", err, "Variants configured for local: codex (codex)")
-	if strings.Contains(err.Error(), "bk-codex") {
-		t.Fatalf("a remote variant was offered for an Action: %v", err)
-	}
-	if runs, _ := f.service.ListActionRuns(ctx, "", 0); len(runs) != 0 {
-		t.Fatalf("refused launches left records: %+v", runs)
-	}
-}

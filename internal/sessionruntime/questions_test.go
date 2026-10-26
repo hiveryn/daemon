@@ -278,16 +278,13 @@ func TestNotifyAndAskWithoutConfigurationFail(t *testing.T) {
 
 func TestNotifySendsAndValidates(t *testing.T) {
 	session := runningArchitect()
-	session.SessionType = domain.SessionTypeAction
-	session.ArchitectKey = ""
-	session.ContextID = "0f3c9a1e-5d4b-4c1a-9a7e-123456789abc"
 	service, _, publisher := newQuestionService(t, session)
 
 	res, err := service.Notify(context.Background(), "session-1", "  Package delivered  ")
 	if err != nil || res.Text != "Notification sent to user" {
 		t.Fatalf("Notify = %+v, %v", res, err)
 	}
-	if sent := publisher.sent(); len(sent) != 1 || sent[0].Body != "Package delivered" || sent[0].Title != "Action · 0f3c9a1e" {
+	if sent := publisher.sent(); len(sent) != 1 || sent[0].Body != "Package delivered" || !strings.HasSuffix(sent[0].Title, " · architect") {
 		t.Fatalf("phone alert = %#v", sent)
 	}
 	if _, err := service.Notify(context.Background(), "session-1", strings.Repeat("x", 501)); !errors.As(err, new(*domain.ValidationError)) {
@@ -325,7 +322,7 @@ func TestReconcileQuestionsInterruptsOrphans(t *testing.T) {
 
 // Every role is told to use notify and askQuestion over native question tools.
 func TestSystemPromptsGuideNotifyAndAskQuestion(t *testing.T) {
-	for _, name := range []string{architectSystemPromptName, workerSystemPromptName, actionSystemPromptName} {
+	for _, name := range []string{architectSystemPromptName, workerSystemPromptName} {
 		text, err := builtinPrompt(name)
 		if err != nil {
 			t.Fatalf("builtinPrompt(%s): %v", name, err)

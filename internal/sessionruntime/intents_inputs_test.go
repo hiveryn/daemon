@@ -22,11 +22,10 @@ import (
 	"github.com/hiveryn/daemon/internal/store"
 )
 
-// Fixture intent types. No production tool requests inputs yet (Actions will),
-// so these are registered only for this package's tests, before any test runs.
+// Fixture intent types. No production tool requests inputs, so these are
+// registered only for this package's tests, before any test runs.
 const (
-	// testDeferred is an input-bearing deferred request, the shape Actions
-	// will use.
+	// testDeferred is an input-bearing deferred request.
 	testDeferred domain.IntentType = "testDeferred"
 	// testBlocking is an ordinary blocking tool without inputs.
 	testBlocking domain.IntentType = "testBlocking"
@@ -95,7 +94,7 @@ func (f *deferredFixture) spec(typ domain.IntentType, fields []domain.IntentInpu
 	return intentSpec[string]{
 		SessionID: "session-1",
 		Type:      typ,
-		Summary:   "run an action",
+		Summary:   "run triage",
 		Payload:   map[string]any{"name": "triage"},
 		Inputs:    fields,
 		Origin:    domain.IntentOrigin{SessionID: "session-1", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeArchitect},

@@ -251,8 +251,6 @@ func TestOnlyTicketWorkerQuestionsEscalate(t *testing.T) {
 	}{
 		{"architect", domain.Session{ID: "session-1", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeArchitect,
 			CurrentRun: &domain.SessionRun{ID: "run-1", Status: domain.SessionRunStatusRunning}}},
-		{"action", domain.Session{ID: "session-1", SessionType: domain.SessionTypeAction, ContextID: "exec-1",
-			CurrentRun: &domain.SessionRun{ID: "run-1", Status: domain.SessionRunStatusRunning}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newEscalationFixture(t, 10*time.Millisecond)

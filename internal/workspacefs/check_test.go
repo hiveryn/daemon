@@ -215,17 +215,11 @@ func TestCheckInvalidConfigIsReportedNotFatal(t *testing.T) {
 	}
 }
 
-// availableActions is part of the config ruleset: listed names need not exist
-// in the Actions library (that is reported by getAvailableActions), but they
-// must be well-formed and unique.
-func TestCheckConfigAvailableActions(t *testing.T) {
+// Actions were removed: a leftover availableActions list is reported as an
+// invalid config rather than silently ignored.
+func TestCheckConfigRejectsAvailableActions(t *testing.T) {
 	f := newFixture(t)
 	f.write(ConfigFileName, "name: Example\nrepos:\n  api: "+f.Repos["api"]+"\navailableActions:\n  - demo-evidence\n")
-	if n := node(t, f.check(), ConfigFileName); !n.Valid {
-		t.Fatalf("config with availableActions invalid: %+v", n.Diagnostics)
-	}
-
-	f.write(ConfigFileName, "name: Example\nrepos:\n  api: "+f.Repos["api"]+"\navailableActions:\n  - demo\n  - demo\n")
 	requireCode(t, node(t, f.check(), ConfigFileName).Diagnostics, domain.DiagConfigInvalid)
 }
 

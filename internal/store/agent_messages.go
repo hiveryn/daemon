@@ -132,9 +132,7 @@ func (s *AgentMessageStore) ListAgentMessages(ctx context.Context, architectKey 
 
 func (s *AgentMessageStore) PruneAgentMessages(ctx context.Context, cutoff time.Time) (int, error) {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM agent_messages WHERE ended_at IS NOT NULL AND ended_at < ?
-		AND state IN (?, ?, ?)
- AND NOT EXISTS (SELECT 1 FROM action_runs WHERE notification_pending = 1
- AND agent_messages.dedupe_key = 'action_ended:' || action_runs.id)`, formatPreciseTime(cutoff),
+		AND state IN (?, ?, ?)`, formatPreciseTime(cutoff),
 		string(domain.AgentMessageAppeared), string(domain.AgentMessageAcknowledged), string(domain.AgentMessageFailed))
 	if err != nil {
 		return 0, fmt.Errorf("prune agent messages: %w", err)

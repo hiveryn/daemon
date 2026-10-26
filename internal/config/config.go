@@ -47,16 +47,14 @@ type Config struct {
 	// DefaultQuestionEscalationDelay; 0 disables escalation; it must stay
 	// under the one-hour question expiry, after which there is nothing left to
 	// answer. Read at startup like the rest of config.yaml.
-	QuestionEscalationDelay *int                          `yaml:"question_escalation_delay,omitempty"`
-	ArchiveAgentEvents      bool                          `yaml:"archive_agent_events"`
-	Notifications           *NotificationsConfig          `yaml:"notifications,omitempty"`
-	ActionPackages          *ActionPackagesConfig         `yaml:"action_packages,omitempty"`
-	Machines                map[string]MachineConfig      `yaml:"-"`
-	Actions                 map[string]ActionRegistration `yaml:"-"`
-	Variants                map[string]VariantConfig      `yaml:"-"`
-	Architects              map[string]ArchitectConfig    `yaml:"-"`
-	Tabs                    map[string][]TabEntry         `yaml:"-"`
-	Shortcuts               map[string]map[string]string  `yaml:"-"`
+	QuestionEscalationDelay *int                         `yaml:"question_escalation_delay,omitempty"`
+	ArchiveAgentEvents      bool                         `yaml:"archive_agent_events"`
+	Notifications           *NotificationsConfig         `yaml:"notifications,omitempty"`
+	Machines                map[string]MachineConfig     `yaml:"-"`
+	Variants                map[string]VariantConfig     `yaml:"-"`
+	Architects              map[string]ArchitectConfig   `yaml:"-"`
+	Tabs                    map[string][]TabEntry        `yaml:"-"`
+	Shortcuts               map[string]map[string]string `yaml:"-"`
 }
 
 // Source is the daemon's view of the current configuration. Current never
@@ -143,31 +141,26 @@ const ReservedMCPServerName = "hiveryn-daemon"
 
 // ArchitectConfig is the resolved configuration for a single architect,
 // assembled from the global architects.yaml registry (which supplies the key
-// and workspace path) and the architect's own hiveryn.yaml (name, repos and
-// the optional availableActions). Repos is keyed by repo key for lookups, with
-// paths expanded to absolute. AvailableActions names the global Actions this
-// architect may discover and request, in file order; omitted means none. It
-// never restricts the user's own manual launches.
+// and workspace path) and the architect's own hiveryn.yaml (name and repos).
+// Repos is keyed by repo key for lookups, with paths expanded to absolute.
 //
 // There are no prompt fields: architect and worker instructions are built into
 // the daemon, and the only per-architect customization is the optional
 // ARCHITECT_SYSTEM.md file in the workspace, read at session start.
 type ArchitectConfig struct {
-	Name             string
-	Path             string
-	Repos            map[string]string
-	RepoMachines     map[string]string
-	AvailableActions []string
+	Name         string
+	Path         string
+	Repos        map[string]string
+	RepoMachines map[string]string
 }
 
 // architectFile is the on-disk shape of <architectPath>/hiveryn.yaml. It is
-// decoded strictly: an unknown key (such as a leftover prompts: block) is an
-// error, because a key the daemon silently ignores would look configured while
+// decoded strictly: an unknown key (such as a leftover prompts: block or the
+// removed availableActions list) is an error, because a key the daemon silently ignores would look configured while
 // doing nothing.
 type architectFile struct {
-	Name             string              `yaml:"name,omitempty"`
-	Repos            map[string]repoFile `yaml:"repos,omitempty"`
-	AvailableActions []string            `yaml:"availableActions,omitempty"`
+	Name  string              `yaml:"name,omitempty"`
+	Repos map[string]repoFile `yaml:"repos,omitempty"`
 }
 
 type TabEntry struct {
@@ -299,8 +292,6 @@ func (c Config) Clone() Config {
 		cloned.QuestionEscalationDelay = &delay
 	}
 	cloned.Machines = cloneMachines(c.Machines)
-	cloned.Actions = cloneActions(c.Actions)
-	cloned.ActionPackages = c.ActionPackages.clone()
 	cloned.Variants = cloneVariantConfigs(c.Variants)
 	cloned.Architects = cloneArchitectConfigs(c.Architects)
 	cloned.Tabs = cloneTabs(c.Tabs)
@@ -394,11 +385,6 @@ func loadOptionalConfigFiles(configDir string, cfg *Config) error {
 		return err
 	}
 	cfg.Machines = machines
-	actions, err := loadActions(ActionsRegistryPath(configDir))
-	if err != nil {
-		return fmt.Errorf("load actions: %w", err)
-	}
-	cfg.Actions = actions
 	if err := loadOptionalFile(filepath.Join(configDir, variantsFileName), &cfg.Variants); err != nil {
 		return fmt.Errorf("load variants: %w", err)
 	}
@@ -487,9 +473,10 @@ func readArchitectFile(workspacePath string) ([]byte, architectFile, error) {
 }
 
 // decodeArchitectFile decodes hiveryn.yaml with unknown keys rejected. The
-// file holds name, repos and the optional availableActions; anything else — most likely a prompts:
-// block left over from before prompts became built in — is reported so it can
-// be removed instead of sitting there looking configured.
+// file holds only name and repos; anything else — most likely a prompts: block
+// left over from before prompts became built in, or an availableActions list
+// left over from the removed Actions feature — is reported so it can be
+// removed instead of sitting there looking configured.
 func decodeArchitectFile(data []byte) (architectFile, error) {
 	var file architectFile
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
@@ -500,7 +487,7 @@ func decodeArchitectFile(data []byte) (architectFile, error) {
 			// name, which is the actionable message.
 			return architectFile{}, nil
 		}
-		return architectFile{}, fmt.Errorf("%w (hiveryn.yaml holds only `name`, `repos` and the optional `availableActions`; prompt overrides were removed — architect and worker instructions are built into the daemon, and project instructions belong in AGENTS.md)", err)
+		return architectFile{}, fmt.Errorf("%w (hiveryn.yaml holds only `name` and `repos`; prompt overrides were removed — architect and worker instructions are built into the daemon, and project instructions belong in AGENTS.md — and Actions were removed, so `availableActions` must be deleted: map former Action repositories under `repos` instead)", err)
 	}
 	return file, nil
 }
@@ -536,11 +523,10 @@ func architectConfigFromFile(key, workspacePath string, file architectFile) (Arc
 	}
 
 	return ArchitectConfig{
-		Name:             file.Name,
-		Path:             workspacePath,
-		Repos:            repos,
-		RepoMachines:     machines,
-		AvailableActions: append([]string(nil), file.AvailableActions...),
+		Name:         file.Name,
+		Path:         workspacePath,
+		Repos:        repos,
+		RepoMachines: machines,
 	}, nil
 }
 
@@ -566,15 +552,14 @@ func expandHomePath(p string) (string, error) {
 }
 
 type coreConfig struct {
-	Port                      int                   `yaml:"port"`
-	BindAddress               string                `yaml:"bind_address"`
-	LogLevel                  string                `yaml:"log_level"`
-	Shell                     string                `yaml:"shell,omitempty"`
-	DesktopHealthPollInterval string                `yaml:"desktop_health_poll_interval,omitempty"`
-	IntentWaitTimeout         int                   `yaml:"intent_wait_timeout,omitempty"`
-	QuestionEscalationDelay   *int                  `yaml:"question_escalation_delay,omitempty"`
-	Notifications             *NotificationsConfig  `yaml:"notifications,omitempty"`
-	ActionPackages            *ActionPackagesConfig `yaml:"action_packages,omitempty"`
+	Port                      int                  `yaml:"port"`
+	BindAddress               string               `yaml:"bind_address"`
+	LogLevel                  string               `yaml:"log_level"`
+	Shell                     string               `yaml:"shell,omitempty"`
+	DesktopHealthPollInterval string               `yaml:"desktop_health_poll_interval,omitempty"`
+	IntentWaitTimeout         int                  `yaml:"intent_wait_timeout,omitempty"`
+	QuestionEscalationDelay   *int                 `yaml:"question_escalation_delay,omitempty"`
+	Notifications             *NotificationsConfig `yaml:"notifications,omitempty"`
 }
 
 func (c Config) Save(path string) error {
@@ -604,7 +589,6 @@ func (c Config) Save(path string) error {
 		IntentWaitTimeout:         c.IntentWaitTimeout,
 		QuestionEscalationDelay:   c.QuestionEscalationDelay,
 		Notifications:             c.Notifications,
-		ActionPackages:            c.ActionPackages,
 	}
 
 	data, err := yaml.Marshal(core)
@@ -712,12 +696,6 @@ func (c Config) Validate() error {
 	}
 
 	if err := c.validateMachines(); err != nil {
-		return err
-	}
-	if err := c.validateActions(); err != nil {
-		return err
-	}
-	if err := c.ActionPackages.validate(); err != nil {
 		return err
 	}
 	architectKeys := sortedKeys(c.Architects)
@@ -923,11 +901,10 @@ func cloneArchitectConfigs(src map[string]ArchitectConfig) map[string]ArchitectC
 	dst := make(map[string]ArchitectConfig, len(src))
 	for key, architect := range src {
 		dst[key] = ArchitectConfig{
-			Name:             architect.Name,
-			Path:             architect.Path,
-			Repos:            cloneStringMap(architect.Repos),
-			RepoMachines:     cloneStringMap(architect.RepoMachines),
-			AvailableActions: append([]string(nil), architect.AvailableActions...),
+			Name:         architect.Name,
+			Path:         architect.Path,
+			Repos:        cloneStringMap(architect.Repos),
+			RepoMachines: cloneStringMap(architect.RepoMachines),
 		}
 	}
 	return dst

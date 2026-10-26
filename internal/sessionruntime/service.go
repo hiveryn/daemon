@@ -39,9 +39,6 @@ const (
 
 var defaultTabsBySessionType = map[string][]config.TabEntry{
 	"ticket": {{Type: "ticket"}},
-	// The action tab shows the execution (prompt, status, output directory,
-	// conclusion).
-	"action": {{Type: "action"}, {Type: "event-log"}},
 }
 
 type Service struct {
@@ -91,18 +88,11 @@ type Service struct {
 
 	bridgeMu      sync.Mutex
 	bridgeCancels map[string]func()
-	// attention holds the attention monitor of each live Action main
-	// terminal. It shares bridgeMu: a monitor lives exactly as long as the
-	// receiver bridge of the same main terminal.
-	attention map[string]*attentionMonitor
 
 	terminalStateMu sync.RWMutex
 	terminalStates  map[string]sessionTerminalState
 
 	archive *archive.Archiver
-
-	actions      *actionRuntime
-	actionEvents actionEventHub
 
 	// notifier publishes phone alerts (nil when notifications.ntfy is not
 	// configured); questions holds pending agent questions and their waiters.
@@ -188,7 +178,6 @@ func New(ctx context.Context, cfg config.Config, configSource config.Source, rep
 		questionEscalationDelay: cfg.QuestionEscalationDelayDuration(),
 		eventStreams:            map[string]map[uint64]chan domain.SessionEvent{},
 		bridgeCancels:           map[string]func(){},
-		attention:               map[string]*attentionMonitor{},
 		terminalStates:          map[string]sessionTerminalState{},
 	}
 	messages.mailbox.SetObservers(service.waiterArmed, service.waiterGone)
@@ -481,19 +470,14 @@ func (s *Service) createRun(ctx context.Context, sessionID string, req domain.Cr
 		return domain.CreateSessionRunResult{}, err
 	}
 
-	// Action sessions belong to no architect; every other session needs its
-	// architect to still be configured.
-	var architect config.ArchitectConfig
-	if session.SessionType != domain.SessionTypeAction {
-		var ok bool
-		if architect, ok = cfg.Architects[session.ArchitectKey]; !ok {
-			return domain.CreateSessionRunResult{}, &domain.NotFoundError{Resource: "architect", ID: session.ArchitectKey}
-		}
+	architect, ok := cfg.Architects[session.ArchitectKey]
+	if !ok {
+		return domain.CreateSessionRunResult{}, &domain.NotFoundError{Resource: "architect", ID: session.ArchitectKey}
 	}
 
 	// A variant describes one machine's executables, config directories and
-	// environment, so it runs only where the session executes: architect and
-	// Action sessions locally, a ticket session on its repositories' machine.
+	// environment, so it runs only where the session executes: architect
+	// sessions locally, a ticket session on its repositories' machine.
 	profile, ok := cfg.Variants[req.ProfileName]
 	if !ok {
 		return domain.CreateSessionRunResult{}, &domain.NotFoundError{Resource: "agent_profile", ID: req.ProfileName}
@@ -697,9 +681,6 @@ func (s *Service) RestoreRunningSessions(ctx context.Context) error {
 				)
 			}
 
-			if session.SessionType == domain.SessionTypeAction {
-				s.failActionSession(session, "restore failed after daemon restart: "+err.Error())
-			}
 			if session.SessionType == domain.SessionTypeTicket {
 				if ticketErr := s.moveTicketToBacklog(ctx, session); ticketErr != nil {
 					s.logger.Error("failed to move ticket back to backlog after restore failure",
@@ -843,9 +824,6 @@ func (s *Service) startSessionMainTerminal(ctx context.Context, session domain.S
 		CleanupPaths: append([]string(nil), spec.CleanupPaths...),
 		OnExit:       s.handleTerminalExit,
 	}
-	if monitor := s.startAttention(session, agentKind, size); monitor != nil {
-		startSpec.Observer = monitor
-	}
 	mainTerminalID := startSpec.TerminalID
 	if err := s.terminal.Start(ctx, startSpec); err != nil {
 		s.cancelReceiverBridge(session.ID)
@@ -957,7 +935,7 @@ func (s *Service) resolveStoredRunLaunchContext(session domain.Session, run doma
 		return config.VariantConfig{}, "", err
 	}
 
-	if _, ok := cfg.Architects[session.ArchitectKey]; !ok && session.SessionType != domain.SessionTypeAction {
+	if _, ok := cfg.Architects[session.ArchitectKey]; !ok {
 		return config.VariantConfig{}, "", fmt.Errorf("architect %q not found in architects.yaml", session.ArchitectKey)
 	}
 	if _, ok := cfg.Variants[run.ProfileName]; !ok {
@@ -1011,14 +989,12 @@ func (s *Service) resumeSessionMainTerminal(ctx context.Context, session domain.
 	if err != nil {
 		return "", err
 	}
-	if session.SessionType != domain.SessionTypeAction {
-		architect, err := s.currentArchitect(session.ArchitectKey)
-		if err != nil {
-			return "", err
-		}
-		if _, err := validateWorkerLaunchContext(architect, session); err != nil {
-			return "", err
-		}
+	architect, err := s.currentArchitect(session.ArchitectKey)
+	if err != nil {
+		return "", err
+	}
+	if _, err := validateWorkerLaunchContext(architect, session); err != nil {
+		return "", err
 	}
 	if err := s.forgetAgentStatus(ctx, run); err != nil {
 		return "", err
@@ -2003,9 +1979,6 @@ func (s *Service) ListTerminalWorkdirs(ctx context.Context, sessionID string) ([
 }
 
 func (s *Service) terminalWorkdirs(ctx context.Context, session domain.Session) ([]domain.TerminalWorkdir, error) {
-	if session.SessionType == domain.SessionTypeAction {
-		return actionTerminalWorkdirs(session)
-	}
 	architect, err := s.currentArchitect(session.ArchitectKey)
 	if err != nil {
 		return nil, fmt.Errorf("load architect %q terminal workdirs: %w", session.ArchitectKey, err)
@@ -2169,7 +2142,6 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	terminalErr := s.terminal.Shutdown(ctx)
 	s.cancelReceiverBridges()
 	s.closeEventSubscribers("")
-	s.closeActionEventSubscribers()
 	if s.archive != nil {
 		if err := s.archive.Close(); err != nil {
 			s.logger.Error("failed to close event archive", "error", err)
@@ -2300,9 +2272,6 @@ func (s *Service) handleReceiverEvent(event agentruntime.Event) {
 
 	s.archiveEvent(event, run)
 	s.observeAgentStatusForMessages(event)
-	if monitor := s.attentionMonitor(event.ID); monitor != nil {
-		monitor.ObserveEvent(event)
-	}
 
 	primaryNativeID := event.PrimaryNativeID
 	if primaryNativeID == "" {
@@ -2363,9 +2332,6 @@ func (s *Service) handleTerminalExit(exit terminalExit) {
 			"error", err,
 		)
 		s.markRunFailed(run.ID, domain.SessionRunFailureLaunchFailed, "resume_main_terminal")
-		if session.SessionType == domain.SessionTypeAction {
-			s.failActionSession(session, "agent exited and could not be resumed: "+err.Error())
-		}
 		if session.SessionType == domain.SessionTypeTicket {
 			if ticketErr := s.moveTicketToBacklog(context.Background(), session); ticketErr != nil {
 				s.logger.Error("failed to move ticket back to backlog after resume failure",
@@ -2442,19 +2408,16 @@ func (s *Service) storeBridgeCancel(sessionID string, cancel func()) {
 	s.bridgeCancels[sessionID] = cancel
 }
 
-// cancelReceiverBridge stops observing the session's current main terminal:
-// its hook-event bridge and, for an Action session, its attention monitor.
+// cancelReceiverBridge stops the hook-event bridge of the session's current
+// main terminal.
 func (s *Service) cancelReceiverBridge(sessionID string) {
 	s.bridgeMu.Lock()
 	cancel := s.bridgeCancels[sessionID]
 	delete(s.bridgeCancels, sessionID)
-	monitor := s.attention[sessionID]
-	delete(s.attention, sessionID)
 	s.bridgeMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
-	s.closeAttention(monitor)
 }
 
 func (s *Service) cancelReceiverBridges() {
@@ -2463,12 +2426,6 @@ func (s *Service) cancelReceiverBridges() {
 	for id, cancel := range s.bridgeCancels {
 		delete(s.bridgeCancels, id)
 		cancels = append(cancels, cancel)
-	}
-	// Shutdown: the monitors stop without announcing a change, since the
-	// agents keep whatever they show and restore starts fresh monitors.
-	for id, monitor := range s.attention {
-		delete(s.attention, id)
-		monitor.Close()
 	}
 	s.bridgeMu.Unlock()
 	for _, cancel := range cancels {
@@ -2605,12 +2562,6 @@ func (s *Service) mcpServersForSession(sessionType domain.SessionType, architect
 			"HIVERYN_SESSION_TYPE":  string(sessionType),
 			"HIVERYN_SESSION_ID":    sessionID,
 		},
-	}
-	// Action sessions have no architect: the MCP server is scoped by session
-	// id alone and registers only the action tools.
-	if sessionType == domain.SessionTypeAction {
-		server.Args = []string{"mcp", "--daemon-url", s.baseURL}
-		delete(server.Env, "HIVERYN_ARCHITECT_KEY")
 	}
 	servers := []agentruntime.MCPServerConfig{server}
 

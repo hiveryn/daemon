@@ -32,8 +32,7 @@ type intentSpec[R any] struct {
 }
 
 // intentHooks keep a tool's own durable record in step with an intent whose
-// outcome that record is authoritative for (executeAction: the Action
-// execution, whose id is the intent id). Every hook is optional, and each
+// outcome that record is authoritative for. Every hook is optional, and each
 // runs at most once per intent. They serve deferred and blocking intents
 // alike; an approval's outcome reaches the record through the tool's Exec.
 type intentHooks struct {

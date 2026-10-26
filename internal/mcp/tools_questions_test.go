@@ -59,7 +59,6 @@ func TestEverySessionTypeGetsNotifyAndAskQuestion(t *testing.T) {
 	for _, cfg := range []Config{
 		{DaemonURL: "http://127.0.0.1:1", ArchitectKey: "hiveryn", SessionID: "s", SessionType: SessionTypeArchitect},
 		{DaemonURL: "http://127.0.0.1:1", ArchitectKey: "hiveryn", SessionID: "s", SessionType: SessionTypeTicket},
-		{DaemonURL: "http://127.0.0.1:1", SessionID: "s", SessionType: SessionTypeAction},
 	} {
 		server, err := NewServer(cfg)
 		if err != nil {
@@ -151,7 +150,6 @@ func TestAnswerQuestionIsArchitectOnly(t *testing.T) {
 	for _, cfg := range []Config{
 		{DaemonURL: "http://127.0.0.1:1", ArchitectKey: "hiveryn", SessionID: "s", SessionType: SessionTypeArchitect},
 		{DaemonURL: "http://127.0.0.1:1", ArchitectKey: "hiveryn", SessionID: "s", SessionType: SessionTypeTicket},
-		{DaemonURL: "http://127.0.0.1:1", SessionID: "s", SessionType: SessionTypeAction},
 	} {
 		server, err := NewServer(cfg)
 		if err != nil {

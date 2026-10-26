@@ -110,7 +110,7 @@ func (c Config) VariantsForMachine(machine string) []string {
 // VariantForMachine resolves a launch's variant for its execution location.
 // A missing, unknown or other-machine variant is a ValidationError naming the
 // target location and the eligible choices; subject names what runs ("worker",
-// "Action", "session").
+// "session").
 func (c Config) VariantForMachine(name, machine, subject string) (VariantConfig, error) {
 	target := MachineLabel(machine)
 	eligible := c.VariantsForMachine(machine)

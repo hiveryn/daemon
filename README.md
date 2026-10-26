@@ -39,26 +39,7 @@ hiverynd mcp --daemon-url http://127.0.0.1:4201 --architect-key hiveryn
 
 `hiverynd mcp` is intended to be spawned by `agentruntime`; session scoping comes from `HIVERYN_SESSION_TYPE` (`architect` or `ticket`; any other value, including the removed `freeform`, is a startup error).
 
-### Creating and validating an Action
-
-```bash
-hiverynd action init [path]
-hiverynd action validate [--json] [--strict] [path]
-```
-
-Init creates a runnable greeting example (`action.yaml` and `KICKOFF.md`), initializing Git when needed. It preserves existing repository state, refuses to overwrite either file, and never registers, launches or commits the Action. The target directory name must be a valid Action identifier. README, AGENTS, operational notes, scripts, tests and dependency manifests are optional.
-
-Validate checks an Action repository (default: the current directory) with the daemon's own definition rules — `.git`, strict `action.yaml` keys and required fields, `suggestions` bounds, and the `KICKOFF.md` placeholders. It runs fully offline: no running daemon, config, database or provider setup, and the path need not be inside `HIVERYN_HOME/actions`. The action name is the directory's base name, as it will be once installed.
-
-Every finding has a stable `code`, a `severity` and the absolute `path` of the file (or action directory) it concerns; `--json` prints them as a report (`path`, `name`, `valid`, `strict`, `passed`, `errors`, `warnings`, `diagnostics`). Errors make the definition invalid, exactly as the runtime refuses to launch it. Missing or empty examples produce the error `SUGGESTIONS_MISSING`; count, per-example word and total-word violations are errors too. `--strict` also rejects any warnings.
-
-| Exit | Meaning |
-|---|---|
-| `0` | No errors (warnings allowed unless `--strict`) |
-| `1` | Validation failed: errors, or any warning under `--strict` |
-| `2` | Usage error, or the path is missing / not a directory (the filesystem error is printed) |
-
-An unknown `hiverynd` command or `action` subcommand is a usage error; only no arguments, bare flags or `serve` start the daemon.
+An unknown `hiverynd` command is a usage error; only no arguments, bare flags or `serve` start the daemon.
 
 ## Configuration
 
@@ -89,7 +70,7 @@ archive_agent_events: false
 
 #### Phone notifications (`notifications.ntfy`)
 
-Agents (architects, ticket workers and Actions) reach the user through two MCP tools: `notify(shortMessage)` publishes an alert and returns `Notification sent to user`; `askQuestion(question, answers, recommendedIndex)` publishes an alert, shows the question in the agent's desktop session (suggested answers, the recommended one marked, or free text) and waits up to one hour for the answer. The daemon publishes to [ntfy](https://ntfy.sh):
+Agents (architects and ticket workers) reach the user through two MCP tools: `notify(shortMessage)` publishes an alert and returns `Notification sent to user`; `askQuestion(question, answers, recommendedIndex)` publishes an alert, shows the question in the agent's desktop session (suggested answers, the recommended one marked, or free text) and waits up to one hour for the answer. The daemon publishes to [ntfy](https://ntfy.sh):
 
 ```yaml
 notifications:
@@ -107,11 +88,11 @@ notifications:
 2. Add the section to `config.yaml` and restart the daemon; like the rest of `config.yaml` it is read at startup, and an invalid section (missing server or topic, credentials embedded in the URL, both a token and a password) stops the daemon from starting with the field named.
 3. Without the section, `notify` and `askQuestion` fail with an error telling the agent the user was not notified; nothing is ever reported as sent unless the ntfy server accepted it (which is publication, not proof of phone delivery). A refused or failed publication returns the server's reason, never the credentials.
 
-Alerts are titled with the project and session (`<project> · architect`, `<project> · <ticket title>`, `Action <name> · <execution>`). Pending questions belong to the daemon: they expire after one hour regardless of the agent's client, end when the session ends or the agent stops waiting, and are marked interrupted if the daemon stops — an answer is accepted only while the agent's call is still waiting for it.
+Alerts are titled with the project and session (`<project> · architect`, `<project> · <ticket title>`). Pending questions belong to the daemon: they expire after one hour regardless of the agent's client, end when the session ends or the agent stops waiting, and are marked interrupted if the daemon stops — an answer is accepted only while the agent's call is still waiting for it.
 
 #### Escalating unanswered worker questions to the architect (`question_escalation_delay`)
 
-A ticket worker's question the user has not answered after `question_escalation_delay` seconds (default 120) is announced once to the project architect as an agent message (kind `question_escalated`, the same durable outbox as ticket-conclusion notices: delivered into the running architect session, or its next one, never by launching one). The notice names the ticket, the question id, the question, its choices and recommendation, how long it has waited and when it expires, and tells the architect it may answer with `answerQuestion(questionId, answer)` only if it is confident — otherwise nothing is expected, since the user was already alerted by phone. Architect and Action questions never escalate; escalation changes nothing about the question itself (phone-first alert, one-hour expiry, cancellation and restart interruption stay as they are), and a notice that cannot be recorded leaves the user's pending question untouched.
+A ticket worker's question the user has not answered after `question_escalation_delay` seconds (default 120) is announced once to the project architect as an agent message (kind `question_escalated`, the same durable outbox as ticket-conclusion notices: delivered into the running architect session, or its next one, never by launching one). The notice names the ticket, the question id, the question, its choices and recommendation, how long it has waited and when it expires, and tells the architect it may answer with `answerQuestion(questionId, answer)` only if it is confident — otherwise nothing is expected, since the user was already alerted by phone. Architect questions never escalate; escalation changes nothing about the question itself (phone-first alert, one-hour expiry, cancellation and restart interruption stay as they are), and a notice that cannot be recorded leaves the user's pending question untouched.
 
 `answerQuestion` is architect-only and authorized by the daemon from the calling session: a running architect session of the question's project, for an escalated ticket-worker question of that project. User and architect may race; exactly one answer wins, and a late, duplicate, expired or unescalated submission gets a `not_answerable` outcome naming what happened rather than overwriting anything. The answer's source travels with the resolution (`answered_by: user|architect`, shown in the desktop) and reaches the worker behind the prefix `Answered by the project architect, not the user:` — an architect answer is never presented as the user's answer or approval. A notice still undelivered when the question resolves is withdrawn.
 
@@ -143,7 +124,7 @@ claude-sonnet-plan:
       args: [--mcp]
 ```
 
-Claude Code's automatic memory is **disabled by default** on every Claude launch and resume — architect, ticket worker and Action sessions alike. A `claude` variant opts in with `claude_auto_memory: true`. The daemon passes the choice to agentruntime, which always sets `CLAUDE_CODE_DISABLE_AUTO_MEMORY` (`1`, or `0` when opted in) in the session's launch env. That value overrides one inherited from the daemon's own environment and the user's `autoMemoryEnabled` setting. Setting that variable under a variant's `env`, or `claude_auto_memory` on a non-claude variant, is a config validation error. The setting is frozen with the run, so a resume keeps the setting it was launched with; a run snapshotted before this setting existed resumes with auto-memory disabled unless its frozen `env` already set the variable to `0`. The session's extra terminal tabs share the launch env, so a `claude` started by hand in one gets the same setting. It does not touch global Claude settings, existing memory files, `CLAUDE.md`/project instructions or transcript persistence. Memory content already in a resumed transcript stays in it.
+Claude Code's automatic memory is **disabled by default** on every Claude launch and resume — architect and ticket worker sessions alike. A `claude` variant opts in with `claude_auto_memory: true`. The daemon passes the choice to agentruntime, which always sets `CLAUDE_CODE_DISABLE_AUTO_MEMORY` (`1`, or `0` when opted in) in the session's launch env. That value overrides one inherited from the daemon's own environment and the user's `autoMemoryEnabled` setting. Setting that variable under a variant's `env`, or `claude_auto_memory` on a non-claude variant, is a config validation error. The setting is frozen with the run, so a resume keeps the setting it was launched with; a run snapshotted before this setting existed resumes with auto-memory disabled unless its frozen `env` already set the variable to `0`. The session's extra terminal tabs share the launch env, so a `claude` started by hand in one gets the same setting. It does not touch global Claude settings, existing memory files, `CLAUDE.md`/project instructions or transcript persistence. Memory content already in a resumed transcript stays in it.
 
 ```yaml
 claude-opus-memory:
@@ -152,7 +133,7 @@ claude-opus-memory:
   claude_auto_memory: true   # omit (or false) to keep auto-memory off
 ```
 
-A variant belongs to one execution location, because its executable, config directories, environment and MCP servers describe that machine. `machine` is optional: omitted means **local only**; `machine: <key>` (a `machines.yaml` key, else a config load error) means only on that machine. An unassigned variant is never reused remotely and nothing is copied between machines — define a separate variant per machine. Architects and Actions (including an Action a remote worker requests) run locally and take only local variants; a ticket worker runs on its repositories' machine and takes only that machine's variants. The daemon enforces this for desktop launches, `spawnTicketWorker` (before the approval and again when the approved request launches) and `executeAction`; a refused variant's error names the target location and its eligible variants. `GET /api/agent-profiles` reports each variant's `machine`. The run's frozen snapshot records the machine; resume and reattachment use the snapshot, so editing `variants.yaml` never switches or migrates a running worker.
+A variant belongs to one execution location, because its executable, config directories, environment and MCP servers describe that machine. `machine` is optional: omitted means **local only**; `machine: <key>` (a `machines.yaml` key, else a config load error) means only on that machine. An unassigned variant is never reused remotely and nothing is copied between machines — define a separate variant per machine. Architects run locally and take only local variants; a ticket worker runs on its repositories' machine and takes only that machine's variants. The daemon enforces this for desktop launches, and `spawnTicketWorker` (before the approval and again when the approved request launches); a refused variant's error names the target location and its eligible variants. `GET /api/agent-profiles` reports each variant's `machine`. The run's frozen snapshot records the machine; resume and reattachment use the snapshot, so editing `variants.yaml` never switches or migrates a running worker.
 
 ```yaml
 codex-bk:
@@ -184,16 +165,14 @@ name: Hiveryn
 repos:
   daemon:  /Users/kareem/hiveryn/daemon
   desktop: /Users/kareem/hiveryn/desktop
-availableActions:   # optional
-  - demo-evidence
 ```
 
-The file holds `name`, `repos` and optional `availableActions`, decoded strictly. Architect and worker instructions are built into the daemon; project-specific instructions belong in `AGENTS.md`. Invalid configuration edits leave the last valid runtime configuration in service and appear in automatic validation. Worker launch checks the current files and refuses invalid context, while architect startup remains available for repairs.
+The file holds only `name` and `repos`, decoded strictly; any other key (such as a leftover `availableActions` from the removed Actions feature) is a load error. Architect and worker instructions are built into the daemon; project-specific instructions belong in `AGENTS.md`. Invalid configuration edits leave the last valid runtime configuration in service and appear in automatic validation. Worker launch checks the current files and refuses invalid context, while architect startup remains available for repairs.
 
 ### Filesystem-authored architect workspaces
 
 ```text
-hiveryn.yaml                 # name, repos; optional availableActions
+hiveryn.yaml                 # name, repos
 OVERVIEW.md                  # required durable brief; updated_at UTC frontmatter
 AGENTS.md                    # optional project operational instructions
 workflows/*.md               # plain Markdown; explicit selection at spawn
@@ -212,28 +191,6 @@ Accepted fingerprints of active/completed records and conclusions live in SQLite
 Architect startup uses the approved built-in SYSTEM and the project/session-time kickoff. It does not load custom workspace SYSTEM files. Architects read configuration, Overview, tickets and conclusions with their filesystem tools.
 
 Workers receive the full `OVERVIEW.md` and the selected plain Markdown workflows in their first message, labelled by name, without a workspace write grant. Launch and resume validate current context; ordinary resume does not reinject it. `GET /api/architects/{key}/workflows` lists canonical paths, validity and diagnostics. The desktop starts with an empty selection, and `POST /api/sessions` stores the explicit `workflows` list (empty is valid). Invalid, missing, duplicate, noncanonical or escaping paths fail launch rather than being omitted. `workspace/worker-preflight` reports Overview/configuration blockers separately from unselected workflows.
-
-Actions remain available through the configured allowlist and explicit-variant execution requests. Valid allowlist edits apply without restart.
-
-### Action definitions — `HIVERYN_HOME/actions/<name>`
-
-Each Action is its own Git repository directly under `HIVERYN_HOME/actions`; the directory name is the action name (lowercase letters, digits, `.`, `_`, `-`, at most 64 characters). It is read live and needs two files:
-
-```yaml
-# action.yaml — decoded strictly; no other key is allowed
-name: demo-evidence            # required, equal to the directory name
-description: |                 # required: what the Action does and what the prompt must contain
-  Compare synthetic AMS and LDN evidence. Say how many collections to run.
-artifacts: |                   # optional: nonempty when this Action promises files
-  summary.md and results.json in the output directory.
-suggestions:                   # required: complete example prompts for users and agents
-  - Compare AMS and LDN with three collections.
-  - Compare AMS and LDN with six collections and a first-attempt failure.
-```
-
-`KICKOFF.md` holds the launch instructions and must contain `{{prompt}}` (the caller's prompt) and, when `artifacts` is declared, `{{output_dir}}` (the fresh output directory); no other `{{…}}` placeholder is supplied.
-
-`suggestions` is a list of plain prompt strings, in the order the launch form shows them — 1–3, each nonblank after trimming, unique, at most 60 whitespace-separated words each and 120 words total (multi-line block scalars are fine). In the Actions window each appears as a chip under the Launch prompt; clicking one replaces the prompt text, which stays editable, and never launches anything. The same examples reach architects and ticket workers through `getAvailableActions`; callers must adapt synthetic example identifiers and dates to the actual request, never use them as defaults. A definition that breaks any rule is listed with its problems (the Actions window shows them) and cannot launch until repaired.
 
 ### `tabs.yaml` — tab layout per session type
 
@@ -335,9 +292,6 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `POST` | `/api/sessions/{id}/conclude` | Conclude a session's running run, publish `ended`, kill its PTYs, and delete the session row; architect conclude returns `CONFLICT` if same-architect ticket sessions are still running |
 | `POST` | `/api/sessions/{id}/discard` | Discard a ticket session without writing a conclusion: move the ticket progress → backlog, publish `ended` with `raw.lifecycle=discarded`, kill PTYs, delete the run, and delete the session row |
 | `POST` | `/api/sessions/{id}/intents/conclude-session` | **Blocking.** Raise a conclude intent: render the structured input into the canonical `conclusion.md` body, publish `intent`/`required`, and block until the user answers or the policy fires. Returns an intent resolution. Called by the MCP conclude tools (`concludeArchitectSession`, `concludeTicketSession`). |
-| `GET` | `/api/sessions/{id}/available-actions` | The calling architect or ticket session's project `availableActions`, in config order, each enriched with description, artifact contract, validity/problems and any running execution id. A configured name missing from the library is listed invalid, not dropped. Called by the MCP `getAvailableActions` tool. |
-| `POST` | `/api/sessions/{id}/intents/execute-action` | **Blocks until the approval resolves (wait-then-allow, like `create-work-ticket`).** Request one execution of an available Action (`{name, prompt, variant}`): records it `pending_approval` with the requested variant and raises the approval. Returns `ExecuteActionResponse` `{outcome, reason, result, notification}`, where `result` is the `ActionResult` under the execution id (also the intent id): `running` once approved or auto-approved and launched, `denied`, or `failed` when it could not start. `notification` is set only for a launched execution and says whether the `action_ended` agent message announcing its end can reach the requesting session (`available`), else why not (`reason`: a remote session, an agent without a message route). `VALIDATION` if the variant is missing or not configured (the message lists every configured variant and tells the agent to ask the user) or the Action is not available to this project or invalid; `CONFLICT` if it is running. Called by the MCP `executeAction` tool. |
-| `GET` | `/api/sessions/{id}/action-results/{executionID}` | The project-scoped result of a requested execution (status, requested/started/ended times, elapsed seconds once started, denial reason, error, agent summary, artifact package state and the caller's `output_dir` once ready, agent activity and attention when running). Another project's or a manual execution is `NOT_FOUND`. Called by the MCP `getActionResult` tool; there is no wait endpoint — the end of an execution is announced to its requester through the agent-message outbox. |
 | `POST` | `/api/sessions/{id}/intents/{intentID}/approve` | Approve a pending intent and run its side effect. Called by the desktop app. |
 | `POST` | `/api/sessions/{id}/intents/{intentID}/deny` | Deny a pending intent with a reason. The side effect never runs; the blocked agent call returns `outcome: denied_by_user`. Called by the desktop app. |
 | `GET` | `/api/sessions/{id}/tabs` | Get the resolved right-pane tab layout for a session's current run |
@@ -386,7 +340,7 @@ Desktop consumers should remove the session tab either when the POST succeeds or
 
 ### Intent approval flow
 
-Agent tool calls that mutate user-visible state route through the **intent system** so the desktop user can approve them before they take effect. Blocking tools are routed today: the conclude tools (`concludeArchitectSession`, `concludeTicketSession`, role-scoped so a session only sees its own), `spawnTicketWorker` (architect only) and `executeAction` (architects and ticket workers) — see "Agent-requested Actions". Each takes **discrete structured fields** rather than a free-text body; the daemon renders/validates them and, for conclusions, produces the canonical `conclusion.md`. See "Structured conclusions" below.
+Agent tool calls that mutate user-visible state route through the **intent system** so the desktop user can approve them before they take effect. Blocking tools are routed today: the conclude tools (`concludeArchitectSession`, `concludeTicketSession`, role-scoped so a session only sees its own), and `spawnTicketWorker` (architect only). Each takes **discrete structured fields** rather than a free-text body; the daemon renders/validates them and, for conclusions, produces the canonical `conclusion.md`. See "Structured conclusions" below.
 
 An intent is a pending tool call awaiting the user's answer. The write lives daemon-side and runs only on approval, so the agent cannot bypass it.
 
@@ -398,7 +352,7 @@ An intent is a pending tool call awaiting the user's answer. The write lives dae
 7. On timeout: the tool's hardcoded policy fires. All current tools are `wait-then-allow`, so the action runs and the agent is told `auto_approved`.
 8. Every resolution publishes a durable `type: "intent"` / `status: "resolved"` event (`raw.outcome` + optional `reason`/`result`), paired to the `required` event by `intent_id`. The `required` event replays on every desktop (re)connect but the pending intent lives only in memory, so the resolution event is its durable counterpart and the log always converges to "no popup". On startup the intent store is empty, so `ReconcileIntents` resolves any still-unpaired `required` (orphaned by a restart) with `outcome: error`.
 
-**Idempotency.** Intents dedup within a 1h window (10 min for `executeAction`, counted from resolution) on `hash(session, tool, normalized-args)`. A retry (e.g. after an agent-runtime tool-call timeout) attaches to the live intent, or replays the resolved outcome if it already finished — so a duplicated worker launch yields one session, not two. Because a tool-call timeout is itself a context cancellation, the intent does not die with the caller's context; a detached owner goroutine holds the wait window.
+**Idempotency.** Intents dedup within a 1h window (counted from resolution) on `hash(session, tool, normalized-args)`. A retry (e.g. after an agent-runtime tool-call timeout) attaches to the live intent, or replays the resolved outcome if it already finished — so a duplicated worker launch yields one session, not two. Because a tool-call timeout is itself a context cancellation, the intent does not die with the caller's context; a detached owner goroutine holds the wait window.
 
 **Outcome catalog.** Every intent resolves to exactly one of `approved`, `auto_approved`, `denied_by_user`, `auto_denied`, `error`. The two `denied_*` outcomes read as "do not retry"; `error` reads as "maybe retry". Denials come back as successful tool results carrying the outcome, never as tool errors.
 
@@ -417,18 +371,6 @@ Direct `/conclude` request:
   "rejection_reason": ""
 }
 ```
-
-### Agent-requested Actions
-
-An architect's or ticket worker's `executeAction(name, prompt, variant)` is a **blocking** intent (`intent_type: executeAction`, policy `wait-then-allow`). The variant is the requester's explicit choice: it is required, never defaulted, and checked against `variants.yaml` before anything is shown — a missing, unknown or non-local variant is a `VALIDATION` error listing every local variant (Actions always run locally) and telling the agent to ask the user (or saying none are configured). The MCP input schema deliberately leaves `variant` optional so a missing argument reaches that diagnostic instead of a bare schema error. The request is recorded `pending_approval` with its variant and shown with the Action, prompt and variant and the usual countdown, without approval inputs; the call waits for the resolution. The intent id *is* the execution id, so the requester uses one id from request to result.
-
-- **Deny** — the execution becomes `denied` with the user's reason; it never ran. The call returns `denied_by_user`.
-- **Approve, or no answer within the approval window (auto-approve)** — the project's `availableActions`, the variant, the definition and the single-run rule are rechecked. If another execution won meanwhile, or anything else prevents the start, the execution is `failed` ("could not start: …") without having started and the call returns `error`. Otherwise it moves `pending_approval → running` and launches like a manual run, and the call returns `approved`/`auto_approved` with the running execution; it never waits for the Action to deliver. From then on the Action lifecycle owns the record, independent of the requesting session, and it stays `running` until the agent concludes, the user cancels or it fails.
-- **Requesting session ends first** — the pending request is `failed` as never run. **Daemon restart** — pending requests are `failed` as never run; a running execution follows the Action restart rules (restored and kept running, or failed as interrupted).
-- Results are read from the durable execution record (never pruned), scoped to the project: a later session of the same project can read them, another project cannot. The variant is part of the request identity: an identical request (same name, prompt and variant) from the same session attaches to the original while it is pending and replays its outcome for 10 minutes after it resolves; a request for another variant is a new request. After the window a new request is created (the single-run rule still applies).
-- **The end is announced, not polled.** Whatever takes a launched agent-requested execution out of `running` — the agent's approved conclusion, the user's cancel, a launch or resume failure, the restart reconciliation — produces exactly one durable `action_ended` agent message (dedupe `action_ended:<execution id>`) to the requester: `architect:<key>` for an architect request (retained across an architect-session replacement), `session:<id>` for a worker request (failed as recipient gone once that session ends, never redirected). Its text names the action, execution id and outcome (with the daemon's reason when the agent did not conclude), points at `getActionResult`, and says a package is copied on the first read with `output_dir` set once `artifacts.state` is ready — never that it is ready. A manual launch tells nobody; a request that never ran (denied, could not start, abandoned, restart before approval) is reported by the call alone. The `executeAction` response's `notification` says up front whether the notice can reach the requesting session; the remote-recipient limitation of the outbox is reported there and on the retained message.
-
-Action agents get no Actions tools; they cannot request Actions.
 
 #### Structured conclusions
 
@@ -501,10 +443,3 @@ are retried before further dispatch. Confirmed receipts are retained in memory
 until persisted; if both persistence and the process fail, recovery depends on
 the provider record still being available. This is bounded recovery, not an
 exactly-once guarantee. Provider crash windows remain documented in agentruntime.
-
-Terminal Action writes atomically retain a notification obligation for started
-agent requests. Startup and periodic reconciliation repair missing outbox rows
-and render the notice from the winning terminal outcome. The obligation clears
-only once the outbox owns it. Historical executions are not backfilled, and
-pruned notices are not replayed. Manual, denied and never-run requests do not
-create obligations. No artifact or live-session launch behavior changes.

@@ -25,8 +25,7 @@ import (
 //
 // A restart cannot resume a captured Exec, so startup fails every record still
 // open instead of leaving it falsely pending (reconcileDeferredIntents). The id
-// is the one caller-visible identity from request to outcome; a future Action
-// run keeps it rather than minting a run id of its own.
+// is the one caller-visible identity from request to outcome.
 
 // deferredIntentRetention bounds how long a resolved record stays
 // retrievable. Open records are never pruned; they cannot outlive a restart.

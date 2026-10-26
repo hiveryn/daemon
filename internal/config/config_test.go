@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -833,42 +832,17 @@ func TestLoadRejectsUnknownArchitectFileKeys(t *testing.T) {
 	}
 }
 
-func TestArchitectAvailableActions(t *testing.T) {
+func TestArchitectAvailableActionsRejected(t *testing.T) {
 	t.Parallel()
 
 	architectDir := writeArchitect(t, map[string]any{
 		"name":             "Hiveryn",
 		"repos":            map[string]string{"daemon": "/tmp/daemon"},
-		"availableActions": []string{"demo-evidence", "other"},
+		"availableActions": []string{"demo-evidence"},
 	})
-	resolved, err := ValidateArchitectConfig(architectDir, "hiveryn")
-	if err != nil {
-		t.Fatalf("ValidateArchitectConfig: %v", err)
-	}
-	if strings.Join(resolved.AvailableActions, ",") != "demo-evidence,other" {
-		t.Fatalf("availableActions = %v, want file order", resolved.AvailableActions)
-	}
-	cloned := (Config{Architects: map[string]ArchitectConfig{"hiveryn": resolved}}).Clone()
-	cloned.Architects["hiveryn"].AvailableActions[0] = "mutated"
-	if resolved.AvailableActions[0] != "demo-evidence" {
-		t.Fatal("Clone shares the availableActions slice")
-	}
-
-	omitted := writeArchitect(t, map[string]any{"name": "Hiveryn", "repos": map[string]string{}})
-	if resolved, err := ValidateArchitectConfig(omitted, "hiveryn"); err != nil || len(resolved.AvailableActions) != 0 {
-		t.Fatalf("omitted availableActions = %v, %v; want none", resolved.AvailableActions, err)
-	}
-
-	for name, list := range map[string][]string{
-		"duplicate": {"demo", "demo"},
-		"malformed": {"Demo Evidence"},
-		"blank":     {""},
-		"path":      {"../escape"},
-	} {
-		dir := writeArchitect(t, map[string]any{"name": "Hiveryn", "repos": map[string]string{}, "availableActions": list})
-		if _, err := ValidateArchitectConfig(dir, "hiveryn"); err == nil || !strings.Contains(err.Error(), "availableActions") {
-			t.Errorf("%s availableActions %v: err = %v, want a rejection naming availableActions", name, list, err)
-		}
+	_, err := ValidateArchitectConfig(architectDir, "hiveryn")
+	if err == nil || !strings.Contains(err.Error(), "availableActions") || !strings.Contains(err.Error(), "Actions were removed") {
+		t.Fatalf("err = %v, want a rejection naming the removed availableActions", err)
 	}
 }
 
@@ -927,9 +901,8 @@ func TestReloadingSourceKeepsLastValidConfigOnBrokenEdit(t *testing.T) {
 
 	// A valid edit is picked up.
 	writeYAML(t, filepath.Join(architectDir, architectConfigFileName), map[string]any{
-		"name":             "Hiveryn",
-		"repos":            map[string]string{"daemon": "/tmp/daemon", "shared": "/tmp/shared"},
-		"availableActions": []string{"demo-evidence"},
+		"name":  "Hiveryn",
+		"repos": map[string]string{"daemon": "/tmp/daemon", "shared": "/tmp/shared"},
 	})
 	cfg, err := source.Current()
 	if err != nil {
@@ -937,9 +910,6 @@ func TestReloadingSourceKeepsLastValidConfigOnBrokenEdit(t *testing.T) {
 	}
 	if _, ok := cfg.Architects["hiveryn"].Repos["shared"]; !ok {
 		t.Fatalf("expected the valid edit to be served, got repos %v", cfg.Architects["hiveryn"].Repos)
-	}
-	if !slices.Equal(cfg.Architects["hiveryn"].AvailableActions, []string{"demo-evidence"}) {
-		t.Fatalf("expected direct availableActions edit to be served without restart, got %v", cfg.Architects["hiveryn"].AvailableActions)
 	}
 	if status := source.LoadStatus(); status.Error != "" {
 		t.Fatalf("expected clean load status, got %+v", status)
@@ -955,9 +925,6 @@ func TestReloadingSourceKeepsLastValidConfigOnBrokenEdit(t *testing.T) {
 	}
 	if _, ok := cfg.Architects["hiveryn"].Repos["shared"]; !ok {
 		t.Fatalf("expected the last valid config to be served, got repos %v", cfg.Architects["hiveryn"].Repos)
-	}
-	if !slices.Equal(cfg.Architects["hiveryn"].AvailableActions, []string{"demo-evidence"}) {
-		t.Fatalf("expected last valid availableActions after broken edit, got %v", cfg.Architects["hiveryn"].AvailableActions)
 	}
 	status := source.LoadStatus()
 	if status.Error == "" || status.FailedAt == nil {

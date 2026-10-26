@@ -15,21 +15,6 @@ import (
 // is anchored at resolution (Finish), not at the request.
 const intentReplayTTL = time.Hour
 
-// intentReplayTTLs overrides the window per tool. executeAction replays for ten
-// minutes: long enough to absorb a retried call, short enough that asking for
-// the same Action again later starts a new request. Expiry only forgets the
-// replay; the execution record and the single-run rule are untouched.
-var intentReplayTTLs = map[domain.IntentType]time.Duration{
-	domain.IntentTypeExecuteAction: 10 * time.Minute,
-}
-
-func replayTTLFor(t domain.IntentType) time.Duration {
-	if ttl, ok := intentReplayTTLs[t]; ok {
-		return ttl
-	}
-	return intentReplayTTL
-}
-
 // intentResult is the resolved verdict, broadcast to every waiter and cached
 // for replay. IntentID is stamped by Finish so a replayed retry can still name
 // the intent it resolved to.
@@ -371,7 +356,7 @@ func (s *intentStore) Finish(intentID string, res intentResult) {
 	// ticket no longer in backlog, the single-run rule), so an error that did
 	// take effect is refused rather than repeated.
 	if res.Outcome != domain.IntentOutcomeError {
-		s.replay[p.dedupKey] = replayEntry{result: res, expires: s.now().Add(replayTTLFor(p.intent.Type))}
+		s.replay[p.dedupKey] = replayEntry{result: res, expires: s.now().Add(intentReplayTTL)}
 	}
 	s.unregisterLocked(p)
 }

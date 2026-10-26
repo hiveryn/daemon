@@ -12,6 +12,4 @@ func (s *Server) registerTicketTools() {
 		Name:        "readTicket",
 		Description: "Read full ticket details by ID.",
 	}, s.handleReadTicket)
-
-	s.registerAgentActionTools()
 }

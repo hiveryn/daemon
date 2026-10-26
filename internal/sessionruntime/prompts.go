@@ -19,7 +19,7 @@ import (
 // project-level customization is the optional ARCHITECT_SYSTEM.md in the
 // architect workspace, which is appended to the architect instructions.
 //
-//go:embed prompts/architect/*.md prompts/work/*.md prompts/action/*.md
+//go:embed prompts/architect/*.md prompts/work/*.md
 var promptFS embed.FS
 
 const (
@@ -28,8 +28,6 @@ const (
 	workerSystemPromptName     = "prompts/work/SYSTEM.md"
 	workerKickoffPromptName    = "prompts/work/KICKOFF.md"
 	workerContextPromptName    = "prompts/work/CONTEXT.md"
-	actionSystemPromptName     = "prompts/action/SYSTEM.md"
-	actionKickoffPromptName    = "prompts/action/KICKOFF.md"
 )
 
 // builtinPrompt reads one embedded prompt. A missing embed is a build defect,

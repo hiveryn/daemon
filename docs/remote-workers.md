@@ -1,8 +1,7 @@
-# Ticket workers and Actions over SSH
+# Ticket workers over SSH
 
-Hiveryn runs ticket workers in existing remote repositories, and Actions in
-remote checkouts (see [actions.md](actions.md)). Tickets, approvals,
-questions, Actions and conclusions stay on the laptop. No remote Hiveryn binary,
+Hiveryn runs ticket workers in existing remote repositories. Tickets, approvals,
+questions and conclusions stay on the laptop. No remote Hiveryn binary,
 daemon, architect workspace copy or checkout synchronization is needed.
 
 Configure an SSH alias first. Verify its host key and noninteractive login;
@@ -63,8 +62,7 @@ A worker's variant must match its repositories' machine: the desktop spawn
 picker lists only those, and the daemon refuses others for desktop launches and
 `spawnTicketWorker` requests (again when an approved request launches), naming
 the target machine and eligible variants. Architects are local and use local
-variants. An Action runs on the machine actions.yaml registers it on, with a
-variant of that machine, whoever requests it. Existing
+variants. Existing
 workers keep the variant frozen at launch; editing `variants.yaml` never
 switches or migrates a running worker or its reattachment.
 
@@ -135,7 +133,7 @@ not replayed: the worker's retry is a fresh request the user approves again,
 while an approved outcome is replayed so a retry never repeats it. A worker
 killed by its own approved conclusion loses only the reply, never the outcome.
 Agent-facing tool calls keep the 65-minute provider deadline; the agent's own
-waits (approval window, one-hour questions, the 30-second Action wait) are
+waits (approval window, one-hour questions) are
 unchanged.
 
 A reverse SSH tunnel maps a session's stable remote loopback port to a dedicated
@@ -163,11 +161,7 @@ path reference also states its `location` (`remote` with its `machine`, `local`,
 or `unknown`) and `status`. A path that is absent there is `missing`
 (`MISSING_PATH_REFERENCE`); one that cannot be inspected (unreachable host,
 unlocatable repo, permission) is `unverified` with its `error`
-(`UNVERIFIED_PATH_REFERENCE`), and is never checked on the laptop instead. The
-desktop offers Reveal in Finder only for a `local`, `present` path. Laptop files are not copied to remote workers; Action results
-are, because the result tools copy each completed package to the caller's
-machine. A remote Action session is launched, reattached and stopped like a
-remote worker and its gateway serves only the Action tools. Remote architects,
+(`UNVERIFIED_PATH_REFERENCE`), and is never checked on the laptop instead. Laptop files are not copied to remote workers. Remote architects,
 cross-machine writable scopes, file browsing and offline MCP delivery are not
 supported.
 
@@ -183,10 +177,9 @@ launches/terminals, failed-preparation cleanup and unconfirmed terminal cleanup.
 
 The fixture uses Alpine Linux 3.22, OpenSSH 10 and tmux 3.5a, with a macOS client.
 Unit tests cover provider target filesystems, scope validation, shell quoting
-and gateway authorization. Remote Action inspection, package snapshots, copies
-between machines and cleanup are covered by unit tests against
-`internal/remoteexec/sshtest`, a fake `ssh` that runs each command locally in a
-per-machine home directory; the Docker smoke test does not exercise Actions. Fixture evidence does not establish real provider
+and gateway authorization. Remote reference inspection and Git diffs are
+covered by unit tests against `internal/remoteexec/sshtest`, a fake `ssh` that
+runs each command locally in a per-machine home directory. Fixture evidence does not establish real provider
 CLI behavior, interactive Electron acceptance, other remote operating systems,
 or a minimum supported version for those tools. Run the selected authenticated
 CLI on the intended host before using it for work.

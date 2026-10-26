@@ -17,9 +17,6 @@ var intentPolicies = map[domain.IntentType]domain.IntentPolicy{
 	// Preserves today's exact behavior: a conclusion nobody answers is applied.
 	domain.IntentTypeConcludeSession:  domain.IntentPolicyWaitThenAllow,
 	domain.IntentTypeCreateWorkTicket: domain.IntentPolicyWaitThenAllow,
-	// The variant is chosen by the requester, so there is nothing left for
-	// the user to fill in: like a ticket, an unanswered request launches.
-	domain.IntentTypeExecuteAction: domain.IntentPolicyWaitThenAllow,
 	// The ticket, variant and workflows are all chosen by the architect and
 	// shown for review; like a ticket, an unanswered request launches.
 	domain.IntentTypeSpawnTicketWorker: domain.IntentPolicyWaitThenAllow,

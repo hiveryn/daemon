@@ -17,7 +17,6 @@ type (
 
 const (
 	AgentMessageTicketConcluded   = sd.AgentMessageTicketConcluded
-	AgentMessageActionEnded       = sd.AgentMessageActionEnded
 	AgentMessageQuestionEscalated = sd.AgentMessageQuestionEscalated
 
 	AgentMessagePendingCommit = sd.AgentMessagePendingCommit

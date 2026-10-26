@@ -23,7 +23,7 @@ func openDeferredIntentStore(t *testing.T) *DeferredIntentStore {
 func deferredIntentFixture(id string, status domain.DeferredIntentStatus, created time.Time) domain.DeferredIntent {
 	return domain.DeferredIntent{
 		ID:        id,
-		Type:      "runAction",
+		Type:      "fixtureDeferred",
 		Summary:   "run " + id,
 		Payload:   map[string]any{"name": "triage"},
 		Origin:    domain.IntentOrigin{ArchitectKey: "hiveryn", SessionID: "session-1", SessionType: domain.SessionTypeArchitect},

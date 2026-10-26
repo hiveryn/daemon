@@ -54,12 +54,12 @@ func TestRemoteGatewayScopesToolsAndHooks(t *testing.T) {
 	if status != 200 {
 		t.Fatalf("%d %s", status, result)
 	}
-	for _, name := range []string{"readTicket", "concludeTicketSession", "notify", "askQuestion", "executeAction"} {
+	for _, name := range []string{"readTicket", "concludeTicketSession", "notify", "askQuestion"} {
 		if !strings.Contains(result, `"name":"`+name+`"`) {
 			t.Fatalf("missing %s: %s", name, result)
 		}
 	}
-	for _, name := range []string{"spawnTicketWorker", "checkWorkspace", "concludeArchitectSession"} {
+	for _, name := range []string{"spawnTicketWorker", "checkWorkspace", "concludeArchitectSession", "executeAction", "getActionResult"} {
 		if strings.Contains(result, `"name":"`+name+`"`) {
 			t.Fatalf("architect tool leaked: %s", name)
 		}

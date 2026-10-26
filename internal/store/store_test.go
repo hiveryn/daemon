@@ -5,7 +5,6 @@ import (
 	"errors"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -831,206 +830,67 @@ func TestSessionStoreMarkRunFailedSetsAgentStatusStopped(t *testing.T) {
 	}
 }
 
-func TestActionRunStoreSingleRunningAndCompareAndSet(t *testing.T) {
-	ctx := context.Background()
-	db, err := Open(ctx, filepath.Join(t.TempDir(), "daemon.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	runs := NewActionRunStore(db)
-
-	now := time.Date(2026, 9, 24, 8, 0, 0, 0, time.UTC)
-	mk := func(id, action string) domain.ActionRun {
-		return domain.ActionRun{ID: id, Action: action, Trigger: domain.ActionRunTriggerManual, Status: domain.ActionRunRunning,
-			Prompt: "p", ProfileName: "codex", RepoPath: "/repo", OutputDir: "/out/" + id, CreatedAt: now, StartedAt: &now}
-	}
-	if err := runs.CreateActionRun(ctx, mk("a", "demo")); err != nil {
-		t.Fatal(err)
-	}
-	var conflict *domain.ConflictError
-	if err := runs.CreateActionRun(ctx, mk("b", "demo")); !errors.As(err, &conflict) || !strings.Contains(err.Error(), "execution a") {
-		t.Fatalf("second running execution err = %v", err)
-	}
-	if err := runs.CreateActionRun(ctx, mk("c", "other")); err != nil {
-		t.Fatalf("other action blocked: %v", err)
-	}
-	if err := runs.SetActionRunSession(ctx, "a", "sess-a"); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := runs.FinishActionRun(ctx, "a", domain.ActionRunCompleted, "delivered", "", now.Add(time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-	if err := runs.FinishActionRun(ctx, "a", domain.ActionRunFailed, "", "late", now.Add(2*time.Minute)); !errors.As(err, &conflict) {
-		t.Fatalf("finishing a finished execution err = %v", err)
-	}
-	got, err := runs.GetActionRun(ctx, "a")
-	if err != nil || got.Status != domain.ActionRunCompleted || got.Summary != "delivered" || got.SessionID != "sess-a" || got.EndedAt == nil || got.Error != "" {
-		t.Fatalf("finished execution = %+v, %v", got, err)
-	}
-	// The action is free again once its execution finished.
-	later := mk("d", "demo")
-	later.CreatedAt = now.Add(3 * time.Minute)
-	if err := runs.CreateActionRun(ctx, later); err != nil {
-		t.Fatalf("relaunch after completion: %v", err)
-	}
-
-	list, err := runs.ListActionRuns(ctx, "demo", 0)
-	if err != nil || len(list) != 2 || list[0].ID != "d" || list[1].ID != "a" {
-		t.Fatalf("list = %+v, %v", list, err)
-	}
-	running, err := runs.RunningActionRuns(ctx)
-	if err != nil || len(running) != 2 || running["demo"].ID != "d" || running["other"].ID != "c" {
-		t.Fatalf("running = %+v, %v", running, err)
-	}
-	conclusions, err := runs.RecentActionConclusions(ctx, "demo", 5)
-	if err != nil || len(conclusions) != 1 || conclusions[0].ExecutionID != "a" || conclusions[0].Summary != "delivered" {
-		t.Fatalf("conclusions = %+v, %v", conclusions, err)
-	}
-	if _, err := runs.GetActionRun(ctx, "missing"); !errors.As(err, new(*domain.NotFoundError)) {
-		t.Fatalf("missing err = %v", err)
-	}
-}
-
-// Executions completed before frozen packages keep their output folder as
-// their package, in place and never expiring; nothing else gains one.
-func TestActionArtifactMigrationKeepsLegacyPackagesInPlace(t *testing.T) {
+// Removing Actions retires their rows and tables and nothing else: action
+// sessions with their runs, events and remote resources, action_ended
+// messages, executeAction intents and approval events go; ticket and
+// architect sessions, their other events, other messages and other intents
+// stay.
+func TestRemoveActionsMigrationRetiresOnlyActionRecords(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "daemon.db")
 	all := migrationFiles
-	migrationFiles = all[:8]
+	migrationFiles = all[:14]
 	db, err := Open(ctx, path)
 	migrationFiles = all
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, stmt := range []string{
-		`INSERT INTO action_runs (id, action, trigger, status, prompt, profile_name, repo_path, output_dir, created_at, ended_at) VALUES ('done', 'demo', 'manual', 'completed', 'p', 'codex', '/repo', '/home/me/.hiveryn/action-runs/demo/done', '2026-09-24T08:00:00.000000000Z', '2026-09-24T09:00:00.000000000Z')`,
-		`INSERT INTO action_runs (id, action, trigger, status, prompt, profile_name, repo_path, output_dir, created_at) VALUES ('failed', 'demo', 'manual', 'failed', 'p', 'codex', '/repo', '/out/failed', '2026-09-24T08:00:00.000000000Z')`,
+		`INSERT INTO sessions (id, architect_key, session_type, context_id, prompt, workdir) VALUES ('act', '', 'action', 'exec-1', 'p', '/repo'), ('tkt', 'hiveryn', 'ticket', 'T-1', 'p', '/repo'), ('arch', 'hiveryn', 'architect', 'hiveryn', 'p', '/ws')`,
+		`INSERT INTO session_runs (id, session_id, status, profile_name, workdir) VALUES ('run-act', 'act', 'completed', 'codex', '/repo'), ('run-tkt', 'tkt', 'running', 'codex', '/repo')`,
+		`INSERT INTO session_events (id, session_id, run_id, seq, type, raw, at) VALUES
+			('e1', 'act', 'run-act', 1, 'status', '{}', '2026-10-20T08:00:00Z'),
+			('e2', 'tkt', 'run-tkt', 1, 'intent', '{"intent_type":"executeAction"}', '2026-10-20T08:00:00Z'),
+			('e3', 'tkt', 'run-tkt', 2, 'intent', '{"intent_type":"concludeSession"}', '2026-10-20T08:00:00Z'),
+			('e4', 'tkt', 'run-tkt', 3, 'status', 'not json', '2026-10-20T08:00:00Z')`,
+		`INSERT INTO remote_resources (session_id, ssh, socket) VALUES ('act', 'box', '/s1'), ('tkt', 'box', '/s2')`,
+		`INSERT INTO action_runs (id, action, trigger, status, prompt, profile_name, repo_path, output_dir, created_at) VALUES ('exec-1', 'demo', 'manual', 'completed', 'p', 'codex', '/repo', '/out', '2026-10-20T08:00:00Z')`,
+		`INSERT INTO action_artifacts (execution_id, kind, machine, path, state, created_at) VALUES ('exec-1', 'package', '', '/out', 'ready', '2026-10-20T08:00:00Z')`,
+		`INSERT INTO agent_messages (id, kind, recipient, dedupe_key, body, state, created_at, updated_at) VALUES
+			('m1', 'action_ended', 'architect:hiveryn', 'action_ended:exec-1', 'b', 'acknowledged', '2026-10-20T08:00:00Z', '2026-10-20T08:00:00Z'),
+			('m2', 'ticket_concluded', 'architect:hiveryn', 'ticket_concluded:x', 'b', 'acknowledged', '2026-10-20T08:00:00Z', '2026-10-20T08:00:00Z')`,
+		`INSERT INTO deferred_intents (id, session_id, intent_type, summary, origin, status, created_at) VALUES ('d1', 'arch', 'executeAction', 's', '{}', 'completed', '2026-10-20T08:00:00Z'), ('d2', 'arch', 'other', 's', '{}', 'completed', '2026-10-20T08:00:00Z')`,
 	} {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
-			t.Fatalf("seed: %v", err)
-		}
-	}
-	_ = db.Close()
-
-	db, err = Open(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	runs := NewActionRunStore(db)
-	recs, err := runs.ActionArtifacts(ctx, "done")
-	if err != nil || len(recs) != 1 {
-		t.Fatalf("legacy package = %+v, %v", recs, err)
-	}
-	pkg := recs[0]
-	if pkg.Kind != domain.ActionArtifactPackage || pkg.Path != "/home/me/.hiveryn/action-runs/demo/done" || pkg.Machine != "" ||
-		pkg.State != domain.ActionArtifactsReady || pkg.ManagedRoot != "" || pkg.ExpiresAt != nil || pkg.ReadyAt == nil {
-		t.Fatalf("legacy package = %+v", pkg)
-	}
-	if recs, _ := runs.ActionArtifacts(ctx, "failed"); len(recs) != 0 {
-		t.Fatalf("failed execution gained a package: %+v", recs)
-	}
-	// Never removable: cleanup does not select it however far in the future.
-	if clean, err := runs.ActionArtifactsToClean(ctx, time.Now().AddDate(10, 0, 0)); err != nil || len(clean) != 0 {
-		t.Fatalf("cleanup selects %+v, %v", clean, err)
-	}
-	run, err := runs.GetActionRun(ctx, "done")
-	if err != nil || run.Machine != "" || run.DeliveryDir != "" {
-		t.Fatalf("legacy run = %+v, %v", run, err)
-	}
-}
-
-func TestCompleteActionRunRecordsItsPackageAtomically(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	db, err := Open(ctx, filepath.Join(t.TempDir(), "daemon.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	runs := NewActionRunStore(db)
-	now := time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)
-	run := domain.ActionRun{ID: "r1", Action: "demo", Trigger: domain.ActionRunTriggerManual, Status: domain.ActionRunRunning,
-		Prompt: "p", ProfileName: "box-codex", RepoPath: "/srv/demo", OutputDir: "/srv/out", Machine: "box", CreatedAt: now, StartedAt: &now}
-	if err := runs.CreateActionRun(ctx, run); err != nil {
-		t.Fatal(err)
-	}
-	expires := now.Add(30 * 24 * time.Hour)
-	pkg := domain.ActionArtifactRecord{ExecutionID: "r1", Kind: domain.ActionArtifactPackage, Machine: "box", SSH: "box", Path: "/home/x/.local/state/hiveryn-actions/artifacts/packages/r1",
-		ManagedRoot: "/home/x/.local/state/hiveryn-actions/artifacts", State: domain.ActionArtifactsReady, Files: 3, Bytes: 42, CreatedAt: now, ReadyAt: &now, ExpiresAt: &expires}
-	if err := runs.PublishActionConclusion(ctx, "r1", domain.ActionRunCompleted, "done", &domain.ActionArtifactRecord{ExecutionID: "r1", Kind: domain.ActionArtifactPackage, State: domain.ActionArtifactsCopying, Path: "/p"}, now); err == nil {
-		t.Fatal("completed with a package that is not ready")
-	}
-	if err := runs.PublishActionConclusion(ctx, "r1", domain.ActionRunCompleted, "done", &pkg, now); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := runs.GetActionRun(ctx, "r1")
-	if got.Status != domain.ActionRunCompleted || got.Machine != "box" || got.Summary != "done" {
-		t.Fatalf("run = %+v", got)
-	}
-	recs, _ := runs.ActionArtifacts(ctx, "r1")
-	if len(recs) != 1 || recs[0].Files != 3 || recs[0].ExpiresAt == nil || !recs[0].ExpiresAt.Equal(expires) {
-		t.Fatalf("package = %+v", recs)
-	}
-	// Completing again conflicts and leaves everything as it was.
-	if err := runs.PublishActionConclusion(ctx, "r1", domain.ActionRunCompleted, "again", &pkg, now); !errors.As(err, new(*domain.ConflictError)) {
-		t.Fatalf("second completion err = %v", err)
-	}
-
-	// Cleanup selects copies left copying, failed removals and expired ones.
-	copying := domain.ActionArtifactRecord{ExecutionID: "r1", Kind: domain.ActionArtifactDelivery, Machine: "", Path: "/h/.hiveryn/action-artifacts/deliveries/r1",
-		ManagedRoot: "/h/.hiveryn/action-artifacts", State: domain.ActionArtifactsCopying, CreatedAt: now, ExpiresAt: &expires}
-	if err := runs.PutActionArtifact(ctx, copying); err != nil {
-		t.Fatal(err)
-	}
-	clean, _ := runs.ActionArtifactsToClean(ctx, now)
-	if len(clean) != 1 || clean[0].Kind != domain.ActionArtifactDelivery {
-		t.Fatalf("before expiry = %+v", clean)
-	}
-	clean, _ = runs.ActionArtifactsToClean(ctx, expires)
-	if len(clean) != 2 {
-		t.Fatalf("at expiry = %+v", clean)
-	}
-	pkg.State = domain.ActionArtifactsExpired
-	if err := runs.PutActionArtifact(ctx, pkg); err != nil {
-		t.Fatal(err)
-	}
-	if clean, _ = runs.ActionArtifactsToClean(ctx, expires); len(clean) != 1 {
-		t.Fatalf("an expired, removed package is selected again: %+v", clean)
-	}
-}
-
-func TestArtifactModeMigrationPreservesLegacyObligations(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "daemon.db")
-	all := migrationFiles
-	migrationFiles = all[:11]
-	db, err := Open(ctx, path)
-	migrationFiles = all
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, contract := range []string{"", "promised files"} {
-		_, err := db.ExecContext(ctx, `INSERT INTO action_runs (id, action, trigger, status, prompt, profile_name, repo_path, output_dir, created_at, artifact_contract) VALUES (?, 'demo', 'manual', 'completed', 'p', 'codex', '/repo', '', '2026-10-20T08:00:00Z', ?)`, "id-"+contract, contract)
-		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("seed %q: %v", stmt, err)
 		}
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
+
 	db, err = Open(ctx, path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	for _, tc := range []struct{ contract, mode string }{{"", "none"}, {"promised files", "required"}} {
-		run, err := NewActionRunStore(db).GetActionRun(ctx, "id-"+tc.contract)
-		if err != nil || run.ArtifactMode != tc.mode || run.ArtifactContract != tc.contract {
-			t.Fatalf("migrated: %+v %v", run, err)
+	for _, table := range []string{"action_runs", "action_artifacts"} {
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE name = ?`, table).Scan(&n); err != nil || n != 0 {
+			t.Fatalf("table %s still present (%d, %v)", table, n, err)
+		}
+	}
+	for query, want := range map[string]string{
+		`SELECT group_concat(id) FROM (SELECT id FROM sessions ORDER BY id)`:                        "arch,tkt",
+		`SELECT group_concat(id) FROM (SELECT id FROM session_runs ORDER BY id)`:                    "run-tkt",
+		`SELECT group_concat(id) FROM (SELECT id FROM session_events ORDER BY id)`:                  "e3,e4",
+		`SELECT group_concat(session_id) FROM (SELECT session_id FROM remote_resources ORDER BY 1)`: "tkt",
+		`SELECT group_concat(id) FROM (SELECT id FROM agent_messages ORDER BY id)`:                  "m2",
+		`SELECT group_concat(id) FROM (SELECT id FROM deferred_intents ORDER BY id)`:                "d2",
+	} {
+		var got string
+		if err := db.QueryRowContext(ctx, query).Scan(&got); err != nil || got != want {
+			t.Errorf("%s = %q (%v), want %q", query, got, err, want)
 		}
 	}
 }

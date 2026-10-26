@@ -13,7 +13,7 @@ import (
 )
 
 // registerUserTools registers notify and askQuestion. Every session type gets
-// them: architects, ticket workers and Action agents.
+// them: architects and ticket workers.
 //
 // Both return plain text, not a JSON envelope, because the text is the
 // contract: "Notification sent to user", the user's answer verbatim, or the

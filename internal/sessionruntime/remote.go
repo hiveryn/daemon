@@ -164,7 +164,7 @@ func (s *Service) prepareRemoteWorker(ctx context.Context, w *remoteWorker, prof
 	}
 	servers[0] = agentruntime.MCPServerConfig{Name: config.ReservedMCPServerName, URL: endpoint + "/mcp", BearerTokenEnvVar: "HIVERYN_WORKER_TOKEN", ToolTimeout: hiverynMCPToolTimeout}
 	req.MCPServers = servers
-	req.Instructions += "\nIf Hiveryn MCP becomes unreachable, stop work and wait for Hiveryn to return. A failed call is not approval or success; do not blindly replay a mutation with an unknown outcome. Laptop path references may be inaccessible here; Action results delivered to you are copied to this machine.\n"
+	req.Instructions += "\nIf Hiveryn MCP becomes unreachable, stop work and wait for Hiveryn to return. A failed call is not approval or success; do not blindly replay a mutation with an unknown outcome. Laptop path references may be inaccessible here.\n"
 	spec, err := adapter.PrepareLaunch(ctx, req)
 	if err != nil {
 		return fmt.Errorf("remote prepare launch: %w", err)

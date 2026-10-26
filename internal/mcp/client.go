@@ -163,3 +163,50 @@ type concludeRequest struct {
 	OpenQuestions   string             `json:"open_questions,omitempty"`
 	NextSteps       string             `json:"next_steps,omitempty"`
 }
+
+// sessionRequest calls /api/sessions/{session}/{subPath} — subPath may carry a
+// query — and decodes the envelope data into out.
+func (s *Server) sessionRequest(ctx context.Context, method, subPath string, body any, out any) error {
+	var reader *bytes.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return newInternalError(fmt.Sprintf("marshal %s body: %v", subPath, err))
+		}
+		reader = bytes.NewReader(raw)
+	}
+	u := fmt.Sprintf("%s/api/sessions/%s/%s", s.daemonURL, url.PathEscape(s.sessionID), subPath)
+	var req *http.Request
+	var err error
+	if reader != nil {
+		req, err = http.NewRequestWithContext(ctx, method, u, reader)
+	} else {
+		req, err = http.NewRequestWithContext(ctx, method, u, nil)
+	}
+	if err != nil {
+		return fmt.Errorf("build %s %s request: %w", method, subPath, err)
+	}
+	if reader != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request %s %s: %w", method, subPath, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var env daemonEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return newInternalError(fmt.Sprintf("decode daemon response: %v", err))
+	}
+	if env.Error != nil {
+		return mapDaemonError(env.Error)
+	}
+	if len(env.Data) == 0 {
+		return newInternalError("daemon response missing data")
+	}
+	if err := json.Unmarshal(env.Data, out); err != nil {
+		return newInternalError(fmt.Sprintf("decode %s payload: %v", subPath, err))
+	}
+	return nil
+}

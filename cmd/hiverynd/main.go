@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -24,21 +25,26 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	var err error
 	switch command {
-	case "action":
-		return runAction(rest, stdout, stderr)
 	case "mcp":
 		err = runMCP(rest)
 	case "serve":
 		err = runServe(rest)
 	default:
-		say(stderr, "hiverynd: unknown command %q\nusage: hiverynd [serve] [flags] | hiverynd mcp [flags] | hiverynd action init|validate [path]\n", command)
-		return exitUsageErr
+		say(stderr, "hiverynd: unknown command %q\nusage: hiverynd [serve] [flags] | hiverynd mcp [flags]\n", command)
+		return exitUsage
 	}
 	if err != nil {
 		say(stderr, "daemon failed: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+// exitUsage is the status of a command-line usage error.
+const exitUsage = 2
+
+func say(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(w, format, args...)
 }
 
 func runServe(args []string) error {

@@ -10,7 +10,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// registerSpawnTicketWorkerTool is architect-only: workers and Action agents
+// registerSpawnTicketWorkerTool is architect-only: workers
 // never launch workers.
 func (s *Server) registerSpawnTicketWorkerTool() {
 	mcp.AddTool(s.mcpServer, &mcp.Tool{

@@ -18,7 +18,7 @@ import (
 // spawnFixture is an architect with a real workspace, a real ticket board and
 // a real session store, so spawn tests assert what the desktop would see.
 type spawnFixture struct {
-	*actionFixture
+	*serviceFixture
 	architect domain.Session
 	workspace string
 	repoPath  string
@@ -30,7 +30,7 @@ type spawnFixture struct {
 
 func newSpawnFixture(t *testing.T) *spawnFixture {
 	t.Helper()
-	f := &spawnFixture{actionFixture: newActionFixture(t), tickets: architectfs.NewTicketService(nil)}
+	f := &spawnFixture{serviceFixture: newServiceFixture(t), tickets: architectfs.NewTicketService(nil)}
 	f.service.tickets = f.tickets
 	f.service.cfg.IntentWaitTimeout = 600
 	// A second variant name on the fixture's only (codex) adapter.
@@ -40,7 +40,7 @@ func newSpawnFixture(t *testing.T) *spawnFixture {
 		defer f.eventsMu.Unlock()
 		f.events = append(f.events, event)
 	})
-	f.architect = f.actionFixture.architect(t, "hiveryn")
+	f.architect = f.serviceFixture.architect(t, "hiveryn")
 	f.repoPath = t.TempDir()
 	if err := os.Mkdir(f.repoPath+"/.git", 0o755); err != nil {
 		t.Fatal(err)
@@ -273,7 +273,7 @@ func TestSpawnTicketWorkerValidatesBeforeApproval(t *testing.T) {
 	if _, err := f.tickets.MoveTicket(context.Background(), f.workspace, done.ID, domain.MoveTicketParams{To: domain.TicketStatusProgress}); err != nil {
 		t.Fatal(err)
 	}
-	other := f.actionFixture.architect(t, "other")
+	other := f.serviceFixture.architect(t, "other")
 	_ = other
 
 	ctx := context.Background()

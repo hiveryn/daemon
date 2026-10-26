@@ -48,17 +48,6 @@ func Run(configPath, databasePath string, portOverride int) error {
 	logger := logManager.AppLogger()
 	slog.SetDefault(logger)
 
-	// Actions are registered in actions.yaml, no longer discovered: the first
-	// start without a registry registers every checkout found in the old
-	// library directory, so no existing Action disappears.
-	registered, err := config.BootstrapActionRegistry(filepath.Dir(runtime.ConfigPath), runtime.ActionsDir)
-	if err != nil {
-		return fmt.Errorf("bootstrap the Action registry: %w", err)
-	}
-	if len(registered) > 0 {
-		logger.Info("created the Action registry from the existing Actions library", "registry", runtime.ActionsRegistry, "library", runtime.ActionsDir, "actions", registered)
-	}
-
 	cfg, err := config.Load(runtime.ConfigPath)
 	if err != nil {
 		return err
@@ -109,22 +98,12 @@ func Run(configPath, databasePath string, portOverride int) error {
 	}
 	service.SetDeferredIntentRepository(store.NewDeferredIntentStore(db))
 	service.SetAgentMessageRepository(store.NewAgentMessageStore(db))
-	service.SetActions(store.NewActionRunStore(db), sessionruntime.ActionPaths{
-		Registry:  runtime.ActionsRegistry,
-		Runs:      runtime.ActionRunsDir,
-		Artifacts: runtime.ActionArtifactsDir,
-	})
 	// Before restore: every question still pending in the log belongs to an
 	// agent call that died with the previous daemon.
 	if err := service.ReconcileQuestions(ctx); err != nil {
 		return fmt.Errorf("reconcile questions: %w", err)
 	}
 	if err := service.RestoreRunningSessions(ctx); err != nil {
-		return err
-	}
-	// After restore: an execution whose agent session did not come back is
-	// failed as interrupted; restored executions keep running.
-	if err := service.ReconcileActionRuns(ctx); err != nil {
 		return err
 	}
 	if err := service.ReconcileIntents(ctx); err != nil {
@@ -135,10 +114,6 @@ func Run(configPath, databasePath string, portOverride int) error {
 	if err := service.StartMessageDelivery(ctx); err != nil {
 		return fmt.Errorf("start agent message delivery: %w", err)
 	}
-	// Interrupted copies and expired Action artifacts are removed once per
-	// start, in the background: an unreachable machine must not hold up the
-	// daemon, and failures stay recorded for the next start.
-	go service.CleanupActionArtifacts(context.WithoutCancel(ctx))
 	architectHub := archevents.New(logger)
 	// Intent side effects (ticket created/concluded) publish workspace_changed
 	// from inside the service, because a generic approve path cannot know which
@@ -187,7 +162,6 @@ func Run(configPath, databasePath string, portOverride int) error {
 		Sessions:        service,
 		Tickets:         ticketService,
 		Workspaces:      workspaceService,
-		Actions:         service,
 		Questions:       service,
 		IngestHandler:   service.IngestHandler(),
 		ArchitectEvents: architectHub,
