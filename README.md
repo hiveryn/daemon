@@ -340,7 +340,7 @@ Desktop consumers should remove the session tab either when the POST succeeds or
 
 ### Intent approval flow
 
-Agent tool calls that mutate user-visible state route through the **intent system** so the desktop user can approve them before they take effect. Blocking tools are routed today: the conclude tools (`concludeArchitectSession`, `concludeTicketSession`, role-scoped so a session only sees its own), and `spawnTicketWorker` (architect only). Each takes **discrete structured fields** rather than a free-text body; the daemon renders/validates them and, for conclusions, produces the canonical `conclusion.md`. See "Structured conclusions" below.
+Agent tool calls that mutate user-visible state route through the **intent system** so the desktop user can approve them before they take effect. Routed today: the conclude tools (`concludeArchitectSession`, `concludeTicketSession`, role-scoped so a session only sees its own), and `spawnTicketWorker` (architect only). Each takes **discrete structured fields** rather than a free-text body; the daemon renders/validates them and, for conclusions, produces the canonical `conclusion.md`. See "Structured conclusions" below.
 
 An intent is a pending tool call awaiting the user's answer. The write lives daemon-side and runs only on approval, so the agent cannot bypass it.
 

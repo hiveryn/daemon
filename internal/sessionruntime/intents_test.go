@@ -19,7 +19,7 @@ func testIntent(id, sessionID string) domain.Intent {
 	}
 }
 
-func noopExec(context.Context, domain.IntentInputValues) (any, error) { return "result", nil }
+func noopExec(context.Context) (any, error) { return "result", nil }
 
 func TestIntentStoreBeginCreatesThenAttaches(t *testing.T) {
 	s := newIntentStore()
@@ -292,31 +292,5 @@ func TestIntentStoreConcurrentIdenticalBeginsCollapseToOne(t *testing.T) {
 		default:
 			t.Fatalf("waiter %d received nothing", i)
 		}
-	}
-}
-
-// Abort withdraws an intent nobody saw: attached waiters learn, and nothing is
-// cached, so the same call again creates a fresh intent instead of replaying.
-func TestIntentStoreAbortBroadcastsWithoutReplay(t *testing.T) {
-	s := newIntentStore()
-
-	_, ch, _, _ := s.Begin("key-1", testIntent("i-1", "sess-1"), noopExec)
-	_, ch2, _, _ := s.Begin("key-1", testIntent("i-2", "sess-1"), noopExec)
-	s.Abort("i-1", intentResult{Outcome: domain.IntentOutcomeError, Reason: "record failed"})
-	for i, c := range []<-chan intentResult{ch, ch2} {
-		select {
-		case got := <-c:
-			if got.IntentID != "i-1" || got.Outcome != domain.IntentOutcomeError {
-				t.Errorf("waiter %d = %+v, want the error for i-1", i, got)
-			}
-		default:
-			t.Errorf("waiter %d received nothing", i)
-		}
-	}
-	if len(s.PendingForSession("sess-1")) != 0 {
-		t.Fatal("aborted intent is still pending")
-	}
-	if _, _, _, d := s.Begin("key-1", testIntent("i-3", "sess-1"), noopExec); d != intentCreated {
-		t.Fatalf("Begin after Abort disposition = %v, want intentCreated", d)
 	}
 }

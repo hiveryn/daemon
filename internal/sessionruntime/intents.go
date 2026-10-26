@@ -21,29 +21,20 @@ const intentReplayTTL = time.Hour
 type intentResult struct {
 	IntentID string
 	Outcome  domain.IntentOutcome
-	Result   any                         // the tool's typed result; nil unless Outcome.Approved()
-	Inputs   domain.IntentInputValues    // validated values the exec ran with; nil unless approved
-	Reason   string                      // denial reason, or error detail
-	Err      error                       // non-nil only when Outcome == error
-	Status   domain.DeferredIntentStatus // deferred only: the record's terminal status
+	Result   any    // the tool's typed result; nil unless Outcome.Approved()
+	Reason   string // denial reason, or error detail
+	Err      error  // non-nil only when Outcome == error
 }
 
 // pendingIntent is one in-flight intent. exec is the tool's actual side effect,
 // captured with its typed params at creation time — which is why the store
-// itself never needs to know the payload type. It receives the validated
-// approval inputs (nil for an intent without inputs).
-//
-// A deferred intent has no waiters: its request already returned. ready is
-// closed once its creator has persisted and announced it, so a retry that
-// attaches meanwhile never reads a record that is not written yet.
+// itself never needs to know the payload type.
 type pendingIntent struct {
 	intent   domain.Intent
 	dedupKey string
-	exec     func(context.Context, domain.IntentInputValues) (any, error)
-	hooks    intentHooks
+	exec     func(context.Context) (any, error)
 	claimed  bool                // CAS'd under mu: exactly one resolver wins
 	waiters  []chan intentResult // each buffered 1, so a broadcast never blocks
-	ready    chan struct{}       // deferred only; closed by MarkReady
 }
 
 type replayEntry struct {
@@ -59,8 +50,7 @@ type replayEntry struct {
 //
 // Lifetime is in-memory only, matching the approval store it replaces. A daemon
 // restart empties it; ReconcileIntents converges the durable event log so no
-// stale popup replays, and fails the durable record of every deferred intent
-// that was still open — its captured exec cannot survive the restart.
+// stale popup replays.
 type intentStore struct {
 	mu        sync.Mutex
 	pending   map[string]*pendingIntent      // intentID → pending
@@ -102,19 +92,7 @@ const (
 func (s *intentStore) Begin(
 	dedupKey string,
 	in domain.Intent,
-	exec func(context.Context, domain.IntentInputValues) (any, error),
-) (id string, ch <-chan intentResult, replayed intentResult, d intentDisposition) {
-	return s.BeginWithHooks(dedupKey, in, exec, intentHooks{})
-}
-
-// BeginWithHooks is Begin for a blocking tool that keeps its own durable
-// record in step with the intent (see intentHooks). The hooks are kept only
-// when this call creates the intent.
-func (s *intentStore) BeginWithHooks(
-	dedupKey string,
-	in domain.Intent,
-	exec func(context.Context, domain.IntentInputValues) (any, error),
-	hooks intentHooks,
+	exec func(context.Context) (any, error),
 ) (id string, ch <-chan intentResult, replayed intentResult, d intentDisposition) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -137,35 +115,9 @@ func (s *intentStore) BeginWithHooks(
 		intent:   in,
 		dedupKey: dedupKey,
 		exec:     exec,
-		hooks:    hooks,
 		waiters:  []chan intentResult{w},
 	})
 	return in.ID, w, intentResult{}, intentCreated
-}
-
-// BeginDeferred is Begin for a deferred intent, in the same single critical
-// section and with the same dedup semantics, but without waiters: nobody
-// blocks on a deferred intent. On intentAttached the caller must wait on ready
-// before reading the persisted record; on intentCreated it must call
-// MarkReady (or Discard) once the record is written and announced.
-func (s *intentStore) BeginDeferred(
-	dedupKey string,
-	in domain.Intent,
-	exec func(context.Context, domain.IntentInputValues) (any, error),
-	hooks intentHooks,
-) (id string, ready <-chan struct{}, d intentDisposition) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if res, ok := s.lookupReplayLocked(dedupKey); ok {
-		return res.IntentID, nil, intentReplayed
-	}
-	if p := s.lookupPendingLocked(dedupKey); p != nil {
-		return p.intent.ID, p.ready, intentAttached
-	}
-	p := &pendingIntent{intent: in, dedupKey: dedupKey, exec: exec, hooks: hooks, ready: make(chan struct{})}
-	s.registerLocked(p)
-	return in.ID, p.ready, intentCreated
 }
 
 // Known reports whether dedupKey has an intent in flight or a resolved
@@ -222,75 +174,6 @@ func (s *intentStore) unregisterLocked(p *pendingIntent) {
 		if len(set) == 0 {
 			delete(s.bySession, p.intent.Origin.SessionID)
 		}
-	}
-	if p.ready != nil {
-		select {
-		case <-p.ready:
-		default:
-			close(p.ready)
-		}
-	}
-}
-
-// MarkReady releases retries that attached to a deferred intent while its
-// creator was persisting and announcing it. It reports false when the intent
-// was resolved meanwhile (a session teardown claimed it before its record
-// existed), so the creator can bring the record in line.
-func (s *intentStore) MarkReady(intentID string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	p, ok := s.pending[intentID]
-	if !ok {
-		return false
-	}
-	if p.ready != nil {
-		select {
-		case <-p.ready:
-		default:
-			close(p.ready)
-		}
-	}
-	return true
-}
-
-// Discard unregisters a deferred intent whose record could not be written,
-// without caching a replay: there is no record for a retry to replay, so the
-// retry must be free to try again.
-func (s *intentStore) Discard(intentID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if p, ok := s.pending[intentID]; ok {
-		s.unregisterLocked(p)
-	}
-}
-
-// Abort ends a blocking intent that was withdrawn before anyone saw it: its
-// waiters learn res, and no replay is cached, so a retry is free to try again.
-func (s *intentStore) Abort(intentID string, res intentResult) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	p, ok := s.pending[intentID]
-	if !ok {
-		return
-	}
-	res.IntentID = p.intent.ID
-	for _, w := range p.waiters {
-		select {
-		case w <- res:
-		default:
-		}
-	}
-	p.waiters = nil
-	s.unregisterLocked(p)
-}
-
-// Release gives up a claim whose resolution could not be recorded, so the
-// intent is answerable again. Nothing ran: callers release only before exec.
-func (s *intentStore) Release(intentID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if p, ok := s.pending[intentID]; ok {
-		p.claimed = false
 	}
 }
 
@@ -352,9 +235,9 @@ func (s *intentStore) Finish(intentID string, res intentResult) {
 	// and replaying the failure would make that retry a no-op for the whole
 	// window. The retry is a new request that the user approves afresh — a
 	// failed approval is never carried over as authorization. Every
-	// mutation re-checks its own state on execution (a concluded run, a
-	// ticket no longer in backlog, the single-run rule), so an error that did
-	// take effect is refused rather than repeated.
+	// mutation re-checks its own state on execution (a concluded session, a
+	// ticket no longer in backlog), so an error that did take effect is
+	// refused rather than repeated.
 	if res.Outcome != domain.IntentOutcomeError {
 		s.replay[p.dedupKey] = replayEntry{result: res, expires: s.now().Add(intentReplayTTL)}
 	}
@@ -377,29 +260,6 @@ func (s *intentStore) Detach(intentID string, ch <-chan intentResult) {
 			return
 		}
 	}
-}
-
-// Get returns a pending intent without claiming it.
-func (s *intentStore) Get(intentID string) (domain.Intent, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	p, ok := s.pending[intentID]
-	if !ok {
-		return domain.Intent{}, false
-	}
-	return p.intent, true
-}
-
-// GetForSession is Get, scoped like ClaimForSession. A claimed intent is
-// reported as not found: it is already resolving and no longer answerable.
-func (s *intentStore) GetForSession(sessionID, intentID string) (domain.Intent, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	p, ok := s.pending[intentID]
-	if !ok || p.claimed || p.intent.Origin.SessionID != sessionID {
-		return domain.Intent{}, false
-	}
-	return p.intent, true
 }
 
 // ResolvingForSession reports whether the session's intent is claimed and its

@@ -71,7 +71,7 @@ func TestSpawnTicketWorkerRechecksVariantMachineOnApproval(t *testing.T) {
 
 	in, done := f.spawn(t, domain.SpawnTicketWorkerRequest{TicketID: ticket.ID, Variant: "claude"})
 	f.service.cfg.Variants["claude"] = config.VariantConfig{Agent: "codex", Machine: "bk"}
-	if _, err := f.service.ApproveIntent(context.Background(), f.architect.ID, in.ID, nil); err == nil {
+	if _, err := f.service.ApproveIntent(context.Background(), f.architect.ID, in.ID); err == nil {
 		t.Fatal("approval of an incompatible variant reported success")
 	}
 	out := wait(t, done)

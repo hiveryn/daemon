@@ -14,59 +14,26 @@ import (
 // it runs only after the intent is approved (or auto-approved) — never before.
 // Keeping the write inside Exec is what makes approval unbypassable: the agent
 // has no path to the write except through an intent the daemon resolved.
-//
-// Inputs is the optional approval-input schema. A spec with inputs is always
-// deferred (submitDeferredIntent, policy manual): the user completes the form
-// and only the user approves it, so Exec receives exactly the values the user
-// submitted, validated. Blocking tools (awaitIntent) take no inputs.
 type intentSpec[R any] struct {
 	SessionID string
 	Type      domain.IntentType
 	Summary   string
 	Payload   map[string]any // desktop-renderable; also the dedup input
-	Inputs    []domain.IntentInputField
 	Origin    domain.IntentOrigin
-	Exec      func(context.Context, domain.IntentInputValues) (R, error)
-	// Hooks keep a tool's own record in step; see intentHooks.
-	Hooks intentHooks
-}
-
-// intentHooks keep a tool's own durable record in step with an intent whose
-// outcome that record is authoritative for. Every hook is optional, and each
-// runs at most once per intent. They serve deferred and blocking intents
-// alike; an approval's outcome reaches the record through the tool's Exec.
-type intentHooks struct {
-	// Created runs before the request is shown (for a deferred intent, once
-	// its generic record exists). An error withdraws the request: nothing is
-	// shown, and a retry is free to try again.
-	Created func(ctx context.Context, in domain.Intent) error
-	// Denied runs after the user's denial is recorded.
-	Denied func(ctx context.Context, in domain.Intent, reason string)
-	// Abandoned runs when the request ends without the user resolving it: its
-	// session ended first, or it could not be shown. It never ran.
-	Abandoned func(ctx context.Context, in domain.Intent, reason string)
+	Exec      func(context.Context) (R, error)
 }
 
 // eraseExec type-erases a spec's Exec once: the store holds heterogeneous
 // intents, so it cannot be generic, and this closure is what lets it stay
 // type-agnostic.
-func eraseExec[R any](exec func(context.Context, domain.IntentInputValues) (R, error)) func(context.Context, domain.IntentInputValues) (any, error) {
-	return func(ctx context.Context, inputs domain.IntentInputValues) (any, error) {
-		v, err := exec(ctx, inputs)
+func eraseExec[R any](exec func(context.Context) (R, error)) func(context.Context) (any, error) {
+	return func(ctx context.Context) (any, error) {
+		v, err := exec(ctx)
 		if err != nil {
 			return nil, err
 		}
 		return v, nil
 	}
-}
-
-// intentDedupInput is what "the same call again" hashes. The schema is part of
-// the request; submitted values are not — they arrive at resolution.
-func intentDedupInput(payload map[string]any, inputs []domain.IntentInputField) any {
-	if len(inputs) == 0 {
-		return payload
-	}
-	return map[string]any{"payload": payload, "inputs": inputs}
 }
 
 // awaitIntent is the generic blocking wait shared by every blocking tool.
@@ -86,15 +53,6 @@ func awaitIntent[R any](ctx context.Context, s *Service, spec intentSpec[R]) (do
 	if err != nil {
 		return zero, err
 	}
-	if policy == domain.IntentPolicyManual {
-		return zero, fmt.Errorf("%s: policy %s is deferred; request it with submitDeferredIntent", spec.Type, policy)
-	}
-	if len(spec.Inputs) > 0 {
-		// Blocking the agent on a form, or approving one on a timer, is exactly
-		// what deferred approval replaced.
-		return zero, fmt.Errorf("%s: an intent with approval inputs must be deferred (policy %s)", spec.Type, domain.IntentPolicyManual)
-	}
-
 	erased := eraseExec(spec.Exec)
 	in := domain.Intent{
 		ID:          uuid.NewString(),
@@ -110,7 +68,7 @@ func awaitIntent[R any](ctx context.Context, s *Service, spec intentSpec[R]) (do
 	// auto-allow never enters the store: nothing to approve, nothing to dedup
 	// against. Emit one resolved event so the action still shows up in the log.
 	if policy == domain.IntentPolicyAutoAllow {
-		v, execErr := spec.Exec(ctx, nil)
+		v, execErr := spec.Exec(ctx)
 		res := intentResult{IntentID: in.ID, Outcome: domain.IntentOutcomeApproved, Result: v}
 		if execErr != nil {
 			res = intentResult{IntentID: in.ID, Outcome: domain.IntentOutcomeError, Err: execErr, Reason: execErr.Error()}
@@ -121,36 +79,19 @@ func awaitIntent[R any](ctx context.Context, s *Service, spec intentSpec[R]) (do
 		return typedResolution[R](res)
 	}
 
-	key, err := intentDedupKey(spec.SessionID, spec.Type, intentDedupInput(spec.Payload, spec.Inputs))
+	key, err := intentDedupKey(spec.SessionID, spec.Type, spec.Payload)
 	if err != nil {
 		return zero, err
 	}
 
-	id, ch, replayed, disposition := s.intents.BeginWithHooks(key, in, erased, spec.Hooks)
+	id, ch, replayed, disposition := s.intents.Begin(key, in, erased)
 	switch disposition {
 	case intentReplayed:
 		// A retry inside the idempotency window: hand back the original
 		// outcome rather than blocking on a dead intent or minting a duplicate.
 		return typedResolution[R](replayed)
 	case intentCreated:
-		if spec.Hooks.Created != nil {
-			if err := spec.Hooks.Created(ctx, in); err != nil {
-				// Withdrawn before anyone saw it: no replay, so a retry mints
-				// a fresh request instead of replaying this failure.
-				s.intents.Abort(id, intentResult{Outcome: domain.IntentOutcomeError, Err: err, Reason: err.Error()})
-				return zero, err
-			}
-			if _, ok := s.intents.Get(id); !ok {
-				// The session ended while the tool's record was being
-				// written, and its teardown ran before the record existed.
-				// Bring the record in line; the teardown's resolution is
-				// already on ch, and nothing is shown.
-				spec.Hooks.abandoned(ctx, in, intentFailedOnSessionEnd)
-				break
-			}
-		}
 		if err := s.publishIntentRequired(ctx, in); err != nil {
-			spec.Hooks.abandoned(ctx, in, "approval request could not be shown: "+err.Error())
 			// Roll back through Finish rather than a bare delete, so any
 			// waiter that attached in the meantime also learns.
 			s.intents.Finish(id, intentResult{
@@ -186,7 +127,6 @@ func typedResolution[R any](res intentResult) (domain.IntentResolution[R], error
 	if !res.Outcome.Approved() {
 		return out, nil
 	}
-	out.Inputs = res.Inputs
 	v, ok := res.Result.(R)
 	if !ok {
 		var want R
@@ -241,12 +181,7 @@ func (s *Service) runIntentPolicy(ctx context.Context, intent domain.Intent, pol
 func (s *Service) resolveByPolicy(ctx context.Context, pending *pendingIntent, policy domain.IntentPolicy) intentResult {
 	switch policy {
 	case domain.IntentPolicyWaitThenAllow:
-		if len(pending.intent.Inputs) > 0 {
-			// awaitIntent refuses such a spec; this is the last line of defense
-			// against approving a form nobody filled in.
-			return intentResult{Outcome: domain.IntentOutcomeError, Reason: "an intent with approval inputs is never approved automatically"}
-		}
-		v, err := pending.exec(ctx, nil)
+		v, err := pending.exec(ctx)
 		if err != nil {
 			return intentResult{Outcome: domain.IntentOutcomeError, Err: err, Reason: err.Error()}
 		}
@@ -264,31 +199,13 @@ func (s *Service) resolveByPolicy(ctx context.Context, pending *pendingIntent, p
 	}
 }
 
-// ApproveIntent resolves an intent as approved and performs its side effect
-// with the user's validated inputs. The exec runs outside the store mutex — a
-// daemon lock is never held across the agent's block or across I/O.
-//
-// Inputs are validated BEFORE the claim: invalid input returns a
-// ValidationError and leaves the intent pending and unclaimed, so the user can
-// correct it and approve again. The schema is immutable, so validating against
-// a pre-claim read is sound; if the policy or another client claims in
-// between, the claim below loses and this reports the intent as resolving.
-func (s *Service) ApproveIntent(ctx context.Context, sessionID, intentID string, submitted domain.IntentInputValues) (domain.Intent, error) {
-	intent, ok := s.intents.GetForSession(sessionID, intentID)
-	if !ok {
-		return domain.Intent{}, s.unanswerableIntent(sessionID, intentID)
-	}
-	inputs, issues := resolveIntentInputs(intent.Inputs, submitted)
-	if len(issues) > 0 {
-		return domain.Intent{}, intentInputsError(issues)
-	}
-
+// ApproveIntent resolves an intent as approved and performs its side effect.
+// The exec runs outside the store mutex — a daemon lock is never held across
+// the agent's block or across I/O.
+func (s *Service) ApproveIntent(ctx context.Context, sessionID, intentID string) (domain.Intent, error) {
 	pending, ok := s.intents.ClaimForSession(sessionID, intentID)
 	if !ok {
 		return domain.Intent{}, s.unanswerableIntent(sessionID, intentID)
-	}
-	if pending.intent.Policy == domain.IntentPolicyManual {
-		return pending.intent, s.approveDeferred(ctx, pending, inputs)
 	}
 
 	// From here on the operation is the daemon's, not the request's: the
@@ -297,9 +214,9 @@ func (s *Service) ApproveIntent(ctx context.Context, sessionID, intentID string,
 	// — killing an SSH teardown mid-command — nor suppress the outcome.
 	s.publishIntentResolving(ctx, pending.intent, "user")
 	execCtx, cancel := intentExecContext(ctx)
-	v, execErr := pending.exec(execCtx, inputs)
+	v, execErr := pending.exec(execCtx)
 	cancel()
-	res := intentResult{Outcome: domain.IntentOutcomeApproved, Result: v, Inputs: inputs}
+	res := intentResult{Outcome: domain.IntentOutcomeApproved, Result: v}
 	if execErr != nil {
 		res = intentResult{Outcome: domain.IntentOutcomeError, Err: execErr, Reason: execErr.Error()}
 	}
@@ -324,13 +241,6 @@ func (s *Service) DenyIntent(ctx context.Context, sessionID, intentID, reason st
 	}
 	ctx, cancel := intentFinalizeContext(ctx)
 	defer cancel()
-	if pending.intent.Policy == domain.IntentPolicyManual {
-		return s.denyDeferred(ctx, pending, reason)
-	}
-
-	if pending.hooks.Denied != nil {
-		pending.hooks.Denied(ctx, pending.intent, reason)
-	}
 	res := intentResult{Outcome: domain.IntentOutcomeDeniedByUser, Reason: reason}
 	s.intents.Finish(intentID, res)
 	return s.publishIntentResolved(ctx, pending.intent, res)
@@ -395,10 +305,7 @@ func (s *Service) finishIntent(ctx context.Context, in domain.Intent, res intent
 // ending. Without it an intent would outlive its session and fire its side
 // effect into a dead session when the policy expires — a gap that could not
 // exist when there was one approval per session and it *was* the conclusion.
-// A deferred intent's record is failed too, and a tool's own record through
-// its Abandoned hook, so neither reads as pending.
-// Claimed intents are skipped: they are already resolving, and a deferred
-// one that is running finishes and records its own outcome.
+// Claimed intents are skipped: they are already resolving.
 func (s *Service) failPendingIntents(ctx context.Context, sessionID, reason string) {
 	ctx, cancel := intentFinalizeContext(ctx)
 	defer cancel()
@@ -408,14 +315,6 @@ func (s *Service) failPendingIntents(ctx context.Context, sessionID, reason stri
 			continue
 		}
 		res := intentResult{Outcome: domain.IntentOutcomeError, Reason: reason}
-		if pending.intent.Policy == domain.IntentPolicyManual {
-			res = intentResult{Outcome: domain.IntentOutcomeError, Reason: intentFailedOnSessionEnd, Status: domain.DeferredIntentFailed}
-			if err := s.failDeferredRecord(ctx, pending.intent, domain.DeferredIntentPendingApproval, intentFailedOnSessionEnd); err != nil {
-				s.logger.Error("fail deferred intent on session teardown",
-					"session_id", sessionID, "intent_id", id, "error", err)
-			}
-		}
-		pending.hooks.abandoned(ctx, pending.intent, intentFailedOnSessionEnd)
 		s.intents.Finish(id, res)
 		if err := s.publishIntentResolved(ctx, pending.intent, res); err != nil {
 			s.logger.Error("publish intent resolved on session teardown",

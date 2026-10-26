@@ -737,7 +737,7 @@ func TestDenyIntentResolvesWithoutRunningExec(t *testing.T) {
 		Summary: "done",
 		Origin:  domain.IntentOrigin{SessionID: "session-work", ArchitectKey: "hiveryn"},
 	}
-	_, ch, _, _ := service.intents.Begin("key-1", in, func(context.Context, domain.IntentInputValues) (any, error) {
+	_, ch, _, _ := service.intents.Begin("key-1", in, func(context.Context) (any, error) {
 		executed = true
 		return nil, nil
 	})
@@ -792,7 +792,7 @@ func TestRequestConclusionCancelledCtxLeavesIntentAlive(t *testing.T) {
 		Type:   domain.IntentTypeCreateWorkTicket,
 		Origin: domain.IntentOrigin{SessionID: "session-work"},
 	}
-	id, ch, _, _ := service.intents.Begin("key-1", in, func(context.Context, domain.IntentInputValues) (any, error) {
+	id, ch, _, _ := service.intents.Begin("key-1", in, func(context.Context) (any, error) {
 		return domain.Ticket{}, nil
 	})
 

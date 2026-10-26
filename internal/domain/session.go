@@ -113,14 +113,9 @@ type SessionService interface {
 	// worker; an approval whose launch failed is outcome error, never success.
 	RequestSpawnTicketWorker(context.Context, string, SpawnTicketWorkerRequest) (SpawnTicketWorkerResponse, error)
 
-	// Desktop-facing intent resolution, addressed by intent id. Approval
-	// carries the user's input values; invalid input is a ValidationError that
-	// leaves the intent pending and correctable.
-	ApproveIntent(context.Context, string, string, IntentInputValues) (Intent, error)
+	// Desktop-facing intent resolution, addressed by intent id.
+	ApproveIntent(context.Context, string, string) (Intent, error)
 	DenyIntent(context.Context, string, string, string) error
-	// GetDeferredIntent returns a deferred intent's pending or resolved outcome
-	// by its stable id, scoped to the session that raised it.
-	GetDeferredIntent(context.Context, string, string) (DeferredIntent, error)
 	ReadConclusion(context.Context, string, string) (ArchitectConclusion, error)
 	ReadRecentConclusion(context.Context, string) (ArchitectConclusion, error)
 	ListConclusions(context.Context, string, int) ([]ConclusionSummary, error)

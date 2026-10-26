@@ -27,6 +27,7 @@ var migrationFiles = []string{
 	"migrations/0013_action_notification_obligation.sql",
 	"migrations/0014_workspace_records.sql",
 	"migrations/0015_remove_actions.sql",
+	"migrations/0016_remove_deferred_intents.sql",
 }
 
 func runMigrations(ctx context.Context, db *sql.DB) error {

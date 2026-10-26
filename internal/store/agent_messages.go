@@ -197,3 +197,21 @@ func scanAgentMessage(scanner interface{ Scan(...any) error }) (domain.AgentMess
 	}
 	return m, nil
 }
+
+func marshalNullableJSON(v any, empty bool) (any, error) {
+	if empty {
+		return nil, nil
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return string(raw), nil
+}
+
+func nullableTime(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return formatPreciseTime(*t)
+}

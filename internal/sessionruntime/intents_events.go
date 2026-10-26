@@ -2,7 +2,6 @@ package sessionruntime
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/hiveryn/daemon/internal/domain"
@@ -48,9 +47,6 @@ func (s *Service) publishIntentRequired(ctx context.Context, in domain.Intent) e
 	}
 	if len(in.Payload) > 0 {
 		raw["payload"] = in.Payload
-	}
-	if len(in.Inputs) > 0 {
-		raw["inputs"] = in.Inputs
 	}
 	return s.appendAndPublishSessionEvent(ctx, domain.AppendSessionEventParams{
 		SessionID: in.Origin.SessionID,
@@ -105,14 +101,6 @@ func (s *Service) publishIntentResolved(ctx context.Context, in domain.Intent, r
 	}
 	if res.Result != nil {
 		raw["result"] = res.Result
-	}
-	if len(res.Inputs) > 0 {
-		raw["inputs"] = res.Inputs
-	}
-	if res.Status != "" {
-		// Deferred only: the durable record's status, so a reader of the log
-		// sees the same outcome a lookup by id returns.
-		raw["status"] = string(res.Status)
 	}
 	return s.appendAndPublishSessionEvent(ctx, domain.AppendSessionEventParams{
 		SessionID: in.Origin.SessionID,
@@ -236,14 +224,7 @@ func intentFromEventRaw(sessionID, id string, event domain.SessionEvent) domain.
 // waiting on it (the agent's process died with the daemon), so widening the
 // agent-facing outcome catalog with a value no agent can ever observe would be
 // worse than reusing error with a reason.
-//
-// Deferred records are failed first (reconcileDeferredIntents), so the durable
-// outcome and the log agree: a deferred orphan's resolved event carries
-// status failed.
 func (s *Service) ReconcileIntents(ctx context.Context) error {
-	if err := s.reconcileDeferredIntents(ctx); err != nil {
-		return fmt.Errorf("reconcile deferred intents: %w", err)
-	}
 	sessions, err := s.repo.ListSessions(ctx)
 	if err != nil {
 		return err
@@ -261,10 +242,6 @@ func (s *Service) ReconcileIntents(ctx context.Context) error {
 			}
 			if resolving[orphan.ID] {
 				res.Reason = intentInterruptedWhileResolving
-			}
-			if orphan.Policy == domain.IntentPolicyManual {
-				res.Reason = deferredFailedOnRestartPending
-				res.Status = domain.DeferredIntentFailed
 			}
 			if err := s.publishIntentResolved(ctx, orphan, res); err != nil {
 				return err

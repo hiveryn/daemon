@@ -15,7 +15,7 @@ import (
 // Architect-requested worker launches. An architect asks to launch a worker
 // for one of its own backlog tickets with spawnTicketWorker(ticketId, variant,
 // workflows). The request is a blocking intent with createWorkTicket's
-// wait-then-allow policy and no approval inputs:
+// wait-then-allow policy:
 //
 //	request         session must be an architect; variant, workflow names and
 //	                the whole ticket-session contract (board, backlog status,
@@ -107,7 +107,7 @@ func (s *Service) RequestSpawnTicketWorker(ctx context.Context, sessionID string
 		Summary:   ticket.Title,
 		Payload:   payload,
 		Origin:    intentOrigin(session),
-		Exec: func(ctx context.Context, _ domain.IntentInputValues) (domain.SpawnedTicketWorker, error) {
+		Exec: func(ctx context.Context) (domain.SpawnedTicketWorker, error) {
 			// Detached: the approving request going away must not abort a
 			// launch halfway.
 			return s.launchRequestedWorker(context.WithoutCancel(ctx), session.ArchitectKey, ticketID, variant, names)

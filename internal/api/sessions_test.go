@@ -468,7 +468,6 @@ type fakeSessionService struct {
 	lastCreateWorkTicket     domain.CreateTicketParams
 	approveIntentResult      domain.Intent
 	approveIntentErr         error
-	lastApproveInputs        domain.IntentInputValues
 	denyIntentErr            error
 	lastIntentID             string
 	lastDenyReason           string
@@ -520,9 +519,8 @@ func (f *fakeSessionService) MoveTicketToDone(_ context.Context, architectKey, t
 	return domain.MoveTicketToDoneResult{}, nil
 }
 
-func (f *fakeSessionService) ApproveIntent(_ context.Context, sessionID, intentID string, inputs domain.IntentInputValues) (domain.Intent, error) {
+func (f *fakeSessionService) ApproveIntent(_ context.Context, sessionID, intentID string) (domain.Intent, error) {
 	f.lastIntentID = intentID
-	f.lastApproveInputs = inputs
 	return f.approveIntentResult, f.approveIntentErr
 }
 
@@ -530,11 +528,6 @@ func (f *fakeSessionService) DenyIntent(_ context.Context, sessionID, intentID, 
 	f.lastIntentID = intentID
 	f.lastDenyReason = reason
 	return f.denyIntentErr
-}
-
-func (f *fakeSessionService) GetDeferredIntent(_ context.Context, sessionID, intentID string) (domain.DeferredIntent, error) {
-	f.lastIntentID = intentID
-	return domain.DeferredIntent{}, &domain.NotFoundError{Resource: "intent", ID: intentID}
 }
 
 func (f *fakeSessionService) ReadConclusion(_ context.Context, architectKey, id string) (domain.ArchitectConclusion, error) {

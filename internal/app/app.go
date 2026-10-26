@@ -96,7 +96,6 @@ func Run(configPath, databasePath string, portOverride int) error {
 		service.SetEventArchiver(archiver)
 		logger.Info("agent event archival enabled", "dir", runtime.Home)
 	}
-	service.SetDeferredIntentRepository(store.NewDeferredIntentStore(db))
 	service.SetAgentMessageRepository(store.NewAgentMessageStore(db))
 	// Before restore: every question still pending in the log belongs to an
 	// agent call that died with the previous daemon.

@@ -44,9 +44,7 @@ func TestIntentPoliciesMilestoneOne(t *testing.T) {
 			t.Errorf("%s policy = %q, want %q", typ, got, wantPolicy)
 		}
 	}
-	// Test-only fixture types (intents_inputs_test.go) are registered by
-	// TestMain and are not production tools.
-	if got := len(intentPolicies) - len(testInputFixtureTypes); got != len(want) {
+	if got := len(intentPolicies); got != len(want) {
 		t.Errorf("intentPolicies has %d production entries, want %d — add new tools to this test",
 			got, len(want))
 	}
@@ -61,7 +59,7 @@ func TestResolveByPolicyWaitThenDenyDoesNotExec(t *testing.T) {
 	executed := false
 	pending := &pendingIntent{
 		intent: domain.Intent{ID: "i-1"},
-		exec: func(context.Context, domain.IntentInputValues) (any, error) {
+		exec: func(context.Context) (any, error) {
 			executed = true
 			return "should not happen", nil
 		},
@@ -90,7 +88,7 @@ func TestResolveByPolicyWaitThenAllowExecs(t *testing.T) {
 	service := &Service{}
 	pending := &pendingIntent{
 		intent: domain.Intent{ID: "i-1"},
-		exec:   func(context.Context, domain.IntentInputValues) (any, error) { return "did it", nil },
+		exec:   func(context.Context) (any, error) { return "did it", nil },
 	}
 
 	res := service.resolveByPolicy(context.Background(), pending, domain.IntentPolicyWaitThenAllow)
@@ -110,7 +108,7 @@ func TestResolveByPolicyExecFailureIsErrorNotDenial(t *testing.T) {
 	service := &Service{}
 	pending := &pendingIntent{
 		intent: domain.Intent{ID: "i-1"},
-		exec:   func(context.Context, domain.IntentInputValues) (any, error) { return nil, errBoom },
+		exec:   func(context.Context) (any, error) { return nil, errBoom },
 	}
 
 	res := service.resolveByPolicy(context.Background(), pending, domain.IntentPolicyWaitThenAllow)

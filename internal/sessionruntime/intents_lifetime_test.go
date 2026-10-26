@@ -23,7 +23,7 @@ func slowIntent(t *testing.T, service *Service, payload map[string]any, exec fun
 			Summary:   "slow",
 			Payload:   payload,
 			Origin:    domain.IntentOrigin{SessionID: "session-1", ArchitectKey: "hiveryn", SessionType: domain.SessionTypeArchitect},
-			Exec: func(ctx context.Context, _ domain.IntentInputValues) (string, error) {
+			Exec: func(ctx context.Context) (string, error) {
 				return exec(ctx)
 			},
 		})
@@ -94,7 +94,7 @@ func TestApprovedIntentOutlivesTheApprovingRequest(t *testing.T) {
 	request, stopWaiting := context.WithCancel(context.Background())
 	approved := make(chan error, 1)
 	go func() {
-		_, err := service.ApproveIntent(request, "session-1", id, nil)
+		_, err := service.ApproveIntent(request, "session-1", id)
 		approved <- err
 	}()
 	<-started
@@ -104,7 +104,7 @@ func TestApprovedIntentOutlivesTheApprovingRequest(t *testing.T) {
 	if got := intentEventStatuses(repo, id); len(got) != 2 || got[1] != sessionEventStatusResolving {
 		t.Fatalf("intent events = %v, want required then resolving", got)
 	}
-	if _, err := service.ApproveIntent(context.Background(), "session-1", id, nil); !errors.As(err, new(*domain.ConflictError)) {
+	if _, err := service.ApproveIntent(context.Background(), "session-1", id); !errors.As(err, new(*domain.ConflictError)) {
 		t.Fatalf("second approve = %v, want a conflict while resolving", err)
 	}
 	if err := service.DenyIntent(context.Background(), "session-1", id, "too late"); !errors.As(err, new(*domain.ConflictError)) {
@@ -127,7 +127,7 @@ func TestApprovedIntentOutlivesTheApprovingRequest(t *testing.T) {
 		t.Fatalf("resolved event outcome = %v, want approved", raw["outcome"])
 	}
 	// A different session still cannot learn the intent exists.
-	if _, err := service.ApproveIntent(context.Background(), "session-2", id, nil); !errors.As(err, new(*domain.NotFoundError)) {
+	if _, err := service.ApproveIntent(context.Background(), "session-2", id); !errors.As(err, new(*domain.NotFoundError)) {
 		t.Fatalf("foreign approve = %v, want not found", err)
 	}
 }
@@ -161,7 +161,7 @@ func TestFailedApprovalIsNotReplayedButSuccessIs(t *testing.T) {
 	payload := map[string]any{"n": 3}
 	fail := errors.New("remote termination not confirmed on bk; session retained: ssh: killed")
 	id, results := slowIntent(t, service, payload, func(context.Context) (string, error) { return "", fail })
-	if _, err := service.ApproveIntent(context.Background(), "session-1", id, nil); !errors.Is(err, fail) {
+	if _, err := service.ApproveIntent(context.Background(), "session-1", id); !errors.Is(err, fail) {
 		t.Fatalf("approve = %v, want the operation's own error", err)
 	}
 	if res := <-results; res.Outcome != domain.IntentOutcomeError || res.Reason != fail.Error() {
@@ -176,7 +176,7 @@ func TestFailedApprovalIsNotReplayedButSuccessIs(t *testing.T) {
 	if retry == id {
 		t.Fatal("the retry replayed the failure instead of asking again")
 	}
-	if _, err := service.ApproveIntent(context.Background(), "session-1", retry, nil); err != nil {
+	if _, err := service.ApproveIntent(context.Background(), "session-1", retry); err != nil {
 		t.Fatalf("approve retry: %v", err)
 	}
 	<-results
@@ -185,7 +185,7 @@ func TestFailedApprovalIsNotReplayedButSuccessIs(t *testing.T) {
 	res, err := awaitIntent(context.Background(), service, intentSpec[string]{
 		SessionID: "session-1", Type: domain.IntentTypeCreateWorkTicket, Summary: "slow", Payload: payload,
 		Origin: domain.IntentOrigin{SessionID: "session-1"},
-		Exec:   func(context.Context, domain.IntentInputValues) (string, error) { runs++; return "again", nil },
+		Exec:   func(context.Context) (string, error) { runs++; return "again", nil },
 	})
 	if err != nil || res.Outcome != domain.IntentOutcomeApproved || res.Result != "ok" || runs != 1 {
 		t.Fatalf("replay = %+v, %v (runs %d), want the original approval without a second run", res, err, runs)

@@ -20,7 +20,7 @@ func TestOpenRunsSessionMigrations(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	for _, table := range []string{"schema_migrations", "sessions", "session_runs", "session_events", "deferred_intents"} {
+	for _, table := range []string{"schema_migrations", "sessions", "session_runs", "session_events"} {
 		var name string
 		if err := db.QueryRowContext(context.Background(), `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&name); err != nil {
 			t.Fatalf("expected table %q to exist: %v", table, err)
@@ -832,9 +832,9 @@ func TestSessionStoreMarkRunFailedSetsAgentStatusStopped(t *testing.T) {
 
 // Removing Actions retires their rows and tables and nothing else: action
 // sessions with their runs, events and remote resources, action_ended
-// messages, executeAction intents and approval events go; ticket and
-// architect sessions, their other events, other messages and other intents
-// stay.
+// messages, executeAction approval events and the deferred-intent table that
+// only executeAction used go; ticket and architect sessions, their other
+// events and other messages stay.
 func TestRemoveActionsMigrationRetiresOnlyActionRecords(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "daemon.db")
@@ -874,7 +874,7 @@ func TestRemoveActionsMigrationRetiresOnlyActionRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	for _, table := range []string{"action_runs", "action_artifacts"} {
+	for _, table := range []string{"action_runs", "action_artifacts", "deferred_intents"} {
 		var n int
 		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE name = ?`, table).Scan(&n); err != nil || n != 0 {
 			t.Fatalf("table %s still present (%d, %v)", table, n, err)
@@ -886,7 +886,6 @@ func TestRemoveActionsMigrationRetiresOnlyActionRecords(t *testing.T) {
 		`SELECT group_concat(id) FROM (SELECT id FROM session_events ORDER BY id)`:                  "e3,e4",
 		`SELECT group_concat(session_id) FROM (SELECT session_id FROM remote_resources ORDER BY 1)`: "tkt",
 		`SELECT group_concat(id) FROM (SELECT id FROM agent_messages ORDER BY id)`:                  "m2",
-		`SELECT group_concat(id) FROM (SELECT id FROM deferred_intents ORDER BY id)`:                "d2",
 	} {
 		var got string
 		if err := db.QueryRowContext(ctx, query).Scan(&got); err != nil || got != want {

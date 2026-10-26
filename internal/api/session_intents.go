@@ -1,8 +1,6 @@
 package api
 
 import (
-	"errors"
-	"io"
 	"net/http"
 
 	"github.com/hiveryn/daemon/internal/domain"
@@ -17,8 +15,6 @@ import (
 //     they are separate routes rather than one generic /intents/{type}.
 //   - Desktop-facing, generic (approve, deny), addressed by intent id — the
 //     desktop must not learn a new route per tool.
-//   - Lookup of a deferred intent's outcome by its stable id (GET), for the
-//     domain-specific result/wait tools built on deferred approval.
 //
 // The desktop's own direct routes (POST /api/sessions/{id}/conclude and
 // POST /api/architects/{key}/tickets) stay unapproved; approval gates the
@@ -107,23 +103,14 @@ func (h *sessionsHandler) concludeSessionIntent(w http.ResponseWriter, r *http.R
 	})
 }
 
-// approveIntent resolves an intent as approved and runs its side effect. The
-// body is optional ({"inputs": {...}}); an intent without inputs is approved
-// with none. Invalid inputs are a 400 that leaves the intent pending, so the
-// user can correct them and approve again.
+// approveIntent resolves an intent as approved and runs its side effect.
 func (h *sessionsHandler) approveIntent(w http.ResponseWriter, r *http.Request) {
 	if h.sessions == nil {
 		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
 		return
 	}
 
-	var input domain.ApproveIntentRequest
-	if err := decodeJSON(r, &input); err != nil && !errors.Is(err, io.EOF) {
-		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
-		return
-	}
-
-	intent, err := h.sessions.ApproveIntent(r.Context(), r.PathValue("id"), r.PathValue("intentID"), input.Inputs)
+	intent, err := h.sessions.ApproveIntent(r.Context(), r.PathValue("id"), r.PathValue("intentID"))
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
@@ -153,24 +140,6 @@ func (h *sessionsHandler) denyIntent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// getDeferredIntent returns a deferred intent's pending or resolved outcome by
-// id. Only deferred intents have a durable record; any other id, or one raised
-// by another session, is a 404.
-func (h *sessionsHandler) getDeferredIntent(w http.ResponseWriter, r *http.Request) {
-	if h.sessions == nil {
-		writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "session service not configured", nil)
-		return
-	}
-
-	record, err := h.sessions.GetDeferredIntent(r.Context(), r.PathValue("id"), r.PathValue("intentID"))
-	if err != nil {
-		writeDomainError(w, r, err)
-		return
-	}
-
-	writeJSON(w, r, http.StatusOK, record)
 }
 
 // spawnTicketWorkerIntent is an architect's worker-launch request. It blocks

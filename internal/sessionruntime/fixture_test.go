@@ -60,7 +60,6 @@ func (f *serviceFixture) open(t *testing.T) {
 		baseURL:        "http://127.0.0.1:4200",
 		executablePath: func() (string, error) { return "/tmp/hiverynd", nil },
 	}
-	f.service.SetDeferredIntentRepository(store.NewDeferredIntentStore(db))
 	f.messages = store.NewAgentMessageStore(db)
 	f.service.SetAgentMessageRepository(f.messages)
 }

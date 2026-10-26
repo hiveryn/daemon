@@ -112,8 +112,11 @@ func (f *spawnFixture) spawn(t *testing.T, req domain.SpawnTicketWorkerRequest) 
 			if before[id] {
 				continue
 			}
-			if in, ok := f.service.intents.GetForSession(f.architect.ID, id); ok {
-				return in, done
+			f.service.intents.mu.Lock()
+			p := f.service.intents.pending[id]
+			f.service.intents.mu.Unlock()
+			if p != nil {
+				return p.intent, done
 			}
 		}
 		time.Sleep(2 * time.Millisecond)
@@ -161,7 +164,7 @@ func TestSpawnTicketWorkerApprovalLaunchesWorkerWithNamedWorkflows(t *testing.T)
 		t.Fatal("something launched before approval")
 	}
 
-	if _, err := f.service.ApproveIntent(context.Background(), f.architect.ID, in.ID, nil); err != nil {
+	if _, err := f.service.ApproveIntent(context.Background(), f.architect.ID, in.ID); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 	out := wait(t, done)
@@ -334,7 +337,7 @@ func TestSpawnTicketWorkerRevalidatesOnApproval(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.ApproveIntent(context.Background(), f.architect.ID, in.ID, nil); err == nil {
+	if _, err := f.service.ApproveIntent(context.Background(), f.architect.ID, in.ID); err == nil {
 		t.Fatal("approval of an unlaunchable request reported success to the desktop")
 	}
 	out := wait(t, done)
@@ -352,7 +355,7 @@ func TestSpawnTicketWorkerLaunchFailureKeepsCauseAndRemovesSession(t *testing.T)
 	ticket := f.backlogTicket(t, "Fail launch")
 
 	in, done := f.spawn(t, domain.SpawnTicketWorkerRequest{TicketID: ticket.ID, Variant: "codex"})
-	if _, err := f.service.ApproveIntent(context.Background(), f.architect.ID, in.ID, nil); err == nil || !strings.Contains(err.Error(), "pty launch failed") {
+	if _, err := f.service.ApproveIntent(context.Background(), f.architect.ID, in.ID); err == nil || !strings.Contains(err.Error(), "pty launch failed") {
 		t.Fatalf("approve = %v", err)
 	}
 	out := wait(t, done)
@@ -382,7 +385,7 @@ func TestSpawnTicketWorkerNeverDuplicatesWorkers(t *testing.T) {
 	if pending := f.service.intents.PendingForSession(f.architect.ID); len(pending) != 1 {
 		t.Fatalf("retry minted another request: %v", pending)
 	}
-	if _, err := f.service.ApproveIntent(ctx, f.architect.ID, in.ID, nil); err != nil {
+	if _, err := f.service.ApproveIntent(ctx, f.architect.ID, in.ID); err != nil {
 		t.Fatal(err)
 	}
 	a, b := wait(t, first), wait(t, retry)
@@ -415,7 +418,7 @@ func TestSpawnTicketWorkerLosesToDesktopLaunchWhilePending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.ApproveIntent(ctx, f.architect.ID, in.ID, nil); err == nil {
+	if _, err := f.service.ApproveIntent(ctx, f.architect.ID, in.ID); err == nil {
 		t.Fatal("approval reported success")
 	}
 	out := wait(t, done)
