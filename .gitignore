@@ -1,3 +1,5 @@
 .opencode/
 go.work
 go.work.sum
+
+runs/

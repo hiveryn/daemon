@@ -89,3 +89,61 @@ Repository checks and exact-commit CI results are recorded in the ticket
 conclusion. During local full-suite testing, the existing fake-SSH startup timing
 test failed once under parallel package load; the entire daemon suite passed
 with `TZ=UTC go test -p 1 ./...`. No unrelated SSH or timezone test was changed.
+
+## Cross-client history and archive verification (2026-10-26)
+
+The follow-up delivery adds migration 0018, receipt discovery and explicit archived
+chat descriptors. Focused regressions cover stable string/block Claude user IDs,
+foreign-echo/hidden-thinking exclusion, tool-name retention and native tool errors,
+receipt pagination/redaction/held queue context, empty retained histories, archive
+idempotency, late output suppression and refusal to launch/admit archived chats.
+The executable smoke also verifies archive discovery after daemon restart and
+request-ID replay after discard. Evidence: ignored
+`daemon/runs/conversation-smoke-xb575dam/evidence.json`.
+
+Real Chrome acceptance ran against isolated source-built daemon state, with fresh
+browser storage contexts and a local notification sink. Provider versions:
+Claude Code 2.1.310 (sonnet, read-only work login reuse), Codex 0.164.0
+(gpt-5.6-sol), OpenCode 1.17.18 (deepseek/deepseek-v4-flash).
+
+- Claude message sent from the UI appeared as a native user item in a fresh
+  browser; hidden kickoff echoes remained excluded. Completed tool revisions
+  retained names.
+- A real askQuestion held the Claude turn while a second client submitted input.
+  The fresh browser discovered that queued receipt and answered Beta; the queue
+  then drained normally.
+- A native conclusion intent was denied in the UI. Repeating the same payload
+  replayed the denial; a new explicit request with a distinct summary was approved.
+  The worker became a retained concluded archive, rediscoverable after reload,
+  with a disabled composer and interrupted conclusion tool (no invented success).
+- The Codex architect received and completed the labelled conclusion notification.
+- OpenCode UI input and its polled reply passed. Mobile archive navigation at
+  390×844 had no horizontal overflow; desktop checks used 1280×900.
+- Separate deterministic browser probes exercised blocked and uncertain dispatch,
+  cross-client held receipts, no automatic replay, and discarded archive discovery.
+  These failure probes are fixtures, not native permission-control acceptance.
+
+Concise screenshots, synthetic inputs/results and scripts are retained in
+`chat-ui-poc/runs/cross-client-evidence/`. Native state:
+`chat-ui-poc/runs/isolated-1793009689`; fixture state:
+`chat-ui-poc/runs/isolated-1793009925`. The manifests identify base commits; native
+checks exercised the working implementation before commits. Subsequent changes
+only narrowed interruption to tool/permission items, recognized native in-progress
+spellings and reduced receipt-list database queries; regression checks were rerun.
+Owned daemons, provider processes and UI servers were stopped, and copied
+credentials removed. No live restart, deployment or global settings changes.
+
+Reproduce final hands-on startup from `chat-ui-poc` with the delivered sibling
+checkouts (daemon pins the delivered agentruntime dependency):
+
+```sh
+pnpm install --frozen-lockfile
+python3 scripts/isolated-daemon.py --providers claude,codex,opencode --port 49410
+# Separate terminal, also in chat-ui-poc:
+HIVERYN_DAEMON_URL=http://127.0.0.1:49410 pnpm dev --port 3217
+```
+
+Open http://127.0.0.1:3217. Use `--providers fixture` to avoid authentication/model
+calls. Ctrl-C both terminals when finished. Final hands-on acceptance remains
+Kareem's; pre-migration deleted metadata cannot be backfilled and native permission
+controls remain outside V1.

@@ -212,3 +212,71 @@ func TestChatLaunchDiagnosticsRedactConfiguredCredentials(t *testing.T) {
 		t.Fatal("lost diagnostic")
 	}
 }
+
+func TestCrossClientDiscoveryRedactionAndEmptyArchive(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	repo := store.NewSessionStore(db)
+	session, err := repo.CreateSession(ctx, domain.CreateSessionParams{ID: "chat", InteractionMode: domain.InteractionChat, SessionType: domain.SessionTypeTicket, ArchitectKey: "p", ContextID: "ticket"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{repo: repo}
+	hidden, err := repo.EnqueueSubmission(ctx, session.ID, domain.SubmissionRequest{RequestID: "launch", Text: "PRIVATE INSTRUCTIONS"}, "kickoff")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repo.ReserveSubmission(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	hidden.Status = "blocked"
+	hidden.Error = "permission unavailable"
+	if err = repo.UpdateSubmission(ctx, hidden); err != nil {
+		t.Fatal(err)
+	}
+	_, err = repo.EnqueueSubmission(ctx, session.ID, domain.SubmissionRequest{RequestID: "user", Text: "hello"}, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := service.ListSubmissions(ctx, session.ID, domain.SequenceQuery{Limit: 1})
+	if err != nil || len(page.Submissions) != 1 || page.Submissions[0].Text != "" || !page.HasMore {
+		t.Fatalf("redaction %#v %v", page, err)
+	}
+	next, err := service.ListSubmissions(ctx, session.ID, domain.SequenceQuery{AfterSequence: page.NextSequence})
+	if err != nil || len(next.Submissions) != 1 || !strings.Contains(next.Submissions[0].Error, hidden.ID) || next.Submissions[0].Status != "queued" {
+		t.Fatalf("queued %#v %v", next, err)
+	}
+	if _, err = service.ListSubmissions(ctx, session.ID, domain.SequenceQuery{Limit: 201}); err == nil {
+		t.Fatal("unbounded page accepted")
+	}
+	if err = service.archiveChat(ctx, session, "discarded"); err != nil {
+		t.Fatal(err)
+	}
+	// Even if deletion was interrupted, archived descriptors cannot be relaunched.
+	if _, err = service.createRun(ctx, session.ID, domain.CreateSessionRunRequest{}); err == nil {
+		t.Fatal("archive relaunched")
+	}
+	if err = repo.DeleteSession(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.ReadConversation(ctx, session.ID, domain.ConversationQuery{}); err != nil {
+		t.Fatal("empty retained archive unreadable", err)
+	}
+	if _, err = service.ListSubmissions(ctx, session.ID, domain.SequenceQuery{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.ReadConversation(ctx, "unknown", domain.ConversationQuery{}); err == nil {
+		t.Fatal("unknown archive accepted")
+	}
+	if _, err = service.SubmitMessage(ctx, session.ID, domain.SubmissionRequest{RequestID: "new", Text: "new"}); err == nil {
+		t.Fatal("archive admitted input")
+	}
+	replay, err := service.SubmitMessage(ctx, session.ID, domain.SubmissionRequest{RequestID: "user", Text: "hello"})
+	if err != nil || replay.Status != "failed" {
+		t.Fatalf("replay %#v %v", replay, err)
+	}
+}

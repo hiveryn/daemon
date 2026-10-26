@@ -75,6 +75,13 @@ func (s *Service) enqueueChat(ctx context.Context, id string, req domain.Submiss
 	if !errors.As(lookupErr, &missing) {
 		return domain.Submission{}, lookupErr
 	}
+	archived, err := repo.IsArchivedChat(ctx, id)
+	if err != nil {
+		return domain.Submission{}, err
+	}
+	if archived {
+		return domain.Submission{}, &domain.ConflictError{Resource: "session", Message: "chat is archived"}
+	}
 	// Serialize admission with teardown. The database serializes all callers'
 	// arrival order and enforces request identity across reconnects/restarts.
 	s.launchMu.Lock()
@@ -137,7 +144,13 @@ func (s *Service) ReadConversation(ctx context.Context, id string, q domain.Conv
 	}
 	page, err := repo.ReadConversation(ctx, id, q)
 	if err == nil && sessionErr != nil && page.SnapshotRevision == 0 {
-		return page, sessionErr
+		archived, archiveErr := repo.IsArchivedChat(ctx, id)
+		if archiveErr != nil {
+			return page, archiveErr
+		}
+		if !archived {
+			return page, sessionErr
+		}
 	}
 	return page, err
 }
@@ -169,6 +182,13 @@ func (s *Service) launchChat(ctx context.Context, session domain.Session, run do
 	repo, err := s.conversationRepo()
 	if err != nil {
 		return err
+	}
+	archived, err := repo.IsArchivedChat(ctx, session.ID)
+	if err != nil {
+		return err
+	}
+	if archived {
+		return &domain.ConflictError{Resource: "session", Message: "chat is archived"}
 	}
 	adapter, ok := s.adapters[kind].(agentruntime.ConversationAdapter)
 	if !ok {
@@ -659,4 +679,70 @@ func (s *Service) failChatRestore(ctx context.Context, id string, cause error) {
 	if err = repo.FailQueuedSubmissions(ctx, id, reason); err != nil {
 		s.logger.Error("settle queued chat", "error", err)
 	}
+}
+
+func validateSequenceQuery(q domain.SequenceQuery) error {
+	if q.AfterSequence < 0 || q.Limit < 0 || q.Limit > 200 {
+		return &domain.ValidationError{Field: "pagination", Message: "after_sequence must be nonnegative and limit at most 200"}
+	}
+	return nil
+}
+func (s *Service) ListArchivedChats(ctx context.Context, q domain.SequenceQuery) (domain.ArchivedChatPage, error) {
+	if err := validateSequenceQuery(q); err != nil {
+		return domain.ArchivedChatPage{}, err
+	}
+	repo, err := s.conversationRepo()
+	if err != nil {
+		return domain.ArchivedChatPage{}, err
+	}
+	return repo.ListArchivedChats(ctx, q)
+}
+func (s *Service) ListSubmissions(ctx context.Context, id string, q domain.SequenceQuery) (domain.SubmissionPage, error) {
+	if err := validateSequenceQuery(q); err != nil {
+		return domain.SubmissionPage{}, err
+	}
+	// Reuse the history capability/existence check, including retained histories.
+	if _, err := s.ReadConversation(ctx, id, domain.ConversationQuery{Limit: 1}); err != nil {
+		return domain.SubmissionPage{}, err
+	}
+	repo, err := s.conversationRepo()
+	if err != nil {
+		return domain.SubmissionPage{}, err
+	}
+	page, err := repo.ListSubmissions(ctx, id, q)
+	if err != nil {
+		return page, err
+	}
+	head, err := repo.PendingSubmission(ctx, id)
+	if err != nil {
+		return page, err
+	}
+	for i := range page.Submissions {
+		sub := &page.Submissions[i]
+		if sub.Origin == "kickoff" {
+			sub.Text = ""
+		}
+		if sub.Status == "queued" && head != nil && head.ID != sub.ID && (head.Status == "blocked" || head.Status == "uncertain") {
+			sub.Error = "Waiting for submission " + head.ID + " (" + head.Status + "): " + head.Error
+		}
+	}
+	return page, nil
+}
+func (s *Service) archiveChat(ctx context.Context, session domain.Session, lifecycle string) error {
+	if session.InteractionMode != domain.InteractionChat {
+		return nil
+	}
+	repo, err := s.conversationRepo()
+	if err != nil {
+		return err
+	}
+	chat := domain.ArchivedChat{ID: session.ID, ArchitectKey: session.ArchitectKey, SessionType: session.SessionType, ContextID: session.ContextID, CreatedAt: session.CreatedAt, EndedAt: time.Now().UTC(), Lifecycle: lifecycle}
+	if run := session.CurrentRun; run != nil {
+		chat.ProfileName = run.ProfileName
+		if run.ProfileSnapshot != nil {
+			chat.Agent = run.ProfileSnapshot.Agent
+			chat.Model = run.ProfileSnapshot.Model
+		}
+	}
+	return repo.ArchiveChat(ctx, chat)
 }

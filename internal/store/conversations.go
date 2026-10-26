@@ -43,6 +43,13 @@ func (s *SessionStore) EnqueueSubmission(ctx context.Context, sid string, req do
 	if !errors.Is(err, sql.ErrNoRows) {
 		return domain.Submission{}, err
 	}
+	var archived int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM chat_archives WHERE session_id=?", sid).Scan(&archived); err != nil {
+		return domain.Submission{}, err
+	}
+	if archived != 0 {
+		return domain.Submission{}, &domain.ConflictError{Resource: "session", Message: "chat is archived"}
+	}
 	now := time.Now().UTC()
 	id := domain.SubmissionIdentity(sid, req.RequestID)
 	result, err := tx.ExecContext(ctx, `INSERT INTO conversation_submissions(id,session_id,request_id,origin,text,status,created_at,updated_at) VALUES(?,?,?,?,?,'queued',?,?)`, id, sid, req.RequestID, origin, req.Text, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
@@ -102,12 +109,22 @@ func (s *SessionStore) PutConversationItem(ctx context.Context, sid string, item
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	var archived int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM chat_archives WHERE session_id=?", sid).Scan(&archived); err != nil {
+		return err
+	}
+	if archived != 0 {
+		return nil
+	} // Session end wins over late native output.
 	var previous string
 	err = tx.QueryRowContext(ctx, "SELECT item_json FROM conversation_items WHERE session_id=? AND item_id=? ORDER BY revision DESC LIMIT 1", sid, item.ID).Scan(&previous)
 	if err == nil {
 		var old domain.ConversationItem
 		if err = json.Unmarshal([]byte(previous), &old); err != nil {
 			return err
+		}
+		if item.Tool == "" {
+			item.Tool = old.Tool
 		}
 		item.Sequence = old.Sequence
 		if !old.At.IsZero() {

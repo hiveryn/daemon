@@ -481,6 +481,20 @@ func (s *Service) createRun(ctx context.Context, sessionID string, req domain.Cr
 		return domain.CreateSessionRunResult{}, err
 	}
 
+	if session.InteractionMode == domain.InteractionChat {
+		repo, err := s.conversationRepo()
+		if err != nil {
+			return domain.CreateSessionRunResult{}, err
+		}
+		archived, err := repo.IsArchivedChat(ctx, sessionID)
+		if err != nil {
+			return domain.CreateSessionRunResult{}, err
+		}
+		if archived {
+			return domain.CreateSessionRunResult{}, &domain.ConflictError{Resource: "session", Message: "chat is archived"}
+		}
+	}
+
 	cfg, err := s.currentConfig()
 	if session.SessionType == domain.SessionTypeTicket {
 		cfg, err = config.WritableConfig(s.cfg, s.configSource)
@@ -1678,6 +1692,14 @@ func (s *Service) runningTicketSessionID(ctx context.Context, architectKey, tick
 }
 
 func (s *Service) appendAndPublishSessionEnded(ctx context.Context, sessionID, runID, message, lifecycle string, raw map[string]any) error {
+	session, err := s.repo.GetSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if err = s.archiveChat(ctx, session, lifecycle); err != nil {
+		return err
+	}
+
 	// Every session-ending path funnels through here, and it is the last point
 	// at which the session row still exists — so this is where intents left
 	// open on the session get resolved. Without it a pending createWorkTicket
@@ -1789,6 +1811,9 @@ func (s *Service) TerminateSession(ctx context.Context, id string) error {
 		return err
 	}
 
+	if err := s.archiveChat(ctx, session, "interrupted"); err != nil {
+		return err
+	}
 	if err := s.stopChat(ctx, id, true); err != nil {
 		return err
 	}

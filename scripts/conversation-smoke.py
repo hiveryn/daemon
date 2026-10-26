@@ -62,7 +62,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--keep', action='store_true')
     args = parser.parse_args()
-    scratch = tempfile.TemporaryDirectory(prefix='hiveryn-conversation-smoke-')
+    (ROOT / 'runs').mkdir(exist_ok=True)
+    scratch = tempfile.TemporaryDirectory(prefix='conversation-smoke-', dir=ROOT / 'runs')
     root = pathlib.Path(scratch.name)
     process = None
     notifier = None
@@ -141,6 +142,16 @@ def main():
             call(prefix + '/messages', {'request_id': 'input-0', 'text': 'different'}, 409)
             for receipt in receipts:
                 wait(lambda: call(prefix + '/submissions/' + receipt['id'])['status'] == 'completed')
+            submissions = []
+            sp = call(prefix + '/submissions?limit=2')
+            while True:
+                submissions.extend(sp['submissions'])
+                if not sp['has_more']:
+                    break
+                sp = call(prefix + f'/submissions?limit=2&after_sequence={sp["next_sequence"]}')
+            assert len(submissions) == 9 and len({s['id'] for s in submissions}) == 9
+            assert all(s['text'] == '' for s in submissions if s['origin'] == 'kickoff')
+            call(prefix + '/submissions?after_sequence=-1', expected=400)
             page = call(prefix + '/conversation?limit=2')
             snapshot = page['snapshot_revision']
             items = page['items']
@@ -164,7 +175,21 @@ def main():
             assert settled['status'] in ['failed', 'completed']
             replay = call(prefix + '/messages', {'request_id': 'discarded', 'text': 'queued'}, 202)
             assert replay['id'] == queued['id']
-            evidence.update(result='passed', receipts=receipts, snapshot_revision=snapshot, discarded=settled)
+            archives = call('/api/archived-chats?architect_key=fixture&limit=1')
+            assert len(archives['chats']) == 1 and archives['chats'][0]['id'] == sid
+            assert archives['chats'][0]['lifecycle'] == 'discarded'
+            assert archives['chats'][0]['agent'] == 'codex'
+            assert not any(s['id'] == sid for s in call('/api/sessions')['sessions'])
+            call(prefix + '/messages', {'request_id': 'new-after-end', 'text': 'must not run'}, 409)
+            call(prefix + '/runs', {'profile_name': 'fixture'}, 404)
+            retained = call(prefix + '/conversation')
+            assert not any(i['role'] == 'tool' and i['status'] == 'started' for i in {i['id']: i for i in retained['items']}.values())
+            assert call(prefix + '/submissions')['submissions']
+            stop()
+            start()
+            assert call('/api/archived-chats')['chats'][0]['lifecycle'] == 'discarded'
+            evidence['archived_chat'] = archives['chats'][0]
+            evidence.update(result='passed' , receipts=receipts, snapshot_revision=snapshot, discarded=settled)
             stop()
         (root / 'evidence.json').write_text(json.dumps(evidence, indent=2))
         print('Passed isolated create/list/read/send/retry/conflict/poll/answer/restart/discard HTTP smoke.')

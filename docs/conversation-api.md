@@ -183,3 +183,41 @@ discard. Fixture success is not native acceptance. See
 [the native acceptance record](conversation-api-verification.md) for installed
 provider evidence and limitations. No UI build, live restart, package release or
 deployment is part of this delivery.
+
+## Cross-client receipt discovery and archived chats
+
+`GET /api/sessions/SESSION_ID/submissions?after_sequence=0&limit=100`
+returns `{submissions, next_sequence, has_more}`. Follow `next_sequence` while
+`has_more` is true. Sequence is stable admission order (gaps are normal). Limits
+are 1–200; omitted/zero uses 100. Negative cursors and limits over 200 are rejected.
+This is a live receipt list, not a revision snapshot: restart at zero to refresh
+old statuses, or poll known receipt IDs. New clients discover the same queue
+without browser storage. Kickoff text is redacted and queued entries include the
+blocking/uncertain head's reason. Discovering a receipt never sends or replays it.
+Queued admission is not evidence of native execution or completion.
+
+`GET /api/archived-chats?architect_key=PROJECT&after_sequence=0&limit=100`
+returns `{chats, next_sequence, has_more}` in archive insertion order with the
+same bounds. The optional project filter scopes discovery. Each descriptor has
+`id` (the former session ID), `sequence`, `architect_key`, `session_type`,
+`context_id`, `agent`, optional `model`, `profile_name`, `created_at`, `ended_at`
+and `lifecycle` (`concluded`, `discarded`, or `interrupted` for administrative
+termination). It contains no prompt, instructions, launch environment or native
+credentials. Use its ID with the existing history and receipt endpoints.
+Archives are read-only, cannot launch or admit new input, and do not participate
+in ordinary active-session discovery or ownership. Exact prior request-ID replay
+still returns its receipt; it does not dispatch again.
+
+Archive descriptors, unfinished receipt disposition and final item revisions
+are committed together before active records are deleted. Unfinished tool/permission
+items become `interrupted`; their names/output remain. Existing native errors and
+successful results remain unchanged. Late native output cannot resurrect archived
+activity. A conclusion tool interrupted by its own session end is not claimed to
+have returned native success. Tool names are retained across result revisions.
+Claude string and text-block user echoes share stable UUID-based IDs; internal
+origins remain labelled and kickoff echoes/hidden thinking stay excluded.
+
+Migration 0018 adds retained archive discovery. Sessions already deleted before
+that migration cannot be reliably backfilled: their metadata is gone. Their
+previously observed history remains readable by known ID. No retention pruning
+or new active-session ownership rules are introduced.

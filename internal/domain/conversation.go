@@ -20,7 +20,16 @@ type ConversationItem = sd.ConversationItem
 type ConversationPage = sd.ConversationPage
 type ConversationQuery = sd.ConversationQuery
 
+type SequenceQuery = sd.SequenceQuery
+type SubmissionPage = sd.SubmissionPage
+type ArchivedChat = sd.ArchivedChat
+type ArchivedChatPage = sd.ArchivedChatPage
+
 type ConversationRepository interface {
+	ListSubmissions(context.Context, string, SequenceQuery) (SubmissionPage, error)
+	ArchiveChat(context.Context, ArchivedChat) error
+	ListArchivedChats(context.Context, SequenceQuery) (ArchivedChatPage, error)
+	IsArchivedChat(context.Context, string) (bool, error)
 	EnqueueSubmission(context.Context, string, SubmissionRequest, string) (Submission, error)
 	GetSubmission(context.Context, string, string) (Submission, error)
 	PendingSubmission(context.Context, string) (*Submission, error)
@@ -32,6 +41,8 @@ type ConversationRepository interface {
 	FailQueuedSubmissions(context.Context, string, string) error
 }
 type ConversationService interface {
+	ListSubmissions(context.Context, string, SequenceQuery) (SubmissionPage, error)
+	ListArchivedChats(context.Context, SequenceQuery) (ArchivedChatPage, error)
 	SubmitMessage(context.Context, string, SubmissionRequest) (Submission, error)
 	GetSubmission(context.Context, string, string) (Submission, error)
 	ReadConversation(context.Context, string, ConversationQuery) (ConversationPage, error)
