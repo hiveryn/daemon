@@ -219,6 +219,10 @@ func (s *Service) messageDeliverer(kind agentruntime.AgentKind) (agentruntime.Me
 
 // attemptMessageDelivery hands over or pushes one pending message.
 func (s *Service) attemptMessageDelivery(ctx context.Context, m *domain.AgentMessage, target messageTarget) {
+	if target.session.InteractionMode == domain.InteractionChat {
+		s.deliverChatNotification(ctx, m, target)
+		return
+	}
 	deliverer, adapter, ok := s.messageDeliverer(target.agent)
 	if !ok {
 		m.Condition = fmt.Sprintf("agent %s cannot receive messages; the message is retained", target.agent)
@@ -389,6 +393,10 @@ func (s *Service) recordMessageAttemptFailure(m *domain.AgentMessage, err error)
 // and decides: appeared (closed), still in flight, or lost (back to pending
 // under the same identity).
 func (s *Service) confirmHandedMessage(ctx context.Context, m *domain.AgentMessage, sessions []domain.Session) {
+	if strings.HasPrefix(m.ProviderRef, "chat:") {
+		s.confirmChatNotification(ctx, m)
+		return
+	}
 	deliverer, adapter, ok := s.messageDeliverer(agentruntime.AgentKind(m.TargetAgent))
 	if !ok {
 		s.repend(m, "the target agent cannot be inspected")

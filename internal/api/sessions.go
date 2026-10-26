@@ -136,11 +136,12 @@ func (h *sessionsHandler) createRun(w http.ResponseWriter, r *http.Request) {
 	// SessionService.CreateRun itself, so the architect-MCP spawn path — which
 	// never touches this handler — emits exactly the same events as this one.
 
-	writeJSON(w, r, http.StatusCreated, map[string]any{
-		"run":              result.Run,
-		"main_terminal_id": result.MainTerminalID,
-		"ws_url":           websocketURL(r, "/ws/session/"+r.PathValue("id")+"/terminal/"+result.MainTerminalID),
-	})
+	payload := map[string]any{"run": result.Run}
+	if result.MainTerminalID != "" {
+		payload["main_terminal_id"] = result.MainTerminalID
+		payload["ws_url"] = websocketURL(r, "/ws/session/"+r.PathValue("id")+"/terminal/"+result.MainTerminalID)
+	}
+	writeJSON(w, r, http.StatusCreated, payload)
 }
 
 func (h *sessionsHandler) conclude(w http.ResponseWriter, r *http.Request) {

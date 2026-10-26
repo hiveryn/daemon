@@ -20,6 +20,9 @@ func NewSessionStore(db *sql.DB) *SessionStore {
 }
 
 func (s *SessionStore) CreateSession(ctx context.Context, params domain.CreateSessionParams) (domain.Session, error) {
+	if params.InteractionMode == "" {
+		params.InteractionMode = domain.InteractionTerminal
+	}
 	if params.ID == "" {
 		params.ID = uuid.NewString()
 	}
@@ -56,9 +59,9 @@ func (s *SessionStore) CreateSession(ctx context.Context, params domain.CreateSe
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO sessions (id, architect_key, session_type, context_id, prompt, workdir, additional_repos, additional_workdirs, workflows, instructions, created_by, machine, ssh, remote_token, remote_port)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, params.ID, params.ArchitectKey, string(params.SessionType), params.ContextID, params.Prompt, params.Workdir, string(additionalRepos), string(additionalWorkdirs), string(workflows), nullIfEmpty(params.Instructions), nullIfEmpty(string(params.CreatedBy)), params.Machine, params.SSH, params.RemoteToken, params.RemotePort)
+		INSERT INTO sessions (id, architect_key, session_type, context_id, prompt, workdir, additional_repos, additional_workdirs, workflows, instructions, created_by, machine, ssh, remote_token, remote_port, interaction_mode)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, params.ID, params.ArchitectKey, string(params.SessionType), params.ContextID, params.Prompt, params.Workdir, string(additionalRepos), string(additionalWorkdirs), string(workflows), nullIfEmpty(params.Instructions), nullIfEmpty(string(params.CreatedBy)), params.Machine, params.SSH, params.RemoteToken, params.RemotePort, params.InteractionMode)
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("insert session: %w", err)
 	}
@@ -113,7 +116,7 @@ func (s *SessionStore) DeleteSession(ctx context.Context, id string) error {
 
 func intentWithCurrentRunQuery(suffix string) string {
 	return `
-		SELECT i.machine, i.ssh, i.remote_token, i.remote_port, i.id, i.architect_key, i.session_type, i.context_id, i.prompt, i.workdir, i.additional_repos, i.additional_workdirs, i.workflows, COALESCE(i.instructions, ''),
+		SELECT i.interaction_mode, i.machine, i.ssh, i.remote_token, i.remote_port, i.id, i.architect_key, i.session_type, i.context_id, i.prompt, i.workdir, i.additional_repos, i.additional_workdirs, i.workflows, COALESCE(i.instructions, ''),
 		       COALESCE(i.created_by, ''), i.created_at, i.updated_at,
 		       r.id, r.session_id, r.status, COALESCE(r.agent_status, ''), r.profile_name, COALESCE(r.profile_snapshot, ''), COALESCE(r.workdir, ''), COALESCE(r.additional_repos, '[]'), COALESCE(r.additional_workdirs, '[]'),
 		       COALESCE(r.native_id, ''), COALESCE(r.failure_reason, ''), COALESCE(r.started_at, ''), COALESCE(r.ended_at, ''),

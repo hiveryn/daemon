@@ -1,0 +1,662 @@
+package sessionruntime
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/hiveryn/agentruntime"
+	"github.com/hiveryn/daemon/internal/config"
+	"github.com/hiveryn/daemon/internal/domain"
+)
+
+type chatOwner struct {
+	cancel      context.CancelFunc
+	cmd         *exec.Cmd
+	exited      chan struct{}
+	wake        chan struct{}
+	ready       chan struct{}
+	conn        agentruntime.Conversation
+	diagnostics *chatDiagnostics
+	once        sync.Once
+}
+
+func (s *Service) conversationRepo() (domain.ConversationRepository, error) {
+	r, ok := s.repo.(domain.ConversationRepository)
+	if !ok {
+		return nil, fmt.Errorf("conversation persistence is not configured")
+	}
+	return r, nil
+}
+func (s *Service) chatCapabilities(session domain.Session) domain.ConversationCapabilities {
+	c := domain.ConversationCapabilities{ExecutionLocation: "local", Limitation: "Terminal conversation submission is unsupported"}
+	if session.Machine != "" {
+		c.ExecutionLocation = "remote"
+		c.Limitation = "Remote SSH chat is unsupported"
+		return c
+	}
+	if session.InteractionMode == domain.InteractionChat {
+		c.History = true
+		c.Send = session.CurrentRun != nil && session.CurrentRun.Status == domain.SessionRunStatusRunning
+		c.Limitation = "Native permission controls are unavailable; permission requests block the queue"
+	}
+	return c
+}
+func (s *Service) SubmitMessage(ctx context.Context, id string, req domain.SubmissionRequest) (domain.Submission, error) {
+	return s.enqueueChat(ctx, id, req, "user")
+}
+func (s *Service) enqueueChat(ctx context.Context, id string, req domain.SubmissionRequest, origin string) (domain.Submission, error) {
+	if strings.TrimSpace(req.RequestID) == "" || len(req.RequestID) > 200 {
+		return domain.Submission{}, &domain.ValidationError{Field: "request_id", Message: "must contain 1–200 characters"}
+	}
+	if strings.TrimSpace(req.Text) == "" || len(req.Text) > 1<<20 {
+		return domain.Submission{}, &domain.ValidationError{Field: "text", Message: "must contain 1–1048576 bytes"}
+	}
+	repo, err := s.conversationRepo()
+	if err != nil {
+		return domain.Submission{}, err
+	}
+	prior, lookupErr := repo.GetSubmission(ctx, id, domain.SubmissionIdentity(id, req.RequestID))
+	if lookupErr == nil {
+		if prior.Text != req.Text || prior.Origin != origin {
+			return domain.Submission{}, &domain.ConflictError{Resource: "submission", Field: "request_id", Message: "request_id was already used with different text or origin"}
+		}
+		return prior, nil
+	}
+	var missing *domain.NotFoundError
+	if !errors.As(lookupErr, &missing) {
+		return domain.Submission{}, lookupErr
+	}
+	// Serialize admission with teardown. The database serializes all callers'
+	// arrival order and enforces request identity across reconnects/restarts.
+	s.launchMu.Lock()
+	defer s.launchMu.Unlock()
+	if _, ending := s.ending[id]; ending {
+		return domain.Submission{}, &domain.ConflictError{Resource: "session", Message: "session is ending"}
+	}
+	session, err := s.repo.GetSession(ctx, id)
+	if err != nil {
+		return domain.Submission{}, err
+	}
+	if session.InteractionMode != domain.InteractionChat || session.Machine != "" {
+		return domain.Submission{}, &domain.ConflictError{Resource: "session", Message: "send requires a local chat session"}
+	}
+	if session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
+		return domain.Submission{}, &domain.ConflictError{Resource: "session", Message: "session is not running"}
+	}
+	sub, err := repo.EnqueueSubmission(ctx, id, req, origin)
+	if err != nil {
+		return sub, err
+	}
+	s.wakeChat(id)
+	return sub, nil
+}
+func (s *Service) GetSubmission(ctx context.Context, id, submissionID string) (domain.Submission, error) {
+	repo, err := s.conversationRepo()
+	if err != nil {
+		return domain.Submission{}, err
+	}
+	sub, err := repo.GetSubmission(ctx, id, submissionID)
+	if err == nil && sub.Status == "queued" {
+		head, headErr := repo.PendingSubmission(ctx, id)
+		if headErr != nil {
+			return sub, headErr
+		}
+		if head != nil && head.ID != sub.ID && (head.Status == "blocked" || head.Status == "uncertain") {
+			sub.Error = "Waiting for submission " + head.ID + " (" + head.Status + "): " + head.Error
+		}
+	}
+	if sub.Origin == "kickoff" {
+		sub.Text = ""
+	}
+	return sub, err
+}
+func (s *Service) ReadConversation(ctx context.Context, id string, q domain.ConversationQuery) (domain.ConversationPage, error) {
+	if q.AfterRevision < 0 || q.SnapshotRevision < 0 || q.Limit < 0 || q.Limit > 200 {
+		return domain.ConversationPage{}, &domain.ValidationError{Field: "pagination", Message: "revisions must be nonnegative and limit at most 200"}
+	}
+	repo, err := s.conversationRepo()
+	if err != nil {
+		return domain.ConversationPage{}, err
+	}
+	session, sessionErr := s.repo.GetSession(ctx, id)
+	if sessionErr == nil && (session.InteractionMode != domain.InteractionChat || session.Machine != "") {
+		return domain.ConversationPage{}, &domain.ConflictError{Resource: "conversation", Message: "history requires a local chat session"}
+	}
+	var missing *domain.NotFoundError
+	if sessionErr != nil && !errors.As(sessionErr, &missing) {
+		return domain.ConversationPage{}, sessionErr
+	}
+	page, err := repo.ReadConversation(ctx, id, q)
+	if err == nil && sessionErr != nil && page.SnapshotRevision == 0 {
+		return page, sessionErr
+	}
+	return page, err
+}
+func (s *Service) wakeChat(id string) {
+	s.chatMu.Lock()
+	owner := s.chats[id]
+	s.chatMu.Unlock()
+	if owner != nil {
+		select {
+		case owner.wake <- struct{}{}:
+		default:
+		}
+	}
+}
+func (s *Service) activateChat(id string) {
+	s.chatMu.Lock()
+	owner := s.chats[id]
+	s.chatMu.Unlock()
+	if owner != nil {
+		owner.once.Do(func() { close(owner.ready) })
+		s.wakeChat(id)
+	}
+}
+
+func (s *Service) launchChat(ctx context.Context, session domain.Session, run domain.SessionRun, profile config.VariantConfig, kind agentruntime.AgentKind, req agentruntime.StartRequest) error {
+	if session.Machine != "" {
+		return fmt.Errorf("remote SSH chat is unsupported")
+	}
+	repo, err := s.conversationRepo()
+	if err != nil {
+		return err
+	}
+	adapter, ok := s.adapters[kind].(agentruntime.ConversationAdapter)
+	if !ok {
+		return fmt.Errorf("%s has no structured conversation transport", kind)
+	}
+	req.ID = session.ID
+	req.Agent = kind
+	req.DisableNativeQuestions = true
+	req.ClaudeAutoMemory = profile.ClaudeAutoMemory
+	if err := configureOpenCodeArchitectAgent(session, kind, &req); err != nil {
+		return err
+	}
+	req.MCPServers, err = s.mcpServersForSession(session.SessionType, session.ArchitectKey, session.ID, profile.MCP)
+	if err != nil {
+		return err
+	}
+	if kind == agentruntime.AgentOpenCode {
+		req.MessageDelivery, err = s.messageDeliveryFor(session.ID, kind)
+		if err != nil {
+			return err
+		}
+	}
+	spec, err := adapter.PrepareConversation(ctx, req)
+	if err != nil {
+		return fmt.Errorf("prepare %s chat: %w", kind, err)
+	}
+	cleanup := func() {
+		for _, path := range spec.Launch.CleanupPaths {
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				s.logger.Error("remove chat launch artifact", "error", err)
+			}
+		}
+	}
+	// The lock is inherited by the child. A previous owner surviving a daemon
+	// crash prevents a second submitter, even if its native ID is already known.
+	dir := filepath.Join(os.TempDir(), fmt.Sprintf("hiveryn-chat-%d", os.Getuid()))
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		cleanup()
+		return err
+	}
+	lock, err := os.OpenFile(filepath.Join(dir, session.ID+".lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		cleanup()
+		return err
+	}
+	ownershipDeadline := time.Now().Add(3 * time.Second)
+	for {
+		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil || !errors.Is(err, syscall.EWOULDBLOCK) || time.Now().After(ownershipDeadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	if err != nil {
+		_ = lock.Close()
+		cleanup()
+		return fmt.Errorf("chat owner remains or ownership cannot be established: %w", err)
+	}
+	lifetime, cancel := context.WithCancel(context.Background())
+	owner := &chatOwner{cancel: cancel, exited: make(chan struct{}), wake: make(chan struct{}, 1), ready: make(chan struct{})}
+	watchRead, watchWrite, err := os.Pipe()
+	if err != nil {
+		cancel()
+		_ = lock.Close()
+		cleanup()
+		return err
+	}
+	// A separate inherited read end observes daemon death without PID polling.
+	// The small watcher lives in the owned process group; EOF terminates that
+	// group on macOS as well as Linux. It also retains the ownership lock until
+	// the previous group has stopped, preventing overlapping restart owners.
+	argv := append([]string{"-c", `( IFS= read -r _ <&4; kill -TERM -- -$$ ) & exec "$@"`, "hiveryn-chat", spec.Launch.Command}, spec.Launch.Args...)
+	cmd := exec.Command("/bin/sh", argv...)
+	owner.cmd = cmd
+	cmd.Dir = spec.Launch.Workdir
+	cmd.Env = mergeProcessEnv(spec.Launch.Env, spec.Launch.Workdir)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.ExtraFiles = []*os.File{lock, watchRead}
+	stdout, stdoutWrite, err := os.Pipe()
+	if err != nil {
+		_ = watchRead.Close()
+		_ = watchWrite.Close()
+		cancel()
+		_ = lock.Close()
+		cleanup()
+		return err
+	}
+	cmd.Stdout = stdoutWrite
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		_ = stdout.Close()
+		_ = stdoutWrite.Close()
+		_ = watchRead.Close()
+		_ = watchWrite.Close()
+		cancel()
+		_ = lock.Close()
+		cleanup()
+		return err
+	}
+	stderr, stderrWrite, err := os.Pipe()
+	if err != nil {
+		cancel()
+		_ = watchRead.Close()
+		_ = watchWrite.Close()
+		_ = stdout.Close()
+		_ = stdoutWrite.Close()
+		_ = lock.Close()
+		cleanup()
+		return err
+	}
+	diagnosticEnv := append([]string(nil), cmd.Env...)
+	for _, server := range req.MCPServers {
+		for key, value := range server.Env {
+			diagnosticEnv = append(diagnosticEnv, key+"="+value)
+		}
+	}
+	diagnostics := newChatDiagnostics(diagnosticEnv)
+	owner.diagnostics = diagnostics
+	stderrDone := make(chan struct{})
+	cmd.Stderr = stderrWrite
+	if err = cmd.Start(); err != nil {
+		_ = stdout.Close()
+		_ = stdoutWrite.Close()
+		_ = stderr.Close()
+		_ = stderrWrite.Close()
+		_ = watchRead.Close()
+		_ = watchWrite.Close()
+		cancel()
+		_ = lock.Close()
+		cleanup()
+		return err
+	}
+	_ = watchRead.Close()
+	_ = stdoutWrite.Close()
+	_ = stderrWrite.Close()
+	go func() { defer close(stderrDone); _, _ = io.Copy(diagnostics, stderr); _ = stderr.Close() }()
+	s.chatMu.Lock()
+	if s.chats == nil {
+		s.chats = map[string]*chatOwner{}
+	}
+	s.chats[session.ID] = owner
+	s.chatMu.Unlock()
+	go func() {
+		err := cmd.Wait()
+		_ = watchWrite.Close()
+		cancel()
+		_ = lock.Close()
+		close(owner.exited)
+		cleanup()
+		defer s.chatExited(session.ID, owner)
+		if err != nil {
+			s.logger.Error("chat provider exited", "session_id", session.ID, "error", err)
+		}
+	}()
+	result := make(chan error, 1)
+	go func() {
+		conn, err := spec.Connect(lifetime, stdout, stdin)
+		if err == nil {
+			owner.conn = conn
+		}
+		result <- err
+	}()
+	select {
+	case err = <-result:
+	case <-ctx.Done():
+		err = ctx.Err()
+	}
+	if err != nil {
+		_ = stdout.Close()
+		_ = s.stopChat(context.Background(), session.ID, false)
+		select {
+		case <-stderrDone:
+		case <-time.After(100 * time.Millisecond):
+		}
+		return fmt.Errorf("connect %s chat: %w; provider diagnostics: %s", kind, err, diagnostics.String())
+	}
+	if err = s.repo.UpdateRunNativeID(ctx, run.ID, owner.conn.NativeID()); err != nil {
+		_ = stdout.Close()
+		_ = s.stopChat(context.Background(), session.ID, false)
+		return err
+	}
+	if req.Resume {
+		if err = s.reconcileChat(ctx, session.ID, owner.conn); err != nil {
+			s.logger.Error("reconcile native chat receipt", "session_id", session.ID, "error", err)
+		}
+		if err = repo.SettleSubmissions(ctx, session.ID, "uncertain", "Provider owner restarted; prior in-flight delivery/completion is unconfirmed. Not replayed."); err != nil {
+			_ = stdout.Close()
+			_ = s.stopChat(context.Background(), session.ID, false)
+			return err
+		}
+	} else {
+		// Queue the unchanged launch prompt before exposing the live session. It
+		// remains internal context and is never returned as conversation text.
+		if _, err = repo.EnqueueSubmission(ctx, session.ID, domain.SubmissionRequest{RequestID: "kickoff:" + run.ID, Text: req.Prompt}, "kickoff"); err != nil {
+			_ = stdout.Close()
+			_ = s.stopChat(context.Background(), session.ID, false)
+			return err
+		}
+	}
+	go func() { <-lifetime.Done(); _ = stdout.Close() }()
+	go s.runChat(lifetime, session, run, owner)
+	if req.Resume {
+		s.activateChat(session.ID)
+	}
+	return nil
+}
+func (s *Service) runChat(ctx context.Context, session domain.Session, run domain.SessionRun, owner *chatOwner) {
+	repo, err := s.conversationRepo()
+	if err != nil {
+		return
+	}
+	select {
+	case <-ctx.Done():
+		return
+	case <-owner.ready:
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-owner.wake:
+		}
+		for ctx.Err() == nil {
+			sub, err := repo.ReserveSubmission(ctx, session.ID)
+			if err != nil {
+				s.logger.Error("reserve chat submission", "error", err)
+				return
+			}
+			if sub == nil {
+				break
+			}
+			if err = s.setChatStatus(ctx, run, domain.AgentStatusActive); err != nil {
+				s.logger.Error("set chat status", "error", err)
+				return
+			}
+			complete := false
+			err = owner.conn.Turn(ctx, agentruntime.ConversationInput{ID: sub.ID, Text: sub.Text, Origin: sub.Origin}, func(e agentruntime.ConversationEvent) error {
+				if e.TurnID != "" {
+					sub.NativeTurnID = e.TurnID
+				}
+				if e.Status == "blocked" {
+					sub.Status = "blocked"
+					sub.Error = e.Text
+					if err := s.setChatStatus(ctx, run, domain.AgentStatusWaiting); err != nil {
+						return err
+					}
+				}
+				if e.Complete {
+					complete = true
+					sub.Status = e.Status
+					sub.Error = ""
+					if e.Status == "failed" {
+						sub.Error = e.Text
+					}
+				}
+				// Hide the kickoff and its native user echo. Public history includes only
+				// user/assistant/tool output, not the role/workflow instruction material.
+				if (sub.Origin != "kickoff" || e.Role != "user") && e.ID != "" {
+					if err := repo.PutConversationItem(ctx, session.ID, domain.ConversationItem{ID: e.ID, SubmissionID: sub.ID, NativeTurnID: e.TurnID, Role: e.Role, Origin: sub.Origin, Text: e.Text, Tool: e.Tool, Status: e.Status, At: e.At}); err != nil {
+						return err
+					}
+				}
+				return repo.UpdateSubmission(ctx, *sub)
+			})
+			if err != nil || !complete {
+				sub.Status = "uncertain"
+				sub.Error = "Native delivery/completion is unconfirmed; not replayed"
+				if err != nil {
+					sub.Error += ": " + err.Error()
+				}
+				if owner.diagnostics != nil && owner.diagnostics.String() != "" {
+					sub.Error += "; provider diagnostics: " + owner.diagnostics.String()
+				}
+				saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				saveErr := repo.UpdateSubmission(saveCtx, *sub)
+				if ctx.Err() == nil {
+					if statusErr := s.setChatStatus(saveCtx, run, domain.AgentStatusWaiting); statusErr != nil {
+						s.logger.Error("set chat waiting status", "error", statusErr)
+					}
+				}
+				cancel()
+				if saveErr != nil {
+					s.logger.Error("persist uncertain chat submission", "error", saveErr)
+				}
+				if ctx.Err() == nil {
+					s.logger.Error("chat turn interrupted", "session_id", session.ID, "error", err)
+				}
+				return
+			}
+			if err = s.setChatStatus(ctx, run, domain.AgentStatusIdle); err != nil {
+				s.logger.Error("set chat status", "error", err)
+				return
+			}
+		}
+	}
+}
+func (s *Service) stopChat(ctx context.Context, id string, settle bool) error {
+	s.chatMu.Lock()
+	owner := s.chats[id]
+	s.chatMu.Unlock()
+	if settle {
+		repo, err := s.conversationRepo()
+		if err == nil {
+			if err = repo.SettleSubmissions(ctx, id, "failed", "Session ended before submission completed"); err != nil {
+				return err
+			}
+		}
+	}
+	s.chatMu.Lock()
+	if s.chats[id] == owner {
+		delete(s.chats, id)
+	}
+	s.chatMu.Unlock()
+	if owner == nil {
+		return nil
+	}
+	owner.cancel()
+	select {
+	case <-owner.exited:
+		return nil
+	default:
+	}
+	if err := syscall.Kill(-owner.cmd.Process.Pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	select {
+	case <-owner.exited:
+		return nil
+	case <-time.After(3 * time.Second):
+	}
+	if err := syscall.Kill(-owner.cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	select {
+	case <-owner.exited:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Service) chatExited(id string, owner *chatOwner) {
+	s.chatMu.Lock()
+	current := s.chats[id]
+	s.chatMu.Unlock()
+	if current != owner || !s.beginLaunch(id) {
+		return
+	}
+	defer s.endLaunch(id)
+	s.chatMu.Lock()
+	if s.chats[id] != owner {
+		s.chatMu.Unlock()
+		return
+	}
+	delete(s.chats, id)
+	s.chatMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), defaultRunLaunchTimeout)
+	defer cancel()
+	session, err := s.repo.GetSession(ctx, id)
+	if err != nil || session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
+		return
+	}
+	if err = s.restoreSession(ctx, session, *session.CurrentRun); err != nil {
+		s.logger.Error("restore chat owner", "session_id", id, "error", err)
+		s.failChatRestore(ctx, id, err)
+		s.markRunFailed(session.CurrentRun.ID, domain.SessionRunFailureRestoreFailed, "chat_owner_exit")
+		if session.SessionType == domain.SessionTypeTicket {
+			if err = s.moveTicketToBacklog(ctx, session); err != nil {
+				s.logger.Error("move failed chat ticket to backlog", "error", err)
+			}
+		}
+	}
+}
+
+func (s *Service) deliverChatNotification(ctx context.Context, m *domain.AgentMessage, target messageTarget) {
+	m.TargetSessionID = target.session.ID
+	m.TargetAgent = string(target.agent)
+	m.TargetNativeID = target.run.NativeID
+	m.ProviderRef = "chat:" + domain.SubmissionIdentity(target.session.ID, "notification:"+m.ID)
+	if !s.reserveMessageAttempt(ctx, m) {
+		return
+	}
+	sub, err := s.enqueueChat(ctx, target.session.ID, domain.SubmissionRequest{RequestID: "notification:" + m.ID, Text: messageText(*m)}, "notification")
+	if err != nil {
+		m.LastError = err.Error()
+		m.Condition = "chat notification admission failed: " + err.Error()
+		return
+	}
+	s.markMessageHanded(m, "chat:"+sub.ID, "queued with user turns under the chat session's sole submitter")
+}
+func (s *Service) confirmChatNotification(ctx context.Context, m *domain.AgentMessage) {
+	sub, err := s.GetSubmission(ctx, m.TargetSessionID, strings.TrimPrefix(m.ProviderRef, "chat:"))
+	if err != nil {
+		var missing *domain.NotFoundError
+		if errors.As(err, &missing) { // reservation survived but queue insert did not
+			_, admitErr := s.enqueueChat(ctx, m.TargetSessionID, domain.SubmissionRequest{RequestID: "notification:" + m.ID, Text: messageText(*m)}, "notification")
+			if admitErr == nil {
+				m.Condition = "chat queue admission recovered"
+				return
+			}
+			err = admitErr
+		}
+		var gone *domain.NotFoundError
+		if errors.As(err, &gone) {
+			s.repend(m, "chat target ended before queue admission")
+			return
+		}
+		m.Condition = "chat receipt unavailable: " + err.Error()
+		return
+	}
+	switch sub.Status {
+	case "completed":
+		now := s.messages.now()
+		m.State = domain.AgentMessageAcknowledged
+		m.AppearedAt = &now
+		m.AcknowledgedAt = &now
+		m.Condition = ""
+	case "failed":
+		if sub.NativeTurnID == "" && strings.HasPrefix(sub.Error, "Session ended") {
+			s.repend(m, "chat session ended before notification dispatch")
+			return
+		}
+		s.markMessageFailed(m, "chat submission failed: "+sub.Error)
+	default:
+		m.Condition = "chat submission " + sub.Status
+		if sub.Error != "" {
+			m.Condition += ": " + sub.Error
+		}
+	}
+}
+
+func (s *Service) reconcileChat(ctx context.Context, id string, conn agentruntime.Conversation) error {
+	repo, err := s.conversationRepo()
+	if err != nil {
+		return err
+	}
+	sub, err := repo.PendingSubmission(ctx, id)
+	if err != nil || sub == nil || sub.Status == "queued" {
+		return err
+	}
+	reconciler, ok := conn.(agentruntime.ConversationReconciler)
+	if !ok {
+		return nil
+	}
+	events, err := reconciler.Reconcile(ctx, agentruntime.ConversationInput{ID: sub.ID, Text: sub.Text, Origin: sub.Origin}, sub.NativeTurnID)
+	if err != nil {
+		return err
+	}
+	for _, e := range events {
+		if err = repo.PutConversationItem(ctx, id, domain.ConversationItem{ID: e.ID, SubmissionID: sub.ID, NativeTurnID: e.TurnID, Role: e.Role, Origin: sub.Origin, Text: e.Text, Tool: e.Tool, Status: e.Status, At: e.At}); err != nil {
+			return err
+		}
+		if e.Complete {
+			sub.Status = e.Status
+			sub.Error = e.Text
+			if err = repo.UpdateSubmission(ctx, *sub); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Service) setChatStatus(ctx context.Context, run domain.SessionRun, status string) error {
+	if err := s.repo.UpdateRunAgentStatus(ctx, run.ID, status); err != nil {
+		return err
+	}
+	return s.appendAndPublishSessionEvent(ctx, domain.AppendSessionEventParams{SessionID: run.SessionID, RunID: run.ID, Type: "agent_status", Status: status, At: time.Now().UTC()})
+}
+
+func (s *Service) failChatRestore(ctx context.Context, id string, cause error) {
+	repo, err := s.conversationRepo()
+	if err != nil {
+		s.logger.Error("chat restore disposition", "error", err)
+		return
+	}
+	reason := "Chat owner could not be restored: " + cause.Error()
+	if err = repo.SettleSubmissions(ctx, id, "uncertain", reason+"; prior delivery/completion remains unconfirmed"); err != nil {
+		s.logger.Error("settle interrupted chat", "error", err)
+	}
+	if err = repo.FailQueuedSubmissions(ctx, id, reason); err != nil {
+		s.logger.Error("settle queued chat", "error", err)
+	}
+}

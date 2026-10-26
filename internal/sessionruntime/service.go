@@ -42,6 +42,8 @@ var defaultTabsBySessionType = map[string][]config.TabEntry{
 }
 
 type Service struct {
+	chatMu             sync.Mutex
+	chats              map[string]*chatOwner
 	workspaceMutation  func(context.Context, string, []string, func() error) error
 	workspaceReconcile func(context.Context, string) error
 	remoteStop         chan struct{}
@@ -216,6 +218,13 @@ func (s *Service) currentArchitect(key string) (config.ArchitectConfig, error) {
 // sessions — the explicit workflow selection, validated against the workspace
 // as it is on disk right now.
 func (s *Service) CreateSession(ctx context.Context, req domain.CreateSessionRequest) (domain.Session, error) {
+	if req.InteractionMode == "" {
+		req.InteractionMode = domain.InteractionTerminal
+	}
+	if req.InteractionMode != domain.InteractionTerminal && req.InteractionMode != domain.InteractionChat {
+		return domain.Session{}, &domain.ValidationError{Field: "interaction_mode", Message: "must be terminal or chat"}
+	}
+
 	cfg, err := s.currentConfig()
 	if err != nil {
 		return domain.Session{}, err
@@ -253,7 +262,8 @@ func (s *Service) CreateSession(ctx context.Context, req domain.CreateSessionReq
 		if err != nil {
 			return domain.Session{}, err
 		}
-		return s.repo.CreateSession(ctx, domain.CreateSessionParams{
+		return s.createStoredSession(ctx, domain.CreateSessionParams{
+			InteractionMode:    req.InteractionMode,
 			ArchitectKey:       req.ArchitectKey,
 			SessionType:        domain.SessionTypeArchitect,
 			ContextID:          now.Format("2006-01-02-1504"),
@@ -269,8 +279,12 @@ func (s *Service) CreateSession(ctx context.Context, req domain.CreateSessionReq
 		if err != nil {
 			return domain.Session{}, err
 		}
+		params.InteractionMode = req.InteractionMode
+		if params.InteractionMode == domain.InteractionChat && params.Machine != "" {
+			return domain.Session{}, &domain.ValidationError{Field: "interaction_mode", Message: "remote SSH chat is unsupported"}
+		}
 		params.CreatedBy = domain.SessionCreatedByDesktop
-		return s.repo.CreateSession(ctx, params)
+		return s.createStoredSession(ctx, params)
 	default:
 		return domain.Session{}, &domain.ValidationError{Field: "session_type", Message: "must be 'architect' or 'ticket'"}
 	}
@@ -408,6 +422,9 @@ func (s *Service) CreateRun(ctx context.Context, sessionID string, req domain.Cr
 func (s *Service) beginLaunch(sessionID string) bool {
 	s.launchMu.Lock()
 	defer s.launchMu.Unlock()
+	if _, ending := s.ending[sessionID]; ending {
+		return false
+	}
 	if _, busy := s.launching[sessionID]; busy {
 		return false
 	}
@@ -439,6 +456,9 @@ const sessionTeardownTimeout = 2 * time.Minute
 func (s *Service) beginTeardown(ctx context.Context, sessionID string) (context.Context, func(), error) {
 	s.launchMu.Lock()
 	defer s.launchMu.Unlock()
+	if _, launching := s.launching[sessionID]; launching {
+		return nil, nil, &domain.ConflictError{Resource: "session", Message: "session launch is still in progress"}
+	}
 	if _, busy := s.ending[sessionID]; busy {
 		return nil, nil, &domain.ConflictError{Resource: "session", Field: "id", Message: "this session is already being ended; its outcome is published when it finishes"}
 	}
@@ -530,7 +550,7 @@ func (s *Service) createRun(ctx context.Context, sessionID string, req domain.Cr
 		return domain.CreateSessionRunResult{}, err
 	}
 
-	s.logger.Info("[spawn] starting session run PTY",
+	s.logger.Info("[spawn] starting session run",
 		"session_id", session.ID,
 		"run_id", run.ID,
 		"session_type", session.SessionType,
@@ -559,6 +579,11 @@ func (s *Service) createRun(ctx context.Context, sessionID string, req domain.Cr
 	if session.SessionType == domain.SessionTypeTicket {
 		ticketID = session.ContextID
 		if _, err := s.tickets.MoveTicket(ctx, architect.Path, session.ContextID, domain.MoveTicketParams{To: domain.TicketStatusProgress}); err != nil {
+			if session.InteractionMode == domain.InteractionChat {
+				if stopErr := s.stopChat(ctx, session.ID, true); stopErr != nil {
+					return domain.CreateSessionRunResult{}, stopErr
+				}
+			}
 			if stopErr := s.stopRemote(ctx, session); stopErr != nil {
 				return domain.CreateSessionRunResult{}, fmt.Errorf("move ticket to progress: %w; remote cleanup: %v", err, stopErr)
 			}
@@ -575,7 +600,7 @@ func (s *Service) createRun(ctx context.Context, sessionID string, req domain.Cr
 
 	// Announce the session on the architect stream. This is the single point in
 	// the daemon where a run becomes genuinely live — it has a running run and a
-	// main terminal — and every caller reaches it: the desktop's
+	// ready terminal or chat owner — and every caller reaches it: the desktop's
 	// POST /api/sessions/{id}/runs and an approved spawnTicketWorker alike.
 	//
 	// It is also the only event anywhere that names a session id, so it is the
@@ -584,6 +609,9 @@ func (s *Service) createRun(ctx context.Context, sessionID string, req domain.Cr
 	// from drifting apart. Publish last, so a subscriber that reacts by refetching
 	// always observes the fully launched session.
 	s.emitArchitectEvent(session.ArchitectKey, domain.ArchitectEventSessionStarted, ticketID, session.ID)
+	if session.InteractionMode == domain.InteractionChat {
+		s.activateChat(session.ID)
+	}
 
 	return domain.CreateSessionRunResult{Run: run, MainTerminalID: mainTerminalID}, nil
 }
@@ -613,6 +641,9 @@ func hookCommandForAgent(agentKind agentruntime.AgentKind) agentruntime.HookComm
 }
 
 func (s *Service) launchSession(ctx context.Context, cfg config.Config, session domain.Session, run domain.SessionRun, profile config.VariantConfig, agentKind agentruntime.AgentKind, startReq agentruntime.StartRequest, size terminalSize) (string, error) {
+	if session.InteractionMode == domain.InteractionChat {
+		return "", s.launchChat(ctx, session, run, profile, agentKind, startReq)
+	}
 	mainTerminalID, spec, err := s.startSessionMainTerminal(ctx, session, run, profile, agentKind, startReq, size)
 	if err != nil {
 		return "", err
@@ -658,6 +689,9 @@ func (s *Service) RestoreRunningSessions(ctx context.Context) error {
 		}
 		run := *session.CurrentRun
 		if err := s.restoreSession(ctx, session, run); err != nil {
+			if session.InteractionMode == domain.InteractionChat {
+				s.failChatRestore(ctx, session.ID, err)
+			}
 			if session.Machine != "" {
 				s.logger.Error("remote attachment restore failed; worker lifecycle retained", "session_id", session.ID, "error", err)
 				s.storeSessionTerminalState(session.ID, sessionTerminalState{runID: run.ID, mainTerminalID: uuid.NewString(), tabs: []sessionTabState{{tab: domain.SessionTab{Type: "ticket"}}}})
@@ -1080,6 +1114,9 @@ func (s *Service) UnspawnTicketSession(ctx context.Context, id string) (domain.C
 		return domain.ConcludeSessionResult{}, err
 	}
 
+	if err := s.stopChat(ctx, session.ID, true); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
 	if err := s.terminal.KillBySession(ctx, session.ID); err != nil && !errors.Is(err, errTerminalNotFound) {
 		return domain.ConcludeSessionResult{}, fmt.Errorf("kill session terminal: %w", err)
 	}
@@ -1388,6 +1425,9 @@ func (s *Service) concludeArchitectSession(ctx context.Context, session domain.S
 		return domain.ConcludeSessionResult{}, err
 	}
 
+	if err := s.stopChat(ctx, session.ID, true); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
 	if err := s.terminal.KillBySession(ctx, session.ID); err != nil && !errors.Is(err, errTerminalNotFound) {
 		return domain.ConcludeSessionResult{}, fmt.Errorf("kill session terminal: %w", err)
 	}
@@ -1526,6 +1566,9 @@ func (s *Service) concludeTicketSession(ctx context.Context, session domain.Sess
 		return domain.ConcludeSessionResult{}, err
 	}
 
+	if err := s.stopChat(ctx, session.ID, true); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
 	if err := s.terminal.KillBySession(ctx, session.ID); err != nil && !errors.Is(err, errTerminalNotFound) {
 		return domain.ConcludeSessionResult{}, fmt.Errorf("kill session terminal: %w", err)
 	}
@@ -1746,6 +1789,9 @@ func (s *Service) TerminateSession(ctx context.Context, id string) error {
 		return err
 	}
 
+	if err := s.stopChat(ctx, id, true); err != nil {
+		return err
+	}
 	if err := s.terminal.KillBySession(ctx, id); err != nil && !errors.Is(err, errTerminalNotFound) {
 		return err
 	}
@@ -2066,8 +2112,15 @@ func (s *Service) ListTerminals(ctx context.Context, sessionID string) ([]domain
 }
 
 func (s *Service) ListSessionTabs(ctx context.Context, sessionID string) ([]domain.SessionTab, error) {
-	if _, err := s.repo.GetSession(ctx, sessionID); err != nil {
+	session, err := s.repo.GetSession(ctx, sessionID)
+	if err != nil {
 		return nil, err
+	}
+	if session.InteractionMode == domain.InteractionChat {
+		if session.SessionType == domain.SessionTypeTicket {
+			return []domain.SessionTab{{Type: "ticket"}}, nil
+		}
+		return []domain.SessionTab{{Type: "kanban"}}, nil
 	}
 
 	tabs := s.sessionTabs(sessionID)
@@ -2137,6 +2190,17 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	s.remoteMu.Unlock()
 	for _, id := range ids {
 		s.closeRemote(id)
+	}
+	s.chatMu.Lock()
+	chatIDs := []string{}
+	for id := range s.chats {
+		chatIDs = append(chatIDs, id)
+	}
+	s.chatMu.Unlock()
+	for _, id := range chatIDs {
+		if err := s.stopChat(ctx, id, false); err != nil {
+			return err
+		}
 	}
 	terminalErr := s.terminal.Shutdown(ctx)
 	s.cancelReceiverBridges()
@@ -2960,6 +3024,10 @@ func cloneSessionTabState(tab sessionTabState) sessionTabState {
 }
 
 func (s *Service) hydrateSession(session domain.Session) domain.Session {
+	if session.InteractionMode == "" {
+		session.InteractionMode = domain.InteractionTerminal
+	}
+	session.Conversation = s.chatCapabilities(session)
 	if session.Machine != "" {
 		session.Connection = "disconnected"
 		s.remoteMu.Lock()
@@ -3006,4 +3074,12 @@ func errorString(err error) string {
 func (s *Service) SetWorkspaceLifecycle(mutate func(context.Context, string, []string, func() error) error, reconcile func(context.Context, string) error) {
 	s.workspaceMutation = mutate
 	s.workspaceReconcile = reconcile
+}
+
+func (s *Service) createStoredSession(ctx context.Context, params domain.CreateSessionParams) (domain.Session, error) {
+	session, err := s.repo.CreateSession(ctx, params)
+	if err != nil {
+		return session, err
+	}
+	return s.hydrateSession(session), nil
 }

@@ -1,0 +1,356 @@
+{
+  "kind": "isolated daemon native acceptance",
+  "observations": [
+    {
+      "provider": "codex",
+      "scratch": "bin/chat-acceptance/run-1793004967",
+      "submissions": [
+        {
+          "session_id": "d6d8bc2c-d090-4a67-b43f-d34286506ab1",
+          "request_id": "first",
+          "status": "completed",
+          "native_turn_id": "01a1776c-e3c7-7a43-90ac-b15fd51d242a",
+          "error": ""
+        },
+        {
+          "session_id": "d6d8bc2c-d090-4a67-b43f-d34286506ab1",
+          "request_id": "second",
+          "status": "completed",
+          "native_turn_id": "01a1776c-ef16-7930-80a5-0393dc77f670",
+          "error": ""
+        },
+        {
+          "session_id": "d6d8bc2c-d090-4a67-b43f-d34286506ab1",
+          "request_id": "third",
+          "status": "completed",
+          "native_turn_id": "01a1776c-f671-75a0-b4a6-d7afed4aeeea",
+          "error": ""
+        },
+        {
+          "session_id": "d6d8bc2c-d090-4a67-b43f-d34286506ab1",
+          "request_id": "question",
+          "status": "completed",
+          "native_turn_id": "01a1776d-15a4-7941-b73c-9e0f8e39a369",
+          "error": ""
+        },
+        {
+          "session_id": "d6d8bc2c-d090-4a67-b43f-d34286506ab1",
+          "request_id": "notify",
+          "status": "completed",
+          "native_turn_id": "01a1776d-28da-7910-81bf-eb2fccd9c80e",
+          "error": ""
+        },
+        {
+          "session_id": "d6d8bc2c-d090-4a67-b43f-d34286506ab1",
+          "request_id": "conclude",
+          "status": "failed",
+          "native_turn_id": "01a1776d-c6ae-7af2-90fb-f5172cdc145f",
+          "error": "Session ended before submission completed"
+        }
+      ]
+    },
+    {
+      "provider": "claude",
+      "scratch": "bin/chat-acceptance/run-1793005538",
+      "submissions": [
+        {
+          "session_id": "7c169fd3-cfe0-4281-a8f2-5da017e50eea",
+          "request_id": "first",
+          "status": "completed",
+          "native_turn_id": "a62f2e65-0df9-5c43-9cc3-781c7a92d91b",
+          "error": ""
+        },
+        {
+          "session_id": "7c169fd3-cfe0-4281-a8f2-5da017e50eea",
+          "request_id": "second",
+          "status": "completed",
+          "native_turn_id": "f9606346-9806-597c-b9c0-ee06d695c5ac",
+          "error": ""
+        },
+        {
+          "session_id": "7c169fd3-cfe0-4281-a8f2-5da017e50eea",
+          "request_id": "third",
+          "status": "completed",
+          "native_turn_id": "00138041-3ed8-5c81-8639-deaa3fbe490b",
+          "error": ""
+        },
+        {
+          "session_id": "7c169fd3-cfe0-4281-a8f2-5da017e50eea",
+          "request_id": "question",
+          "status": "completed",
+          "native_turn_id": "744891e3-14f8-50ce-b2c5-5171696396c3",
+          "error": ""
+        },
+        {
+          "session_id": "7c169fd3-cfe0-4281-a8f2-5da017e50eea",
+          "request_id": "notify",
+          "status": "completed",
+          "native_turn_id": "1dc8179e-bf6f-5a38-91b6-9eecfd812753",
+          "error": ""
+        },
+        {
+          "session_id": "7c169fd3-cfe0-4281-a8f2-5da017e50eea",
+          "request_id": "conclude",
+          "status": "failed",
+          "native_turn_id": "865d9850-66a9-54e7-a662-0f3ac15c0f69",
+          "error": "Session ended before submission completed"
+        }
+      ]
+    },
+    {
+      "provider": "opencode",
+      "scratch": "bin/chat-acceptance/run-1793005147",
+      "submissions": [
+        {
+          "session_id": "3876db66-6ccc-4f58-9d07-558685c6361a",
+          "request_id": "first",
+          "status": "completed",
+          "native_turn_id": "msg_1776f7429000bfc7f132c39649",
+          "error": ""
+        },
+        {
+          "session_id": "3876db66-6ccc-4f58-9d07-558685c6361a",
+          "request_id": "second",
+          "status": "completed",
+          "native_turn_id": "msg_1776f7ab3000b6a4a2dd433e49",
+          "error": ""
+        },
+        {
+          "session_id": "3876db66-6ccc-4f58-9d07-558685c6361a",
+          "request_id": "third",
+          "status": "completed",
+          "native_turn_id": "msg_1776fac820005edd7f79694542",
+          "error": ""
+        },
+        {
+          "session_id": "3876db66-6ccc-4f58-9d07-558685c6361a",
+          "request_id": "question",
+          "status": "completed",
+          "native_turn_id": "msg_1776fb994000f3d976ba6ba84a",
+          "error": ""
+        },
+        {
+          "session_id": "3876db66-6ccc-4f58-9d07-558685c6361a",
+          "request_id": "notify",
+          "status": "completed",
+          "native_turn_id": "msg_1776fc6b3000da18d14e662a4b",
+          "error": ""
+        },
+        {
+          "session_id": "3876db66-6ccc-4f58-9d07-558685c6361a",
+          "request_id": "conclude",
+          "status": "failed",
+          "native_turn_id": "msg_1776fd29a000e11b3474a18840",
+          "error": "Session ended before submission completed"
+        }
+      ]
+    },
+    {
+      "provider": "opencode-crash-notification",
+      "scratch": "bin/chat-acceptance/run-1793005574",
+      "submissions": [
+        {
+          "session_id": "43c20522-bdda-4130-9e14-0f2b33d38d60",
+          "request_id": "first",
+          "status": "completed",
+          "native_turn_id": "msg_17775f8b8000a16f2e4498305c",
+          "error": ""
+        },
+        {
+          "session_id": "43c20522-bdda-4130-9e14-0f2b33d38d60",
+          "request_id": "second",
+          "status": "completed",
+          "native_turn_id": "msg_17775fdd10005fa4daa844df5c",
+          "error": ""
+        },
+        {
+          "session_id": "43c20522-bdda-4130-9e14-0f2b33d38d60",
+          "request_id": "third",
+          "status": "completed",
+          "native_turn_id": "msg_177760bd6000cade6679708f5b",
+          "error": ""
+        },
+        {
+          "session_id": "43c20522-bdda-4130-9e14-0f2b33d38d60",
+          "request_id": "question",
+          "status": "completed",
+          "native_turn_id": "msg_1777618ef0008103dd9ab5be58",
+          "error": ""
+        },
+        {
+          "session_id": "43c20522-bdda-4130-9e14-0f2b33d38d60",
+          "request_id": "notify",
+          "status": "completed",
+          "native_turn_id": "msg_17776274c000a132a82d344355",
+          "error": ""
+        },
+        {
+          "session_id": "43c20522-bdda-4130-9e14-0f2b33d38d60",
+          "request_id": "conclude",
+          "status": "failed",
+          "native_turn_id": "msg_177763469000ace1b29ee8a650",
+          "error": "Session ended before submission completed"
+        },
+        {
+          "session_id": "c358f08b-a03f-45a5-a763-87eb15478f6e",
+          "request_id": "notification:4e8f04ad-fab3-4d6a-8cbb-63370168f962",
+          "status": "uncertain",
+          "native_turn_id": "msg_177763f270002eb6fc8ac2a25c",
+          "error": "Native delivery/completion is unconfirmed; not replayed : context canceled"
+        }
+      ]
+    },
+    {
+      "provider": "codex-native-permission",
+      "scratch": "bin/chat-acceptance/run-1793005812",
+      "submissions": [
+        {
+          "session_id": "1f0015c9-a12c-4c6e-87f7-108d6de6717f",
+          "request_id": "waiting",
+          "status": "failed",
+          "native_turn_id": "",
+          "error": "Session ended before submission completed"
+        }
+      ]
+    }
+  ],
+  "versions": {
+    "claude": "2.1.310 (Claude Code)",
+    "codex": "codex-cli 0.164.0",
+    "opencode": "1.17.18"
+  },
+  "negative_catalog": [
+    {
+      "request_id": "kickoff:e214ba1b-99fe-4d1e-852e-1261ac7e3f45",
+      "status": "failed",
+      "error": "Session ended before submission completed"
+    },
+    {
+      "request_id": "negative",
+      "status": "failed",
+      "error": "Session ended before submission completed"
+    }
+  ],
+  "ownership_permission_notification": [
+    {
+      "provider": "opencode",
+      "crash_owned_groups_exited": [
+        [
+          77387,
+          77387
+        ],
+        [
+          77399,
+          77399
+        ]
+      ]
+    },
+    {
+      "provider": "opencode",
+      "notification_items": [
+        {
+          "id": "2eb6fc8a-c2a2-5c6f-8488-bffa682fd166",
+          "role": "user",
+          "origin": "notification",
+          "status": "started",
+          "native_turn_id": "msg_177763f270002eb6fc8ac2a25c"
+        },
+        {
+          "id": "prt_177765283001k18yzeSZS4Q7nv",
+          "role": "tool",
+          "origin": "notification",
+          "status": "running",
+          "native_turn_id": "msg_177763f270002eb6fc8ac2a25c"
+        },
+        {
+          "id": "prt_177765283001k18yzeSZS4Q7nv",
+          "role": "tool",
+          "origin": "notification",
+          "status": "completed",
+          "native_turn_id": "msg_177763f270002eb6fc8ac2a25c"
+        },
+        {
+          "id": "prt_177765833001TOhxqOcuG71uzD",
+          "role": "tool",
+          "origin": "notification",
+          "status": "pending",
+          "native_turn_id": "msg_177763f270002eb6fc8ac2a25c"
+        },
+        {
+          "id": "prt_177765833001TOhxqOcuG71uzD",
+          "role": "tool",
+          "origin": "notification",
+          "status": "completed",
+          "native_turn_id": "msg_177763f270002eb6fc8ac2a25c"
+        },
+        {
+          "id": "prt_17776596f001Oi7APHEJgX4vLM",
+          "role": "tool",
+          "origin": "notification",
+          "status": "completed",
+          "native_turn_id": "msg_177763f270002eb6fc8ac2a25c"
+        },
+        {
+          "id": "prt_1777661b7001YsMQ7QPjAvnhGG",
+          "role": "assistant",
+          "origin": "notification",
+          "status": "completed",
+          "native_turn_id": "msg_177763f270002eb6fc8ac2a25c"
+        }
+      ]
+    },
+    {
+      "provider": "codex",
+      "native_permission_blocks": [
+        {
+          "id": "permission:0",
+          "submission_id": "74e18f6f-0fe6-5785-8b60-3bd43a1f9ef1",
+          "sequence": 5,
+          "revision": 5,
+          "native_turn_id": "01a17779-8b94-7ed3-85d4-2943262a21c6",
+          "role": "system",
+          "origin": "kickoff",
+          "text": "Native request pending: mcpServer/elicitation/request; native permission control is unavailable in chat V1",
+          "status": "blocked",
+          "at": "2026-10-26T09:10:38.316635Z"
+        }
+      ]
+    }
+  ],
+  "claude_native_provenance": [
+    {
+      "sha256": "770122b56ac4b28e2935c6047779d0b99e2d5401b2590997176e05ba73e72906",
+      "native_session_id": "0e7b4728-7a59-485c-be91-a042563ad7d7",
+      "users": [
+        {
+          "uuid": "d67de87c-fe54-5378-a7c2-57fb7c96d724",
+          "turnOrigin": "sdk"
+        },
+        {
+          "uuid": "a62f2e65-0df9-5c43-9cc3-781c7a92d91b",
+          "turnOrigin": "sdk"
+        },
+        {
+          "uuid": "f9606346-9806-597c-b9c0-ee06d695c5ac",
+          "turnOrigin": "sdk"
+        },
+        {
+          "uuid": "00138041-3ed8-5c81-8639-deaa3fbe490b",
+          "turnOrigin": "sdk"
+        },
+        {
+          "uuid": "744891e3-14f8-50ce-b2c5-5171696396c3",
+          "turnOrigin": "sdk"
+        },
+        {
+          "uuid": "1dc8179e-bf6f-5a38-91b6-9eecfd812753",
+          "turnOrigin": "sdk"
+        },
+        {
+          "uuid": "865d9850-66a9-54e7-a662-0f3ac15c0f69",
+          "turnOrigin": "sdk"
+        }
+      ]
+    }
+  ]
+}
