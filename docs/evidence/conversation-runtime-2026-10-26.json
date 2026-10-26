@@ -1,0 +1,1716 @@
+{
+  "date": "2026-10-26",
+  "versions": {
+    "claude": "2.1.310",
+    "codex": "0.164.0",
+    "opencode": "1.17.18"
+  },
+  "probes": {
+    "claude": {
+      "source_sha256": {
+        "claude/config/projects/-Users-kareemelbahrawy-hiveryn-daemon-bin-conversation-probe-claude-work/9b021265-12f2-4d1d-bccb-ba6c25e7ea3d.jsonl": "93315249088c133f74b1b8e348016ba9add81eb69f9476ca664bab257dc78f34"
+      },
+      "observations": [
+        {
+          "id": "5045e891-855d-43eb-9a91-f4f232265c57",
+          "role": "user",
+          "origin": "human",
+          "at": "2026-10-26T08:07:57.242Z",
+          "text": "Reply exactly READY-C001. Do not use tools.",
+          "tools": []
+        },
+        {
+          "id": "48355eeb-2f9a-41de-9ca3-c64b5f7eb328",
+          "role": "assistant",
+          "origin": null,
+          "at": "2026-10-26T08:07:59.093Z",
+          "text": "READY-C001",
+          "tools": []
+        },
+        {
+          "id": "0fc9bb6a-a065-4d06-83d3-22d3688499c8",
+          "role": "user",
+          "origin": "task_notification",
+          "at": "2026-10-26T08:08:09.149Z",
+          "text": "<task-notification>\n<summary>Stop hook feedback</summary>\n</task-notification>\n<system-reminder>\nStop hook blocking error from command \"SessionStart:startup\": Synthetic external input probe C001: Reply exactly ACK-C001.\n\n</system-reminder>",
+          "tools": []
+        },
+        {
+          "id": "dcd928ea-fa69-4634-8e13-e49d4c2826b6",
+          "role": "assistant",
+          "origin": null,
+          "at": "2026-10-26T08:08:10.466Z",
+          "text": "ACK-C001",
+          "tools": []
+        }
+      ]
+    },
+    "claude-structured": {
+      "source_sha256": {
+        "claude-structured/config/projects/-Users-kareemelbahrawy-hiveryn-daemon-bin-conversation-probe-claude-structured-work/2b7559f8-35c9-4626-bd82-f5f431bf9b8e.jsonl": "599e294c136e983263e17f9dfa83b7c57b9877c4a59d1a3de8d7472816cbc9e2",
+        "claude-structured/events.json": "1c1c0f634a181885cdd34310c9ae2d32809d68bc27c7397591b8aa21bd10c6a8"
+      },
+      "observations": [
+        {
+          "id": "173b0117-80eb-4483-b3ef-542cce08a392",
+          "role": "user",
+          "origin": "sdk",
+          "at": "2026-10-26T08:18:38.956Z",
+          "text": "Run the read-only shell command sleep 8, then reply exactly FIRST-S001.",
+          "tools": []
+        },
+        {
+          "id": "fba22b7c-3049-468d-98d0-d84325f2d677",
+          "role": "assistant",
+          "origin": null,
+          "at": "2026-10-26T08:18:40.782Z",
+          "text": "",
+          "tools": [
+            "Bash"
+          ]
+        },
+        {
+          "id": "54861446-0131-43d3-a920-81323a57a566",
+          "role": "assistant",
+          "origin": null,
+          "at": "2026-10-26T08:18:51.022Z",
+          "text": "FIRST-S001",
+          "tools": []
+        },
+        {
+          "id": "c8ea6a20-35eb-4f25-a471-ecf91b35ad37",
+          "role": "user",
+          "origin": "sdk",
+          "at": "2026-10-26T08:18:51.061Z",
+          "text": "Reply exactly SECOND-S002. Do not use tools.",
+          "tools": []
+        },
+        {
+          "id": "88591b41-3f16-49ad-b3fc-a0e5c040ac09",
+          "role": "assistant",
+          "origin": null,
+          "at": "2026-10-26T08:18:52.043Z",
+          "text": "SECOND-S002",
+          "tools": []
+        },
+        {
+          "id": "0e111674-251c-41fb-ba64-5e392e844aee",
+          "role": "user",
+          "origin": "sdk",
+          "at": "2026-10-26T08:18:53.678Z",
+          "text": "Reply exactly RESUMED-S003. Do not use tools.",
+          "tools": []
+        },
+        {
+          "id": "9572438b-bb27-4499-a0e1-2abc6f61fe0d",
+          "role": "assistant",
+          "origin": null,
+          "at": "2026-10-26T08:18:55.371Z",
+          "text": "RESUMED-S003",
+          "tools": []
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "session_id": "2b7559f8-35c9-4626-bd82-f5f431bf9b8e",
+          "user_message_uuid": "173b0117-80eb-4483-b3ef-542cce08a392",
+          "result": "FIRST-S001"
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "session_id": "2b7559f8-35c9-4626-bd82-f5f431bf9b8e",
+          "user_message_uuid": "c8ea6a20-35eb-4f25-a471-ecf91b35ad37",
+          "result": "SECOND-S002"
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "session_id": "2b7559f8-35c9-4626-bd82-f5f431bf9b8e",
+          "user_message_uuid": "0e111674-251c-41fb-ba64-5e392e844aee",
+          "result": "RESUMED-S003"
+        }
+      ]
+    },
+    "claude-mcp": {
+      "source_sha256": {
+        "claude-mcp/config/projects/-Users-kareemelbahrawy-hiveryn-daemon-bin-conversation-probe-claude-mcp-work/e2f98ab1-9931-45e4-b09f-19b3b295d2fd.jsonl": "7a9973508ea9008ea253739274a5d0b1da1693f0c9f1141c896744ed5d4f9b54",
+        "claude-mcp/events.json": "2f660c82cfe4fb49a43b39e15a8b6b6c786b99dae609957b12db9c4fd1afa30b"
+      },
+      "observations": [
+        {
+          "id": "405f1b2c-c5a7-49e5-8f6d-58c851ff2c35",
+          "role": "user",
+          "origin": "sdk",
+          "at": "2026-10-26T08:20:52.483Z",
+          "text": "Call the probe_echo MCP tool with text FIRST-MCP001, then reply with its returned text.",
+          "tools": []
+        },
+        {
+          "id": "972b020b-cdd0-4f5b-980c-09b6ec405399",
+          "role": "assistant",
+          "origin": null,
+          "at": "2026-10-26T08:20:54.112Z",
+          "text": "",
+          "tools": [
+            "ToolSearch"
+          ]
+        },
+        {
+          "id": "f28cca07-cac5-41c7-8d16-7cb8105a2bfc",
+          "role": "assistant",
+          "origin": null,
+          "at": "2026-10-26T08:20:55.205Z",
+          "text": "",
+          "tools": [
+            "mcp__probe__probe_echo"
+          ]
+        },
+        {
+          "id": "1d72a667-b095-41c2-8d7e-f855b405b9e1",
+          "role": "assistant",
+          "origin": null,
+          "at": "2026-10-26T08:20:56.019Z",
+          "text": "FIRST-MCP001",
+          "tools": []
+        },
+        {
+          "id": "9f2f0b9b-dfa6-42b9-a831-76f25540e856",
+          "role": "user",
+          "origin": "sdk",
+          "at": "2026-10-26T08:20:56.048Z",
+          "text": "Call the probe_echo MCP tool with text SECOND-MCP002, then reply with its returned text.",
+          "tools": []
+        },
+        {
+          "id": "21bfd4a5-87a4-4a7f-94bf-16f3716e6302",
+          "role": "assistant",
+          "origin": null,
+          "at": "2026-10-26T08:20:57.205Z",
+          "text": "",
+          "tools": [
+            "mcp__probe__probe_echo"
+          ]
+        },
+        {
+          "id": "dbc94352-5198-4d54-9601-e232aa34e340",
+          "role": "assistant",
+          "origin": null,
+          "at": "2026-10-26T08:20:58.025Z",
+          "text": "SECOND-MCP002",
+          "tools": []
+        },
+        {
+          "id": "104db260-833d-4bb7-8100-854fea92b9b2",
+          "role": "user",
+          "origin": "sdk",
+          "at": "2026-10-26T08:20:59.834Z",
+          "text": "Call the probe_echo MCP tool with text RESUMED-MCP003, then reply with its returned text.",
+          "tools": []
+        },
+        {
+          "id": "ab0fb47d-6be9-47a0-bfed-3d751ef97263",
+          "role": "assistant",
+          "origin": null,
+          "at": "2026-10-26T08:21:01.366Z",
+          "text": "",
+          "tools": [
+            "mcp__probe__probe_echo"
+          ]
+        },
+        {
+          "id": "a3ca06ba-3f10-4853-bdc1-bfb2d2b2a43f",
+          "role": "assistant",
+          "origin": null,
+          "at": "2026-10-26T08:21:02.244Z",
+          "text": "RESUMED-MCP003",
+          "tools": []
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "session_id": "e2f98ab1-9931-45e4-b09f-19b3b295d2fd",
+          "user_message_uuid": "405f1b2c-c5a7-49e5-8f6d-58c851ff2c35",
+          "result": "FIRST-MCP001"
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "session_id": "e2f98ab1-9931-45e4-b09f-19b3b295d2fd",
+          "user_message_uuid": "9f2f0b9b-dfa6-42b9-a831-76f25540e856",
+          "result": "SECOND-MCP002"
+        },
+        {
+          "type": "result",
+          "subtype": "success",
+          "session_id": "e2f98ab1-9931-45e4-b09f-19b3b295d2fd",
+          "user_message_uuid": "104db260-833d-4bb7-8100-854fea92b9b2",
+          "result": "RESUMED-MCP003"
+        }
+      ]
+    },
+    "codex-trusted": {
+      "source_sha256": {
+        "codex-trusted/config/sessions/2026/10/26/rollout-2026-10-26T08-14-26-01a17746-6dc3-7022-a195-385321ea6c23.jsonl": "b55a69cf9f1e3d93655c811b4ba134cac20364d17eb3dd777e28f5d6e83aefaa"
+      },
+      "observations": [
+        {
+          "timestamp": "2026-10-26T08:14:26.841Z",
+          "ordinal": 1,
+          "type": "event_msg",
+          "payload": {
+            "type": "task_started",
+            "turn_attribution": {
+              "turn_id": "01a17746-6df8-7eb3-9747-1a807c29f373",
+              "turn_trigger": "user",
+              "parent_turn_id": null,
+              "initiating_agent_path": null,
+              "root_turn_id": "01a17746-6df8-7eb3-9747-1a807c29f373"
+            },
+            "turn_id": "01a17746-6df8-7eb3-9747-1a807c29f373",
+            "root_turn_id": "01a17746-6df8-7eb3-9747-1a807c29f373",
+            "started_at": 1793002466,
+            "model_context_window": 258400,
+            "collaboration_mode_kind": "default"
+          }
+        },
+        {
+          "timestamp": "2026-10-26T08:14:33.415Z",
+          "ordinal": 12,
+          "type": "event_msg",
+          "payload": {
+            "type": "item_completed",
+            "thread_id": "01a17746-6dc3-7022-a195-385321ea6c23",
+            "turn_id": "01a17746-6df8-7eb3-9747-1a807c29f373",
+            "item": {
+              "type": "UserMessage",
+              "id": "01a17746-87c7-7312-ae47-2ec01cb6803d",
+              "client_id": "dd323a10-48e4-4d70-9636-bb63de507219",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Reply exactly READY-X001. Do not use tools.",
+                  "text_elements": []
+                }
+              ]
+            },
+            "started_at_ms": 1793002473415,
+            "completed_at_ms": 1793002473415
+          }
+        },
+        {
+          "timestamp": "2026-10-26T08:14:36.011Z",
+          "ordinal": 13,
+          "type": "event_msg",
+          "payload": {
+            "type": "item_completed",
+            "thread_id": "01a17746-6dc3-7022-a195-385321ea6c23",
+            "turn_id": "01a17746-6df8-7eb3-9747-1a807c29f373",
+            "item": {
+              "type": "AgentMessage",
+              "id": "msg_08ccd9613ba576ad016adf0be69db48191afa2a382b6229117",
+              "content": [
+                {
+                  "type": "Text",
+                  "text": "READY-X001"
+                }
+              ],
+              "phase": "final_answer"
+            },
+            "started_at_ms": 1793002475959,
+            "completed_at_ms": 1793002476010
+          }
+        },
+        {
+          "timestamp": "2026-10-26T08:14:36.057Z",
+          "ordinal": 17,
+          "type": "event_msg",
+          "payload": {
+            "type": "task_complete",
+            "root_turn_id": "01a17746-6df8-7eb3-9747-1a807c29f373",
+            "turn_id": "01a17746-6df8-7eb3-9747-1a807c29f373",
+            "last_agent_message": "READY-X001",
+            "started_at": 1793002466,
+            "completed_at": 1793002476,
+            "duration_ms": 9248,
+            "time_to_first_token_ms": 9151
+          }
+        },
+        {
+          "timestamp": "2026-10-26T08:14:42.737Z",
+          "ordinal": 18,
+          "type": "event_msg",
+          "payload": {
+            "type": "task_started",
+            "turn_attribution": {
+              "turn_id": "01a17746-ac2a-7193-b06c-16fa9cea9ce4",
+              "turn_trigger": "queue",
+              "parent_turn_id": null,
+              "initiating_agent_path": null,
+              "root_turn_id": "01a17746-ac2a-7193-b06c-16fa9cea9ce4"
+            },
+            "turn_id": "01a17746-ac2a-7193-b06c-16fa9cea9ce4",
+            "root_turn_id": "01a17746-ac2a-7193-b06c-16fa9cea9ce4",
+            "started_at": 1793002482,
+            "model_context_window": 258400,
+            "collaboration_mode_kind": "default"
+          }
+        },
+        {
+          "timestamp": "2026-10-26T08:14:42.759Z",
+          "ordinal": 23,
+          "type": "event_msg",
+          "payload": {
+            "type": "item_completed",
+            "thread_id": "01a17746-6dc3-7022-a195-385321ea6c23",
+            "turn_id": "01a17746-ac2a-7193-b06c-16fa9cea9ce4",
+            "item": {
+              "type": "UserMessage",
+              "id": "01a17746-ac47-77a2-b139-1df336f3b2c4",
+              "client_id": "chat-probe-X001",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Reply exactly ACK-X001. Do not use tools.",
+                  "text_elements": []
+                }
+              ]
+            },
+            "started_at_ms": 1793002482759,
+            "completed_at_ms": 1793002482759
+          }
+        },
+        {
+          "timestamp": "2026-10-26T08:14:46.600Z",
+          "ordinal": 24,
+          "type": "event_msg",
+          "payload": {
+            "type": "item_completed",
+            "thread_id": "01a17746-6dc3-7022-a195-385321ea6c23",
+            "turn_id": "01a17746-ac2a-7193-b06c-16fa9cea9ce4",
+            "item": {
+              "type": "AgentMessage",
+              "id": "msg_08ccd9613ba576ad016adf0bf0766081919ae82551e79f0475",
+              "content": [
+                {
+                  "type": "Text",
+                  "text": "ACK-X001"
+                }
+              ],
+              "phase": "final_answer"
+            },
+            "started_at_ms": 1793002485954,
+            "completed_at_ms": 1793002486600
+          }
+        },
+        {
+          "timestamp": "2026-10-26T08:14:46.628Z",
+          "ordinal": 28,
+          "type": "event_msg",
+          "payload": {
+            "type": "task_complete",
+            "root_turn_id": "01a17746-ac2a-7193-b06c-16fa9cea9ce4",
+            "turn_id": "01a17746-ac2a-7193-b06c-16fa9cea9ce4",
+            "last_agent_message": "ACK-X001",
+            "started_at": 1793002482,
+            "completed_at": 1793002486,
+            "duration_ms": 3890,
+            "time_to_first_token_ms": 3685
+          }
+        }
+      ]
+    },
+    "codex-busy-fixed": {
+      "source_sha256": {
+        "codex-busy-fixed/config/sessions/2026/10/26/rollout-2026-10-26T08-17-10-01a17748-eb51-7251-a77e-c491ffaf823b.jsonl": "3ab8b2227fb901d93c074929e60bc1a43e45bfbf436af9d2e7f3e5530b95dfb0"
+      },
+      "observations": [
+        {
+          "timestamp": "2026-10-26T08:17:10.078Z",
+          "ordinal": 1,
+          "type": "event_msg",
+          "payload": {
+            "type": "task_started",
+            "turn_attribution": {
+              "turn_id": "01a17748-eb90-77e2-9b67-5b4d761b5eda",
+              "turn_trigger": "user",
+              "parent_turn_id": null,
+              "initiating_agent_path": null,
+              "root_turn_id": "01a17748-eb90-77e2-9b67-5b4d761b5eda"
+            },
+            "turn_id": "01a17748-eb90-77e2-9b67-5b4d761b5eda",
+            "root_turn_id": "01a17748-eb90-77e2-9b67-5b4d761b5eda",
+            "started_at": 1793002630,
+            "model_context_window": 258400,
+            "collaboration_mode_kind": "default"
+          }
+        },
+        {
+          "timestamp": "2026-10-26T08:17:37.011Z",
+          "ordinal": 12,
+          "type": "event_msg",
+          "payload": {
+            "type": "item_completed",
+            "thread_id": "01a17748-eb51-7251-a77e-c491ffaf823b",
+            "turn_id": "01a17748-eb90-77e2-9b67-5b4d761b5eda",
+            "item": {
+              "type": "UserMessage",
+              "id": "01a17749-54f2-7ef1-916a-254727037f87",
+              "client_id": "1aaab0f6-7b34-4457-ba6e-a76f30d67db8",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Run the read-only shell command sleep 12, then reply exactly FIRST-X002.",
+                  "text_elements": []
+                }
+              ]
+            },
+            "started_at_ms": 1793002657011,
+            "completed_at_ms": 1793002657011
+          }
+        },
+        {
+          "timestamp": "2026-10-26T08:17:51.426Z",
+          "ordinal": 13,
+          "type": "event_msg",
+          "payload": {
+            "type": "item_completed",
+            "thread_id": "01a17748-eb51-7251-a77e-c491ffaf823b",
+            "turn_id": "01a17748-eb90-77e2-9b67-5b4d761b5eda",
+            "item": {
+              "type": "AgentMessage",
+              "id": "msg_09c6a5a3bae0891f016adf0ca9e7f08191be14716f7a6556d6",
+              "content": [
+                {
+                  "type": "Text",
+                  "text": "I\u2019ll run the requested read-only command and wait for it to finish."
+                }
+              ],
+              "phase": "commentary"
+            },
+            "started_at_ms": 1793002671248,
+            "completed_at_ms": 1793002671426
+          }
+        },
+        {
+          "timestamp": "2026-10-26T08:18:12.132Z",
+          "ordinal": 20,
+          "type": "event_msg",
+          "payload": {
+            "type": "item_completed",
+            "thread_id": "01a17748-eb51-7251-a77e-c491ffaf823b",
+            "turn_id": "01a17748-eb90-77e2-9b67-5b4d761b5eda",
+            "item": {
+              "type": "AgentMessage",
+              "id": "msg_09c6a5a3bae0891f016adf0cbec1688191bc5adefbb867bc8e",
+              "content": [
+                {
+                  "type": "Text",
+                  "text": "FIRST-X002"
+                }
+              ],
+              "phase": "final_answer"
+            },
+            "started_at_ms": 1793002692120,
+            "completed_at_ms": 1793002692132
+          }
+        },
+        {
+          "timestamp": "2026-10-26T08:18:12.234Z",
+          "ordinal": 24,
+          "type": "event_msg",
+          "payload": {
+            "type": "task_complete",
+            "root_turn_id": "01a17748-eb90-77e2-9b67-5b4d761b5eda",
+            "turn_id": "01a17748-eb90-77e2-9b67-5b4d761b5eda",
+            "last_agent_message": "FIRST-X002",
+            "started_at": 1793002630,
+            "completed_at": 1793002692,
+            "duration_ms": 62200,
+            "time_to_first_token_ms": 41239
+          }
+        },
+        {
+          "timestamp": "2026-10-26T08:18:12.238Z",
+          "ordinal": 25,
+          "type": "event_msg",
+          "payload": {
+            "type": "task_started",
+            "turn_attribution": {
+              "turn_id": "01a17749-de8b-7921-bdf0-e7dfa019b6ac",
+              "turn_trigger": "queue",
+              "parent_turn_id": null,
+              "initiating_agent_path": null,
+              "root_turn_id": "01a17749-de8b-7921-bdf0-e7dfa019b6ac"
+            },
+            "turn_id": "01a17749-de8b-7921-bdf0-e7dfa019b6ac",
+            "root_turn_id": "01a17749-de8b-7921-bdf0-e7dfa019b6ac",
+            "started_at": 1793002692,
+            "model_context_window": 258400,
+            "collaboration_mode_kind": "default"
+          }
+        },
+        {
+          "timestamp": "2026-10-26T08:18:15.274Z",
+          "ordinal": 28,
+          "type": "event_msg",
+          "payload": {
+            "type": "item_completed",
+            "thread_id": "01a17748-eb51-7251-a77e-c491ffaf823b",
+            "turn_id": "01a17749-de8b-7921-bdf0-e7dfa019b6ac",
+            "item": {
+              "type": "UserMessage",
+              "id": "01a17749-ea69-7031-bd87-cb8e45cb7010",
+              "client_id": "chat-probe-X003",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Reply exactly SECOND-X003. Do not use tools.",
+                  "text_elements": []
+                }
+              ]
+            },
+            "started_at_ms": 1793002695274,
+            "completed_at_ms": 1793002695274
+          }
+        },
+        {
+          "timestamp": "2026-10-26T08:18:20.873Z",
+          "ordinal": 29,
+          "type": "event_msg",
+          "payload": {
+            "type": "item_completed",
+            "thread_id": "01a17748-eb51-7251-a77e-c491ffaf823b",
+            "turn_id": "01a17749-de8b-7921-bdf0-e7dfa019b6ac",
+            "item": {
+              "type": "AgentMessage",
+              "id": "msg_09c6a5a3bae0891f016adf0cc762248191b4dd546c72ce0dc7",
+              "content": [
+                {
+                  "type": "Text",
+                  "text": "SECOND-X003"
+                }
+              ],
+              "phase": "final_answer"
+            },
+            "started_at_ms": 1793002700714,
+            "completed_at_ms": 1793002700873
+          }
+        },
+        {
+          "timestamp": "2026-10-26T08:18:20.886Z",
+          "ordinal": 33,
+          "type": "event_msg",
+          "payload": {
+            "type": "task_complete",
+            "root_turn_id": "01a17749-de8b-7921-bdf0-e7dfa019b6ac",
+            "turn_id": "01a17749-de8b-7921-bdf0-e7dfa019b6ac",
+            "last_agent_message": "SECOND-X003",
+            "started_at": 1793002692,
+            "completed_at": 1793002700,
+            "duration_ms": 8647,
+            "time_to_first_token_ms": 8476
+          }
+        }
+      ]
+    },
+    "codex-structured": {
+      "source_sha256": {
+        "codex-structured/events.json": "abf00ba18540ba6bb4f1e88e05cd36ae53383a841e857bca1ca26185062ac57f"
+      },
+      "observations": [
+        {
+          "turn": "01a1774a-ddb2-7891-b059-4fd1274e113e",
+          "item": {
+            "type": "userMessage",
+            "id": "01a1774a-f7a4-7b22-8fe3-0bdd968593ca",
+            "clientId": null,
+            "content": [
+              {
+                "type": "text",
+                "text": "Run the read-only shell command sleep 8, then reply exactly FIRST-AS001.",
+                "text_elements": []
+              }
+            ]
+          }
+        },
+        {
+          "turn": "01a1774a-ddb2-7891-b059-4fd1274e113e",
+          "item": {
+            "type": "agentMessage",
+            "id": "msg_04e59b5b4e9d6e77016adf0d0a2d0881919bf788094af795e2",
+            "text": "I\u2019ll run the requested read-only wait, then return the exact text.",
+            "phase": "commentary",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        },
+        {
+          "turn": "01a1774a-ddb2-7891-b059-4fd1274e113e",
+          "item": {
+            "type": "agentMessage",
+            "id": "msg_04e59b5b4e9d6e77016adf0d1613688191b3c54dfc77ec4443",
+            "text": "FIRST-AS001",
+            "phase": "final_answer",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        },
+        {
+          "turn": "01a1774a-ddb2-7891-b059-4fd1274e113e",
+          "status": "completed"
+        },
+        {
+          "turn": "01a1774b-33cb-7e11-9cb2-1f1f4777dc26",
+          "item": {
+            "type": "userMessage",
+            "id": "01a1774b-33e2-75f0-abc7-be27b74b0fdf",
+            "clientId": null,
+            "content": [
+              {
+                "type": "text",
+                "text": "Reply exactly SECOND-AS002. Do not use tools.",
+                "text_elements": []
+              }
+            ]
+          }
+        },
+        {
+          "turn": "01a1774b-33cb-7e11-9cb2-1f1f4777dc26",
+          "item": {
+            "type": "agentMessage",
+            "id": "msg_04e59b5b4e9d6e77016adf0d190124819182fd931f8227c1fe",
+            "text": "SECOND-AS002",
+            "phase": "final_answer",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        },
+        {
+          "turn": "01a1774b-33cb-7e11-9cb2-1f1f4777dc26",
+          "status": "completed"
+        },
+        {
+          "turn": "01a1774b-3f6d-78d1-b3d7-00cec831d490",
+          "item": {
+            "type": "userMessage",
+            "id": "01a1774b-56a7-7041-80a8-187089b8d0e4",
+            "clientId": null,
+            "content": [
+              {
+                "type": "text",
+                "text": "Reply exactly RESUMED-AS003. Do not use tools.",
+                "text_elements": []
+              }
+            ]
+          }
+        },
+        {
+          "turn": "01a1774b-3f6d-78d1-b3d7-00cec831d490",
+          "item": {
+            "type": "agentMessage",
+            "id": "msg_0b5dbbdf101c3aab016adf0d22b1b48191a6f4a072e2c95dc8",
+            "text": "RESUMED-AS003",
+            "phase": "final_answer",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        },
+        {
+          "turn": "01a1774b-3f6d-78d1-b3d7-00cec831d490",
+          "status": "completed"
+        }
+      ]
+    },
+    "codex-mcp": {
+      "source_sha256": {
+        "codex-mcp/events.json": "448a1d55ecf71fa0e2d6a972cbaf21fde39dab82f5b285562906a4272d52c978"
+      },
+      "observations": [
+        {
+          "turn": "01a1774c-b6bf-7823-904c-231b41aa8ef5",
+          "item": {
+            "type": "userMessage",
+            "id": "01a1774c-ec6a-7132-a951-756e61ce1230",
+            "clientId": null,
+            "content": [
+              {
+                "type": "text",
+                "text": "Call the probe_echo MCP tool with text FIRST-MCP001, then reply with its returned text.",
+                "text_elements": []
+              }
+            ]
+          }
+        },
+        {
+          "turn": "01a1774c-b6bf-7823-904c-231b41aa8ef5",
+          "item": {
+            "type": "agentMessage",
+            "id": "msg_04cd2046487cd1d4016adf0d91d3a08191824001544b6baae5",
+            "text": "I\u2019ll call the requested MCP probe and return its response verbatim.",
+            "phase": "commentary",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        },
+        {
+          "turn": "01a1774c-b6bf-7823-904c-231b41aa8ef5",
+          "item": {
+            "type": "mcpToolCall",
+            "id": "exec-867b74aa-ed68-497e-b34d-1265a2544305",
+            "server": "probe",
+            "tool": "probe_echo",
+            "status": "failed",
+            "arguments": {
+              "text": "FIRST-MCP001"
+            },
+            "appContext": null,
+            "mcpAppUi": null,
+            "pluginId": null,
+            "readOnlyHint": null,
+            "result": null,
+            "error": {
+              "message": "MCP tool call requires approval, but approval policy is never"
+            },
+            "durationMs": 0
+          }
+        },
+        {
+          "turn": "01a1774c-b6bf-7823-904c-231b41aa8ef5",
+          "item": {
+            "type": "agentMessage",
+            "id": "msg_04cd2046487cd1d4016adf0d9753e081919f3f88fa2adefc9f",
+            "text": "MCP tool call requires approval, but approval policy is never",
+            "phase": "final_answer",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        },
+        {
+          "turn": "01a1774c-b6bf-7823-904c-231b41aa8ef5",
+          "status": "completed"
+        },
+        {
+          "turn": "01a1774d-2d43-7b60-87a1-24c99c83f3de",
+          "item": {
+            "type": "userMessage",
+            "id": "01a1774d-2d50-7ad0-b13a-1e81bc08c2d4",
+            "clientId": null,
+            "content": [
+              {
+                "type": "text",
+                "text": "Call the probe_echo MCP tool with text SECOND-MCP002, then reply with its returned text.",
+                "text_elements": []
+              }
+            ]
+          }
+        },
+        {
+          "turn": "01a1774d-2d43-7b60-87a1-24c99c83f3de",
+          "item": {
+            "type": "agentMessage",
+            "id": "msg_04cd2046487cd1d4016adf0d9933048191b2608ad91d503112",
+            "text": "I\u2019ll call the probe again with the new marker and relay its returned text.",
+            "phase": "commentary",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        },
+        {
+          "turn": "01a1774d-2d43-7b60-87a1-24c99c83f3de",
+          "item": {
+            "type": "mcpToolCall",
+            "id": "exec-67e3c8cb-2c74-4b83-b58e-a9458b12d3f7",
+            "server": "probe",
+            "tool": "probe_echo",
+            "status": "failed",
+            "arguments": {
+              "text": "SECOND-MCP002"
+            },
+            "appContext": null,
+            "mcpAppUi": null,
+            "pluginId": null,
+            "readOnlyHint": null,
+            "result": null,
+            "error": {
+              "message": "MCP tool call requires approval, but approval policy is never"
+            },
+            "durationMs": 0
+          }
+        },
+        {
+          "turn": "01a1774d-2d43-7b60-87a1-24c99c83f3de",
+          "item": {
+            "type": "agentMessage",
+            "id": "msg_04cd2046487cd1d4016adf0d9bb194819185732ac1d79d60fb",
+            "text": "MCP tool call requires approval, but approval policy is never",
+            "phase": "final_answer",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        },
+        {
+          "turn": "01a1774d-2d43-7b60-87a1-24c99c83f3de",
+          "status": "completed"
+        },
+        {
+          "turn": "01a1774d-3dfc-7d10-9fbb-b4494decb40e",
+          "item": {
+            "type": "userMessage",
+            "id": "01a1774d-53d6-7951-9b49-2b00724df983",
+            "clientId": null,
+            "content": [
+              {
+                "type": "text",
+                "text": "Call the probe_echo MCP tool with text RESUMED-MCP003, then reply with its returned text.",
+                "text_elements": []
+              }
+            ]
+          }
+        },
+        {
+          "turn": "01a1774d-3dfc-7d10-9fbb-b4494decb40e",
+          "item": {
+            "type": "agentMessage",
+            "id": "msg_088e83a1ea61339a016adf0da5390081919ddbc0bf514cea84",
+            "text": "I\u2019ll call the MCP probe with the resumed marker and relay its returned text.",
+            "phase": "commentary",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        },
+        {
+          "turn": "01a1774d-3dfc-7d10-9fbb-b4494decb40e",
+          "item": {
+            "type": "mcpToolCall",
+            "id": "exec-ab64a57c-fb24-4368-b9a1-858f9007d3b7",
+            "server": "probe",
+            "tool": "probe_echo",
+            "status": "failed",
+            "arguments": {
+              "text": "RESUMED-MCP003"
+            },
+            "appContext": null,
+            "mcpAppUi": null,
+            "pluginId": null,
+            "readOnlyHint": null,
+            "result": null,
+            "error": {
+              "message": "MCP tool call requires approval, but approval policy is never"
+            },
+            "durationMs": 0
+          }
+        },
+        {
+          "turn": "01a1774d-3dfc-7d10-9fbb-b4494decb40e",
+          "item": {
+            "type": "agentMessage",
+            "id": "msg_088e83a1ea61339a016adf0da8ca788191845cdfeed15e43e5",
+            "text": "MCP tool call requires approval, but approval policy is never",
+            "phase": "final_answer",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        },
+        {
+          "turn": "01a1774d-3dfc-7d10-9fbb-b4494decb40e",
+          "status": "completed"
+        }
+      ]
+    },
+    "codex-mcp-readonly": {
+      "source_sha256": {
+        "codex-mcp-readonly/events.json": "65b9f5486e6f5be98810dd1a418b141030d8c8b399c3345b2802b758b009cc85"
+      },
+      "observations": [
+        {
+          "turn": "01a17750-d6f9-7c33-9f1f-880506dbd2c6",
+          "item": {
+            "type": "userMessage",
+            "id": "01a17751-2b9b-7cc1-9599-9131229cff29",
+            "clientId": null,
+            "content": [
+              {
+                "type": "text",
+                "text": "Call the probe_echo MCP tool with text FIRST-MCP001, then reply with its returned text.",
+                "text_elements": []
+              }
+            ]
+          }
+        },
+        {
+          "turn": "01a17750-d6f9-7c33-9f1f-880506dbd2c6",
+          "item": {
+            "type": "agentMessage",
+            "id": "msg_0c30fcb76f466772016adf0ea0b4d48191827e231093bb3b7a",
+            "text": "I\u2019ll call the requested MCP probe and return its response exactly.",
+            "phase": "commentary",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        },
+        {
+          "turn": "01a17750-d6f9-7c33-9f1f-880506dbd2c6",
+          "item": {
+            "type": "mcpToolCall",
+            "id": "exec-385d4841-4b8e-48d3-851e-dffe57f386f0",
+            "server": "probe",
+            "tool": "probe_echo",
+            "status": "completed",
+            "arguments": {
+              "text": "FIRST-MCP001"
+            },
+            "appContext": null,
+            "mcpAppUi": null,
+            "pluginId": null,
+            "readOnlyHint": true,
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "FIRST-MCP001"
+                }
+              ],
+              "structuredContent": null,
+              "_meta": null
+            },
+            "error": null,
+            "durationMs": 0
+          }
+        },
+        {
+          "turn": "01a17750-d6f9-7c33-9f1f-880506dbd2c6",
+          "item": {
+            "type": "agentMessage",
+            "id": "msg_0c30fcb76f466772016adf0ea60a9c819186eeb93d2bfa1c9c",
+            "text": "FIRST-MCP001",
+            "phase": "final_answer",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        },
+        {
+          "turn": "01a17750-d6f9-7c33-9f1f-880506dbd2c6",
+          "status": "completed"
+        },
+        {
+          "turn": "01a17751-4ddc-7bb1-81e6-aa61e6d3f94e",
+          "item": {
+            "type": "userMessage",
+            "id": "01a17751-4dea-77a3-b36a-0c28ff97c711",
+            "clientId": null,
+            "content": [
+              {
+                "type": "text",
+                "text": "Call the probe_echo MCP tool with text SECOND-MCP002, then reply with its returned text.",
+                "text_elements": []
+              }
+            ]
+          }
+        },
+        {
+          "turn": "01a17751-4ddc-7bb1-81e6-aa61e6d3f94e",
+          "item": {
+            "type": "agentMessage",
+            "id": "msg_0c30fcb76f466772016adf0ea7bd1081919a36ed55ce03d891",
+            "text": "I\u2019ll call the MCP probe with the new text and return its response exactly.",
+            "phase": "commentary",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        },
+        {
+          "turn": "01a17751-4ddc-7bb1-81e6-aa61e6d3f94e",
+          "item": {
+            "type": "mcpToolCall",
+            "id": "exec-77b3c934-3018-4283-89d2-8dd9a9dd9f41",
+            "server": "probe",
+            "tool": "probe_echo",
+            "status": "completed",
+            "arguments": {
+              "text": "SECOND-MCP002"
+            },
+            "appContext": null,
+            "mcpAppUi": null,
+            "pluginId": null,
+            "readOnlyHint": true,
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "SECOND-MCP002"
+                }
+              ],
+              "structuredContent": null,
+              "_meta": null
+            },
+            "error": null,
+            "durationMs": 0
+          }
+        },
+        {
+          "turn": "01a17751-4ddc-7bb1-81e6-aa61e6d3f94e",
+          "item": {
+            "type": "agentMessage",
+            "id": "msg_0c30fcb76f466772016adf0ea9dc2881919c929936b4ebe90a",
+            "text": "SECOND-MCP002",
+            "phase": "final_answer",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        },
+        {
+          "turn": "01a17751-4ddc-7bb1-81e6-aa61e6d3f94e",
+          "status": "completed"
+        },
+        {
+          "turn": "01a17751-5d3b-7762-b109-c182c0a27928",
+          "item": {
+            "type": "userMessage",
+            "id": "01a17751-8306-7001-a666-98130e5b6166",
+            "clientId": null,
+            "content": [
+              {
+                "type": "text",
+                "text": "Call the probe_echo MCP tool with text RESUMED-MCP003, then reply with its returned text.",
+                "text_elements": []
+              }
+            ]
+          }
+        },
+        {
+          "turn": "01a17751-5d3b-7762-b109-c182c0a27928",
+          "item": {
+            "type": "agentMessage",
+            "id": "msg_09c4b98ddda9e179016adf0eb824708191bbb864b55ea6ff67",
+            "text": "I\u2019ll call the MCP probe with that text and return its response exactly.",
+            "phase": "commentary",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        },
+        {
+          "turn": "01a17751-5d3b-7762-b109-c182c0a27928",
+          "item": {
+            "type": "mcpToolCall",
+            "id": "exec-5c183613-5401-43eb-9b84-90685e58aeb0",
+            "server": "probe",
+            "tool": "probe_echo",
+            "status": "completed",
+            "arguments": {
+              "text": "RESUMED-MCP003"
+            },
+            "appContext": null,
+            "mcpAppUi": null,
+            "pluginId": null,
+            "readOnlyHint": true,
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "RESUMED-MCP003"
+                }
+              ],
+              "structuredContent": null,
+              "_meta": null
+            },
+            "error": null,
+            "durationMs": 0
+          }
+        },
+        {
+          "turn": "01a17751-5d3b-7762-b109-c182c0a27928",
+          "item": {
+            "type": "agentMessage",
+            "id": "msg_09c4b98ddda9e179016adf0ebf31548191848c445100bf0ed7",
+            "text": "RESUMED-MCP003",
+            "phase": "final_answer",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        },
+        {
+          "turn": "01a17751-5d3b-7762-b109-c182c0a27928",
+          "status": "completed"
+        }
+      ]
+    },
+    "opencode-fixed": {
+      "source_sha256": {
+        "opencode-fixed/messages.json": "300d98ade4c9128df576f20680abd26bc290b8161b6ae645f69fbda765e95762"
+      },
+      "observations": [
+        {
+          "id": "msg_17744a576001zsNv2bJ2wCef2C",
+          "session": "ses_e88bb5aa1ffeHv6olDxydOi9SY",
+          "role": "user",
+          "parent": null,
+          "time": {
+            "created": 1793002349942
+          },
+          "finish": null,
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "Reply exactly READY-O001. Do not use tools."
+            }
+          ]
+        },
+        {
+          "id": "msg_17744a580001qodQvyhqpFzN3y",
+          "session": "ses_e88bb5aa1ffeHv6olDxydOi9SY",
+          "role": "assistant",
+          "parent": "msg_17744a576001zsNv2bJ2wCef2C",
+          "time": {
+            "created": 1793002349952,
+            "completed": 1793002355532
+          },
+          "finish": "stop",
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "READY-O001"
+            }
+          ]
+        },
+        {
+          "id": "msg_17744bf02000678bfef8455849",
+          "session": "ses_e88bb5aa1ffeHv6olDxydOi9SY",
+          "role": "user",
+          "parent": null,
+          "time": {
+            "created": 1793002356485
+          },
+          "finish": null,
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "Reply exactly ACK-O001. Do not use tools."
+            }
+          ]
+        },
+        {
+          "id": "msg_17744bf0a001NF1aEOqof6Ta6p",
+          "session": "ses_e88bb5aa1ffeHv6olDxydOi9SY",
+          "role": "assistant",
+          "parent": "msg_17744bf02000678bfef8455849",
+          "time": {
+            "created": 1793002356490,
+            "completed": 1793002357755
+          },
+          "finish": "stop",
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "ACK-O001"
+            }
+          ]
+        },
+        {
+          "id": "msg_17744c6f600022c3b03908ca42",
+          "session": "ses_e88bb5aa1ffeHv6olDxydOi9SY",
+          "role": "user",
+          "parent": null,
+          "time": {
+            "created": 1793002358520
+          },
+          "finish": null,
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "Run the read-only shell command sleep 12, then reply exactly FIRST-O002."
+            }
+          ]
+        },
+        {
+          "id": "msg_17744c6fe001kV84c4dHIpxnE1",
+          "session": "ses_e88bb5aa1ffeHv6olDxydOi9SY",
+          "role": "assistant",
+          "parent": "msg_17744c6f600022c3b03908ca42",
+          "time": {
+            "created": 1793002358526,
+            "completed": 1793002372694
+          },
+          "finish": "tool-calls",
+          "error": null,
+          "parts": [
+            {
+              "type": "tool",
+              "name": "bash",
+              "status": "completed"
+            }
+          ]
+        },
+        {
+          "id": "msg_17744cf0000082a8ec081f9640",
+          "session": "ses_e88bb5aa1ffeHv6olDxydOi9SY",
+          "role": "user",
+          "parent": null,
+          "time": {
+            "created": 1793002360579
+          },
+          "finish": null,
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "Reply exactly SECOND-O003. Do not use tools."
+            }
+          ]
+        },
+        {
+          "id": "msg_17744fe57001lBboDgrS66UdKG",
+          "session": "ses_e88bb5aa1ffeHv6olDxydOi9SY",
+          "role": "assistant",
+          "parent": "msg_17744cf0000082a8ec081f9640",
+          "time": {
+            "created": 1793002372695,
+            "completed": 1793002374215
+          },
+          "finish": "stop",
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "SECOND-O003"
+            }
+          ]
+        }
+      ]
+    },
+    "opencode-structured": {
+      "source_sha256": {
+        "opencode-structured/messages.json": "e00ad31a4e9f55bca5b5681c7d5dc2a07e52cb3c82ea05995c65d698889e3023"
+      },
+      "observations": [
+        {
+          "id": "msg_1774b54ca0019d89d672f80e4a",
+          "session": "ses_e88b4ab39ffejy8eVvaMa4PGgZ",
+          "role": "user",
+          "parent": null,
+          "time": {
+            "created": 1793002788069
+          },
+          "finish": null,
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "Run the read-only shell command sleep 8, then reply exactly FIRST-OS001."
+            }
+          ]
+        },
+        {
+          "id": "msg_1774b55830011aMNCz4DM0zreE",
+          "session": "ses_e88b4ab39ffejy8eVvaMa4PGgZ",
+          "role": "assistant",
+          "parent": "msg_1774b54ca0019d89d672f80e4a",
+          "time": {
+            "created": 1793002788227,
+            "completed": 1793002802537
+          },
+          "finish": "tool-calls",
+          "error": null,
+          "parts": [
+            {
+              "type": "tool",
+              "name": "bash",
+              "status": "completed"
+            }
+          ]
+        },
+        {
+          "id": "msg_1774b8d6b001INsE34hxwwQGaa",
+          "session": "ses_e88b4ab39ffejy8eVvaMa4PGgZ",
+          "role": "assistant",
+          "parent": "msg_1774b54ca0019d89d672f80e4a",
+          "time": {
+            "created": 1793002802539,
+            "completed": 1793002804124
+          },
+          "finish": "stop",
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "FIRST-OS001"
+            }
+          ]
+        },
+        {
+          "id": "msg_1774b9648001a4fdb480b9664e",
+          "session": "ses_e88b4ab39ffejy8eVvaMa4PGgZ",
+          "role": "user",
+          "parent": null,
+          "time": {
+            "created": 1793002804810
+          },
+          "finish": null,
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "Reply exactly SECOND-OS002. Do not use tools."
+            }
+          ]
+        },
+        {
+          "id": "msg_1774b9650001fY8yLY29r0jMas",
+          "session": "ses_e88b4ab39ffejy8eVvaMa4PGgZ",
+          "role": "assistant",
+          "parent": "msg_1774b9648001a4fdb480b9664e",
+          "time": {
+            "created": 1793002804816,
+            "completed": 1793002806256
+          },
+          "finish": "stop",
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "SECOND-OS002"
+            }
+          ]
+        },
+        {
+          "id": "msg_1774b9f50001043a684a234044",
+          "session": "ses_e88b4ab39ffejy8eVvaMa4PGgZ",
+          "role": "user",
+          "parent": null,
+          "time": {
+            "created": 1793002807141
+          },
+          "finish": null,
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "Reply exactly RESUMED-OS003. Do not use tools."
+            }
+          ]
+        }
+      ]
+    },
+    "opencode-structured-pinned": {
+      "source_sha256": {
+        "opencode-structured-pinned/messages.json": "cd1e059fa4b72015774bb99581da080ee6c1910dbc20cc7cefe623c6485a6444"
+      },
+      "observations": [
+        {
+          "id": "msg_1774dda1000186f773f2985a49",
+          "session": "ses_e88b225f3ffe6FeStFmnZYLvTu",
+          "role": "user",
+          "parent": null,
+          "time": {
+            "created": 1793002953266
+          },
+          "finish": null,
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "Run the read-only shell command sleep 8, then reply exactly FIRST-OS001."
+            }
+          ]
+        },
+        {
+          "id": "msg_1774ddb360011rbsrwHucxviUD",
+          "session": "ses_e88b225f3ffe6FeStFmnZYLvTu",
+          "role": "assistant",
+          "parent": "msg_1774dda1000186f773f2985a49",
+          "time": {
+            "created": 1793002953527,
+            "completed": 1793002968258
+          },
+          "finish": "tool-calls",
+          "error": null,
+          "parts": [
+            {
+              "type": "tool",
+              "name": "bash",
+              "status": "completed"
+            }
+          ]
+        },
+        {
+          "id": "msg_1774e14c3001yDgVvr855xRXHu",
+          "session": "ses_e88b225f3ffe6FeStFmnZYLvTu",
+          "role": "assistant",
+          "parent": "msg_1774dda1000186f773f2985a49",
+          "time": {
+            "created": 1793002968259,
+            "completed": 1793002970107
+          },
+          "finish": "stop",
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "FIRST-OS001"
+            }
+          ]
+        },
+        {
+          "id": "msg_1774e1cf20010b9fbdd15e5b40",
+          "session": "ses_e88b225f3ffe6FeStFmnZYLvTu",
+          "role": "user",
+          "parent": null,
+          "time": {
+            "created": 1793002970355
+          },
+          "finish": null,
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "Reply exactly SECOND-OS002. Do not use tools."
+            }
+          ]
+        },
+        {
+          "id": "msg_1774e1cf70010iBlBqcgSNYusU",
+          "session": "ses_e88b225f3ffe6FeStFmnZYLvTu",
+          "role": "assistant",
+          "parent": "msg_1774e1cf20010b9fbdd15e5b40",
+          "time": {
+            "created": 1793002970359,
+            "completed": 1793002971879
+          },
+          "finish": "stop",
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "SECOND-OS002"
+            }
+          ]
+        },
+        {
+          "id": "msg_1774e25e0001ddc1fea89b0f45",
+          "session": "ses_e88b225f3ffe6FeStFmnZYLvTu",
+          "role": "user",
+          "parent": null,
+          "time": {
+            "created": 1793002972660
+          },
+          "finish": null,
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "Reply exactly RESUMED-OS003. Do not use tools."
+            }
+          ]
+        },
+        {
+          "id": "msg_1774e268d0017Ar2eUV46lLt7D",
+          "session": "ses_e88b225f3ffe6FeStFmnZYLvTu",
+          "role": "assistant",
+          "parent": "msg_1774e25e0001ddc1fea89b0f45",
+          "time": {
+            "created": 1793002972813,
+            "completed": 1793002975655
+          },
+          "finish": "stop",
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "RESUMED-OS003"
+            }
+          ]
+        }
+      ]
+    },
+    "opencode-mcp-pinned": {
+      "source_sha256": {
+        "opencode-mcp-pinned/messages.json": "26439608ab40095e95d78d54cda51a3bd1e79ab03b5c0782775466aea7375db7"
+      },
+      "observations": [
+        {
+          "id": "msg_1774dde7300132f8e07cf3fa45",
+          "session": "ses_e88b22190ffecUUM7U2RBERIPh",
+          "role": "user",
+          "parent": null,
+          "time": {
+            "created": 1793002954385
+          },
+          "finish": null,
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "Call the probe_echo MCP tool with text FIRST-MCP001, then reply with its returned text."
+            }
+          ]
+        },
+        {
+          "id": "msg_1774ddf80001IwE4jHotu1k4dk",
+          "session": "ses_e88b22190ffecUUM7U2RBERIPh",
+          "role": "assistant",
+          "parent": "msg_1774dde7300132f8e07cf3fa45",
+          "time": {
+            "created": 1793002954624,
+            "completed": 1793002960939
+          },
+          "finish": "tool-calls",
+          "error": null,
+          "parts": [
+            {
+              "type": "tool",
+              "name": "probe_probe_echo",
+              "status": "completed"
+            }
+          ]
+        },
+        {
+          "id": "msg_1774df82c001CCVcx20cOnHU7k",
+          "session": "ses_e88b22190ffecUUM7U2RBERIPh",
+          "role": "assistant",
+          "parent": "msg_1774dde7300132f8e07cf3fa45",
+          "time": {
+            "created": 1793002960940,
+            "completed": 1793002962435
+          },
+          "finish": "stop",
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "FIRST-MCP001"
+            }
+          ]
+        },
+        {
+          "id": "msg_1774dfe92001de1b761339014b",
+          "session": "ses_e88b22190ffecUUM7U2RBERIPh",
+          "role": "user",
+          "parent": null,
+          "time": {
+            "created": 1793002962579
+          },
+          "finish": null,
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "Call the probe_echo MCP tool with text SECOND-MCP002, then reply with its returned text."
+            }
+          ]
+        },
+        {
+          "id": "msg_1774dfe97001f7V3FvX6pZhIZc",
+          "session": "ses_e88b22190ffecUUM7U2RBERIPh",
+          "role": "assistant",
+          "parent": "msg_1774dfe92001de1b761339014b",
+          "time": {
+            "created": 1793002962583,
+            "completed": 1793002964675
+          },
+          "finish": "tool-calls",
+          "error": null,
+          "parts": [
+            {
+              "type": "tool",
+              "name": "probe_probe_echo",
+              "status": "completed"
+            }
+          ]
+        },
+        {
+          "id": "msg_1774e06c5001kTKHE8wAAf7Rke",
+          "session": "ses_e88b22190ffecUUM7U2RBERIPh",
+          "role": "assistant",
+          "parent": "msg_1774dfe92001de1b761339014b",
+          "time": {
+            "created": 1793002964677,
+            "completed": 1793002966435
+          },
+          "finish": "stop",
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "SECOND-MCP002"
+            }
+          ]
+        },
+        {
+          "id": "msg_1774e11b50010cfced28b8e54c",
+          "session": "ses_e88b22190ffecUUM7U2RBERIPh",
+          "role": "user",
+          "parent": null,
+          "time": {
+            "created": 1793002967496
+          },
+          "finish": null,
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "Call the probe_echo MCP tool with text RESUMED-MCP003, then reply with its returned text."
+            }
+          ]
+        },
+        {
+          "id": "msg_1774e1262001R39xyMWmhwi1j3",
+          "session": "ses_e88b22190ffecUUM7U2RBERIPh",
+          "role": "assistant",
+          "parent": "msg_1774e11b50010cfced28b8e54c",
+          "time": {
+            "created": 1793002967650,
+            "completed": 1793002970776
+          },
+          "finish": "tool-calls",
+          "error": null,
+          "parts": [
+            {
+              "type": "tool",
+              "name": "probe_probe_echo",
+              "status": "completed"
+            }
+          ]
+        },
+        {
+          "id": "msg_1774e1e990019crHPN5X20vG0a",
+          "session": "ses_e88b22190ffecUUM7U2RBERIPh",
+          "role": "assistant",
+          "parent": "msg_1774e11b50010cfced28b8e54c",
+          "time": {
+            "created": 1793002970777,
+            "completed": 1793002972425
+          },
+          "finish": "stop",
+          "error": null,
+          "parts": [
+            {
+              "type": "text",
+              "text": "RESUMED-MCP003"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
