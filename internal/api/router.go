@@ -31,8 +31,6 @@ type Dependencies struct {
 	ArchitectEvents *archevents.Hub
 	// ContextReader reads worker context; nil uses contextref.NewReader.
 	ContextReader *contextref.Reader
-	// ReferenceMigrator serves `hiverynd references-migrate`.
-	ReferenceMigrator domain.ReferenceMigrator
 }
 
 type profilesHandler struct {
@@ -120,7 +118,6 @@ func NewHandler(deps Dependencies) http.Handler {
 	wh := &workspaceHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, workspaces: deps.Workspaces}
 	qh := &questionsHandler{logger: deps.Logger, questions: deps.Questions}
 	ch := &contextHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, reader: deps.ContextReader}
-	rmh := &referenceMigrationHandler{migrator: deps.ReferenceMigrator}
 	if ch.reader == nil {
 		ch.reader = contextref.NewReader()
 	}
@@ -198,10 +195,6 @@ func NewHandler(deps Dependencies) http.Handler {
 	// The architect agent's answer to an escalated ticket-worker question,
 	// addressed by the architect's own session; authorized by the daemon.
 	mux.HandleFunc("POST /api/sessions/{id}/questions/{questionID}/architect-answer", qh.architectAnswer)
-	// Reference migration (operator CLI): plan reads only; apply takes a
-	// reviewed plan and changes tickets through workspace protection.
-	mux.HandleFunc("POST /api/reference-migration/plan", rmh.plan)
-	mux.HandleFunc("POST /api/reference-migration/apply", rmh.apply)
 	// Worker context reads, scoped to the calling session's architect.
 	mux.HandleFunc("GET /api/sessions/{id}/context/file", ch.readFile)
 	mux.HandleFunc("GET /api/sessions/{id}/context/directory", ch.listDirectory)

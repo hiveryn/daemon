@@ -46,7 +46,7 @@ the ticket `INVALID_TICKET` or hides its other references. The workspace check
 reports `INVALID_REFERENCE` at its ticket.md line as an **error** for backlog
 and progress tickets — so it reaches the architect through the existing
 `workspace_validation` agent message after the two-second quiet period — and
-as a warning for done tickets, which only the migration below may rewrite.
+as a warning for done tickets, which are runtime-owned and never edited directly.
 Ticket writes through the API (`POST`/`PATCH .../metadata`) reject invalid
 references with every problem listed; existence is not required.
 
@@ -83,71 +83,8 @@ pointer it finds straight to `readContext`. Reading context grants no write acce
 `additional_repos` remain the only writable scope. Bulk or binary
 materialization and dependency crawling are not provided.
 
-## Migration of existing workspaces
+## Migration
 
-`hiverynd references-migrate` talks to the running daemon
-(`HIVERYN_DAEMON_URL`, default `http://127.0.0.1:4201`):
-
-```sh
-hiverynd references-migrate plan > plan.json            # every registered architect; changes nothing
-hiverynd references-migrate plan -architect radius > radius.json
-hiverynd references-migrate apply plan.json > result.json
-```
-
-The plan lists, per architect, every ticket (backlog, progress, done) with a
-reference that is not already valid, each reference with a disposition, and
-every absolute path and relative Markdown link found in architect-owned
-Markdown outside `tickets/` and `architect-sessions/` (Overview, knowledge,
-investigations, specs, workflows). Ticket reference dispositions:
-
-- `convert` — `to` holds the inferred reference: the deepest configured root
-  (this architect's workspace or repos) containing the path. A repo is
-  inferred only on the machine the removed interpreter used (the ticket's
-  primary repo machine); a path in the architect workspace maps to
-  `architect:` even when it was formerly looked up remotely (the defect being
-  corrected), and the reason says so.
-- `ambiguous` — several candidates (listed), or a repo on another machine, or
-  an unconfigured primary repo; decide.
-- `unmapped` — no configured root contains it; decide.
-- `cross_architect` — another architect's workspace; references cannot address
-  it, so copy what is needed or drop it. Nothing is granted across architects.
-- `invalid` — not a path and not valid (non-canonical ids, unknown keys,
-  duplicates); decide.
-
-Review the file: set `to` to a valid reference or `drop: true`; undecided
-entries stay as they are and keep their diagnostic. Apply rewrites only the
-reference scalars of each ticket.md in place — other frontmatter (comments
-included), the body, `updated_at` and every conclusion are untouched — and
-re-parses the result to prove it. Each ticket is applied through the
-daemon's workspace protection (`Protection.Mutate`), so progress/done records
-stay accepted rather than becoming conflicts, and only when the file still has
-the plan's `sha256`. Results per ticket: `applied`, `already_applied`
-(idempotent rerun), `no_change`, `conflict` (changed or moved since the plan;
-plan again), `blocked` (the workspace has an unresolved protected-record
-conflict; nothing there is written), `rejected` (invalid decision or a layout
-it will not rewrite — comments on items, multi-line forms) and `failed`.
-Document findings are never changed by apply; each carries the suggested
-reference (a relative link resolves against its file to `architect:<path>`;
-one leaving the workspace is `unmapped`). Edit the author-owned Markdown to use
-it.
-
-`plan -rules rules.json` takes reviewed prefix rules — explicit mappings such
-as a repo that moved, `[{"architect": "radius", "from_prefix":
-"/Users/me/one/repos/radius-engine", "to_prefix": "radius-engine:"}]` — applied
-before inference (longest prefix wins; a global rule only where its owner is
-configured), recorded in the plan and validated against the architect's keys.
-
-### Rollout
-
-1. Deploy the daemon with this resolver (rebuild/restart). There is no
-   compatibility reader: from then on every legacy absolute reference is
-   `INVALID_REFERENCE` (an error notice for backlog/progress tickets, a warning
-   for done ones) until migrated, and the old daemon is never asked to accept
-   new forms.
-2. Run `plan`, review and decide, run `apply`; repeat `plan` until only
-   deliberate leftovers remain. Fix document findings by editing the
-   author-owned Markdown.
-3. Restarted architects and workers receive the new instructions; running
-   sessions keep their prompts and tool lists until restarted.
-
-A fresh workspace needs nothing: it has no legacy references.
+All registered architects were migrated once to this grammar on 27 October
+2026 (ticket and document references); the one-off migration tool was then
+removed. A fresh workspace needs nothing: it has no legacy references.

@@ -322,8 +322,7 @@ func (s *Service) checkTickets(ctx context.Context, workspacePath string, report
 // invalidReferenceDiagnostic reports an invalid ticket reference at its
 // ticket.md line. Author-owned backlog and active progress tickets carry it
 // as an error, so it reaches the architect's validation notice; a completed
-// record keeps it as a warning, since only the supported reference migration
-// may rewrite it.
+// record keeps it as a warning, since it must not be edited directly.
 func invalidReferenceDiagnostic(summary domain.TicketSummary, warning domain.TicketWarning) domain.WorkspaceDiagnostic {
 	d := domain.WorkspaceDiagnostic{
 		Code:     warning.Code,
@@ -341,7 +340,7 @@ func invalidReferenceDiagnostic(summary domain.TicketSummary, warning domain.Tic
 	remedy := " Use a same-board ticket id, architect:<path relative to the architect workspace> or <repo key>:<path relative to that repo> (see hiveryn.yaml for repo keys)."
 	if summary.Status == domain.TicketStatusDone {
 		d.Severity = domain.DiagnosticWarning
-		remedy = " Completed records are runtime-owned: convert them with `hiverynd references-migrate`, never by direct edit."
+		remedy = " Completed records are runtime-owned and must not be edited directly; resolve it with the user."
 	}
 	d.Message += "." + remedy
 	return d
