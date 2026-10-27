@@ -1,0 +1,27 @@
+{
+  "native_id": "01a17afe-d2b6-7720-acfa-5541e79cdb39",
+  "version": "codex-cli 0.164.0",
+  "model": "gpt-5.6-sol",
+  "turns": [
+    {
+      "turn_id": "01a17afe-d2ef-78b3-81b2-f9ddae29aac6",
+      "trigger": "user",
+      "reply": "LAPTOP-READY"
+    },
+    {
+      "turn_id": "01a17aff-11db-7101-bb2b-435a3930f96e",
+      "trigger": "queue",
+      "reply": "PHONE-MAPLE-742"
+    },
+    {
+      "turn_id": "01a17aff-1c2f-74a3-abaa-c66ea0cb0036",
+      "trigger": "user",
+      "reply": "LAPTOP-RETURN MAPLE-742 cobalt"
+    }
+  ],
+  "record_hashes": {
+    "rollout-2026-10-27T01-34-42-01a17afe-d2b6-7720-acfa-5541e79cdb39.jsonl": "fb51597277d77b951901641775759e2241fc9aef06a3aadee0c443454b5f06ca"
+  },
+  "verification": "Verified native task_complete replies after fixing extraction to use task_complete.last_agent_message; initial assertion incorrectly expected legacy agent_message events. No repeated model run.",
+  "limitation": "Direct isolated TUI/queue/TUI probe, not Hiveryn desktop/API/browser acceptance. Existing busy/restart limitations remain."
+}

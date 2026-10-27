@@ -221,3 +221,14 @@ Migration 0018 adds retained archive discovery. Sessions already deleted before
 that migration cannot be reliably backfilled: their metadata is gone. Their
 previously observed history remains readable by known ID. No retention pruning
 or new active-session ownership rules are introduced.
+
+## Connect-only browser and native laptop sessions
+
+The browser test client no longer creates, launches or resumes sessions; its
+proxy rejects those mutations. Daemon lifecycle routes remain available to
+Hiveryn. This does not make terminal sessions compatible with conversation
+reads/sends. Desktop launch and existing session ownership remain unchanged.
+See the [27 October investigation](laptop-conversation-continuity.md) for the
+user's API/client-only constraint, bounded native Codex evidence and unresolved
+Claude/OpenCode coordination blockers. Three-provider laptop/browser continuity
+has not passed acceptance; do not treat connect-only UI changes as that outcome.
