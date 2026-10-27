@@ -2,6 +2,8 @@ package domain
 
 import (
 	"context"
+	"time"
+
 	"github.com/google/uuid"
 	sd "github.com/hiveryn/shared/domain"
 )
@@ -40,6 +42,32 @@ type ConversationRepository interface {
 	SettleSubmissions(context.Context, string, string, string) error
 	FailQueuedSubmissions(context.Context, string, string) error
 }
+
+// TerminalSubmission is a conversation-API input addressed to a terminal-owned
+// session, with its durable dispatch reservation.
+type TerminalSubmission struct {
+	Submission
+	ProviderRef string
+	HandedAt    time.Time
+	// HandedTerminal is the main terminal (provider process) that received it.
+	HandedTerminal string
+}
+
+// TerminalConversationRepository persists dispatch reservations for input into
+// existing terminal-owned sessions.
+type TerminalConversationRepository interface {
+	// OpenTerminalSubmissions lists queued and started submissions in admission order.
+	OpenTerminalSubmissions(context.Context, string) ([]TerminalSubmission, error)
+	// ReserveTerminalSubmission moves a queued submission to started with its
+	// provider reference before any native hand-off; false if it was not queued.
+	ReserveTerminalSubmission(ctx context.Context, sessionID, id, providerRef, terminalID string, handedAt time.Time) (bool, error)
+	// ReleaseTerminalSubmission returns a started submission to queued when the
+	// hand-off demonstrably never reached the provider.
+	ReleaseTerminalSubmission(ctx context.Context, sessionID, id, reason string) error
+	// TerminalProviderRefs maps provider references to submission ids.
+	TerminalProviderRefs(context.Context, string) (map[string]string, error)
+}
+
 type ConversationService interface {
 	ListSubmissions(context.Context, string, SequenceQuery) (SubmissionPage, error)
 	ListArchivedChats(context.Context, SequenceQuery) (ArchivedChatPage, error)

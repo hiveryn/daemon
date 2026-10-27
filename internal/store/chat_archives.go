@@ -29,7 +29,7 @@ func (s *SessionStore) ArchiveChat(ctx context.Context, chat domain.ArchivedChat
 	if _, err = tx.ExecContext(ctx, "INSERT INTO chat_archives(session_id,architect_key,descriptor_json) VALUES(?,?,?) ON CONFLICT(session_id) DO NOTHING", chat.ID, chat.ArchitectKey, string(data)); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, "UPDATE conversation_submissions SET status='failed',error='Session ended before submission completed',updated_at=? WHERE session_id=? AND status NOT IN ('completed','failed')", chat.EndedAt.Format(time.RFC3339Nano), chat.ID); err != nil {
+	if _, err = tx.ExecContext(ctx, "UPDATE conversation_submissions SET status='failed',error='Session ended before submission completed',updated_at=? WHERE session_id=? AND status NOT IN ('completed','failed','uncertain')", chat.EndedAt.Format(time.RFC3339Nano), chat.ID); err != nil {
 		return err
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT item_json FROM conversation_items WHERE revision IN (SELECT MAX(revision) FROM conversation_items WHERE session_id=? GROUP BY item_id)`, chat.ID)

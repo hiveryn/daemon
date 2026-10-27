@@ -47,9 +47,6 @@ func (s *Service) dispatchAgentMessages(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if len(open) == 0 {
-		return nil
-	}
 	sessions, err := s.repo.ListSessions(ctx)
 	if err != nil {
 		return fmt.Errorf("list sessions for message delivery: %w", err)
@@ -70,6 +67,11 @@ func (s *Service) dispatchAgentMessages(ctx context.Context) error {
 			inflight[m.TargetSessionID] = true
 		}
 		s.persistMessageChange(ctx, before, *m)
+	}
+	// Conversation-API input into terminal sessions shares the one-hand-off-
+	// per-session rule with the outbox (terminal_conversation.go).
+	if s.dispatchTerminalSubmissions(ctx, sessions, inflight) {
+		s.kickMessagesSoon()
 	}
 	for i := range open {
 		m := &open[i]

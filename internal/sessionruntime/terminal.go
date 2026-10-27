@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/creack/pty"
 	"github.com/hiveryn/daemon/internal/domain"
@@ -179,8 +180,11 @@ type terminalProcess struct {
 	onExit       func(terminalExit)
 	observer     terminalObserver
 
-	mu          sync.Mutex
-	closing     bool
+	mu      sync.Mutex
+	closing bool
+	// held buffers client input while holdUntil is in the future; see HoldInput.
+	held        [][]byte
+	holdUntil   time.Time
 	cleanupOnce sync.Once
 	outputNext  uint64
 	outputSubs  map[uint64]chan []byte
@@ -532,12 +536,55 @@ func (p *terminalProcess) write(data []byte) error {
 	p.mu.Lock()
 	ptyFile := p.pty
 	closing := p.closing
+	if !closing && ptyFile != nil && time.Now().Before(p.holdUntil) {
+		p.held = append(p.held, append([]byte(nil), data...))
+		p.mu.Unlock()
+		return nil
+	}
 	p.mu.Unlock()
 	if closing || ptyFile == nil {
 		return fmt.Errorf("session is closing")
 	}
 	_, err := ptyFile.Write(data)
 	return err
+}
+
+// HoldInput briefly buffers client input to one terminal, in arrival order,
+// so a daemon-side hand-off into the same agent is not raced by a keystroke
+// (an Enter) that the agent would see at the same idle moment. The returned
+// release flushes the buffer; the hold also ends by itself after d. Output,
+// resize and every other terminal are unaffected.
+func (m *ptyTerminalManager) HoldInput(sessionID, terminalID string, d time.Duration) func() {
+	process := m.get(terminalKey(sessionID, terminalID))
+	if process == nil {
+		return func() {}
+	}
+	process.mu.Lock()
+	process.holdUntil = time.Now().Add(d)
+	process.mu.Unlock()
+	var once sync.Once
+	release := func() { once.Do(process.flushHeld) }
+	time.AfterFunc(d, release)
+	return release
+}
+
+func (p *terminalProcess) flushHeld() {
+	p.mu.Lock()
+	p.holdUntil = time.Time{}
+	held := p.held
+	p.held = nil
+	ptyFile := p.pty
+	closing := p.closing
+	// Write under the lock so input arriving now cannot overtake held input.
+	if !closing && ptyFile != nil {
+		for _, data := range held {
+			if _, err := ptyFile.Write(data); err != nil {
+				p.logger.Warn("[pty] flush held input", "terminal_key", p.key, "error", err)
+				break
+			}
+		}
+	}
+	p.mu.Unlock()
 }
 
 func (p *terminalProcess) resize(cols, rows uint16) error {

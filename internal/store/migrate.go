@@ -30,6 +30,7 @@ var migrationFiles = []string{
 	"migrations/0016_remove_deferred_intents.sql",
 	"migrations/0017_conversations.sql",
 	"migrations/0018_chat_archives.sql",
+	"migrations/0019_terminal_submissions.sql",
 }
 
 func runMigrations(ctx context.Context, db *sql.DB) error {

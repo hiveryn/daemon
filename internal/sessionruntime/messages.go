@@ -95,6 +95,8 @@ type messageRuntime struct {
 	idle      map[string]bool
 	idleAt    map[string]time.Time
 	endpoints map[string]messageEndpoint
+	// holds are the release functions of active terminal input holds.
+	holds map[string]func()
 	// failures counts preparation/storage failures for pending retry backoff;
 	// Attempts counts durably reserved hand-offs, including unknown acceptance.
 	failures map[string]int
@@ -107,6 +109,8 @@ type messageRuntime struct {
 	staleChecks map[domain.AgentMessageKind]messageStaleCheck
 
 	kick chan struct{}
+	// soon is set while a short follow-up pass is scheduled (kickMessagesSoon).
+	soon bool
 	stop chan struct{}
 	once sync.Once
 	done chan struct{}
@@ -363,6 +367,7 @@ func (s *Service) observeAgentStatusForMessages(event agentruntime.Event) {
 		s.setMessageIdle(event.ID, true)
 	case agentruntime.StatusWorking, agentruntime.StatusAwaitingInput, agentruntime.StatusEnded, agentruntime.StatusError:
 		s.setMessageIdle(event.ID, false)
+		s.releaseTerminalInput(event.ID)
 	default:
 		return
 	}
@@ -417,6 +422,26 @@ func (s *Service) waiterArmed(w ingest.Waiter) {
 }
 
 func (s *Service) waiterGone(ingest.Waiter) { s.kickMessages() }
+
+// kickMessagesSoon schedules one more dispatcher pass shortly: native
+// records are written just after the hook events that kick the dispatcher.
+func (s *Service) kickMessagesSoon() {
+	if s.messages == nil {
+		return
+	}
+	s.messages.mu.Lock()
+	defer s.messages.mu.Unlock()
+	if s.messages.soon {
+		return
+	}
+	s.messages.soon = true
+	time.AfterFunc(terminalRecheck, func() {
+		s.messages.mu.Lock()
+		s.messages.soon = false
+		s.messages.mu.Unlock()
+		s.kickMessages()
+	})
+}
 
 func (s *Service) kickMessages() {
 	if s.messages == nil {

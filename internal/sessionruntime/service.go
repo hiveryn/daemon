@@ -42,8 +42,11 @@ var defaultTabsBySessionType = map[string][]config.TabEntry{
 }
 
 type Service struct {
-	chatMu             sync.Mutex
-	chats              map[string]*chatOwner
+	chatMu sync.Mutex
+	chats  map[string]*chatOwner
+	// terminalHistory caches per-session native history sync (terminal_conversation.go).
+	terminalHistoryMu  sync.Mutex
+	terminalHistory    map[string]*terminalHistoryState
 	workspaceMutation  func(context.Context, string, []string, func() error) error
 	workspaceReconcile func(context.Context, string) error
 	remoteStop         chan struct{}

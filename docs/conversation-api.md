@@ -1,6 +1,10 @@
 # Local conversation API V1
 
-New sessions may opt into `interaction_mode: "chat"`. Omitting it retains the
+The same polling API serves two kinds of session. Ordinary laptop sessions
+(terminal mode, launched normally from the desktop) are read and continued
+through the provider's own route into their running TUI conversation — see
+[Existing terminal sessions](#existing-terminal-sessions-laptop-continuity).
+New sessions may instead opt into `interaction_mode: "chat"`. Omitting it retains the
 existing terminal mode, including existing records. Architect/ticket ownership,
 workspace validation, variants, repository snapshots and single-session rules
 are unchanged. Interaction mode is immutable for the life of the session; runs
@@ -10,8 +14,7 @@ or attached as another submitter.
 The daemon owns Claude's structured CLI, Codex app-server or a private loopback
 OpenCode server. These provider transports are internal. Public clients use
 ordinary HTTP and polling; no streaming/authentication/gateway is added. Listener
-exposure is unchanged. Remote SSH chat is rejected. Terminal history/send is
-not advertised by this V1.
+exposure is unchanged. Remote SSH chat is rejected.
 
 ## Create, launch and discover
 
@@ -222,13 +225,85 @@ that migration cannot be reliably backfilled: their metadata is gone. Their
 previously observed history remains readable by known ID. No retention pruning
 or new active-session ownership rules are introduced.
 
-## Connect-only browser and native laptop sessions
+## Existing terminal sessions (laptop continuity)
 
-The browser test client no longer creates, launches or resumes sessions; its
-proxy rejects those mutations. Daemon lifecycle routes remain available to
-Hiveryn. This does not make terminal sessions compatible with conversation
-reads/sends. Desktop launch and existing session ownership remain unchanged.
-See the [27 October investigation](laptop-conversation-continuity.md) for the
-user's API/client-only constraint, bounded native Codex evidence and unresolved
-Claude/OpenCode coordination blockers. Three-provider laptop/browser continuity
-has not passed acceptance; do not treat connect-only UI changes as that outcome.
+Architects and workers opened normally on the laptop are terminal-mode
+sessions: the daemon owns their PTY, native session id, hook state and the
+provider's own message route. The same endpoints read and send into those
+sessions — the same native conversation the laptop TUI shows — without a
+second conversation owner, a takeover, a structured pane or a changed launch.
+The browser client stays connect-only.
+
+`GET /api/sessions/SESSION_ID` reports, for a local terminal session:
+
+```json
+"conversation": {"history": true, "send": true, "native_permissions": false,
+  "execution_location": "local", "input_route": "codex_thread_queue",
+  "limitation": "Queued in Codex's durable thread queue ..."}
+```
+
+`history` requires a known native session id (first hook event); `send` also
+requires a running run (and, for OpenCode, the TUI server endpoint minted by
+this daemon process). Remote SSH sessions advertise neither. `limitation` is
+always the route's explicit caveat.
+
+| `input_route` | Mechanism | Native provenance of API input |
+| --- | --- | --- |
+| `claude_async_rewake` | The session's asyncRewake Stop/SessionStart waiter, only while idle | `task_notification`. Claude Code wraps it for the model as a hook notification, and the TUI shows a collapsed "Stop hook feedback" entry followed by the reply. The model answered and acted on such input as the user's request in acceptance, but this is not native human input |
+| `codex_thread_queue` | Durable thread queue, `clientUserMessageId` = submission id | Genuine user message, turn trigger `queue` |
+| `opencode_prompt_async` | TUI server `prompt_async` with a daemon-chosen id, only while the server reports idle, under the agent/model of the latest user turn | `prompt` (same as typed input) |
+
+None of these touch the TUI composer: a laptop draft stays intact and is
+submitted when the laptop presses Enter. For Claude and OpenCode the daemon
+briefly holds keystrokes to the session's main terminal around the hand-off
+(re-checks idle after 300 ms, releases on the agent's working signal, at most
+3 s), so a laptop Enter at the same instant runs as the next turn instead of
+racing into the same idle slot. Codex needs no hold: its queue waits for the
+running turn.
+
+History is read from the native record (Claude transcript, Codex rollout
+segments, OpenCode database) into the same version feed on each read and while
+input is open. User items carry `via` (`terminal` typed in the TUI, `api`, or
+`notification` for the outbox) and the unmodified `native_origin`. API items
+show the submitted text and `submission_id`; items of that native turn carry
+it too. The launch prompt (role/kickoff instructions, injected Overview and
+workflows) is hidden; developer instructions, hidden reasoning and hook
+plumbing are never read. An unreadable record is an error, never an empty
+page.
+
+Submissions use the same request-id replay/conflict rules and receipts, with
+these terminal meanings:
+
+- `queued` — waiting; `error` says why (agent busy, no Claude waiter armed yet,
+  previous input not yet in the record, session not running).
+- `started` — reserved durably (provider reference, hand-off time, receiving
+  terminal) before the hand-off; `error` says whether it is queued natively or
+  running in the native conversation.
+- `completed` — explicit native completion of the turn containing the input.
+- `failed` — native turn interrupted/failed, or the session ended before the
+  hand-off.
+- `uncertain` — never resent automatically: not found in a record that moved
+  past the hand-off after the agent went idle; the provider process was
+  restarted during the turn (the resumed process never completes it);
+  OpenCode merged later laptop input into the turn so its final reply belongs
+  to that later input; or the session ended before completion was observed.
+
+Unlike the chat queue, an `uncertain` terminal input does not hold later
+input (the laptop is not held either). One hand-off per session is in flight
+at a time, shared with outbox notifications. A daemon restart restores the
+TUI sessions; open receipts are reconciled from the record, and Claude/OpenCode
+gates come from the resumed waiter and the server's own status.
+
+Questions, approvals and notifications are unchanged: answer through
+`/controls` operations; chat text never answers or approves. Worker
+conclusions reach the architect through the outbox and appear in its history
+as `via: notification`. Ended terminal sessions get an archive descriptor
+(`interaction_mode: "terminal"`) and retain the history observed up to a
+final sync at session end.
+
+Known limits: Claude provenance as above; OpenCode laptop input sent while a
+turn runs merges into it (native behaviour, reported as above); Codex holds
+its queue after an Esc-interrupted turn until the next laptop turn completes;
+a tool interrupted by a provider crash can stay `running` in the native
+record; no remote SSH, streaming or authentication. Localhost is not a phone
+network path. Acceptance evidence: [laptop continuity](laptop-conversation-continuity.md).

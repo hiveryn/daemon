@@ -214,3 +214,65 @@ func (s *SessionStore) FailQueuedSubmissions(ctx context.Context, sid, reason st
 	_, err := s.db.ExecContext(ctx, "UPDATE conversation_submissions SET status='failed',error=?,updated_at=? WHERE session_id=? AND status='queued'", reason, time.Now().UTC().Format(time.RFC3339Nano), sid)
 	return err
 }
+
+func (s *SessionStore) OpenTerminalSubmissions(ctx context.Context, sid string) ([]domain.TerminalSubmission, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT "+submissionColumns+",provider_ref,handed_at,handed_terminal FROM conversation_submissions WHERE session_id=? AND status IN ('queued','started') ORDER BY seq", sid)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []domain.TerminalSubmission
+	for rows.Next() {
+		var t domain.TerminalSubmission
+		var created, updated, handed string
+		if err := rows.Scan(&t.Sequence, &t.ID, &t.SessionID, &t.RequestID, &t.Origin, &t.Text, &t.Status, &t.NativeTurnID, &t.Error, &created, &updated, &t.ProviderRef, &handed, &t.HandedTerminal); err != nil {
+			return nil, err
+		}
+		if t.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
+			return nil, err
+		}
+		if t.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated); err != nil {
+			return nil, err
+		}
+		if handed != "" {
+			if t.HandedAt, err = time.Parse(time.RFC3339Nano, handed); err != nil {
+				return nil, err
+			}
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (s *SessionStore) ReserveTerminalSubmission(ctx context.Context, sid, id, providerRef, terminalID string, handedAt time.Time) (bool, error) {
+	result, err := s.db.ExecContext(ctx, "UPDATE conversation_submissions SET status='started',provider_ref=?,handed_at=?,handed_terminal=?,error='',updated_at=? WHERE session_id=? AND id=? AND status='queued'",
+		providerRef, handedAt.UTC().Format(time.RFC3339Nano), terminalID, time.Now().UTC().Format(time.RFC3339Nano), sid, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
+}
+
+func (s *SessionStore) ReleaseTerminalSubmission(ctx context.Context, sid, id, reason string) error {
+	_, err := s.db.ExecContext(ctx, "UPDATE conversation_submissions SET status='queued',provider_ref='',handed_at='',handed_terminal='',error=?,updated_at=? WHERE session_id=? AND id=? AND status='started'",
+		reason, time.Now().UTC().Format(time.RFC3339Nano), sid, id)
+	return err
+}
+
+func (s *SessionStore) TerminalProviderRefs(ctx context.Context, sid string) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT provider_ref,id FROM conversation_submissions WHERE session_id=? AND provider_ref<>''", sid)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	refs := map[string]string{}
+	for rows.Next() {
+		var ref, id string
+		if err := rows.Scan(&ref, &id); err != nil {
+			return nil, err
+		}
+		refs[ref] = id
+	}
+	return refs, rows.Err()
+}

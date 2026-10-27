@@ -43,11 +43,15 @@ func (s *Service) chatCapabilities(session domain.Session) domain.ConversationCa
 		c.Limitation = "Remote SSH chat is unsupported"
 		return c
 	}
-	if session.InteractionMode == domain.InteractionChat {
-		c.History = true
-		c.Send = session.CurrentRun != nil && session.CurrentRun.Status == domain.SessionRunStatusRunning
-		c.Limitation = "Native permission controls are unavailable; permission requests block the queue"
+	if session.InteractionMode != domain.InteractionChat {
+		return s.terminalCapabilities(session)
 	}
+	c.History = true
+	c.Send = session.CurrentRun != nil && session.CurrentRun.Status == domain.SessionRunStatusRunning
+	if c.Send {
+		c.InputRoute = "chat"
+	}
+	c.Limitation = "Native permission controls are unavailable; permission requests block the queue"
 	return c
 }
 func (s *Service) SubmitMessage(ctx context.Context, id string, req domain.SubmissionRequest) (domain.Submission, error) {
@@ -93,8 +97,14 @@ func (s *Service) enqueueChat(ctx context.Context, id string, req domain.Submiss
 	if err != nil {
 		return domain.Submission{}, err
 	}
-	if session.InteractionMode != domain.InteractionChat || session.Machine != "" {
-		return domain.Submission{}, &domain.ConflictError{Resource: "session", Message: "send requires a local chat session"}
+	if session.Machine != "" {
+		return domain.Submission{}, &domain.ConflictError{Resource: "session", Message: "send to remote SSH sessions is unsupported"}
+	}
+	if session.InteractionMode != domain.InteractionChat {
+		if origin != "user" {
+			return domain.Submission{}, &domain.ConflictError{Resource: "session", Message: "only user input is admitted into terminal sessions"}
+		}
+		return s.submitTerminal(ctx, session, req)
 	}
 	if session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
 		return domain.Submission{}, &domain.ConflictError{Resource: "session", Message: "session is not running"}
@@ -112,7 +122,7 @@ func (s *Service) GetSubmission(ctx context.Context, id, submissionID string) (d
 		return domain.Submission{}, err
 	}
 	sub, err := repo.GetSubmission(ctx, id, submissionID)
-	if err == nil && sub.Status == "queued" {
+	if err == nil && sub.Status == "queued" && s.isChatSession(ctx, id) {
 		head, headErr := repo.PendingSubmission(ctx, id)
 		if headErr != nil {
 			return sub, headErr
@@ -135,8 +145,19 @@ func (s *Service) ReadConversation(ctx context.Context, id string, q domain.Conv
 		return domain.ConversationPage{}, err
 	}
 	session, sessionErr := s.repo.GetSession(ctx, id)
-	if sessionErr == nil && (session.InteractionMode != domain.InteractionChat || session.Machine != "") {
-		return domain.ConversationPage{}, &domain.ConflictError{Resource: "conversation", Message: "history requires a local chat session"}
+	if sessionErr == nil && session.Machine != "" {
+		return domain.ConversationPage{}, &domain.ConflictError{Resource: "conversation", Message: "history of remote SSH sessions is unsupported"}
+	}
+	if sessionErr == nil && session.InteractionMode != domain.InteractionChat {
+		// Read the native record first; an unreadable record is an error, never
+		// an empty or silently stale page.
+		if !s.terminalCapabilities(session).History {
+			return domain.ConversationPage{}, &domain.ConflictError{Resource: "conversation", Message: "history unavailable: " + s.terminalCapabilities(session).Limitation}
+		}
+		if _, err := s.syncTerminalHistory(ctx, session, false); err != nil {
+			return domain.ConversationPage{}, fmt.Errorf("read native conversation record: %w", err)
+		}
+		s.kickMessages()
 	}
 	var missing *domain.NotFoundError
 	if sessionErr != nil && !errors.As(sessionErr, &missing) {
@@ -496,7 +517,9 @@ func (s *Service) stopChat(ctx context.Context, id string, settle bool) error {
 	s.chatMu.Lock()
 	owner := s.chats[id]
 	s.chatMu.Unlock()
-	if settle {
+	// Terminal sessions are settled from their native record when they end
+	// (settleTerminalConversation); only the chat queue is failed wholesale.
+	if settle && s.isChatSession(ctx, id) {
 		repo, err := s.conversationRepo()
 		if err == nil {
 			if err = repo.SettleSubmissions(ctx, id, "failed", "Session ended before submission completed"); err != nil {
@@ -717,26 +740,44 @@ func (s *Service) ListSubmissions(ctx context.Context, id string, q domain.Seque
 	if err != nil {
 		return page, err
 	}
+	chat := s.isChatSession(ctx, id)
 	for i := range page.Submissions {
 		sub := &page.Submissions[i]
 		if sub.Origin == "kickoff" {
 			sub.Text = ""
 		}
-		if sub.Status == "queued" && head != nil && head.ID != sub.ID && (head.Status == "blocked" || head.Status == "uncertain") {
+		if chat && sub.Status == "queued" && head != nil && head.ID != sub.ID && (head.Status == "blocked" || head.Status == "uncertain") {
 			sub.Error = "Waiting for submission " + head.ID + " (" + head.Status + "): " + head.Error
 		}
 	}
 	return page, nil
 }
+
+// isChatSession reports a chat-mode session; archived chats count as chat.
+// Only chat queues are held by a blocked/uncertain head.
+func (s *Service) isChatSession(ctx context.Context, id string) bool {
+	session, err := s.repo.GetSession(ctx, id)
+	return err != nil || session.InteractionMode == domain.InteractionChat
+}
+
+// archiveChat retains a discovery descriptor for the ended session's observed
+// history. Terminal sessions are settled from a final native sync first.
 func (s *Service) archiveChat(ctx context.Context, session domain.Session, lifecycle string) error {
-	if session.InteractionMode != domain.InteractionChat {
+	if session.Machine != "" {
 		return nil
 	}
+	terminal := session.InteractionMode != domain.InteractionChat
 	repo, err := s.conversationRepo()
 	if err != nil {
+		if terminal { // no conversation persistence: nothing was observed to retain
+			return nil
+		}
 		return err
 	}
-	chat := domain.ArchivedChat{ID: session.ID, ArchitectKey: session.ArchitectKey, SessionType: session.SessionType, ContextID: session.ContextID, CreatedAt: session.CreatedAt, EndedAt: time.Now().UTC(), Lifecycle: lifecycle}
+	if terminal {
+		s.settleTerminalConversation(ctx, session)
+	}
+	chat := domain.ArchivedChat{ID: session.ID, ArchitectKey: session.ArchitectKey, SessionType: session.SessionType, ContextID: session.ContextID, CreatedAt: session.CreatedAt, EndedAt: time.Now().UTC(), Lifecycle: lifecycle, InteractionMode: session.InteractionMode}
 	if run := session.CurrentRun; run != nil {
 		chat.ProfileName = run.ProfileName
 		if run.ProfileSnapshot != nil {
