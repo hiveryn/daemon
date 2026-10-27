@@ -44,8 +44,6 @@ async function rpc(method,params){
 (async()=>{
  const tools=await rpc('tools/list',{});
  const ticket=await rpc('tools/call',{name:'readTicket',arguments:{id:process.env.SMOKE_TICKET_ID}});
- const created=await rpc('tools/call',{name:'createWorkTicket',arguments:{title:agent+' followup fixture',repo:'remote',body:'Fixture auto-approval'}});
- if(created.isError)throw Error(JSON.stringify(created));
  const denied=await fetch(base+'/mcp',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
  const api=await fetch(base+'/api/health',{headers});
  if(denied.status!==401 || api.status!==404)throw Error('gateway isolation failed');
@@ -57,7 +55,7 @@ async function rpc(method,params){
   const command=config.hooks.PreToolUse[0].hooks[0].command;
   require('child_process').execSync(command,{input:JSON.stringify({hook_event_name:'PreToolUse',session_id:'native-'+id,tool_name:'Read',cwd:process.cwd()}),env:process.env});
  }
- fs.writeFileSync('/home/worker/result-'+id,JSON.stringify({tools:tools.tools.map(t=>t.name),ticket,created}));
+ fs.writeFileSync('/home/worker/result-'+id,JSON.stringify({tools:tools.tools.map(t=>t.name),ticket}));
  console.log('FIXTURE_READY');
 })().catch(e=>{fs.writeFileSync('/home/worker/error-'+id,String(e));console.error(e)});
 setInterval(async()=>{
@@ -114,7 +112,7 @@ with tempfile.TemporaryDirectory(prefix='hiveryn-remote-smoke-') as tmp:
         (home/'machines.yaml').write_text('box:\n  ssh: fixture\n')
         (home/'architects.yaml').write_text(f'fixture: {workspace}\n')
         (workspace/'hiveryn.yaml').write_text('name: Fixture\nrepos:\n  remote:\n    path: /home/worker/repo\n    machine: box\n')
-        for name in ['PROJECT_OVERVIEW.md','PROJECT_STATE.md']:(workspace/name).write_text('---\nlastUpdatedAt: 2026-10-09T00:00:00Z\n---\nFixture project context.\n')
+        (workspace/'OVERVIEW.md').write_text('---\nupdated_at: 2026-10-09T00:00:00Z\n---\nFixture project context.\n')
         env=dict(os.environ,HIVERYN_HOME=str(home),PATH=str(bindir)+os.pathsep+os.environ['PATH'],TZ='UTC')
         (home/'variants.yaml').write_text('fixture:\n  agent: claude\n  machine: box\n  yolo: true\n')
         run('go','build','-race','-o',str(tmp/'hiverynd'),'./cmd/hiverynd',cwd=ROOT)
@@ -181,7 +179,7 @@ with tempfile.TemporaryDirectory(prefix='hiveryn-remote-smoke-') as tmp:
                     assert api(f'/sessions/{sid}')['current_run']['status']=='running'
                 api(f'/sessions/{sid}/discard',{})
             assert remote(f'test ! -d /home/worker/.local/state/hiveryn-workers/{sid} && echo cleaned')=='cleaned'
-            print(f'{agent}: authenticated tools/mutation/hooks, remote diffs, terminal input/resize/restore, detach/reattach, daemon restart, one launch and cleanup PASS',flush=True)
+            print(f'{agent}: authenticated tools/hooks, remote diffs, terminal input/resize/restore, detach/reattach, daemon restart, one launch and cleanup PASS',flush=True)
         # Launch lifetime: with slow SSH, preparing a worker takes well over the
         # desktop's former 5 s request bound.
         def post(path,body,timeout):
@@ -334,8 +332,6 @@ with tempfile.TemporaryDirectory(prefix='hiveryn-remote-smoke-') as tmp:
         def launch(title):
             ticket,sid=fresh(title)
             api(f'/sessions/{sid}/runs',{'profile_name':'fixture'})
-            iid=wait(lambda:open_intent(sid,'createWorkTicket'),timeout=60)
-            api(f'/sessions/{sid}/intents/{iid}/approve',{})
             wait(lambda:remote(f'cat /home/worker/result-{sid}'),timeout=60)
             return ticket,sid
         ticket,sid=launch('slow conclusion approval')

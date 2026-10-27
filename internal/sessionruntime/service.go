@@ -478,7 +478,7 @@ func (s *Service) beginTeardown(ctx context.Context, sessionID string) (context.
 	}, nil
 }
 
-func (s *Service) createRun(ctx context.Context, sessionID string, req domain.CreateSessionRunRequest) (domain.CreateSessionRunResult, error) {
+func (s *Service) createRun(ctx context.Context, sessionID string, req domain.CreateSessionRunRequest) (_ domain.CreateSessionRunResult, err error) {
 	session, err := s.repo.GetSession(ctx, sessionID)
 	if err != nil {
 		return domain.CreateSessionRunResult{}, err
@@ -542,6 +542,14 @@ func (s *Service) createRun(ctx context.Context, sessionID string, req domain.Cr
 	}
 	if err := s.validateSessionLocation(ctx, cfg, architect, session); err != nil {
 		return domain.CreateSessionRunResult{}, err
+	}
+	if session.Machine != "" {
+		var finish func(error) error
+		ctx, finish = s.openRemoteLaunch(ctx, session)
+		defer func() { err = finish(err) }()
+		if err := checkRemoteWorkdirs(ctx, session); err != nil {
+			return domain.CreateSessionRunResult{}, err
+		}
 	}
 	workerCtx, err := validateWorkerLaunchContext(architect, session)
 	if err != nil {
@@ -669,6 +677,7 @@ func (s *Service) launchSession(ctx context.Context, cfg config.Config, session 
 	if session.Machine != "" {
 		s.storeSessionTerminalState(session.ID, sessionTerminalState{runID: run.ID, mainTerminalID: mainTerminalID})
 	}
+	remoteStage(ctx, "repository terminals")
 	tabs := s.startAutoTerminals(ctx, cfg, session, spec.Workdir, spec.Env, size, spec.CleanupPaths)
 	if session.Machine != "" {
 		s.terminalStateMu.Lock()

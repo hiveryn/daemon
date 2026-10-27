@@ -134,7 +134,7 @@ func TestFailedRemoteLaunchNeverKillsAServerItDidNotCreate(t *testing.T) {
 	// No repository and no SSH: the pre-existing server is left alone and the
 	// error says how to recover.
 	s := &Service{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	err := s.cleanupFailedRemoteLaunch(domain.Session{ID: "s", Machine: "box", SSH: "box"}, errors.Join(errors.New("create remote worker tmux"), errRemoteServerExists))
+	err := s.cleanupFailedRemoteLaunch(context.Background(), domain.Session{ID: "s", Machine: "box", SSH: "box"}, errors.Join(errors.New("create remote worker tmux"), errRemoteServerExists))
 	if !errors.Is(err, errRemoteServerExists) || !strings.Contains(err.Error(), "discard the session") {
 		t.Fatalf("existing server: %v", err)
 	}

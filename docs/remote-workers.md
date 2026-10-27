@@ -93,17 +93,65 @@ Stop, discard and conclusion first confirm owned remote resources are stopped.
 If a host is unreachable, the local session remains and the error explains that
 termination was not confirmed. Retry after restoring connectivity.
 
-Launching a worker validates the repositories and prepares the worker over many
-SSH round trips, so it can take tens of seconds. A launch is bounded by the
-daemon (two minutes) rather than by the requester: a client that stops waiting
-does not interrupt it, and the session appears once it starts. A second launch
-of a session already launching is rejected as a conflict. If preparation fails,
-the provider has not started (it waits behind its launch gate), so the owned
-tmux server and runtime directory are removed and the same session can be
-launched again; if that cleanup cannot be confirmed, or an owned server from an
-earlier attempt already exists, the error says so and the session must be
-discarded before spawning again. An exceeded bound is reported as such, with the
-interrupted SSH step.
+Launching a worker validates the repositories and prepares the worker over SSH.
+A launch is bounded by the daemon (two minutes) rather than by the requester: a
+client that stops waiting does not interrupt it, and the session appears once it
+starts. A second launch of a session already launching is rejected as a
+conflict. If preparation fails, the provider has not started (it waits behind
+its launch gate), so the owned tmux server and runtime directory are removed and
+the same session can be launched again; if that cleanup cannot be confirmed, or
+an owned server from an earlier attempt already exists, the error says so and
+the session must be discarded before spawning again.
+
+### Launch cost
+
+A fresh SSH connection's handshake usually dominates a remote command (on the
+host that motivated this, ~7.5 s for `sh -c true`, ~6.2 s to establish a
+connection and ~1.3 s per command over it). Preparation therefore pays the
+handshake once and keeps its command count fixed:
+
+- **Launch-scoped shared connection** (`remoteexec.Connection`). The launch
+  starts one OpenSSH master for the session's alias (`ControlMaster=yes`,
+  `ControlPersist=no`) with its control socket in a fresh 0700 directory of the
+  daemon's account, and its preparation commands (repository check, probe,
+  provider setup, launch files, tmux creation, the attach pre-check, repository
+  terminals and failed-launch cleanup) run over it. It is closed (master killed,
+  directory removed) when the launch returns, success or failure. User, port,
+  identity, proxy/jump and authentication still come from the alias's SSH
+  configuration; only the master/control options of these commands are fixed,
+  overriding any `ControlMaster`/`ControlPath` of the alias for them alone. The
+  attached worker PTY and every reconnect open their own connections, so nothing
+  that outlives the launch depends on it. If the master cannot be established
+  (or exits) the launch continues over direct connections and logs why; the
+  first failing command still reports its original cause.
+- **Batched probes.** All repository directories are checked in one command
+  that names every path that is missing or not a directory; a failed SSH command
+  is reported as such, never as a missing repository. Prerequisites (`tmux`, the
+  provider CLI, Node for Claude/Codex) and the target environment are one
+  command that names every missing prerequisite. The private runtime directory
+  is created by the first file written into it, after its ownership record. An
+  unchanged provider setup is one read.
+
+| 11-repo Claude worker | Handshakes | Commands | Estimate at the measured cost |
+| --- | --- | --- | --- |
+| Before | 24 (23 commands + attach) | 23 | ~180 s — exceeded the 2 min bound |
+| After, changed setup | 2 (master + attach) | 9 | ~6 + 9 × 1.3 + 7.5 ≈ 25 s |
+| After, unchanged setup | 2 | 7 | ≈ 23 s |
+| After, master refused | 11 (failed master + 9 + attach) | 9 | ≈ 6 + 9 × 7.5 + 7.5 ≈ 81 s |
+
+Counts are the same for one repository; before the change one repository took
+13 commands and each further repository one more. Estimates are arithmetic from
+the measured per-connection costs, not a timed launch on that host.
+
+Each remote launch logs `[spawn] remote launch prepared` (or `failed`) with its
+duration, whether the shared connection was used, how long it took to become
+ready, and per-stage elapsed time and command counts (`validate repositories`,
+`prerequisites`, `<agent> setup`, `prepare launch`, `create tmux`, `attach`,
+`repository terminals`, `cleanup`). Logs never include scripts, settings,
+environment values, tokens or file contents. When the launch's own bound runs
+out the error says `launch did not complete within …` and names the stage the
+budget ran out in with the same timing; a remote command that genuinely failed
+keeps its own exit status and stderr instead.
 
 Opening a remote repository terminal creates its tmux server over SSH, likewise
 detached from the requester and bounded by the daemon (45 seconds). A completed
@@ -177,7 +225,15 @@ launches/terminals, failed-preparation cleanup and unconfirmed terminal cleanup.
 
 The fixture uses Alpine Linux 3.22, OpenSSH 10 and tmux 3.5a, with a macOS client.
 Unit tests cover provider target filesystems, scope validation, shell quoting
-and gateway authorization. Remote reference inspection and Git diffs are
+and gateway authorization. `internal/sessionruntime/remote_launch_test.go`
+launches an 11-repository Claude worker through `CreateRun` against the fake
+`ssh` with per-connection latency scaled from the measured cost (fresh 187 ms,
+shared 33 ms, bound 3 s): it asserts one master and a fixed command count for
+one and eleven repositories, an unchanged second setup without a write, the
+fallback without multiplexing, missing repositories and prerequisites, a
+changed machine, a failed setup write, budget exhaustion, cleanup and retry
+with exactly one tmux creation. The same test against the previous code fails
+its bound during the prerequisite checks after 23 fresh connections. Remote reference inspection and Git diffs are
 covered by unit tests against `internal/remoteexec/sshtest`, a fake `ssh` that
 runs each command locally in a per-machine home directory. Fixture evidence does not establish real provider
 CLI behavior, interactive Electron acceptance, other remote operating systems,

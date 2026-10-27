@@ -26,21 +26,39 @@ func Options(alias string) []string {
 
 // Command leaves stdin available for private scripts or file content. The SSH
 // alias is configuration, not a hostname assembled from request arguments.
+// When ctx carries a usable Connection for alias, the command runs over it.
 func Command(ctx context.Context, alias, script string) *exec.Cmd {
-	args := append(Options(alias), "sh -c "+Quote(script))
+	cmd, _, _ := command(ctx, alias, script)
+	return cmd
+}
+
+// command also returns ctx's connection for alias and whether cmd uses it.
+func command(ctx context.Context, alias, script string) (*exec.Cmd, *Connection, bool) {
+	var args []string
+	c, shared := connectionFor(ctx, alias)
+	if shared {
+		args = []string{"-o", "ControlMaster=no", "-o", "ControlPath=" + c.socket}
+	}
+	args = append(append(args, Options(alias)...), "sh -c "+Quote(script))
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	// A cancelled ssh is killed, but a child it started (a ProxyCommand, a
 	// connection multiplexer) can keep its output pipes open; stop waiting for
 	// them so a deadline actually bounds the call.
 	cmd.WaitDelay = outputWaitDelay
-	return cmd
+	return cmd, c, shared
 }
 
 // outputWaitDelay bounds how long a killed ssh's leftover pipes are drained.
 const outputWaitDelay = 2 * time.Second
 
-func Run(ctx context.Context, alias, script string, input io.Reader) ([]byte, error) {
-	cmd := Command(ctx, alias, script)
+// Run executes script on alias. A command for the alias of ctx's Connection is
+// recorded in its stats, whether or not its master was still up.
+func Run(ctx context.Context, alias, script string, input io.Reader) (_ []byte, err error) {
+	cmd, c, shared := command(ctx, alias, script)
+	if c != nil {
+		started := time.Now()
+		defer func() { c.record(time.Since(started), err, !shared) }()
+	}
 	cmd.Stdin = input
 	var out, stderr bytes.Buffer
 	cmd.Stdout = &out

@@ -64,11 +64,12 @@ func (s *Service) startRemoteTerminal(ctx context.Context, session domain.Sessio
 			s.remoteMu.Lock()
 			delete(s.remotes, session.ID)
 			s.remoteMu.Unlock()
-			return "", agentruntime.LaunchSpec{}, s.cleanupFailedRemoteLaunch(session, fmt.Errorf("prepare remote worker on %s: %w", session.Machine, err))
+			return "", agentruntime.LaunchSpec{}, s.cleanupFailedRemoteLaunch(ctx, session, fmt.Errorf("prepare remote worker on %s: %w", session.Machine, err))
 		}
 	}
 	s.cancelReceiverBridge(session.ID)
 	s.storeBridgeCancel(session.ID, s.startReceiverBridge(session.ID))
+	remoteStage(ctx, "attach")
 	id, err := s.attachRemote(ctx, w, size)
 	if err != nil {
 		if !s.remoteMissing(w, err) {
@@ -78,6 +79,63 @@ func (s *Service) startRemoteTerminal(ctx context.Context, session domain.Sessio
 		id = uuid.NewString()
 	}
 	return id, agentruntime.LaunchSpec{Command: "ssh", Workdir: session.Workdir}, nil
+}
+
+// openRemoteLaunch gives a remote launch one shared SSH connection for its
+// preparation commands, so their cost no longer scales with the number of
+// handshakes: validation, prerequisite and setup commands, tmux creation and
+// failure cleanup all run over it. The attached worker PTY and any reconnect
+// open their own connections, since they outlive the launch. A master that
+// cannot be established is logged and the launch proceeds over direct
+// connections, whose first command reports the original cause.
+//
+// finish closes the connection once the launch returned, logs its timing and,
+// when the launch's own bound ran out, names the stage it ran out in so an
+// exhausted budget reads differently from a failed remote command. Timing
+// carries stage names and counts only, never scripts, settings or payloads.
+func (s *Service) openRemoteLaunch(ctx context.Context, session domain.Session) (context.Context, func(error) error) {
+	started := time.Now()
+	conn, err := remoteexec.Dial(ctx, session.SSH)
+	ready := time.Since(started)
+	if err != nil {
+		s.logger.Warn("[spawn] shared SSH connection unavailable; launch continues over direct connections",
+			"session_id", session.ID, "machine", session.Machine, "duration", ready.String(), "error", err)
+	}
+	conn.Stage("validate repositories")
+	launchCtx := remoteexec.WithConnection(ctx, conn)
+	return launchCtx, func(launchErr error) error {
+		stats := conn.Stats()
+		conn.Close()
+		if launchErr != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			launchErr = fmt.Errorf("%w (launch budget ran out during remote stage %q after %s: %s)", launchErr, exhaustedStage(stats), time.Since(started).Round(time.Millisecond), stats)
+		}
+		attrs := []any{"session_id", session.ID, "machine", session.Machine, "duration", time.Since(started).String(),
+			"shared_connection", err == nil, "connection_ready", ready.String(), "operations", stats.String()}
+		if launchErr != nil {
+			s.logger.Warn("[spawn] remote launch failed", append(attrs, "error", launchErr)...)
+		} else {
+			s.logger.Info("[spawn] remote launch prepared", attrs...)
+		}
+		return launchErr
+	}
+}
+
+// exhaustedStage is the stage the launch was in when it failed: cleanup runs
+// on a bound of its own afterwards.
+func exhaustedStage(stats remoteexec.ConnectionStats) string {
+	for i := len(stats.Stages) - 1; i >= 0; i-- {
+		if stats.Stages[i].Name != remoteCleanupStage {
+			return stats.Stages[i].Name
+		}
+	}
+	return ""
+}
+
+const remoteCleanupStage = "cleanup"
+
+// remoteStage marks the launch stage that following SSH commands belong to.
+func remoteStage(ctx context.Context, name string) {
+	remoteexec.ConnectionFrom(ctx).Stage(name)
 }
 
 // remoteServerExistsMessage is printed by the tmux creation command when the
@@ -91,17 +149,19 @@ var errRemoteServerExists = errors.New("a managed tmux server from an earlier la
 const remoteCleanupTimeout = 30 * time.Second
 
 // cleanupFailedRemoteLaunch removes what a failed fresh launch prepared, so a
-// retry starts clean. It is safe because the provider never started: the tmux
-// pane waits on its launch gate, which only a successful attachment releases,
+// retry starts clean. It runs on a fresh bound that keeps the launch's shared
+// connection, since the launch's own deadline may already be exhausted. It is
+// safe because the provider never started: the tmux pane waits on its launch gate, which only a successful attachment releases,
 // and a launch whose attachment ran does not fail here. A launch only gets
 // this far while the session has no running run, so whatever cleanup reaches
 // never started a provider. A server found already existing at creation is
 // still left alone and reported: its origin is unknown to this attempt.
-func (s *Service) cleanupFailedRemoteLaunch(session domain.Session, launchErr error) error {
+func (s *Service) cleanupFailedRemoteLaunch(launchCtx context.Context, session domain.Session, launchErr error) error {
 	if errors.Is(launchErr, errRemoteServerExists) {
 		return launchErr
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), remoteCleanupTimeout)
+	remoteStage(launchCtx, remoteCleanupStage)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(launchCtx), remoteCleanupTimeout)
 	defer cancel()
 	if err := s.stopRemoteResources(ctx, session); err != nil {
 		s.logger.Error("cleanup after failed remote launch not confirmed", "session_id", session.ID, "error", err)
@@ -112,16 +172,12 @@ func (s *Service) cleanupFailedRemoteLaunch(session domain.Session, launchErr er
 
 func (s *Service) prepareRemoteWorker(ctx context.Context, w *remoteWorker, profile config.VariantConfig, kind agentruntime.AgentKind, req agentruntime.StartRequest) error {
 	session := w.session
+	remoteStage(ctx, "prerequisites")
 	commands := []string{"tmux", string(kind)}
 	if kind == agentruntime.AgentClaude || kind == agentruntime.AgentCodex {
 		commands = append(commands, "node")
 	}
-	for _, command := range commands {
-		if _, err := remoteexec.Run(ctx, session.SSH, "command -v "+remoteexec.Quote(command), nil); err != nil {
-			return fmt.Errorf("remote prerequisite %s is unavailable: %w", command, err)
-		}
-	}
-	fs, err := remoteexec.NewFileSystem(ctx, session.SSH)
+	fs, err := remoteexec.NewFileSystem(ctx, session.SSH, commands...)
 	if err != nil {
 		return err
 	}
@@ -129,6 +185,7 @@ func (s *Service) prepareRemoteWorker(ctx context.Context, w *remoteWorker, prof
 	if err != nil {
 		return err
 	}
+	// Created by the first file written there, after its ownership record.
 	fs.TempDir = path.Join(remoteHome, ".local/state/hiveryn-workers", session.ID)
 	resources, ok := s.repo.(remoteResourceStore)
 	if !ok {
@@ -137,15 +194,13 @@ func (s *Service) prepareRemoteWorker(ctx context.Context, w *remoteWorker, prof
 	if err := resources.AddRemoteResource(ctx, session.ID, session.SSH, remoteSocket(session.ID), fs.TempDir); err != nil {
 		return err
 	}
-	if err := fs.MkdirAll(fs.TempDir, 0700); err != nil {
-		return err
-	}
 	for k, v := range profile.Env {
 		fs.Env[k] = v
 	}
 	adapter := s.adapters[kind]
 	setup := setupRequestForAgent(adapter, fs.Env)
 	setup.FileSystem = fs
+	remoteStage(ctx, string(kind)+" setup")
 	if _, err := adapter.EnsureSetup(ctx, setup); err != nil {
 		return fmt.Errorf("remote %s setup: %w", kind, err)
 	}
@@ -165,6 +220,7 @@ func (s *Service) prepareRemoteWorker(ctx context.Context, w *remoteWorker, prof
 	servers[0] = agentruntime.MCPServerConfig{Name: config.ReservedMCPServerName, URL: endpoint + "/mcp", BearerTokenEnvVar: "HIVERYN_WORKER_TOKEN", ToolTimeout: hiverynMCPToolTimeout}
 	req.MCPServers = servers
 	req.Instructions += "\nIf Hiveryn MCP becomes unreachable, stop work and wait for Hiveryn to return. A failed call is not approval or success; do not blindly replay a mutation with an unknown outcome. Laptop path references may be inaccessible here.\n"
+	remoteStage(ctx, "prepare launch")
 	spec, err := adapter.PrepareLaunch(ctx, req)
 	if err != nil {
 		return fmt.Errorf("remote prepare launch: %w", err)
@@ -182,6 +238,7 @@ func (s *Service) prepareRemoteWorker(ctx context.Context, w *remoteWorker, prof
 	if err != nil {
 		return err
 	}
+	remoteStage(ctx, "create tmux")
 	// No existing server is ever reused for a new launch. All subsequent paths
 	// attach only; an SSH error can never cause a duplicate provider invocation.
 	command := tmux(session.ID, "has-session") + " 2>/dev/null && { echo '" + remoteServerExistsMessage + "' >&2; exit 1; }; "
