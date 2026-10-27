@@ -10,6 +10,8 @@ func (s *Server) registerTicketTools() {
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "readTicket",
-		Description: "Read full ticket details by ID.",
+		Description: "Read full ticket details by ID: this project's tickets, including their conclusions. resolved_references lists each reference with its status, where it lives and the tool that reads it (access).",
 	}, s.handleReadTicket)
+
+	s.registerContextTools()
 }

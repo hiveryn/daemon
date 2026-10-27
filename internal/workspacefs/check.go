@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -299,6 +300,9 @@ func (s *Service) checkTickets(ctx context.Context, workspacePath string, report
 		}
 
 		for _, warning := range summary.Warnings {
+			if warning.Code == "INVALID_REFERENCE" {
+				reportDiags = append(reportDiags, invalidReferenceDiagnostic(summary, warning))
+			}
 			if warning.Code == "INVALID_TICKET" {
 				reportDiags = append(reportDiags, domain.WorkspaceDiagnostic{Code: warning.Code, Severity: domain.DiagnosticError, Path: "tickets/" + string(summary.Status) + "/" + summary.ID + "/ticket.md", Message: warning.Message})
 			}
@@ -313,6 +317,34 @@ func (s *Service) checkTickets(ctx context.Context, workspacePath string, report
 		}
 	}
 	return tickets, reportDiags
+}
+
+// invalidReferenceDiagnostic reports an invalid ticket reference at its
+// ticket.md line. Author-owned backlog and active progress tickets carry it
+// as an error, so it reaches the architect's validation notice; a completed
+// record keeps it as a warning, since only the supported reference migration
+// may rewrite it.
+func invalidReferenceDiagnostic(summary domain.TicketSummary, warning domain.TicketWarning) domain.WorkspaceDiagnostic {
+	d := domain.WorkspaceDiagnostic{
+		Code:     warning.Code,
+		Severity: domain.DiagnosticError,
+		Path:     "tickets/" + string(summary.Status) + "/" + summary.ID + "/ticket.md",
+		Message:  warning.Message,
+	}
+	if rest, ok := strings.CutPrefix(warning.Message, "ticket.md line "); ok {
+		if n, tail, ok := strings.Cut(rest, ": "); ok {
+			if line, err := strconv.Atoi(n); err == nil {
+				d.Line, d.Message = line, tail
+			}
+		}
+	}
+	remedy := " Use a same-board ticket id, architect:<path relative to the architect workspace> or <repo key>:<path relative to that repo> (see hiveryn.yaml for repo keys)."
+	if summary.Status == domain.TicketStatusDone {
+		d.Severity = domain.DiagnosticWarning
+		remedy = " Completed records are runtime-owned: convert them with `hiverynd references-migrate`, never by direct edit."
+	}
+	d.Message += "." + remedy
+	return d
 }
 
 // reportIsValid is true only when no error-severity diagnostic appears anywhere

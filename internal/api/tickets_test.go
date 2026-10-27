@@ -195,15 +195,24 @@ func TestTicketsAPIValidationAndNotFound(t *testing.T) {
 	status, body = requestJSON(t, handler, http.MethodPost, "/api/architects/hiveryn/tickets", map[string]any{
 		"title":      "bad refs",
 		"repo":       "daemon",
-		"references": []string{"missing-ticket"},
+		"references": []string{"2026-01-01-0000-missing-ticket"},
 	})
 	if status != http.StatusCreated {
 		t.Fatalf("expected broken references to succeed (201), got %d: %s", status, string(body))
 	}
 
+	status, body = requestJSON(t, handler, http.MethodPost, "/api/architects/hiveryn/tickets", map[string]any{
+		"title":      "absolute refs",
+		"repo":       "daemon",
+		"references": []string{"/Users/someone/architects/hiveryn/OVERVIEW.md"},
+	})
+	if status != http.StatusBadRequest || !strings.Contains(string(body), "absolute and home-relative paths are not references") {
+		t.Fatalf("expected absolute reference rejection, got %d: %s", status, string(body))
+	}
+
 	status, body = requestJSON(t, handler, http.MethodPatch, "/api/architects/hiveryn/tickets/2026-05-12-0900-edit/metadata", map[string]any{
 		"title":      "",
-		"references": []string{"missing-ticket"},
+		"references": []string{"2026-01-01-0000-missing-ticket"},
 	})
 	if status != http.StatusBadRequest {
 		t.Fatalf("expected empty title validation status %d, got %d: %s", http.StatusBadRequest, status, string(body))

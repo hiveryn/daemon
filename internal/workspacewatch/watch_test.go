@@ -169,3 +169,88 @@ func TestProtectedRecordsSurviveRestartAndDoNotAuthorizeEdits(t *testing.T) {
 		t.Fatalf("deleted conclusion not detected: %+v %v", diags, err)
 	}
 }
+
+// An invalid reference in one backlog ticket reaches the architect's
+// validation notice after the quiet period with its exact path, line, value
+// and remediation, without hiding a sibling ticket's own problem; correcting
+// the file refreshes validation without it.
+func TestInvalidReferenceNotifiesAndClearsWhenCorrected(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	root := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("hiveryn.yaml", "name: Example\nrepos:\n  core: "+root+"\n")
+	write("OVERVIEW.md", "---\nupdated_at: 2026-01-01T00:00:00Z\n---\n\nOverview.\n")
+	write("workflows/deliver.md", "Deliver.\n")
+	write("knowledge/tracing.md", "Notes.\n")
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	cfg := config.Config{Architects: map[string]config.ArchitectConfig{"example": {Path: root, Repos: map[string]string{"core": root}}}}
+	protection := architectfs.NewProtection(store.NewWorkspaceRecordStore(db))
+	tickets := architectfs.NewTicketService(architectfs.ConfigLocator(config.StaticSource(cfg)))
+	tickets.SetProtection(protection)
+	messages := make(chan string, 20)
+	w := &Watcher{Source: config.StaticSource(cfg), Protection: protection, Workspaces: workspacefs.NewService(tickets), Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Publish: func(string, domain.ArchitectEvent) {}, Notify: func(_ context.Context, _ string, body string) error { messages <- body; return nil }}
+	done := make(chan struct{})
+	go func() { defer close(done); w.Run(ctx) }()
+	defer func() { cancel(); <-done }()
+	time.Sleep(500 * time.Millisecond)
+
+	ticket := func(refs string) string {
+		return "---\ntitle: Refs\nrepo: core\ncreated_at: 2026-01-01T00:00:00Z\nupdated_at: 2026-01-01T00:00:00Z\nreferences:\n" + refs + "---\nBody\n"
+	}
+	write("tickets/backlog/2026-01-01-0000-refs/ticket.md", ticket("  - "+root+"/knowledge/tracing.md\n  - unknown:docs\n"))
+	write("tickets/backlog/2026-01-01-0001-sibling/ticket.md", ticket("  - core:.\n  - notes.md\n"))
+	var notice string
+	select {
+	case notice = <-messages:
+	case <-time.After(6 * time.Second):
+		t.Fatal("missing validation notice")
+	}
+	for _, want := range []string{
+		"tickets/backlog/2026-01-01-0000-refs/ticket.md:7 [INVALID_REFERENCE]",
+		"absolute and home-relative paths are not references",
+		"tickets/backlog/2026-01-01-0000-refs/ticket.md:8 [INVALID_REFERENCE]",
+		`"unknown" is not architect or a repo key in this architect's hiveryn.yaml (configured: core)`,
+		"tickets/backlog/2026-01-01-0001-sibling/ticket.md:8 [INVALID_REFERENCE]",
+		"architect:<path relative to the architect workspace>",
+	} {
+		if !strings.Contains(notice, want) {
+			t.Fatalf("notice lacks %q:\n%s", want, notice)
+		}
+	}
+
+	write("tickets/backlog/2026-01-01-0000-refs/ticket.md", ticket("  - architect:knowledge/tracing.md\n  - core:.\n"))
+	write("tickets/backlog/2026-01-01-0001-sibling/ticket.md", ticket("  - core:.\n"))
+	select {
+	case m := <-messages:
+		t.Fatalf("corrected workspace still notified:\n%s", m)
+	case <-time.After(4 * time.Second):
+	}
+	board, err := tickets.ListTickets(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range board.Backlog {
+		if len(s.Warnings) != 0 {
+			t.Fatalf("%s warnings after correction: %#v", s.ID, s.Warnings)
+		}
+		for _, ref := range s.ResolvedReferences {
+			if ref.Status != domain.ReferencePresent {
+				t.Fatalf("%s reference %#v", s.ID, ref)
+			}
+		}
+	}
+}

@@ -29,8 +29,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runMCP(rest)
 	case "serve":
 		err = runServe(rest)
+	case "references-migrate":
+		return runReferences(rest, stdout, stderr)
 	default:
-		say(stderr, "hiverynd: unknown command %q\nusage: hiverynd [serve] [flags] | hiverynd mcp [flags]\n", command)
+		say(stderr, "hiverynd: unknown command %q\nusage: hiverynd [serve] [flags] | hiverynd mcp [flags] | hiverynd references-migrate plan|apply [flags]\n", command)
 		return exitUsage
 	}
 	if err != nil {

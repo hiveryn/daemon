@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"strings"
+
+	"github.com/hiveryn/daemon/internal/domain"
 )
 
 // validateArchitect enforces the per-architect rules. It is the single ruleset
@@ -22,6 +24,14 @@ func validateArchitect(key string, architect ArchitectConfig) error {
 		}
 		if strings.TrimSpace(repoKey) == "" {
 			return fmt.Errorf("architects.%s.repos keys must not be blank", key)
+		}
+		// Every repo key is a context reference prefix (<repoKey>:<path>), and
+		// architect:<path> addresses the workspace itself.
+		if strings.EqualFold(repoKey, domain.ArchitectReferencePrefix) {
+			return fmt.Errorf("architects.%s.repos.%s: %q is reserved for architect:<path> workspace references; rename the repo key", key, repoKey, domain.ArchitectReferencePrefix)
+		}
+		if !domain.ValidRepoKey(repoKey) {
+			return fmt.Errorf("architects.%s.repos.%s: repo keys must start with a letter or digit and use only letters, digits, '.', '_' or '-' so they can prefix <repoKey>:<path> references", key, repoKey)
 		}
 		if strings.TrimSpace(repoPath) == "" {
 			return fmt.Errorf("architects.%s.repos.%s is required", key, repoKey)

@@ -12,65 +12,76 @@ import (
 	"time"
 
 	"github.com/hiveryn/daemon/internal/config"
+	"github.com/hiveryn/daemon/internal/contextref"
 	"github.com/hiveryn/daemon/internal/domain"
 	"github.com/hiveryn/daemon/internal/remoteexec/sshtest"
 )
 
 // referenceConfig registers the architect at root with a local repo
-// "daemon" and a repo "infra" on machine bk (SSH alias bk-alias).
-func referenceConfig(root string) config.Config {
+// "daemon" at localRepo and a repo "infra" at /remote/infra on machine bk
+// (SSH alias bk-alias).
+func referenceConfig(root, localRepo string) config.Config {
+	return referenceConfigWithRemote(root, localRepo, "/remote/infra")
+}
+
+func referenceConfigWithRemote(root, localRepo, remoteRepo string) config.Config {
 	return config.Config{
 		Machines: map[string]config.MachineConfig{"bk": {SSH: "bk-alias"}},
 		Architects: map[string]config.ArchitectConfig{"hiveryn": {
 			Path:         root,
-			Repos:        map[string]string{"daemon": "/local/daemon", "infra": "/remote/infra"},
+			Repos:        map[string]string{"daemon": localRepo, "infra": remoteRepo},
 			RepoMachines: map[string]string{"infra": "bk"},
 		}},
 	}
 }
 
-// fakeRemote answers remote inspections from a per-alias table (absent
-// entries are missing) and records every call.
+// fakeRemote answers remote inspections from a per-alias table of absolute
+// paths (absent entries are missing) and records every call.
 type fakeRemote struct {
 	mu    sync.Mutex
-	paths map[string]map[string]domain.PathReferenceKind
+	paths map[string]map[string]domain.PathKind
 	down  map[string]error
-	calls []string // alias: sorted paths
+	calls []string // alias: sorted absolute paths
 	// gate, when set, holds every inspection until it is closed.
 	gate chan struct{}
 }
 
-func (f *fakeRemote) inspect(_ context.Context, alias string, paths []string) ([]pathState, error) {
+func (f *fakeRemote) inspect(_ context.Context, alias string, items []string) ([]contextref.State, error) {
 	if f.gate != nil {
 		<-f.gate
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	sorted := slices.Clone(paths)
+	var sorted []string
+	for _, item := range items {
+		_, p, _ := strings.Cut(item, "\x00")
+		sorted = append(sorted, p)
+	}
 	slices.Sort(sorted)
 	f.calls = append(f.calls, alias+": "+strings.Join(sorted, ","))
 	if err := f.down[alias]; err != nil {
 		return nil, err
 	}
-	states := make([]pathState, len(paths))
-	for i, p := range paths {
+	states := make([]contextref.State, len(items))
+	for i, item := range items {
+		_, p, _ := strings.Cut(item, "\x00")
 		if kind, ok := f.paths[alias][p]; ok {
-			states[i].kind = kind
+			states[i].Kind = kind
 		} else {
-			states[i].missing = true
+			states[i].Missing = true
 		}
 	}
 	return states, nil
 }
 
-func (f *fakeRemote) set(alias, path string, kind domain.PathReferenceKind) {
+func (f *fakeRemote) set(alias, path string, kind domain.PathKind) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.paths == nil {
-		f.paths = map[string]map[string]domain.PathReferenceKind{}
+		f.paths = map[string]map[string]domain.PathKind{}
 	}
 	if f.paths[alias] == nil {
-		f.paths[alias] = map[string]domain.PathReferenceKind{}
+		f.paths[alias] = map[string]domain.PathKind{}
 	}
 	f.paths[alias][path] = kind
 }
@@ -150,141 +161,186 @@ func warningCodes(summary domain.TicketSummary) []string {
 	return codes
 }
 
-// The same absolute paths resolve differently for a remote-primary and a
-// local-primary ticket: each is inspected on its own primary repo's machine.
-func TestPathReferencesResolveOnThePrimaryRepoMachine(t *testing.T) {
+func mustWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const (
+	targetID = "2026-10-27-0100-target"
+	remoteID = "2026-10-27-0101-remote-primary"
+)
+
+// The defect this contract fixes: a ticket whose primary repo is remote still
+// finds its architect-workspace document on this machine, a local repo locally
+// and a remote repo on its own machine. Each reference is resolved where its
+// target lives, never on the ticket's primary machine.
+func TestReferencesResolveWhereTheirTargetLives(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	local := t.TempDir()
-	same := filepath.Join(local, "same")       // a local file; a remote directory
-	localOnly := filepath.Join(local, "local") // a local directory only
-	remoteOnly := "/srv/remote-only/spec.md"   // a remote file only
-	if err := os.WriteFile(same, []byte("x"), 0o644); err != nil {
+	localRepo := t.TempDir()
+	mustWrite(t, filepath.Join(root, "investigations", "2026-10-27-tracing.md"), "notes")
+	if err := os.MkdirAll(filepath.Join(localRepo, "docs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(localOnly, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	remote := &fakeRemote{paths: map[string]map[string]domain.PathReferenceKind{"bk-alias": {
-		same:       domain.PathReferenceDirectory,
-		remoteOnly: domain.PathReferenceFile,
-	}}}
-	clock := &fakeClock{now: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)}
-	service := newReferenceService(referenceConfig(root), remote, clock)
+	remote := &fakeRemote{}
+	remote.set("bk-alias", "/remote/infra/spec.md", domain.PathKindFile)
+	clock := &fakeClock{now: time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC)}
+	service := newReferenceService(referenceConfig(root, localRepo), remote, clock)
 
-	refTicket(t, root, "target", "daemon")
-	refTicket(t, root, "remote-ticket", "infra", "target", same, localOnly, remoteOnly)
-	refTicket(t, root, "remote-ticket-2", "infra", same, remoteOnly)
-	refTicket(t, root, "local-ticket", "daemon", "target", same, localOnly, remoteOnly)
+	refTicket(t, root, targetID, "daemon")
+	refTicket(t, root, remoteID, "infra",
+		targetID,
+		"architect:investigations/2026-10-27-tracing.md",
+		"daemon:docs",
+		"infra:spec.md",
+		"infra:absent.md",
+		"architect:missing.md",
+		"2026-10-27-0102-nowhere",
+	)
 
 	board, err := service.ListTickets(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
+	summary := boardTicket(t, board, remoteID)
+	refs := resolvedByValue(t, summary)
+	check := func(value string, want domain.TicketReference) {
+		t.Helper()
+		want.Value = value
+		if got := refs[value]; got != want {
+			t.Fatalf("%s =\n %#v\nwant\n %#v", value, got, want)
+		}
+	}
+	check(targetID, domain.TicketReference{Kind: domain.ReferenceKindTicket, Status: domain.ReferencePresent, Exists: true, Access: domain.ReferenceAccessReadTicket})
+	check("architect:investigations/2026-10-27-tracing.md", domain.TicketReference{Kind: domain.ReferenceKindArchitect, Status: domain.ReferencePresent, Exists: true, Owner: "architect", Target: "investigations/2026-10-27-tracing.md", Location: domain.ReferenceLocal, PathKind: domain.PathKindFile, Access: domain.ReferenceAccessReadContext})
+	check("daemon:docs", domain.TicketReference{Kind: domain.ReferenceKindRepo, Status: domain.ReferencePresent, Exists: true, Owner: "daemon", Target: "docs", Location: domain.ReferenceLocal, PathKind: domain.PathKindDirectory, Access: domain.ReferenceAccessListContext})
+	check("infra:spec.md", domain.TicketReference{Kind: domain.ReferenceKindRepo, Status: domain.ReferencePresent, Exists: true, Owner: "infra", Target: "spec.md", Location: domain.ReferenceRemote, Machine: "bk", PathKind: domain.PathKindFile, Access: domain.ReferenceAccessReadContext})
+	check("infra:absent.md", domain.TicketReference{Kind: domain.ReferenceKindRepo, Status: domain.ReferenceMissing, Owner: "infra", Target: "absent.md", Location: domain.ReferenceRemote, Machine: "bk", Access: domain.ReferenceAccessReadContext})
+	check("architect:missing.md", domain.TicketReference{Kind: domain.ReferenceKindArchitect, Status: domain.ReferenceMissing, Owner: "architect", Target: "missing.md", Location: domain.ReferenceLocal, Access: domain.ReferenceAccessReadContext})
+	check("2026-10-27-0102-nowhere", domain.TicketReference{Kind: domain.ReferenceKindTicket, Status: domain.ReferenceMissing, Access: domain.ReferenceAccessReadTicket})
 
-	remoteRefs := resolvedByValue(t, boardTicket(t, board, "remote-ticket"))
-	if ref := remoteRefs["target"]; ref.Type != domain.TicketReferenceTicket || !ref.Exists || ref.Status != "" || ref.Location != "" {
-		t.Fatalf("ticket reference = %#v", ref)
+	if codes := warningCodes(summary); !slices.Equal(codes, []string{warningMissingReference, warningMissingReference, warningBrokenReference}) {
+		t.Fatalf("warnings = %#v", summary.Warnings)
 	}
-	if ref := remoteRefs[same]; !ref.Exists || ref.Kind != domain.PathReferenceDirectory || ref.Status != domain.PathReferencePresent || ref.Location != domain.PathReferenceRemote || ref.Machine != "bk" || ref.Error != "" {
-		t.Fatalf("remote view of %s = %#v", same, ref)
+	if msg := summary.Warnings[0].Message; !strings.Contains(msg, `machine "bk" (SSH bk-alias)`) || !strings.Contains(msg, "infra:absent.md") || !strings.Contains(msg, "ticket.md line 11: ") {
+		t.Fatalf("remote missing warning = %q", msg)
 	}
-	if ref := remoteRefs[localOnly]; ref.Exists || ref.Kind != "" || ref.Status != domain.PathReferenceMissing || ref.Location != domain.PathReferenceRemote || ref.Machine != "bk" || ref.Error != "" {
-		t.Fatalf("local-only path on remote = %#v", ref)
+	if msg := summary.Warnings[1].Message; !strings.Contains(msg, "this machine (local)") {
+		t.Fatalf("architect missing warning = %q", msg)
 	}
-	if ref := remoteRefs[remoteOnly]; !ref.Exists || ref.Kind != domain.PathReferenceFile {
-		t.Fatalf("remote-only path on remote = %#v", ref)
-	}
-	remoteSummary := boardTicket(t, board, "remote-ticket")
-	if codes := warningCodes(remoteSummary); !slices.Equal(codes, []string{warningMissingPathReference}) {
-		t.Fatalf("remote warnings = %#v", remoteSummary.Warnings)
-	}
-	if msg := remoteSummary.Warnings[0].Message; !strings.Contains(msg, `machine "bk" (SSH bk-alias)`) || !strings.Contains(msg, localOnly) {
-		t.Fatalf("missing warning does not name the location: %q", msg)
-	}
-
-	localRefs := resolvedByValue(t, boardTicket(t, board, "local-ticket"))
-	if ref := localRefs[same]; !ref.Exists || ref.Kind != domain.PathReferenceFile || ref.Status != domain.PathReferencePresent || ref.Location != domain.PathReferenceLocal || ref.Machine != "" {
-		t.Fatalf("local view of %s = %#v", same, ref)
-	}
-	if ref := localRefs[localOnly]; !ref.Exists || ref.Kind != domain.PathReferenceDirectory {
-		t.Fatalf("local-only path locally = %#v", ref)
-	}
-	if ref := localRefs[remoteOnly]; ref.Exists || ref.Status != domain.PathReferenceMissing || ref.Location != domain.PathReferenceLocal {
-		t.Fatalf("remote-only path locally = %#v", ref)
-	}
-	localSummary := boardTicket(t, board, "local-ticket")
-	if len(localSummary.Warnings) != 1 || !strings.Contains(localSummary.Warnings[0].Message, "this machine (local)") {
-		t.Fatalf("local warnings = %#v", localSummary.Warnings)
-	}
-
-	// One SSH inspection for the whole board, with each remote path once.
-	want := []string{"bk-alias: " + strings.Join(slices.Sorted(slices.Values([]string{same, localOnly, remoteOnly})), ",")}
+	// Only the remote repo's targets travel over SSH, once for the board.
+	want := []string{"bk-alias: /remote/infra/absent.md,/remote/infra/spec.md"}
 	if calls := remote.takeCalls(); !slices.Equal(calls, want) {
 		t.Fatalf("remote calls = %#v, want %#v", calls, want)
 	}
 
-	// Within the TTL the answers are reused; after it they are asked again.
+	// Within the TTL the answers are reused; after it the stale answers are
+	// served while they are refreshed in the background.
 	if _, err := service.ListTickets(context.Background(), root); err != nil {
 		t.Fatal(err)
 	}
 	if calls := remote.takeCalls(); len(calls) != 0 {
 		t.Fatalf("cached board read inspected again: %#v", calls)
 	}
-	// After it the stale answers are served while they are refreshed in the
-	// background.
 	clock.Advance(remoteInspectTTL)
-	if _, err := service.ListTickets(context.Background(), root); err != nil {
+	if _, err := service.GetTicket(context.Background(), root, remoteID); err != nil {
 		t.Fatal(err)
 	}
 	service.waitForBackground()
 	if calls := remote.takeCalls(); len(calls) != 1 {
 		t.Fatalf("expired cache calls = %#v", calls)
 	}
+}
 
-	// A single-ticket read inspects only that ticket's paths.
-	clock.Advance(remoteInspectTTL)
-	ticket, err := service.GetTicket(context.Background(), root, "remote-ticket-2")
+// A malformed entry is reported on its own, with the line and remediation; it
+// neither hides the ticket nor its other references, and nothing is
+// interpreted as a legacy absolute path.
+func TestInvalidReferencesAreReportedIndividually(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	localRepo := t.TempDir()
+	outside := t.TempDir()
+	mustWrite(t, filepath.Join(outside, "secret.md"), "x")
+	mustWrite(t, filepath.Join(root, "OVERVIEW.md"), "x")
+	if err := os.Symlink(filepath.Join(outside, "secret.md"), filepath.Join(root, "escape.md")); err != nil {
+		t.Fatal(err)
+	}
+	remote := &fakeRemote{}
+	service := newReferenceService(referenceConfig(root, localRepo), remote, &fakeClock{now: time.Now()})
+	absolute := filepath.Join(root, "OVERVIEW.md")
+	refTicket(t, root, remoteID, "infra",
+		absolute,
+		"OVERVIEW.md",
+		"unknown:docs",
+		"architect:../x",
+		"architect:escape.md",
+		"architect:OVERVIEW.md",
+		"architect:OVERVIEW.md",
+	)
+	ticket, err := service.GetTicket(context.Background(), root, remoteID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	service.waitForBackground()
-	if !ticket.ResolvedReferences[0].Exists || len(ticket.Warnings) != 0 {
-		t.Fatalf("remote ticket = %#v", ticket.TicketSummary)
+	if ticket.Title != remoteID {
+		t.Fatalf("ticket hidden: %#v", ticket.TicketSummary)
 	}
-	want = []string{"bk-alias: " + strings.Join(slices.Sorted(slices.Values([]string{same, remoteOnly})), ",")}
-	if calls := remote.takeCalls(); !slices.Equal(calls, want) {
-		t.Fatalf("single-ticket calls = %#v, want %#v", calls, want)
+	statuses := make([]domain.ReferenceStatus, 0, len(ticket.ResolvedReferences))
+	for _, ref := range ticket.ResolvedReferences {
+		statuses = append(statuses, ref.Status)
+	}
+	wantStatuses := []domain.ReferenceStatus{domain.ReferenceInvalid, domain.ReferenceInvalid, domain.ReferenceInvalid, domain.ReferenceInvalid, domain.ReferenceInvalid, domain.ReferencePresent, domain.ReferenceInvalid}
+	if !slices.Equal(statuses, wantStatuses) {
+		t.Fatalf("statuses = %v, want %v (%#v)", statuses, wantStatuses, ticket.ResolvedReferences)
+	}
+	if codes := warningCodes(ticket.TicketSummary); len(codes) != 6 || slices.ContainsFunc(codes, func(c string) bool { return c != WarningInvalidReference }) {
+		t.Fatalf("warnings = %#v", ticket.Warnings)
+	}
+	for i, want := range []string{"absolute and home-relative paths are not references", "unqualified path", `"unknown" is not architect or a repo key`, "'..' segments", "outside its root", "duplicate reference"} {
+		if msg := ticket.Warnings[i].Message; !strings.Contains(msg, want) || !strings.Contains(msg, "ticket.md line ") {
+			t.Fatalf("warning %d = %q, want it to mention %q and its line", i, msg, want)
+		}
+	}
+	if !strings.Contains(ticket.Warnings[2].Message, "configured: daemon, infra") {
+		t.Fatalf("unknown-key warning does not list the keys: %q", ticket.Warnings[2].Message)
+	}
+	if calls := remote.takeCalls(); len(calls) != 0 {
+		t.Fatalf("invalid references inspected remotely: %#v", calls)
 	}
 }
 
-// A machine that cannot be inspected leaves its paths unverified — never
-// missing, and never answered from this machine even where the path exists
-// here.
-func TestUnreachableMachineLeavesPathsUnverified(t *testing.T) {
+// A machine that cannot be inspected leaves its targets unverified — never
+// missing, and never answered from this machine even where the same path
+// exists here; architect references are unaffected.
+func TestUnreachableMachineLeavesTargetsUnverified(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	existsLocally := t.TempDir()
+	mustWrite(t, filepath.Join(existsLocally, "spec.md"), "x")
+	mustWrite(t, filepath.Join(root, "OVERVIEW.md"), "x")
 	remote := &fakeRemote{down: map[string]error{"bk-alias": errors.New("SSH bk-alias: exit status 255: Connection refused")}}
-	clock := &fakeClock{now: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)}
-	service := newReferenceService(referenceConfig(root), remote, clock)
-	refTicket(t, root, "remote-ticket", "infra", existsLocally)
+	service := newReferenceService(referenceConfigWithRemote(root, t.TempDir(), existsLocally), remote, &fakeClock{now: time.Now()})
+	refTicket(t, root, remoteID, "infra", "infra:spec.md", "architect:OVERVIEW.md")
 
 	for range 2 {
-		ticket, err := service.GetTicket(context.Background(), root, "remote-ticket")
+		ticket, err := service.GetTicket(context.Background(), root, remoteID)
 		if err != nil {
 			t.Fatal(err)
 		}
 		ref := ticket.ResolvedReferences[0]
-		if ref.Exists || ref.Kind != "" || ref.Status != domain.PathReferenceUnverified || ref.Location != domain.PathReferenceRemote || ref.Machine != "bk" || !strings.Contains(ref.Error, "Connection refused") {
+		if ref.Exists || ref.PathKind != "" || ref.Status != domain.ReferenceUnverified || ref.Location != domain.ReferenceRemote || ref.Machine != "bk" || !strings.Contains(ref.Error, "Connection refused") {
 			t.Fatalf("unreachable reference = %#v", ref)
 		}
-		if codes := warningCodes(ticket.TicketSummary); !slices.Equal(codes, []string{warningUnverifiedPathReference}) {
-			t.Fatalf("warnings = %#v", ticket.Warnings)
+		if ref := ticket.ResolvedReferences[1]; ref.Status != domain.ReferencePresent || ref.Location != domain.ReferenceLocal {
+			t.Fatalf("architect reference = %#v", ref)
 		}
-		msg := ticket.Warnings[0].Message
-		if !strings.Contains(msg, `machine "bk" (SSH bk-alias)`) || !strings.Contains(msg, "Connection refused") || !strings.Contains(msg, existsLocally) {
-			t.Fatalf("unverified warning lacks location or cause: %q", msg)
+		if codes := warningCodes(ticket.TicketSummary); !slices.Equal(codes, []string{warningUnverifiedReference}) || !strings.Contains(ticket.Warnings[0].Message, `machine "bk" (SSH bk-alias)`) {
+			t.Fatalf("warnings = %#v", ticket.Warnings)
 		}
 	}
 	// The failure is remembered, so the second read did not wait on the host.
@@ -293,80 +349,50 @@ func TestUnreachableMachineLeavesPathsUnverified(t *testing.T) {
 	}
 }
 
-// A ticket whose primary repo cannot be located has unverified paths naming
-// the cause; its ticket-ID references still resolve.
-func TestUnlocatableRepoLeavesPathsUnverified(t *testing.T) {
+// A workspace that is not a registered architect cannot locate anything: its
+// architect and repo references are unverified with an unknown location;
+// ticket-ID references still resolve.
+func TestUnregisteredWorkspaceLeavesTargetsUnverified(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	existsLocally := t.TempDir()
-	remote := &fakeRemote{}
-	clock := &fakeClock{now: time.Now()}
-	cfg := referenceConfig(root)
-	service := newReferenceService(cfg, remote, clock)
-	refTicket(t, root, "target", "daemon")
-	refTicket(t, root, "gone-repo", "removed", "target", existsLocally)
-	refTicket(t, root, "no-repo", "", existsLocally)
-	if err := os.WriteFile(filepath.Join(root, "tickets/backlog/no-repo/ticket.md"), []byte("---\ntitle: No repo\n---\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	board, err := service.ListTickets(context.Background(), root)
+	other := t.TempDir()
+	mustWrite(t, filepath.Join(other, "OVERVIEW.md"), "x")
+	service := newReferenceService(referenceConfig(t.TempDir(), t.TempDir()), &fakeRemote{}, &fakeClock{now: time.Now()})
+	refTicket(t, other, targetID, "daemon")
+	refTicket(t, other, remoteID, "daemon", targetID, "architect:OVERVIEW.md")
+	ticket, err := service.GetTicket(context.Background(), other, remoteID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gone := boardTicket(t, board, "gone-repo")
-	if ref := resolvedByValue(t, gone)["target"]; !ref.Exists {
+	if ref := ticket.ResolvedReferences[0]; !ref.Exists {
 		t.Fatalf("ticket reference = %#v", ref)
 	}
-	// The machine is unknown, so the path is not treated as local even
-	// though it exists here.
-	if ref := resolvedByValue(t, gone)[existsLocally]; ref.Exists || ref.Status != domain.PathReferenceUnverified || ref.Location != domain.PathReferenceUnknown || ref.Machine != "" || !strings.Contains(ref.Error, `primary repo "removed" is not configured`) {
-		t.Fatalf("path of unlocatable repo = %#v", ref)
-	}
-	if codes := warningCodes(gone); !slices.Equal(codes, []string{warningUnverifiedPathReference}) || !strings.Contains(gone.Warnings[0].Message, `primary repo "removed" is not configured`) {
-		t.Fatalf("gone-repo warnings = %#v", gone.Warnings)
-	}
-	noRepo := boardTicket(t, board, "no-repo")
-	if codes := warningCodes(noRepo); !slices.Equal(codes, []string{"INVALID_TICKET"}) || !strings.Contains(noRepo.Warnings[0].Message, "repo") {
-		t.Fatalf("no-repo warnings = %#v", noRepo.Warnings)
-	}
-	if calls := remote.takeCalls(); len(calls) != 0 {
-		t.Fatalf("remote calls = %#v", calls)
-	}
-
-	// A workspace that is not a registered architect cannot locate any repo.
-	other := t.TempDir()
-	refTicket(t, other, "orphan", "daemon", existsLocally)
-	orphan, err := service.GetTicket(context.Background(), other, "orphan")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if codes := warningCodes(orphan.TicketSummary); !slices.Equal(codes, []string{warningUnverifiedPathReference}) || !strings.Contains(orphan.Warnings[0].Message, "no architect is registered at "+other) {
-		t.Fatalf("orphan warnings = %#v", orphan.Warnings)
+	if ref := ticket.ResolvedReferences[1]; ref.Status != domain.ReferenceUnverified || ref.Location != domain.ReferenceUnknown || !strings.Contains(ref.Error, "no architect is registered at "+other) {
+		t.Fatalf("architect reference = %#v", ref)
 	}
 }
 
-// Through a fake ssh: a board's remote paths travel in one SSH invocation,
-// the answers distinguish directories, files and absence, and a host that
-// goes down makes them unverified without consulting this machine.
+// Through a fake ssh: the board's remote targets travel in one SSH
+// invocation, the answers distinguish directories, files, absence and
+// symlink escapes, and a host that goes down makes them unverified.
 func TestRemoteReferencesThroughSSH(t *testing.T) {
 	fake := sshtest.Install(t)
 	root := t.TempDir()
-	dir := t.TempDir()
-	file := filepath.Join(dir, "file.txt")
-	if err := os.WriteFile(file, nil, 0o644); err != nil {
+	remoteRepo := t.TempDir()
+	outside := t.TempDir()
+	mustWrite(t, filepath.Join(remoteRepo, "file.txt"), "")
+	mustWrite(t, filepath.Join(remoteRepo, " leading space", "x"), "")
+	mustWrite(t, filepath.Join(outside, "secret"), "")
+	if err := os.Symlink(filepath.Join(outside, "secret"), filepath.Join(remoteRepo, "escape")); err != nil {
 		t.Fatal(err)
 	}
-	missing := filepath.Join(dir, "missing")
-	spaced := filepath.Join(dir, " leading space")
-	if err := os.Mkdir(spaced, 0o755); err != nil {
+	if err := os.Symlink("file.txt", filepath.Join(remoteRepo, "inner-link")); err != nil {
 		t.Fatal(err)
 	}
 	clock := &fakeClock{now: time.Now()}
-	service := NewTicketService(ConfigLocator(config.StaticSource(referenceConfig(root))))
+	service := NewTicketService(ConfigLocator(config.StaticSource(referenceConfigWithRemote(root, t.TempDir(), remoteRepo))))
 	service.now = clock.Now
-	refTicket(t, root, "one", "infra", dir, file)
-	refTicket(t, root, "two", "infra", missing, `"`+spaced+`"`, file)
+	refTicket(t, root, targetID, "infra", "infra:.", "infra:file.txt", "infra:escape", "infra:inner-link")
+	refTicket(t, root, remoteID, "infra", "infra:missing", `"infra: leading space"`, "infra:file.txt")
 
 	board, err := service.ListTickets(context.Background(), root)
 	if err != nil {
@@ -375,56 +401,42 @@ func TestRemoteReferencesThroughSSH(t *testing.T) {
 	if n := len(fake.Commands("bk-alias")); n != 1 {
 		t.Fatalf("ssh invocations = %d, want 1", n)
 	}
-	one := resolvedByValue(t, boardTicket(t, board, "one"))
-	if one[dir].Kind != domain.PathReferenceDirectory || one[file].Kind != domain.PathReferenceFile {
+	one := resolvedByValue(t, boardTicket(t, board, targetID))
+	if one["infra:."].PathKind != domain.PathKindDirectory || one["infra:file.txt"].PathKind != domain.PathKindFile || one["infra:inner-link"].PathKind != domain.PathKindFile {
 		t.Fatalf("one = %#v", one)
 	}
-	two := boardTicket(t, board, "two")
+	if ref := one["infra:escape"]; ref.Status != domain.ReferenceInvalid || !strings.Contains(ref.Error, "outside its root") {
+		t.Fatalf("escape = %#v", ref)
+	}
+	two := boardTicket(t, board, remoteID)
 	refs := resolvedByValue(t, two)
-	if refs[missing].Exists || refs[spaced].Kind != domain.PathReferenceDirectory || refs[file].Kind != domain.PathReferenceFile {
+	if refs["infra:missing"].Status != domain.ReferenceMissing || refs["infra: leading space"].PathKind != domain.PathKindDirectory {
 		t.Fatalf("two = %#v", refs)
 	}
-	if codes := warningCodes(two); !slices.Equal(codes, []string{warningMissingPathReference}) {
-		t.Fatalf("two warnings = %#v", two.Warnings)
-	}
 
-	// A host that goes down: the first read past the TTL is served the
-	// earlier answers while they are refreshed; the refresh fails and later
-	// reads report the failure.
 	fake.SetDown(t, "bk", true)
 	fake.SetDown(t, "bk-alias", true)
-	clock.Advance(remoteInspectTTL)
-	ticket, err := service.GetTicket(context.Background(), root, "one")
+	clock.Advance(remoteStaleLimit)
+	ticket, err := service.GetTicket(context.Background(), root, targetID)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !ticket.ResolvedReferences[0].Exists || !ticket.ResolvedReferences[1].Exists {
-		t.Fatalf("stale references = %#v", ticket.ResolvedReferences)
 	}
 	service.waitForBackground()
-	ticket, err = service.GetTicket(context.Background(), root, "one")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ticket.ResolvedReferences[0].Exists || ticket.ResolvedReferences[1].Exists {
-		t.Fatalf("down host references = %#v", ticket.ResolvedReferences)
-	}
-	if codes := warningCodes(ticket.TicketSummary); !slices.Equal(codes, []string{warningUnverifiedPathReference, warningUnverifiedPathReference}) || !strings.Contains(ticket.Warnings[0].Message, "Connection refused") {
-		t.Fatalf("down host warnings = %#v", ticket.Warnings)
+	for _, ref := range ticket.ResolvedReferences {
+		if ref.Status != domain.ReferenceUnverified {
+			t.Fatalf("down host reference = %#v", ref)
+		}
 	}
 }
 
-func TestInspectRemotePathsReportsUnsearchableAncestors(t *testing.T) {
+func TestInspectRemoteReportsUnsearchableAncestors(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root can search any directory")
 	}
 	sshtest.Install(t)
 	dir := t.TempDir()
 	locked := filepath.Join(dir, "locked")
-	if err := os.Mkdir(locked, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(locked, "inner"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(locked, "inner"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(locked, 0o600); err != nil {
@@ -432,14 +444,14 @@ func TestInspectRemotePathsReportsUnsearchableAncestors(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 
-	states, err := inspectRemotePaths(context.Background(), "bk-alias", []string{filepath.Join(locked, "inner", "x"), filepath.Join(dir, "absent", "x")})
+	states, err := contextref.InspectRemote(context.Background(), "bk-alias", [][2]string{{dir, filepath.Join(locked, "inner", "x")}, {dir, filepath.Join(dir, "absent", "x")}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if states[0].err == nil || states[0].missing || states[0].kind != "" {
+	if states[0].Err == nil || states[0].Missing || states[0].Kind != "" {
 		t.Fatalf("behind unsearchable ancestor = %#v", states[0])
 	}
-	if !states[1].missing {
+	if !states[1].Missing {
 		t.Fatalf("absent = %#v", states[1])
 	}
 }
@@ -471,13 +483,13 @@ func TestSlowMachineDoesNotHoldUpTheBoard(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	remote := &fakeRemote{gate: make(chan struct{})}
-	remote.set("bk-alias", "/srv/spec.md", domain.PathReferenceFile)
+	remote.set("bk-alias", "/remote/infra/spec.md", domain.PathKindFile)
 	clock := &fakeClock{now: time.Date(2026, 10, 14, 11, 0, 0, 0, time.UTC)}
-	service := newReferenceService(referenceConfig(root), remote, clock)
+	service := newReferenceService(referenceConfig(root, t.TempDir()), remote, clock)
 	service.waitBudget = 50 * time.Millisecond
 	changes := &changeRecorder{}
 	service.SetReferencesChanged(changes.record)
-	refTicket(t, root, "remote-ticket", "infra", "/srv/spec.md")
+	refTicket(t, root, remoteID, "infra", "infra:spec.md")
 
 	// Two reads while the machine is silent: neither waits past the budget,
 	// and they share one inspection.
@@ -490,12 +502,12 @@ func TestSlowMachineDoesNotHoldUpTheBoard(t *testing.T) {
 		if elapsed := time.Since(started); elapsed > time.Second {
 			t.Fatalf("board read took %s", elapsed)
 		}
-		summary := boardTicket(t, board, "remote-ticket")
-		ref := resolvedByValue(t, summary)["/srv/spec.md"]
-		if ref.Exists || ref.Status != domain.PathReferenceUnverified || ref.Location != domain.PathReferenceRemote || ref.Machine != "bk" || !strings.Contains(ref.Error, "no answer within 50ms") {
+		summary := boardTicket(t, board, remoteID)
+		ref := resolvedByValue(t, summary)["infra:spec.md"]
+		if ref.Exists || ref.Status != domain.ReferenceUnverified || ref.Location != domain.ReferenceRemote || ref.Machine != "bk" || !strings.Contains(ref.Error, "no answer within 50ms") {
 			t.Fatalf("pending reference = %#v", ref)
 		}
-		if codes := warningCodes(summary); !slices.Equal(codes, []string{warningUnverifiedPathReference}) || !strings.Contains(summary.Warnings[0].Message, `machine "bk" (SSH bk-alias)`) {
+		if codes := warningCodes(summary); !slices.Equal(codes, []string{warningUnverifiedReference}) || !strings.Contains(summary.Warnings[0].Message, `machine "bk" (SSH bk-alias)`) {
 			t.Fatalf("pending warnings = %#v", summary.Warnings)
 		}
 	}
@@ -516,7 +528,7 @@ func TestSlowMachineDoesNotHoldUpTheBoard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ref := resolvedByValue(t, boardTicket(t, board, "remote-ticket"))["/srv/spec.md"]; !ref.Exists || ref.Status != domain.PathReferencePresent {
+	if ref := resolvedByValue(t, boardTicket(t, board, remoteID))["infra:spec.md"]; !ref.Exists || ref.Status != domain.ReferencePresent {
 		t.Fatalf("answered reference = %#v", ref)
 	}
 	if calls := remote.takeCalls(); len(calls) != 0 {
@@ -530,17 +542,17 @@ func TestCancelledReadDoesNotWaitForTheMachine(t *testing.T) {
 	root := t.TempDir()
 	remote := &fakeRemote{gate: make(chan struct{})}
 	clock := &fakeClock{now: time.Date(2026, 10, 14, 11, 0, 0, 0, time.UTC)}
-	service := newReferenceService(referenceConfig(root), remote, clock)
+	service := newReferenceService(referenceConfig(root, t.TempDir()), remote, clock)
 	service.waitBudget = time.Hour
-	refTicket(t, root, "remote-ticket", "infra", "/srv/spec.md")
+	refTicket(t, root, remoteID, "infra", "infra:spec.md")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	ticket, err := service.GetTicket(ctx, root, "remote-ticket")
+	ticket, err := service.GetTicket(ctx, root, remoteID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ref := ticket.ResolvedReferences[0]; ref.Status != domain.PathReferenceUnverified {
+	if ref := ticket.ResolvedReferences[0]; ref.Status != domain.ReferenceUnverified {
 		t.Fatalf("reference = %#v", ref)
 	}
 	close(remote.gate)
@@ -553,16 +565,16 @@ func TestStaleAnswersAreServedWhileRefreshed(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	remote := &fakeRemote{}
-	remote.set("bk-alias", "/srv/spec.md", domain.PathReferenceFile)
+	remote.set("bk-alias", "/remote/infra/spec.md", domain.PathKindFile)
 	clock := &fakeClock{now: time.Date(2026, 10, 14, 11, 0, 0, 0, time.UTC)}
-	service := newReferenceService(referenceConfig(root), remote, clock)
+	service := newReferenceService(referenceConfig(root, t.TempDir()), remote, clock)
 	changes := &changeRecorder{}
 	service.SetReferencesChanged(changes.record)
-	refTicket(t, root, "remote-ticket", "infra", "/srv/spec.md")
+	refTicket(t, root, remoteID, "infra", "infra:spec.md")
 
 	read := func() domain.TicketReference {
 		t.Helper()
-		ticket, err := service.GetTicket(context.Background(), root, "remote-ticket")
+		ticket, err := service.GetTicket(context.Background(), root, remoteID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -592,7 +604,7 @@ func TestStaleAnswersAreServedWhileRefreshed(t *testing.T) {
 	// Gone on refresh: the stale read still shows it, then the workspace is
 	// told and the next read reports it missing.
 	remote.mu.Lock()
-	delete(remote.paths["bk-alias"], "/srv/spec.md")
+	delete(remote.paths["bk-alias"], "/remote/infra/spec.md")
 	remote.mu.Unlock()
 	clock.Advance(remoteInspectTTL)
 	if ref := read(); !ref.Exists {
@@ -602,7 +614,7 @@ func TestStaleAnswersAreServedWhileRefreshed(t *testing.T) {
 	if seen := changes.take(); !slices.Equal(seen, []string{root}) {
 		t.Fatalf("told = %#v", seen)
 	}
-	if ref := read(); ref.Exists || ref.Status != domain.PathReferenceMissing {
+	if ref := read(); ref.Exists || ref.Status != domain.ReferenceMissing {
 		t.Fatalf("refreshed read = %#v", ref)
 	}
 
@@ -610,7 +622,7 @@ func TestStaleAnswersAreServedWhileRefreshed(t *testing.T) {
 	clock.Advance(remoteStaleLimit)
 	service.waitBudget = 0
 	remote.gate = make(chan struct{})
-	if ref := read(); ref.Status != domain.PathReferenceUnverified {
+	if ref := read(); ref.Status != domain.ReferenceUnverified {
 		t.Fatalf("expired read = %#v", ref)
 	}
 	close(remote.gate)

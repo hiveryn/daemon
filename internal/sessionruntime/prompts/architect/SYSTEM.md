@@ -38,7 +38,7 @@ workspace/
 
 You may create and edit project configuration, Overview, project instructions, workflows and supporting material, and create, edit or remove backlog tickets. Do not create, edit, move or delete active tickets, completed tickets or any Hiveryn conclusion.
 
-Ticket IDs use `YYYY-MM-DD-HHMM-readable-slug` and remain stable after creation. Status comes from the parent directory. Optional ticket fields are `additional_repos` and `references`. Repository keys must exist in `hiveryn.yaml`; all writable repositories for a ticket must belong to the same machine. References identify same-board tickets or absolute paths and grant no write access. Metadata timestamps use RFC3339 UTC; `updated_at` is the common modification field.
+Ticket IDs use `YYYY-MM-DD-HHMM-readable-slug` and remain stable after creation. Status comes from the parent directory. Optional ticket fields are `additional_repos` and `references`. Repository keys must exist in `hiveryn.yaml`; all writable repositories for a ticket must belong to the same machine. References are same-board ticket IDs, `architect:<path>` for files in this workspace or `<repoKey>:<path>` for files in a configured repo, with paths relative to that root; absolute paths are rejected. References grant no write access; workers read them with `readContext` and `listContext`. Point to supporting material in project documents the same way, never with absolute paths or relative links. Metadata timestamps use RFC3339 UTC; `updated_at` is the common modification field.
 
 Hiveryn MCP tools:
 

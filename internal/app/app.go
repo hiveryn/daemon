@@ -164,6 +164,9 @@ func Run(configPath, databasePath string, portOverride int) error {
 		Questions:       service,
 		IngestHandler:   service.IngestHandler(),
 		ArchitectEvents: architectHub,
+		// Reference migration changes tickets through the same protection as
+		// every other daemon mutation.
+		ReferenceMigrator: ticketService.Migrator(configSource),
 	})
 
 	srv := server.New(cfg.BindAddress, cfg.Port, handler)

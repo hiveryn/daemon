@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hiveryn/daemon/internal/contextref"
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
@@ -17,8 +18,8 @@ func TestTicketServiceListAndGet(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-backlog-ticket", "---\ntitle: Backlog ticket\nrepo: daemon\ncreated_at: 2026-05-12T09:00:00Z\nupdated_at: 2026-05-12T09:01:00Z\nreferences:\n  - abc\n---\n\nBacklog body\n")
-	writeTicketFile(t, root, domain.TicketStatusBacklog, "abc", "---\ntitle: Referenced ticket\n---\n\nReference target\n")
+	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-backlog-ticket", "---\ntitle: Backlog ticket\nrepo: daemon\ncreated_at: 2026-05-12T09:00:00Z\nupdated_at: 2026-05-12T09:01:00Z\nreferences:\n  - 2026-05-12-0800-abc\n---\n\nBacklog body\n")
+	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0800-abc", "---\ntitle: Referenced ticket\n---\n\nReference target\n")
 	writeTicketFile(t, root, domain.TicketStatusDone, "2026-05-12-1000-done-ticket", "---\ntitle: Done ticket\nrepo: daemon\n---\n\nDone body\n")
 	writeConclusionFile(t, root, domain.TicketStatusDone, "2026-05-12-1000-done-ticket", "---\nstarted_at: 2026-05-12T10:00:00Z\nconcluded_at: 2026-05-12T10:30:00Z\nagent: codex\nprofile: codex-default\nrejected: false\ncommits:\n  - abc1234\n---\n\nSummary\n")
 	writeTicketFile(t, root, domain.TicketStatusDone, "2026-05-12-1100-missing-conclusion", "---\ntitle: Missing conclusion\nrepo: daemon\n---\n\nDone body\n")
@@ -258,13 +259,13 @@ func TestTicketServiceUpdateMetadata(t *testing.T) {
 
 	root := t.TempDir()
 	now := time.Date(2026, 5, 12, 9, 15, 0, 0, time.UTC)
-	writeTicketFile(t, root, domain.TicketStatusBacklog, "target-ticket", "---\ntitle: Target\n---\n\nbody\n")
+	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0800-target-ticket", "---\ntitle: Target\n---\n\nbody\n")
 	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0915-update-me", "---\ntitle: Update me\nrepo: daemon\ncustom_field: keep-me\nreferences: []\n---\n\nbody\n")
 
 	service := newLocalTicketService()
 	newTitle := "Renamed ticket"
 	newRepo := "desktop"
-	newReferences := []string{"target-ticket"}
+	newReferences := []string{"2026-05-12-0800-target-ticket"}
 	updated, err := service.UpdateTicketMetadata(context.Background(), root, "2026-05-12-0915-update-me", domain.UpdateTicketMetadataParams{
 		Title:      &newTitle,
 		Repo:       &newRepo,
@@ -274,7 +275,7 @@ func TestTicketServiceUpdateMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateTicketMetadata: %v", err)
 	}
-	if updated.Title != newTitle || updated.Repo != newRepo || len(updated.References) != 1 || updated.References[0] != "target-ticket" {
+	if updated.Title != newTitle || updated.Repo != newRepo || len(updated.References) != 1 || updated.References[0] != "2026-05-12-0800-target-ticket" {
 		t.Fatalf("unexpected updated ticket: %#v", updated)
 	}
 
@@ -374,7 +375,7 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 
 	t.Run("broken references on existing ticket", func(t *testing.T) {
 		root := t.TempDir()
-		writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-refs", "---\ntitle: Refs\nreferences:\n  - missing-ticket\n---\n\nbody\n")
+		writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-refs", "---\ntitle: Refs\nreferences:\n  - 2026-01-01-0000-missing-ticket\n---\n\nbody\n")
 
 		board, err := newLocalTicketService().ListTickets(context.Background(), root)
 		if err != nil {
@@ -387,7 +388,7 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		if len(ticket.Warnings) != 1 || ticket.Warnings[0].Code != warningBrokenReference {
 			t.Fatalf("expected 1 BROKEN_REFERENCE warning, got %#v", ticket.Warnings)
 		}
-		if !strings.Contains(ticket.Warnings[0].Message, "missing-ticket") {
+		if !strings.Contains(ticket.Warnings[0].Message, "2026-01-01-0000-missing-ticket") {
 			t.Fatalf("expected warning message to mention missing-ticket, got %q", ticket.Warnings[0].Message)
 		}
 	})
@@ -396,7 +397,7 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		root := t.TempDir()
 		ticket, err := newLocalTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{
 			Title: "Bad refs", Repo: "daemon",
-			References: []string{"missing-ticket"},
+			References: []string{"2026-01-01-0000-missing-ticket"},
 		})
 		if err != nil {
 			t.Fatalf("expected CreateTicket to succeed, got: %v", err)
@@ -404,7 +405,7 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 		if ticket.Title != "Bad refs" {
 			t.Fatalf("expected title Bad refs, got %q", ticket.Title)
 		}
-		if len(ticket.References) != 1 || ticket.References[0] != "missing-ticket" {
+		if len(ticket.References) != 1 || ticket.References[0] != "2026-01-01-0000-missing-ticket" {
 			t.Fatalf("expected reference to be stored, got %#v", ticket.References)
 		}
 		if len(ticket.Warnings) != 1 || ticket.Warnings[0].Code != warningBrokenReference {
@@ -415,13 +416,13 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 	t.Run("broken references on metadata update", func(t *testing.T) {
 		root := t.TempDir()
 		writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-update", "---\ntitle: Update\n---\n\nbody\n")
-		references := []string{"missing-ticket"}
+		references := []string{"2026-01-01-0000-missing-ticket"}
 
 		ticket, err := newLocalTicketService().UpdateTicketMetadata(context.Background(), root, "2026-05-12-0900-update", domain.UpdateTicketMetadataParams{References: &references})
 		if err != nil {
 			t.Fatalf("expected UpdateTicketMetadata to succeed, got: %v", err)
 		}
-		if len(ticket.References) != 1 || ticket.References[0] != "missing-ticket" {
+		if len(ticket.References) != 1 || ticket.References[0] != "2026-01-01-0000-missing-ticket" {
 			t.Fatalf("expected reference to be stored, got %#v", ticket.References)
 		}
 		if len(ticket.Warnings) != 1 || ticket.Warnings[0].Code != warningBrokenReference {
@@ -431,7 +432,7 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 
 	t.Run("broken references surface on body edit", func(t *testing.T) {
 		root := t.TempDir()
-		writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-edit-refs", "---\ntitle: Edit refs\nreferences:\n  - missing-ticket\n---\n\nalpha\n")
+		writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-edit-refs", "---\ntitle: Edit refs\nreferences:\n  - 2026-01-01-0000-missing-ticket\n---\n\nalpha\n")
 
 		ticket, err := newLocalTicketService().EditTicket(context.Background(), root, "2026-05-12-0900-edit-refs", domain.EditTicketParams{OldString: "alpha", NewString: "beta"})
 		if err != nil {
@@ -444,7 +445,7 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 
 	t.Run("broken references surface on move", func(t *testing.T) {
 		root := t.TempDir()
-		writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-move-refs", "---\ntitle: Move refs\nreferences:\n  - missing-ticket\n---\n\nbody\n")
+		writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0900-move-refs", "---\ntitle: Move refs\nreferences:\n  - 2026-01-01-0000-missing-ticket\n---\n\nbody\n")
 
 		ticket, err := newLocalTicketService().MoveTicket(context.Background(), root, "2026-05-12-0900-move-refs", domain.MoveTicketParams{To: domain.TicketStatusProgress})
 		if err != nil {
@@ -513,40 +514,36 @@ func TestTicketServiceValidationErrors(t *testing.T) {
 	})
 }
 
-func TestMixedTicketAndPathReferences(t *testing.T) {
+// Writes through the API accept only strict references whose owner exists,
+// reporting every problem at once; existence is not required.
+func TestWrittenReferencesAreValidatedStrictly(t *testing.T) {
 	root := t.TempDir()
-	pathDir := t.TempDir()
-	pathFile := filepath.Join(pathDir, "spec.md")
-	if err := os.WriteFile(pathFile, []byte("spec"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "hiveryn.yaml"), []byte("name: Test\nrepos:\n  daemon: /tmp/daemon\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	missing := filepath.Join(pathDir, "missing")
-	writeTicketFile(t, root, domain.TicketStatusBacklog, "target", "---\ntitle: Target\n---\n")
-	ticket, err := newLocalTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{Title: "Mixed", Repo: "daemon", References: []string{"target", pathDir + "/.", pathFile, missing}})
+	writeTicketFile(t, root, domain.TicketStatusBacklog, "2026-05-12-0800-target", "---\ntitle: Target\n---\n")
+	ticket, err := newLocalTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{Title: "Mixed", Repo: "daemon", References: []string{" 2026-05-12-0800-target ", "architect:specs/missing.md", "daemon:docs"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ticket.ResolvedReferences) != 4 {
-		t.Fatalf("resolved = %#v", ticket.ResolvedReferences)
+	if !slices.Equal(ticket.References, []string{"2026-05-12-0800-target", "architect:specs/missing.md", "daemon:docs"}) {
+		t.Fatalf("stored = %#v", ticket.References)
 	}
-	if ref := ticket.ResolvedReferences[0]; ref.Type != domain.TicketReferenceTicket || !ref.Exists {
+	if ref := ticket.ResolvedReferences[0]; ref.Kind != domain.ReferenceKindTicket || !ref.Exists {
 		t.Fatalf("ticket = %#v", ref)
 	}
-	if ref := ticket.ResolvedReferences[1]; ref.Kind != domain.PathReferenceDirectory || !ref.Exists {
-		t.Fatalf("directory = %#v", ref)
+	if ref := ticket.ResolvedReferences[1]; ref.Status != domain.ReferenceMissing || ref.Location != domain.ReferenceLocal {
+		t.Fatalf("architect = %#v", ref)
 	}
-	if ref := ticket.ResolvedReferences[2]; ref.Kind != domain.PathReferenceFile || !ref.Exists {
-		t.Fatalf("file = %#v", ref)
+	_, err = newLocalTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{Title: "Bad", Repo: "daemon", References: []string{"/abs/path", "unknown:x", "daemon:a", "daemon:a", "notes.md"}})
+	var validation *domain.ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("err = %v, want validation", err)
 	}
-	if ref := ticket.ResolvedReferences[3]; ref.Exists || ref.Kind != "" {
-		t.Fatalf("missing = %#v", ref)
-	}
-	if len(ticket.Warnings) != 1 || ticket.Warnings[0].Code != warningMissingPathReference {
-		t.Fatalf("warnings = %#v", ticket.Warnings)
-	}
-	_, err = newLocalTicketService().CreateTicket(context.Background(), root, domain.CreateTicketParams{Title: "Duplicate", References: []string{pathDir, pathDir + "/."}})
-	if err == nil {
-		t.Fatal("expected normalized duplicate rejection")
+	for _, want := range []string{"absolute", `"unknown" is not architect or a repo key`, "configured: daemon", "duplicate reference daemon:a", "unqualified"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %q, want it to mention %q", err, want)
+		}
 	}
 }
 
@@ -646,7 +643,9 @@ func readFile(t *testing.T, path string) string {
 // newLocalTicketService locates every repo on this machine, for tests about
 // ticket files rather than reference location.
 func newLocalTicketService() *TicketService {
-	return NewTicketService(func(string, string) (PathLocation, error) { return PathLocation{}, nil })
+	return NewTicketService(func(path string) (contextref.Scope, error) {
+		return contextref.Scope{Architect: contextref.Root{Owner: domain.ArchitectReferencePrefix, Path: path}}, nil
+	})
 }
 
 func TestTicketServiceSearchTickets(t *testing.T) {

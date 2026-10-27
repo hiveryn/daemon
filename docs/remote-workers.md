@@ -199,19 +199,23 @@ succeeded; do not blindly replay it. Existing approvals, tool outcomes and
 one-hour questions retain their usual semantics. Remote Git working-tree,
 commit-diff and conclusion-commit checks run in the actual remote checkout.
 
-Project documents and selected workflows arrive as embedded text. A ticket's
-absolute path references are interpreted on its primary repo's machine: the
-board stats them over SSH there (one detached call per machine; a read waits
-for it at most 2 s and otherwise reports the path `unverified` until the answer
-arrives and the board is told to refresh; answers are reused for 15 s, then
-served while refreshed in the background for up to 10 min), so `exists`/`kind` describe the worker's machine. Each
-path reference also states its `location` (`remote` with its `machine`, `local`,
-or `unknown`) and `status`. A path that is absent there is `missing`
-(`MISSING_PATH_REFERENCE`); one that cannot be inspected (unreachable host,
-unlocatable repo, permission) is `unverified` with its `error`
-(`UNVERIFIED_PATH_REFERENCE`), and is never checked on the laptop instead. Laptop files are not copied to remote workers. Remote architects,
-cross-machine writable scopes, file browsing and offline MCP delivery are not
-supported.
+Project documents and selected workflows arrive as embedded text. Anything
+else a remote worker needs from the laptop — documents the Overview links to,
+investigations, specs, ticket conclusions — or from a repo on another machine,
+it reads on demand with `readContext`/`listContext` through its authenticated
+gateway: the daemon reads the architect workspace locally and each repo on its
+own configured machine, scoped to the gateway's fixed session
+(`docs/context-references.md`). Ticket references (`architect:<path>`,
+`<repoKey>:<path>`, ticket ids) are likewise inspected where each target lives,
+not on the ticket's primary machine: remote targets over one detached SSH call
+per machine (a read waits at most 2 s, then reports `unverified` until the
+answer arrives and the board is told to refresh; answers are reused for 15 s,
+then served while refreshed for up to 10 min). A target absent there is
+`missing` (`MISSING_REFERENCE`); one that cannot be inspected (unreachable
+host, permission) is `unverified` with its `error` (`UNVERIFIED_REFERENCE`) and
+is never checked on another machine instead. Laptop files are not copied to remote workers; reads are live and bounded (no
+bulk or binary materialization). Remote architects, cross-machine writable
+scopes, file browsing and offline MCP delivery are not supported.
 
 ## Verification
 

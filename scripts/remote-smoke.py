@@ -44,6 +44,17 @@ async function rpc(method,params){
 (async()=>{
  const tools=await rpc('tools/list',{});
  const ticket=await rpc('tools/call',{name:'readTicket',arguments:{id:process.env.SMOKE_TICKET_ID}});
+ // Laptop context and repo context through the authenticated gateway.
+ const read=async(name,args)=>(await rpc('tools/call',{name,arguments:args}));
+ const context={
+  overview:await read('readContext',{reference:'architect:OVERVIEW.md'}),
+  linked:await read('readContext',{reference:'architect:investigations/tracing.md'}),
+  listed:await read('listContext',{reference:'architect:investigations'}),
+  repo:await read('readContext',{reference:'remote:file'}),
+  absolute:await read('readContext',{reference:process.env.SMOKE_WORKSPACE+'/OVERVIEW.md'}),
+  traversal:await read('readContext',{reference:'architect:../outside.md'}),
+  foreign:await read('readContext',{reference:'other:x'}),
+ };
  const denied=await fetch(base+'/mcp',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
  const api=await fetch(base+'/api/health',{headers});
  if(denied.status!==401 || api.status!==404)throw Error('gateway isolation failed');
@@ -55,7 +66,7 @@ async function rpc(method,params){
   const command=config.hooks.PreToolUse[0].hooks[0].command;
   require('child_process').execSync(command,{input:JSON.stringify({hook_event_name:'PreToolUse',session_id:'native-'+id,tool_name:'Read',cwd:process.cwd()}),env:process.env});
  }
- fs.writeFileSync('/home/worker/result-'+id,JSON.stringify({tools:tools.tools.map(t=>t.name),ticket}));
+ fs.writeFileSync('/home/worker/result-'+id,JSON.stringify({tools:tools.tools.map(t=>t.name),ticket,context}));
  console.log('FIXTURE_READY');
 })().catch(e=>{fs.writeFileSync('/home/worker/error-'+id,String(e));console.error(e)});
 setInterval(async()=>{
@@ -112,20 +123,34 @@ with tempfile.TemporaryDirectory(prefix='hiveryn-remote-smoke-') as tmp:
         (home/'machines.yaml').write_text('box:\n  ssh: fixture\n')
         (home/'architects.yaml').write_text(f'fixture: {workspace}\n')
         (workspace/'hiveryn.yaml').write_text('name: Fixture\nrepos:\n  remote:\n    path: /home/worker/repo\n    machine: box\n')
-        (workspace/'OVERVIEW.md').write_text('---\nupdated_at: 2026-10-09T00:00:00Z\n---\nFixture project context.\n')
+        (workspace/'OVERVIEW.md').write_text('---\nupdated_at: 2026-10-09T00:00:00Z\n---\nFixture project context. See architect:investigations/tracing.md.\n')
+        (workspace/'investigations').mkdir()
+        (workspace/'investigations'/'tracing.md').write_text('laptop-only tracing notes\n')
+        (tmp/'outside.md').write_text('outside the workspace\n')
         env=dict(os.environ,HIVERYN_HOME=str(home),PATH=str(bindir)+os.pathsep+os.environ['PATH'],TZ='UTC')
         (home/'variants.yaml').write_text('fixture:\n  agent: claude\n  machine: box\n  yolo: true\n')
         run('go','build','-race','-o',str(tmp/'hiverynd'),'./cmd/hiverynd',cwd=ROOT)
         start()
         for agent in ['claude','codex','opencode']:
-            ticket=api('/architects/fixture/tickets',{'title':f'{agent} remote smoke','repo':'remote','body':'Fixture'})
-            (home/'variants.yaml').write_text(f'fixture:\n  agent: {agent}\n  machine: box\n  yolo: true\n  env:\n    SMOKE_TICKET_ID: {ticket["id"]}\n    SMOKE_AGENT: {agent}\n')
+            ticket=api('/architects/fixture/tickets',{'title':f'{agent} remote smoke','repo':'remote','body':'Fixture','references':['architect:investigations/tracing.md','remote:file']})
+            (home/'variants.yaml').write_text(f'fixture:\n  agent: {agent}\n  machine: box\n  yolo: true\n  env:\n    SMOKE_TICKET_ID: {ticket["id"]}\n    SMOKE_AGENT: {agent}\n    SMOKE_WORKSPACE: {workspace}\n')
             session=api('/sessions',{'session_type':'ticket','architect_key':'fixture','ticket_id':ticket['id']})
             sid=session['id']
             api(f'/sessions/{sid}/runs',{'profile_name':'fixture'})
             result=json.loads(wait(lambda:remote(f'cat /home/worker/result-{sid}')))
             assert 'readTicket' in result['tools'] and 'spawnTicketWorker' not in result['tools'],result
             assert not result['ticket'].get('isError'),result
+            assert 'readContext' in result['tools'] and 'listContext' in result['tools'],result
+            refs={r['value']:r for r in result['ticket']['structuredContent']['resolved_references']}
+            assert refs['architect:investigations/tracing.md']['status']=='present' and refs['architect:investigations/tracing.md']['location']=='local',refs
+            assert refs['remote:file']['status']=='present' and refs['remote:file']['location']=='remote' and refs['remote:file']['machine']=='box',refs
+            ctx={k:v.get('structuredContent',{}) for k,v in result['context'].items()}
+            assert ctx['overview']['status']=='ok' and 'architect:investigations/tracing.md' in ctx['overview']['content'],ctx
+            assert ctx['linked']['status']=='ok' and ctx['linked']['content']=='laptop-only tracing notes\n' and ctx['linked']['location']=='local',ctx
+            assert [e['reference'] for e in ctx['listed']['entries']]==['architect:investigations/tracing.md'],ctx
+            assert ctx['repo']['status']=='ok' and ctx['repo']['content'].startswith('before') and ctx['repo']['machine']=='box',ctx
+            for refused in ['absolute','traversal','foreign']:
+                assert result['context'][refused].get('isError') and 'outside the workspace' not in json.dumps(result['context'][refused]),result['context'][refused]
             assert api('/architects/fixture/repos/remote/diff')['files']
             sha=remote('git -C /home/worker/repo rev-parse HEAD')
             assert api(f'/architects/fixture/repos/remote/commits/{sha}/diff')['files']

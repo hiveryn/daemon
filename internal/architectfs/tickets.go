@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hiveryn/daemon/internal/config"
+	"github.com/hiveryn/daemon/internal/contextref"
 	"github.com/hiveryn/daemon/internal/domain"
 	"gopkg.in/yaml.v3"
 )
@@ -24,20 +25,23 @@ const (
 	warningDoneWithoutConclusion = "DONE_WITHOUT_CONCLUSION"
 	warningConclusionOutsideDone = "CONCLUSION_OUTSIDE_DONE"
 	warningBrokenReference       = "BROKEN_REFERENCE"
-	// warningMissingPathReference is confirmed absence on the ticket's
-	// primary-repo machine; warningUnverifiedPathReference is a path that
-	// could not be inspected there (unlocatable repo, unreachable machine,
-	// permission), whose existence is unknown.
-	warningMissingPathReference    = "MISSING_PATH_REFERENCE"
-	warningUnverifiedPathReference = "UNVERIFIED_PATH_REFERENCE"
+	// WarningInvalidReference is an entry that is not a valid reference for
+	// this architect (syntax, unknown repo key, duplicate, symlink escape).
+	// warningMissingReference is confirmed absence where the target lives;
+	// warningUnverifiedReference a target that could not be inspected there
+	// (unreachable machine, permission), whose existence is unknown.
+	WarningInvalidReference    = "INVALID_REFERENCE"
+	warningInvalidReference    = WarningInvalidReference
+	warningMissingReference    = "MISSING_REFERENCE"
+	warningUnverifiedReference = "UNVERIFIED_REFERENCE"
 )
 
-// TicketService owns ticket files in an architect workspace. Absolute path
-// references are resolved on the machine of each ticket's primary repo, as
-// located by locate.
+// TicketService owns ticket files in an architect workspace. Each context
+// reference is resolved where its own target lives — the workspace on this
+// machine, a repo on its configured machine — as located by locate.
 type TicketService struct {
 	protection    *Protection
-	locate        RepoLocator
+	locate        ScopeLocator
 	inspectRemote remoteInspector
 	now           func() time.Time
 	waitBudget    time.Duration
@@ -49,8 +53,8 @@ type TicketService struct {
 	referencesChanged func(architectPath string)
 }
 
-func NewTicketService(locate RepoLocator) *TicketService {
-	return &TicketService{locate: locate, inspectRemote: inspectRemotePaths, now: time.Now, waitBudget: remoteWaitBudget}
+func NewTicketService(locate ScopeLocator) *TicketService {
+	return &TicketService{locate: locate, inspectRemote: inspectRemoteItems, now: time.Now, waitBudget: remoteWaitBudget}
 }
 
 func (s *TicketService) ListTickets(ctx context.Context, architectPath string) (domain.TicketBoard, error) {
@@ -183,7 +187,7 @@ func (s *TicketService) createTicket(ctx context.Context, architectPath string, 
 		now = time.Now().UTC()
 	}
 
-	references, err := normalizeReferences(params.References)
+	references, err := normalizeReferences(architectPath, params.References)
 	if err != nil {
 		return domain.Ticket{}, err
 	}
@@ -281,7 +285,7 @@ func (s *TicketService) updateTicketMetadata(ctx context.Context, architectPath,
 	}
 
 	if params.References != nil {
-		references, err := normalizeReferences(*params.References)
+		references, err := normalizeReferences(architectPath, *params.References)
 		if err != nil {
 			return domain.Ticket{}, err
 		}
@@ -748,6 +752,9 @@ type ticketMetadata struct {
 	Created         *time.Time
 	Updated         *time.Time
 	References      []string
+	// ReferenceLines are the frontmatter lines (1-based within the YAML) of
+	// References, when decoded from a file.
+	ReferenceLines []int
 }
 
 func decodeTicketMetadata(node *yaml.Node) (ticketMetadata, error) {
@@ -771,10 +778,10 @@ func decodeTicketMetadata(node *yaml.Node) (ticketMetadata, error) {
 		AdditionalRepos: append([]string(nil), raw.AdditionalRepos...),
 		References:      append([]string(nil), raw.References...),
 	}
-	var err error
-	metadata.References, err = normalizeReferences(metadata.References)
-	if err != nil {
-		return ticketMetadata{}, err
+	if refs := mappingValue(node, "references"); refs != nil && refs.Kind == yaml.SequenceNode {
+		for _, item := range refs.Content {
+			metadata.ReferenceLines = append(metadata.ReferenceLines, item.Line)
+		}
 	}
 	if !raw.Created.IsZero() {
 		created := raw.Created.UTC()
@@ -929,27 +936,66 @@ func ticketIDs(entries map[domain.TicketStatus][]ticketEntry) map[string]struct{
 	return ids
 }
 
-func normalizeReferences(references []string) ([]string, error) {
+// normalizeReferences validates references written through the API: each is
+// trimmed, must parse strictly, must name architect or a repo key of the
+// architect's hiveryn.yaml, and must be unique. Every problem is reported at
+// once. Existence is not required (a missing target is a warning on read).
+func normalizeReferences(architectPath string, references []string) ([]string, error) {
 	if references == nil {
 		return []string{}, nil
 	}
+	var repos map[string]string
+	var configErr error
 	normalized := make([]string, 0, len(references))
 	seen := make(map[string]struct{}, len(references))
+	var problems []string
 	for _, reference := range references {
 		reference = strings.TrimSpace(reference)
-		if reference == "" {
-			return nil, &domain.ValidationError{Field: "references", Message: "must contain only non-empty ticket IDs or absolute filesystem paths"}
-		}
-		if filepath.IsAbs(reference) {
-			reference = filepath.Clean(reference)
+		parsed, err := domain.ParseReference(reference)
+		switch {
+		case err != nil:
+			problems = append(problems, err.Error())
+			continue
+		case parsed.Kind == domain.ReferenceKindRepo:
+			if repos == nil && configErr == nil {
+				var cfg config.ArchitectConfig
+				cfg, configErr = config.ValidateArchitectConfig(architectPath, filepath.Base(architectPath))
+				repos = cfg.Repos
+			}
+			if configErr != nil {
+				problems = append(problems, fmt.Sprintf("cannot check repo key of %q: %v", reference, configErr))
+				continue
+			}
+			if _, ok := repos[parsed.Owner]; !ok {
+				keys := make([]string, 0, len(repos))
+				for key := range repos {
+					keys = append(keys, key)
+				}
+				sort.Strings(keys)
+				problems = append(problems, (&contextref.UnknownOwnerError{Reference: reference, Owner: parsed.Owner, Known: keys}).Error())
+				continue
+			}
 		}
 		if _, ok := seen[reference]; ok {
-			return nil, &domain.ValidationError{Field: "references", Message: "contains duplicate reference " + reference}
+			problems = append(problems, "duplicate reference "+reference)
+			continue
 		}
 		seen[reference] = struct{}{}
 		normalized = append(normalized, reference)
 	}
+	if len(problems) > 0 {
+		return nil, &domain.ValidationError{Field: "references", Message: strings.Join(problems, "; ")}
+	}
 	return normalized, nil
+}
+
+// referenceAt locates reference i for warnings: the ticket.md line when known.
+func (e *ticketEntry) referenceAt(i int) string {
+	if i < len(e.metadata.ReferenceLines) && e.metadata.ReferenceLines[i] > 0 {
+		// The frontmatter starts after the opening "---" line.
+		return fmt.Sprintf("ticket.md line %d: ", e.metadata.ReferenceLines[i]+1)
+	}
+	return ""
 }
 
 func (s *TicketService) SetProtection(p *Protection) { s.protection = p }
