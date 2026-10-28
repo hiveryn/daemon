@@ -23,6 +23,7 @@ type ConversationPage = sd.ConversationPage
 type ConversationQuery = sd.ConversationQuery
 
 type DeliveryError = sd.DeliveryError
+type ConversationError = sd.ConversationError
 
 const (
 	SubmissionQueued     = sd.SubmissionQueued
@@ -46,6 +47,10 @@ const (
 	DeliveryInterrupted         = sd.DeliveryInterrupted
 	DeliveryQueuedBeforeCutover = sd.DeliveryQueuedBeforeCutover
 	DeliveryUnknown             = sd.DeliveryUnknown
+
+	HistoryUnsupported = sd.HistoryUnsupported
+	HistoryUnavailable = sd.HistoryUnavailable
+	HistoryReadFailed  = sd.HistoryReadFailed
 )
 
 // SequenceQuery pages a session's submissions by admission sequence (daemon

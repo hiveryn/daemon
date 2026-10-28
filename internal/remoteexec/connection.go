@@ -278,3 +278,10 @@ func connectionFor(ctx context.Context, alias string) (*Connection, bool) {
 	}
 	return c, c.usable()
 }
+
+// Alive reports whether the master is still up and not closed, so a
+// long-lived owner can replace one that went away instead of silently
+// falling back to a handshake per command.
+func (c *Connection) Alive() bool {
+	return c != nil && c.usable()
+}

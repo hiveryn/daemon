@@ -478,6 +478,15 @@ func (s *Service) stopMessageDelivery() {
 	}
 	s.messages.once.Do(func() {
 		close(s.messages.stop)
+		// A remote worker's provider outlives this daemon: its Claude waiter
+		// is released to retry through the tunnel and re-arms against the
+		// restarted daemon. Local providers stop with the daemon and re-arm on
+		// resume, so their waiters are answered to exit.
+		s.remoteMu.Lock()
+		for id := range s.remotes {
+			s.messages.mailbox.Interrupt(id)
+		}
+		s.remoteMu.Unlock()
 		s.messages.mailbox.Close()
 	})
 }

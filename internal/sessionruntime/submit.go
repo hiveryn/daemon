@@ -265,8 +265,11 @@ func (s *Service) admissionRefusal(ctx context.Context, session domain.Session, 
 	if _, ending := s.ending[session.ID]; ending {
 		return domain.DeliverySessionEnding, "Not sent: the session is ending"
 	}
-	if session.Machine != "" {
-		return domain.DeliverySendUnsupported, "Not sent: sending to remote SSH sessions is unsupported"
+	if session.Machine != "" && session.InteractionMode == domain.InteractionChat {
+		return domain.DeliverySendUnsupported, "Not sent: remote SSH chat sessions are unsupported"
+	}
+	if session.InteractionMode != domain.InteractionChat && s.terminalConversationUnsupported(session) {
+		return domain.DeliverySendUnsupported, "Not sent: " + s.terminalCapabilities(session).Limitation
 	}
 	if session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
 		return domain.DeliverySessionNotRunning, "Not sent: the session is not running"

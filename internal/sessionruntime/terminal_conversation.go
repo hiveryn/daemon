@@ -10,6 +10,7 @@ import (
 
 	"github.com/hiveryn/agentruntime"
 	"github.com/hiveryn/agentruntime/ingest"
+	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
@@ -90,9 +91,47 @@ func terminalRouteFor(kind agentruntime.AgentKind) (terminalRoute, bool) {
 	return terminalRoute{}, false
 }
 
+// conversationUnsupported names why a terminal session has no conversation
+// route at all ("" when it has one): an agent without a reader or input route,
+// or a remote location the route cannot reach.
+func (s *Service) conversationUnsupported(session domain.Session, kind agentruntime.AgentKind) string {
+	_, ok := terminalRouteFor(kind)
+	_, reads := s.adapters[kind].(agentruntime.HistoryReader)
+	if !ok || !reads {
+		return fmt.Sprintf("%s terminal conversations are not supported", kind)
+	}
+	return s.remoteConversationUnsupported(session, kind)
+}
+
+// terminalConversationUnsupported reports a session whose agent/location has
+// no conversation route at all (as opposed to one unavailable right now).
+func (s *Service) terminalConversationUnsupported(session domain.Session) bool {
+	run := session.CurrentRun
+	if run == nil || run.ProfileSnapshot == nil {
+		return false
+	}
+	kind, err := parseAgentKind(run.ProfileSnapshot.Agent)
+	return err == nil && s.conversationUnsupported(session, kind) != ""
+}
+
+// remoteRouteLimit is the extra caveat of a route reached over SSH.
+func remoteRouteLimit(kind agentruntime.AgentKind, machine string) string {
+	limit := " Remote worker on " + config.MachineLabel(machine) + ": history is read over SSH (one command per read on a reused connection, typically about one network round trip or two) and an unreachable machine is an explicit error, never empty history."
+	switch kind {
+	case agentruntime.AgentClaude:
+		limit += " Input reaches Claude's waiter through the worker's reverse tunnel, so a send is refused (SEND_UNAVAILABLE) while the worker's SSH attachment is down or before the worker armed a waiter (workers launched before remote conversation support never do)."
+	case agentruntime.AgentCodex:
+		limit += " Input is queued by running `codex app-server` on that machine over SSH; a connection lost after the request was sent is DELIVERY_UNKNOWN and reconciled from the queue and rollout."
+	}
+	return limit
+}
+
 // terminalCapabilities describes history/send for a terminal-owned session.
 func (s *Service) terminalCapabilities(session domain.Session) domain.ConversationCapabilities {
 	c := domain.ConversationCapabilities{ExecutionLocation: "local"}
+	if session.Machine != "" {
+		c.ExecutionLocation, c.Machine = "remote", session.Machine
+	}
 	run := session.CurrentRun
 	if run == nil || run.ProfileSnapshot == nil {
 		c.Limitation = "No run: the native conversation is unknown"
@@ -103,11 +142,13 @@ func (s *Service) terminalCapabilities(session domain.Session) domain.Conversati
 		c.Limitation = "Unknown agent: " + err.Error()
 		return c
 	}
-	route, ok := terminalRouteFor(kind)
-	_, reads := s.adapters[kind].(agentruntime.HistoryReader)
-	if !ok || !reads {
-		c.Limitation = fmt.Sprintf("%s terminal conversations are not supported", kind)
+	if reason := s.conversationUnsupported(session, kind); reason != "" {
+		c.Limitation = reason
 		return c
+	}
+	route, _ := terminalRouteFor(kind)
+	if session.Machine != "" {
+		route.limit += remoteRouteLimit(kind, session.Machine)
 	}
 	if run.NativeID == "" {
 		c.Limitation = "The native session id is not known yet (no hook event received)"
@@ -201,6 +242,10 @@ func (s *Service) readTerminalRecord(ctx context.Context, session domain.Session
 	reader, ok := adapter.(agentruntime.HistoryReader)
 	if !ok {
 		return agentruntime.History{}, &domain.ConflictError{Resource: "conversation", Message: fmt.Sprintf("%s terminal history is unsupported", kind)}
+	}
+	if session.Machine != "" {
+		// Never the laptop's provider home: the record lives on the worker's machine.
+		return s.readRemoteRecord(ctx, session, kind, adapter, reader)
 	}
 	env := cloneStringMap(run.ProfileSnapshot.Env)
 	req := agentruntime.HistoryRequest{NativeSessionID: run.NativeID, ConfigRoot: adapter.ConfigRoot(env), Env: env}
@@ -407,7 +452,7 @@ func (s *Service) dispatchTerminalSubmissions(ctx context.Context, sessions []do
 	open := false
 	for i := range sessions {
 		session := sessions[i]
-		if session.InteractionMode == domain.InteractionChat || session.Machine != "" {
+		if session.InteractionMode == domain.InteractionChat {
 			continue
 		}
 		subs, err := trepo.OpenTerminalSubmissions(ctx, session.ID)
@@ -516,7 +561,7 @@ func (s *Service) confirmTerminalSubmission(ctx context.Context, session domain.
 		}
 		// A provider process that died mid-turn never completes it; the resumed
 		// process starts from the next input.
-		if s.processReplaced(session.ID, sub) {
+		if s.processReplaced(session, sub) {
 			sub.Status = domain.SubmissionUncertain
 			sub.Error = "The provider process was restarted during this turn and its completion was never recorded; visible output is in history. Not resent"
 		}
@@ -541,7 +586,7 @@ func (s *Service) confirmTerminalSubmission(ctx context.Context, session domain.
 	case !running:
 		sub.Status = domain.SubmissionUncertain
 		sub.Error = what + " did not appear in the native record before the session stopped; not resent"
-	case s.processReplaced(session.ID, sub) && history.RecordedThrough.After(sub.HandedAt) && idle && idleAt.After(sub.HandedAt.Add(terminalLostAfter)):
+	case s.processReplaced(session, sub) && history.RecordedThrough.After(sub.HandedAt) && idle && idleAt.After(sub.HandedAt.Add(terminalLostAfter)):
 		sub.Status = domain.SubmissionUncertain
 		sub.Error = "The provider process was restarted after the hand-off and the input is not in the native record; not resent"
 	case history.RecordedThrough.After(sub.HandedAt) && idle && idleAt.After(sub.HandedAt.Add(terminalLostAfter)):
@@ -571,8 +616,15 @@ func terminalInputTurn(session domain.Session, history agentruntime.History, sub
 // is gone: the session's live main terminal (held in memory, not in SQLite)
 // is no longer the one handed to — an unexpected exit resumed, or the daemon
 // restarted and restored the session.
-func (s *Service) processReplaced(sessionID string, sub *domain.TerminalSubmission) bool {
-	current := s.mainTerminalID(sessionID)
+//
+// A remote worker's main terminal is only its SSH attachment: a reconnect
+// replaces it while the provider keeps running in its tmux pane, and Hiveryn
+// never restarts a remote provider, so it is never replaced.
+func (s *Service) processReplaced(session domain.Session, sub *domain.TerminalSubmission) bool {
+	if session.Machine != "" {
+		return false
+	}
+	current := s.mainTerminalID(session.ID)
 	return sub.HandedTerminal != "" && current != "" && current != sub.HandedTerminal
 }
 
@@ -587,11 +639,22 @@ func (s *Service) terminalInputQueued(ctx context.Context, session domain.Sessio
 		return false
 	}
 	env := cloneStringMap(run.ProfileSnapshot.Env)
+	confirmCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if session.Machine != "" {
+		// The queue lives on the worker's machine; the record was already read
+		// from there. Each check starts an app-server over SSH, so it is spaced.
+		inspector, ok := deliverer.(agentruntime.QueueInspector)
+		if !ok {
+			return false
+		}
+		return s.remoteMessageQueued(confirmCtx, session, sub.ID, func(ctx context.Context) (bool, error) {
+			return inspector.MessageQueued(ctx, agentruntime.ConfirmRequest{Env: env, NativeSessionID: run.NativeID, MessageID: sub.ID, Exec: remoteProviderCommand(session.SSH)})
+		})
+	}
 	if root := adapter.ConfigRoot(env); root != "" {
 		env["CODEX_HOME"] = root
 	}
-	confirmCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 	receipt, err := deliverer.ConfirmMessage(confirmCtx, agentruntime.ConfirmRequest{Env: env, NativeSessionID: run.NativeID, MessageID: sub.ID})
 	return err == nil && receipt.Queued
 }
@@ -663,6 +726,13 @@ func (s *Service) handOffTerminalInput(ctx context.Context, session domain.Sessi
 	idle, _ := s.messageIdle(session.ID)
 	switch kind {
 	case agentruntime.AgentClaude:
+		// A remote Claude's waiter reaches the daemon only through the
+		// attachment's reverse tunnel; while it is down the activity state is
+		// stale and no waiter can take input.
+		if state := s.remoteConnectionState(session); state != "" && state != "connected" {
+			reject(domain.DeliverySendUnavailable, "the remote worker's SSH attachment is "+state+"; Claude's input waiter is reachable only through it")
+			return
+		}
 		if !idle {
 			reject(domain.DeliverySessionBusy, "the agent is working; Claude takes input only at its idle prompt")
 			return
@@ -702,10 +772,28 @@ func (s *Service) handOffTerminalInput(ctx context.Context, session domain.Sessi
 		}
 		unknown("Handed to Claude's input waiter, but it did not appear in Claude's record within " + submitDeliveryBound.String())
 	case agentruntime.AgentCodex:
+		deliver := func(ctx context.Context) error {
+			_, err := deliverer.DeliverMessage(ctx, req)
+			return err
+		}
+		if session.Machine != "" {
+			// The queue lives on the worker's machine: run app-server there
+			// over the conversation's SSH master, which is established before
+			// the reservation, so an unreachable machine is a known refusal.
+			if err := s.withRemoteConversation(ctx, session, func(context.Context) error { return nil }); err != nil {
+				reject(domain.DeliveryRejected, err.Error())
+				return
+			}
+			req.Exec = remoteProviderCommand(session.SSH)
+			local := deliver
+			deliver = func(ctx context.Context) error {
+				return s.withRemoteConversation(ctx, session, local)
+			}
+		}
 		if !reserve(sub.ID) {
 			return
 		}
-		if _, err := deliverer.DeliverMessage(ctx, req); err != nil {
+		if err := deliver(ctx); err != nil {
 			if agentruntime.IsNotDelivered(err) {
 				reject(domain.DeliveryRejected, "Codex did not take the input: "+err.Error())
 				return
@@ -842,10 +930,11 @@ func sleepContext(ctx context.Context, d time.Duration) bool {
 // observed becomes uncertain; an attempt never handed over is rejected.
 // Errors are logged; teardown proceeds.
 func (s *Service) settleTerminalConversation(ctx context.Context, session domain.Session) {
-	if session.InteractionMode == domain.InteractionChat || session.Machine != "" {
+	if session.InteractionMode == domain.InteractionChat {
 		return
 	}
 	defer s.forgetTerminalHistory(session.ID)
+	defer s.closeRemoteConversation(session.ID)
 	// A synchronous hand-off in progress finishes (bounded) before settling.
 	if err := s.waitHandoff(ctx, session.ID); err != nil {
 		s.logger.Warn("wait for conversation hand-off before settling", "session_id", session.ID, "error", err)

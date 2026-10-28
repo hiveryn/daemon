@@ -1,7 +1,9 @@
 package sessionruntime
 
 import (
+	"bytes"
 	"crypto/subtle"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -44,6 +46,10 @@ func (s *Service) remoteGateway(session domain.Session) (*http.Server, int, erro
 			http.NotFound(w, r)
 			return
 		}
+		if r.URL.Path == hookPrefix+"claude/wait" {
+			s.serveRemoteWaiter(w, r, session)
+			return
+		}
 		kind := agentruntime.AgentKind(strings.TrimPrefix(r.URL.Path, hookPrefix))
 		if kind != agentruntime.AgentClaude && kind != agentruntime.AgentCodex && kind != agentruntime.AgentOpenCode {
 			http.NotFound(w, r)
@@ -79,4 +85,36 @@ func (s *Service) remoteGateway(session domain.Session) (*http.Server, int, erro
 		}
 	}()
 	return httpServer, ln.Addr().(*net.TCPAddr).Port, nil
+}
+
+// serveRemoteWaiter admits a remote Claude worker's asyncRewake waiter (its
+// long poll arrives through the reverse tunnel at the token-scoped hook path)
+// into the daemon's mailbox. The waiter is bound to this gateway's session: an
+// envelope naming another session is refused, so one worker can never arm or
+// receive another session's input. The body is never logged.
+func (s *Service) serveRemoteWaiter(w http.ResponseWriter, r *http.Request, session domain.Session) {
+	if s.messages == nil {
+		// The waiter exits 0 on 404; nothing can be delivered.
+		http.NotFound(w, r)
+		return
+	}
+	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 2<<20))
+	if err != nil {
+		http.Error(w, "invalid waiter body", http.StatusBadRequest)
+		return
+	}
+	var envelope struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(b, &envelope); err != nil {
+		http.Error(w, "invalid waiter body", http.StatusBadRequest)
+		return
+	}
+	if envelope.Env["AGENTRUNTIME_SESSION_ID"] != session.ID {
+		http.Error(w, "waiter session mismatch", http.StatusBadRequest) // 400: the waiter exits instead of retrying
+		return
+	}
+	r2 := r.Clone(r.Context())
+	r2.Body = io.NopCloser(bytes.NewReader(b))
+	s.messages.mailbox.Handler().ServeHTTP(w, r2)
 }

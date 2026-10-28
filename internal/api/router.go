@@ -350,12 +350,30 @@ func deliveryHTTPStatus(code string) int {
 	return http.StatusConflict
 }
 
+// historyHTTPStatus maps a history read code: no route for this session (422),
+// none right now (409), or the native record could not be read (502).
+func historyHTTPStatus(code string) int {
+	switch code {
+	case domain.HistoryUnsupported:
+		return http.StatusUnprocessableEntity
+	case domain.HistoryReadFailed:
+		return http.StatusBadGateway
+	}
+	return http.StatusConflict
+}
+
 func writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
 	var deliveryErr *domain.DeliveryError
 	if errors.As(err, &deliveryErr) {
 		writeError(w, r, deliveryHTTPStatus(deliveryErr.Code), deliveryErr.Code, deliveryErr.Message, map[string]any{
 			"submission": deliveryErr.Submission,
 		})
+		return
+	}
+
+	var conversationErr *domain.ConversationError
+	if errors.As(err, &conversationErr) {
+		writeError(w, r, historyHTTPStatus(conversationErr.Code), conversationErr.Code, conversationErr.Message, nil)
 		return
 	}
 

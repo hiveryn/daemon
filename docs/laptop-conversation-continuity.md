@@ -120,9 +120,17 @@ competing notifications, teardown and restart are covered deterministically
 (Go tests and `scripts/conversation-smoke.py`); no real provider was forced
 into an ambiguous hand-off.
 
+## 28 October: remote workers
+
+Remote Claude and Codex ticket workers are now readable and sendable over SSH
+([contract](conversation-api.md#remote-workers-over-ssh),
+[evidence](evidence/remote-conversations-2026-10-28.json)): laptop terminal →
+API → laptop continuity, busy Claude refusal, busy Codex native queueing, draft
+preservation, attachment loss and daemon restart passed natively on machine ka.
+
 ## Not covered
 
-Physical-phone networking (localhost only), remote SSH sessions, streaming,
+Physical-phone networking (localhost only), remote OpenCode, streaming,
 authentication, native permission prompts, every provider profile. A hands-on
 demo needs a visible isolated desktop; the desktop's isolated verification
 entry is hidden by design.

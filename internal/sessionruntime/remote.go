@@ -209,6 +209,13 @@ func (s *Service) prepareRemoteWorker(ctx context.Context, w *remoteWorker, prof
 	req.FileSystem = fs
 	req.DisableNativeQuestions = true
 	req.ClaudeAutoMemory = profile.ClaudeAutoMemory
+	// Claude's asyncRewake waiter long-polls the gateway through the reverse
+	// tunnel (remote_gateway.go), so conversation input reaches a remote
+	// Claude worker exactly as a local one. Codex needs nothing at launch: its
+	// queue is reached by app-server over SSH. Remote OpenCode has no route.
+	if kind == agentruntime.AgentClaude && s.messages != nil {
+		req.MessageDelivery = &agentruntime.MessageDelivery{}
+	}
 	endpoint := "http://127.0.0.1:" + strconv.Itoa(session.RemotePort)
 	req.HookEndpoint = endpoint + "/hooks/" + session.RemoteToken
 	req.Env = cloneStringMap(profile.Env)

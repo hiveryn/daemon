@@ -135,7 +135,7 @@ handshake once and keeps its command count fixed:
 | 11-repo Claude worker | Handshakes | Commands | Estimate at the measured cost |
 | --- | --- | --- | --- |
 | Before | 24 (23 commands + attach) | 23 | ~180 s — exceeded the 2 min bound |
-| After, changed setup | 2 (master + attach) | 9 | ~6 + 9 × 1.3 + 7.5 ≈ 25 s |
+| After, changed setup | 2 (master + attach) | 9 (+1 Claude waiter settings since 28 Oct) | ~6 + 9 × 1.3 + 7.5 ≈ 25 s |
 | After, unchanged setup | 2 | 7 | ≈ 23 s |
 | After, master refused | 11 (failed master + 9 + attach) | 9 | ≈ 6 + 9 × 7.5 + 7.5 ≈ 81 s |
 
@@ -192,6 +192,15 @@ reported; the worker remains behind its launch gate until attachment succeeds.
 Private runtime files live under `~/.local/state/hiveryn-workers/<session UUID>`
 and are removed during confirmed cleanup. SQLite holds private credentials and
 ownership records; the database is restricted to the local account.
+
+The conversation API reads and sends to remote Claude and Codex workers over
+SSH (no remote install; remote OpenCode is explicitly unsupported there): see
+[remote workers in the conversation API](conversation-api.md#remote-workers-over-ssh).
+Its commands run over a session-scoped OpenSSH master separate from the
+launch's, and Claude's input waiter uses the gateway's token-scoped
+`/hooks/<token>/claude/wait` route, bound to the gateway's own session. Claude
+workers therefore carry one more launch file (the per-launch waiter settings):
+one more remote write than the table above.
 
 If Hiveryn MCP is unreachable, workers are instructed to stop work and wait.
 This is agent guidance, not process suspension. An interrupted mutation may have

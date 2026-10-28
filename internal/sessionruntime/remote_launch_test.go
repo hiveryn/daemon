@@ -150,8 +150,10 @@ func TestElevenRepoRemoteLaunchFitsItsBudget(t *testing.T) {
 	if fresh != 0 || masters != 1 {
 		t.Fatalf("handshakes: fresh=%d masters=%d, want one master only", fresh, masters)
 	}
-	if shared > 9 {
-		t.Fatalf("%d commands over the shared connection, want at most 9", shared)
+	// 9 preparation commands plus the per-launch waiter settings write that
+	// lets conversation input reach a remote Claude worker.
+	if shared > 10 {
+		t.Fatalf("%d commands over the shared connection, want at most 10", shared)
 	}
 	if elapsed > scaledBudget/2 {
 		t.Fatalf("launch took %s, more than half its %s budget", elapsed, scaledBudget)
@@ -219,7 +221,7 @@ func TestRemoteLaunchWithoutSharedConnectionStillBatches(t *testing.T) {
 	}
 	fresh, masters, shared := f.ssh.Connections("ka")
 	t.Logf("11 repos without multiplexing: %s; fresh=%d masters=%d shared=%d", elapsed.Round(time.Millisecond), fresh, masters, shared)
-	if masters != 1 || shared != 0 || fresh > 9 {
+	if masters != 1 || shared != 0 || fresh > 10 {
 		t.Fatalf("fresh=%d masters=%d shared=%d", fresh, masters, shared)
 	}
 }

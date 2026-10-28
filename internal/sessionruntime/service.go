@@ -47,6 +47,10 @@ type Service struct {
 	// terminalHistory caches per-session native history sync (terminal_conversation.go).
 	terminalHistoryMu sync.Mutex
 	terminalHistory   map[string]*terminalHistoryState
+	// remoteConvs holds the SSH transport and record mirror of remote
+	// sessions' conversations (remote_conversation.go).
+	remoteConvMu sync.Mutex
+	remoteConvs  map[string]*remoteConversation
 	// deliveries coordinates synchronous conversation sends (submit.go).
 	deliveries         deliveryState
 	workspaceMutation  func(context.Context, string, []string, func() error) error
@@ -2229,6 +2233,15 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	s.remoteMu.Unlock()
 	for _, id := range ids {
 		s.closeRemote(id)
+	}
+	s.remoteConvMu.Lock()
+	convIDs := []string{}
+	for id := range s.remoteConvs {
+		convIDs = append(convIDs, id)
+	}
+	s.remoteConvMu.Unlock()
+	for _, id := range convIDs {
+		s.closeRemoteConversation(id)
 	}
 	s.chatMu.Lock()
 	chatIDs := []string{}

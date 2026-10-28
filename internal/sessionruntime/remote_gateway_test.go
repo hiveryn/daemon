@@ -15,6 +15,7 @@ import (
 
 	"github.com/hiveryn/agentruntime"
 	"github.com/hiveryn/agentruntime/adapter/claude"
+	"github.com/hiveryn/agentruntime/ingest"
 	"github.com/hiveryn/daemon/internal/api"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
@@ -216,5 +217,75 @@ func TestRemoteGatewayReadsProjectContext(t *testing.T) {
 	}
 	if status, _ := callTool(strings.Repeat("d", 64), "readContext", `{"reference":"architect:OVERVIEW.md"}`); status != http.StatusUnauthorized {
 		t.Fatalf("wrong token status %d", status)
+	}
+}
+
+// A remote Claude worker's asyncRewake waiter reaches the daemon's mailbox only
+// through its own gateway's token path and only for its own session: a waiter
+// naming another session, a wrong token or a GET never arms anything.
+func TestRemoteGatewayWaiterIsBoundToItsSession(t *testing.T) {
+	t.Parallel()
+	messages := newMessageRuntime()
+	t.Cleanup(messages.mailbox.Close)
+	service := &Service{baseURL: "http://127.0.0.1:1", logger: slog.New(slog.NewTextHandler(io.Discard, nil)), messages: messages, adapters: map[agentruntime.AgentKind]agentruntime.Adapter{agentruntime.AgentClaude: claude.New(claude.DefaultOptions())}}
+	session := domain.Session{ID: "worker", ArchitectKey: "project", SessionType: domain.SessionTypeTicket, RemoteToken: strings.Repeat("c", 64)}
+	server, port, err := service.remoteGateway(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Close() }()
+	url := func(token string) string {
+		return fmt.Sprintf("http://127.0.0.1:%d/hooks/%s/claude/wait", port, token)
+	}
+	envelope := func(sessionID string) string {
+		return `{"agent":"claude","hook":{"hook_event_name":"Stop","session_id":"native"},"env":{"AGENTRUNTIME_SESSION_ID":"` + sessionID + `"}}`
+	}
+	post := func(target, body string) int {
+		t.Helper()
+		resp, err := http.Post(target, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	if status := post(url(session.RemoteToken), envelope("other-worker")); status != http.StatusBadRequest {
+		t.Fatalf("cross-session waiter: %d", status)
+	}
+	if status := post(url(strings.Repeat("d", 64)), envelope("worker")); status != http.StatusUnauthorized {
+		t.Fatalf("wrong token waiter: %d", status)
+	}
+	if resp, err := http.Get(url(session.RemoteToken)); err != nil || resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET waiter: %v %v", resp, err)
+	}
+	if _, armed := messages.mailbox.Armed("other-worker"); armed {
+		t.Fatal("another session's waiter was armed")
+	}
+	got := make(chan string, 1)
+	go func() {
+		resp, err := http.Post(url(session.RemoteToken), "application/json", strings.NewReader(envelope("worker")))
+		if err != nil {
+			got <- err.Error()
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		b, _ := io.ReadAll(resp.Body)
+		got <- fmt.Sprint(resp.StatusCode, " ", string(b))
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, armed := messages.mailbox.Armed("worker"); armed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("own waiter not armed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, delivered := messages.mailbox.Deliver("worker", ingest.MailboxMessage{ID: "m1", Text: "hello"}); !delivered {
+		t.Fatal("not delivered to the armed waiter")
+	}
+	if answer := <-got; !strings.HasPrefix(answer, "200 ") || !strings.Contains(answer, `"text":"hello"`) {
+		t.Fatalf("waiter answer = %s", answer)
 	}
 }

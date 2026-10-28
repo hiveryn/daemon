@@ -1,0 +1,54 @@
+{
+  "ticket": "2026-10-28-0956-support-remote-claude-and-codex-conversations-over-ssh",
+  "date": "2026-10-28",
+  "environment": {
+    "daemon": "isolated hiverynd built from this checkout (private HIVERYN_HOME, port, SQLite, ntfy sink); live daemon 4201 and UI 3217 untouched",
+    "laptop": "macOS arm64, OpenSSH_10.2p1",
+    "remote": "machine ka (SSH alias ka), Darwin arm64, tmux 3.7c, node v24.22.1",
+    "providers": {"claude": "Claude Code 2.1.312 (claude-sonnet-5-5), ka default profile; agentruntime hook setup verified byte-identical before launch (no global write)",
+                  "codex": "codex-cli 0.164.0 (gpt-5.6-sol), run-owned CODEX_HOME on ka with a remote-side copy of the account auth (0600, removed)"},
+    "fixture": "synthetic git repo and workspace under a run-owned /tmp/hv-rlab-<id> on ka; ticket workers launched through POST /api/sessions + /runs; laptop input through the desktop terminal WebSocket",
+    "cleanup": "both sessions discarded (remote tmux servers and runtime dirs confirmed gone), run dir and the synthetic Claude project transcript dir removed on ka, isolated daemon/UI stopped; unrelated ka workers untouched"
+  },
+  "ssh_probe_seconds": {"fresh_connection_command": "7.1-9.5", "command_over_master": "1.23-1.37", "persistent_shell_round_trip": "0.64-0.69"},
+  "results": {
+    "launch_seconds": {"claude": 25.4, "codex": 23.7},
+    "history": {
+      "first_read_with_master_dial_s": 9.5,
+      "steady_read_s": [1.31, 1.40, 1.41, 1.35, 1.31],
+      "kickoff_first_with_kickoff_provenance": "pass (both)",
+      "laptop_input": "via terminal, native_origin human (Claude) / user (Codex)",
+      "api_input": "via api, native_origin task_notification (Claude) / queue (Codex)",
+      "unreachable_machine": "real network loss to ka during the run: GET /conversation 502 HISTORY_READ_FAILED naming the SSH timeout; next read re-dialled (5.5 s) and succeeded",
+      "after_discard": "retained history readable by session id (33 items each)"
+    },
+    "claude": {
+      "idle_send": {"http": 200, "seconds": [3.24, 3.25], "acceptance": "claude_native_record"},
+      "turn_completed_after_post_s": 21.3,
+      "busy_send": {"http": 409, "code": "SESSION_BUSY", "seconds": 0.0, "never_in_history": true},
+      "same_id_replay": "200 completed, no second hand-off",
+      "continuity": "laptop codeword recalled by the API turn; API-requested command recalled by the next laptop turn",
+      "laptop_draft_during_api_send": "draft intact in the composer, submitted afterwards as its own turn",
+      "attachment_lost": "history kept working over the conversation master; send was refused as SESSION_BUSY by the first build, changed to SEND_UNAVAILABLE naming the attachment (deterministic test; not re-run natively)",
+      "daemon_restart": "found: shutdown answered waiters 204 and a remote Claude had no waiter afterwards; fixed (Mailbox.Interrupt, 503 retry); rerun: waiter survived, first send after restart 200 in 9.59 s (cold master), context kept",
+      "approval_intent": "not raised: the worker declined to request conclusion (lab Overview forbids it); controls verified with a question instead"
+    },
+    "codex": {
+      "busy_send_during_kickoff": {"http": 200, "seconds": 11.9, "acceptance": "codex_thread_queue", "note": "cold master dial included; ran as its own queue turn after the kickoff"},
+      "idle_send": {"http": 200, "seconds": [3.92, 3.59, 3.77], "acceptance": "codex_thread_queue"},
+      "turn_completed_after_post_s": 33.7,
+      "continuity": "laptop codeword recalled by the API turn; API-requested command recalled by the next laptop turn",
+      "attachment_killed": "send accepted (queue is independent of the tunnel); attachment reconnected on its own",
+      "question": "askQuestion raised through the remote gateway, answered with POST /questions/{id}/answer; worker reported the answer"
+    },
+    "poc": "production build served against the isolated daemon: remote badge 'remote · ka (SSH)', route limitation, history, send from the composer to the remote Codex worker accepted and answered"
+  },
+  "deterministic": ["remote record mirror (append-only fetch, chunking, in-place rewrite, truncation, vanished file, path filter)",
+                    "remote Claude history from the frozen CLAUDE_CONFIG_DIR, never the laptop home or the remote default root; unreachable machine -> HISTORY_READ_FAILED; one master reused",
+                    "remote Claude send from the remote record; detached/disconnected attachment -> SEND_UNAVAILABLE; reconnect is not a provider restart",
+                    "remote Codex send over SSH app-server; lost response -> DELIVERY_UNKNOWN reconciled from the remote queue, same-ID replay without a second queue entry; unreachable -> DELIVERY_REJECTED",
+                    "remote OpenCode -> capabilities unsupported, HISTORY_UNSUPPORTED, SEND_UNSUPPORTED, nothing run remotely",
+                    "gateway waiter bound to its session (cross-session 400, wrong token 401, GET 404)",
+                    "agentruntime: record locations/copy reads, Codex CommandFunc and MessageQueued, Mailbox.Interrupt"],
+  "not_covered": ["a real provider forced into an ambiguous hand-off over SSH", "remote OpenCode natively (deterministic only)", "approval intent natively for a remote worker", "remote Linux hosts", "physical phone networking"]
+}

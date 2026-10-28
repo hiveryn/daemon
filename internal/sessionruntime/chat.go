@@ -38,8 +38,8 @@ func (s *Service) conversationRepo() (domain.ConversationRepository, error) {
 }
 func (s *Service) chatCapabilities(session domain.Session) domain.ConversationCapabilities {
 	c := domain.ConversationCapabilities{ExecutionLocation: "local", Limitation: "Terminal conversation submission is unsupported"}
-	if session.Machine != "" {
-		c.ExecutionLocation = "remote"
+	if session.Machine != "" && session.InteractionMode == domain.InteractionChat {
+		c.ExecutionLocation, c.Machine = "remote", session.Machine
 		c.Limitation = "Remote SSH chat is unsupported"
 		return c
 	}
@@ -199,17 +199,22 @@ func (s *Service) ReadConversation(ctx context.Context, id string, q domain.Conv
 		return domain.ConversationPage{}, err
 	}
 	session, sessionErr := s.repo.GetSession(ctx, id)
-	if sessionErr == nil && session.Machine != "" {
-		return domain.ConversationPage{}, &domain.ConflictError{Resource: "conversation", Message: "history of remote SSH sessions is unsupported"}
+	if sessionErr == nil && session.Machine != "" && session.InteractionMode == domain.InteractionChat {
+		return domain.ConversationPage{}, &domain.ConversationError{Code: domain.HistoryUnsupported, Message: "Remote SSH chat sessions are unsupported"}
 	}
 	if sessionErr == nil && session.InteractionMode != domain.InteractionChat {
 		// Read the native record first; an unreadable record is an error, never
 		// an empty or silently stale page.
-		if !s.terminalCapabilities(session).History {
-			return domain.ConversationPage{}, &domain.ConflictError{Resource: "conversation", Message: "history unavailable: " + s.terminalCapabilities(session).Limitation}
+		if caps := s.terminalCapabilities(session); !caps.History {
+			code := domain.HistoryUnavailable
+			if s.terminalConversationUnsupported(session) {
+				code = domain.HistoryUnsupported
+			}
+			return domain.ConversationPage{}, &domain.ConversationError{Code: code, Message: "History unavailable: " + caps.Limitation}
 		}
 		if _, err := s.syncTerminalHistory(ctx, session, false); err != nil {
-			return domain.ConversationPage{}, fmt.Errorf("read native conversation record: %w", err)
+			s.logger.Warn("read native conversation record", "session_id", session.ID, "machine", session.Machine, "error", err)
+			return domain.ConversationPage{}, historyError(fmt.Errorf("read native conversation record: %w", err))
 		}
 		s.kickMessages()
 	}

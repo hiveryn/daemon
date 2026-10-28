@@ -14,7 +14,8 @@ or attached as another submitter.
 The daemon owns Claude's structured CLI, Codex app-server or a private loopback
 OpenCode server. These provider transports are internal. Public clients use
 ordinary HTTP and polling; no streaming/authentication/gateway is added. Listener
-exposure is unchanged. Remote SSH chat is rejected.
+exposure is unchanged. Remote SSH chat is rejected; remote terminal workers are
+covered in [Remote workers](#remote-workers-over-ssh).
 
 ## Create, launch and discover
 
@@ -83,8 +84,8 @@ attempts delivery to the existing agent before answering, within a bound of
 | `SESSION_NOT_RUNNING` | 409 | No running run |
 | `SESSION_ENDING` | 409 | Conclusion/discard in progress |
 | `SESSION_ARCHIVED` | 409 | The session ended; no receipt is created |
-| `SEND_UNAVAILABLE` | 409 | The route cannot take input now (no native id yet, no Claude waiter, OpenCode server unknown, chat owner not ready) |
-| `SEND_UNSUPPORTED` | 422 | Remote SSH session or an agent without an input route |
+| `SEND_UNAVAILABLE` | 409 | The route cannot take input now (no native id yet, no Claude waiter, a remote Claude worker's SSH attachment down, OpenCode server unknown, chat owner not ready) |
+| `SEND_UNSUPPORTED` | 422 | No input route for this session: remote OpenCode, remote chat, or an agent without one |
 | `DELIVERY_REJECTED` | 502 | The provider refused it, or a known failure before the hand-off (reservation, preparation, deadline before the hand-off) |
 | `DELIVERY_INTERRUPTED` | — | (receipts only) the daemon stopped before the hand-off |
 | `QUEUED_BEFORE_CUTOVER` | — | (receipts only) waiting in the former Hiveryn queue at the cutover; never sent |
@@ -197,7 +198,12 @@ upsert items by `id`, retain the greatest revision, display by `sequence`.
 To continue a page, send `after_revision=next_revision` and the same
 `snapshot_revision`. Once `has_more` is false, the next poll starts at that
 snapshot revision and omits `snapshot_revision`. A change to an old item is a
-new revision. Provider compaction/resume never removes observed history. Page
+new revision. A read that returns no page is an error envelope with a
+stable code: `HISTORY_UNSUPPORTED` (422: no history route for this session, e.g.
+remote OpenCode), `HISTORY_UNAVAILABLE` (409: not now, e.g. no native id yet) or
+`HISTORY_READ_FAILED` (502: the native record could not be read — an unreachable
+machine, an SSH failure, an unreadable or ambiguous record; the message keeps the
+original cause). Never an empty or silently stale page. Provider compaction/resume never removes observed history. Page
 size is at most 200. Already-observed history survives session deletion and stays
 readable by the session's known ID; unknown/unsupported session history returns an explicit error.
 Retention pruning is not implemented in V1.
@@ -330,8 +336,9 @@ The browser client stays connect-only.
 
 `history` requires a known native session id (first hook event); `send` also
 requires a running run (and, for OpenCode, the TUI server endpoint minted by
-this daemon process). Remote SSH sessions advertise neither. `limitation` is
-always the route's explicit caveat.
+this daemon process). Remote SSH workers are described in
+[Remote workers](#remote-workers-over-ssh). `limitation` is always the route's
+explicit caveat.
 
 | `input_route` | Mechanism | Native provenance of API input |
 | --- | --- | --- |
@@ -402,5 +409,56 @@ Known limits: Claude provenance as above; OpenCode laptop input sent while a
 turn runs merges into it (native behaviour, reported as above); Codex holds
 its queue after an Esc-interrupted turn until the next laptop turn completes;
 a tool interrupted by a provider crash can stay `running` in the native
-record; no remote SSH, streaming or authentication. Localhost is not a phone
+record; no streaming or authentication. Localhost is not a phone
 network path. Acceptance evidence: [laptop continuity](laptop-conversation-continuity.md).
+
+## Remote workers over SSH
+
+Ticket workers running on another machine ([remote workers](remote-workers.md))
+use the same endpoints, codes, receipts and replay rules. The browser still talks
+only to the laptop daemon; nothing Hiveryn-specific is installed or exposed on the
+remote machine. The daemon reaches the worker's native conversation with ordinary
+SSH commands against the installed provider CLI and the remote account's own
+provider home, and never reads the laptop's provider home for a remote run.
+
+```json
+"conversation": {"history": true, "send": true, "native_permissions": false,
+  "execution_location": "remote", "machine": "buildbox",
+  "input_route": "codex_thread_queue", "limitation": "... Remote worker on machine buildbox: ..."}
+```
+
+| Provider | History | Send |
+| --- | --- | --- |
+| Claude | Transcript under the root the frozen launch environment selects on that machine (`CLAUDE_CONFIG_DIR`, else `~/.claude` there) | The session's asyncRewake waiter long-polls the worker's authenticated gateway through the attachment's reverse tunnel, so the local rules apply: idle only (`SESSION_BUSY` otherwise), accepted once the input is in the remote transcript (`claude_native_record`). `SEND_UNAVAILABLE` while the SSH attachment is down or before a waiter armed — workers launched before remote conversation support never arm one |
+| Codex | Every verified rollout segment under the frozen `CODEX_HOME` there (else `~/.codex`) | `codex app-server` runs on that machine over SSH with the frozen variant environment; `thread/queue/add` answered → `accepted` (`codex_thread_queue`), also while busy or while the attachment is down. Known failure before the request (machine unreachable, app-server not started) → `DELIVERY_REJECTED`; connection lost after it was sent → `DELIVERY_UNKNOWN`, reconciled from the remote queue (checked at most every 15 s per input) and rollout, never resent |
+| OpenCode | `HISTORY_UNSUPPORTED` | `SEND_UNSUPPORTED`; capabilities advertise neither. Remote OpenCode execution itself is unchanged |
+
+**Transport.** Each remote session's conversation commands run over one OpenSSH
+master (private control socket, `BatchMode`, the alias's own configuration),
+opened on first use, replaced when it dies and closed after 2 minutes unused or
+when the session ends. History is mirrored incrementally into a private 0700
+local directory: each read sends only appended bytes plus a 64-byte overlap that
+detects a file rewritten in place (it is then refetched), in chunks of at most
+8 MiB per command and 512 MiB per session; vanished files are dropped. The
+unchanged agentruntime readers parse the mirror, so ordering, kickoff, provenance
+and torn-final-line handling are the local ones. A read is bounded at 20 s. The
+mirror is deleted at session end and daemon shutdown and rebuilt after a restart.
+
+**Measured** (ka, 28 October; [evidence](evidence/remote-conversations-2026-10-28.json)):
+a fresh SSH connection costs 7–9.5 s, a command over the master about 1.3 s, so
+the first read of a session (or the first after 2 idle minutes) takes about
+9.5 s and later reads 1.3–1.4 s; the 1-second read throttle therefore means at
+most one SSH command per poll. Idle sends were accepted in 3.2 s (Claude) and
+3.6–3.9 s (Codex: app-server start over SSH) — up to 12 s when the master had to
+be dialled first — well inside the unchanged 20 s delivery bound and before the
+turns completed (21–34 s).
+
+**Disconnects and restarts.** The worker keeps running in its tmux pane when the
+attachment drops; history keeps working over the conversation master. A daemon
+restart restores the attachment; the remote Claude waiter is released with a
+retryable answer at shutdown and re-arms through the restored tunnel (local
+waiters still exit, their TUIs are resumed). A remote attachment reconnect is not
+a provider restart, so open turns are not marked uncertain for it. Questions,
+approvals and notifications use the worker's existing gateway and controls.
+Inbound agent-message outbox notifications to remote sessions remain retained,
+as before.
