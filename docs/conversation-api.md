@@ -32,8 +32,10 @@ Launch separately with `POST /api/sessions/SESSION_ID/runs` and
 `{"profile_name":"CONFIGURED_VARIANT"}`. Readiness means the structured transport
 initialized and its native session identity was persisted. A chat launch returns
 `run` without a terminal ID or WebSocket URL. The unchanged kickoff is the first
-internal queue entry; user input follows it. A worker is moved to progress before
-that queue starts executing, so its readTicket/conclusion calls see correct state.
+entry of the chat owner's internal queue (kickoff and outbox notifications only);
+user input is never queued and is refused as busy until the kickoff turn ends.
+A worker is moved to progress before the kickoff runs, so its readTicket/conclusion
+calls see correct state.
 
 Existing `GET /api/sessions` and `GET /api/sessions/SESSION_ID` include:
 
@@ -45,18 +47,17 @@ Existing `GET /api/sessions` and `GET /api/sessions/SESSION_ID` include:
     "send": true,
     "native_permissions": false,
     "execution_location": "local",
-    "limitation": "Native permission controls are unavailable; permission requests block the queue"
+    "limitation": "Native permission controls are unavailable; a permission request holds the chat"
   }
 }
 ```
 
-`send` requires a running local chat session. It describes admission to the
-queue, not an assurance that the provider can currently complete work. Inspect
-submission receipts for waits/errors. Existing terminal/question/intent desktop
+`send` requires a running local chat session. It says the route exists, not that
+the agent is idle right now: a send is answered synchronously (below). Existing terminal/question/intent desktop
 flows remain; chat sessions have a labelled status placeholder and session event
 subscription, without a fake main terminal or a desktop chat UI.
 
-## Submit and poll
+## Send (synchronous delivery)
 
 ```http
 POST /api/sessions/SESSION_ID/messages
@@ -65,33 +66,99 @@ Content-Type: application/json
 {"request_id":"client-unique-123","text":"Explain the fixture."}
 ```
 
-HTTP 202 returns a durable receipt with `id`, `session_id`, `request_id`,
-`sequence`, `origin`, `text`, `status`, `created_at`, `updated_at`, and optional
-`native_turn_id`/`error`. Poll
-`GET /api/sessions/SESSION_ID/submissions/SUBMISSION_ID`.
+Hiveryn does not queue user input. The request records a durable identity and
+attempts delivery to the existing agent before answering, within a bound of
+**20 seconds** (`submitDeliveryBound`). It never waits for the agent's reply.
 
-- `queued`: accepted and waiting its turn.
-- `started`: dispatch reserved durably before handoff; native execution may have begun.
-- `blocked`: native permission/request requires a control unavailable in V1.
-- `uncertain`: delivery/completion cannot be established. No automatic replay.
-- `completed`: the matching native turn completed. Individual tool items may still have failed.
-- `failed`: explicit native turn failure, or session ended before completion.
+- **HTTP 200** — the provider accepted the input. `data` is the receipt, with
+  `accepted_at` and `acceptance` naming the evidence (see below). Codex's own
+  native queue counts as acceptance, so a busy Codex session still answers 200.
+- **Non-success** — the standard error envelope with a stable `error.code`, the
+  original reason in `error.message` and the durable receipt (when one exists) in
+  `error.details.submission`:
 
-Exact same request ID/text replays the existing receipt, including after session
-conclusion/discard. Reuse with different text/origin is HTTP 409. Request IDs are
-1–200 characters; text is nonblank and at most 1 MiB. Concurrent callers are
-ordered by SQLite admission sequence, not client clocks. A single owner dispatches
-one native turn at a time. Closing an HTTP connection never cancels an accepted
-submission. If an earlier entry is blocked/uncertain, queued receipts report that
-entry's ID and reason in `error`; clients may poll it too. Internal kickoff text
-is redacted in receipt reads.
+| `error.code` | HTTP | Meaning |
+| --- | --- | --- |
+| `SESSION_BUSY` | 409 | The agent is working, another input is being handed over, earlier input has not reached the conversation yet, or (chat) an entry holds the chat |
+| `SESSION_NOT_RUNNING` | 409 | No running run |
+| `SESSION_ENDING` | 409 | Conclusion/discard in progress |
+| `SESSION_ARCHIVED` | 409 | The session ended; no receipt is created |
+| `SEND_UNAVAILABLE` | 409 | The route cannot take input now (no native id yet, no Claude waiter, OpenCode server unknown, chat owner not ready) |
+| `SEND_UNSUPPORTED` | 422 | Remote SSH session or an agent without an input route |
+| `DELIVERY_REJECTED` | 502 | The provider refused it, or a known failure before the hand-off (reservation, preparation, deadline before the hand-off) |
+| `DELIVERY_INTERRUPTED` | — | (receipts only) the daemon stopped before the hand-off |
+| `QUEUED_BEFORE_CUTOVER` | — | (receipts only) waiting in the former Hiveryn queue at the cutover; never sent |
+| `DELIVERY_UNKNOWN` | 504 | A hand-off was attempted and acceptance could not be established |
 
-This is bounded evidence, not exactly-once execution: a crash can happen after
-native acceptance but before a native turn ID or result is persisted. On resume,
-explicit native turn/parent/user-UUID lineage is consulted before settling the
-in-flight entry. Inconclusive results remain uncertain and hold the queue. No
-resubmit/interrupt/force-resolve API is provided in V1. Discard/conclude through
-the existing lifecycle operations when the session cannot continue safely.
+Every code except `DELIVERY_UNKNOWN` is **definitive**: nothing reached the
+provider and the input is never delivered later (not after idle, not after a
+restart). `DELIVERY_UNKNOWN` is ambiguous: the input may be in the conversation.
+It is never resent; the daemon reconciles it from native evidence (the native
+record, Codex's queue, the chat turn) and the receipt moves to `accepted`,
+`running` or a turn outcome, or settles `uncertain`.
+
+**Retry versus reconcile.** A `request_id` names one delivery decision.
+
+- Same `request_id` and text: replays the recorded outcome (200, the same
+  refusal, or `DELIVERY_UNKNOWN` until reconciled). It never sends again. Use it
+  after a lost response, a reconnect or a restart, and to check an unknown send.
+  A request whose attempt is still in progress waits for it, so concurrent
+  duplicates get one outcome and one hand-off.
+- To send a definitively refused message again, use a **new** `request_id`.
+  Never do that for `DELIVERY_UNKNOWN`: it may already be in the conversation.
+- Same `request_id` with different text is HTTP 409 `CONFLICT`.
+
+The attempt runs detached from the HTTP request: a client that disconnects,
+times out or retries does not cut a hand-off in half. Session teardown waits for
+an attempt in progress (bounded) before settling it. Request IDs are 1–200
+characters; text is nonblank and at most 1 MiB.
+
+### Receipts
+
+`GET /api/sessions/SESSION_ID/submissions/SUBMISSION_ID` returns `id`,
+`session_id`, `request_id`, `sequence`, `origin`, `text`, `status`,
+`native_turn_id`, `error_code`, `error`, `accepted_at`, `acceptance`,
+`created_at`, `updated_at`. A normal successful send needs no polling to know it
+was delivered; poll a receipt to follow its turn, or to reconcile an unknown send.
+
+| `status` | Meaning |
+| --- | --- |
+| `delivering` | The synchronous attempt is in progress |
+| `rejected` | Definitively not sent (`error_code`); final |
+| `unknown` | Acceptance not established (`DELIVERY_UNKNOWN`); being reconciled, never resent |
+| `accepted` | The provider accepted it (Codex native queue, OpenCode server); not yet seen running |
+| `running` | The input is in the native conversation; its turn has not ended |
+| `blocked` | (chat) a native permission request needs a control V1 does not provide |
+| `completed` | The matching native turn completed. Individual tool items may still have failed |
+| `failed` | Explicit native turn failure/interruption, or the session ended before completion |
+| `uncertain` | Settled without the evidence: delivery (when `accepted_at` is absent) or completion cannot be established; not resent |
+| `queued` | (chat internal entries only) kickoff/notification waiting in the chat owner's queue |
+
+`accepted_at`/`acceptance` record acceptance and stay set through later turn
+states: delivery acceptance is separate from turn completion. Acceptance evidence
+per route: Claude terminal `claude_native_record` (the input in Claude's own
+transcript — the asyncRewake waiter taking it is not enough), Codex terminal
+`codex_thread_queue` (`thread/queue/add` answered), OpenCode terminal
+`opencode_prompt_async` (the TUI server answered 2xx), chat `claude_stream_output`,
+`codex_turn_start` or `opencode_prompt_async` (the structured transport's first
+output for the input), and `native_record` when an unknown input was later found
+in the record (or for receipts migrated at the cutover). Internal kickoff text is
+redacted in receipt reads.
+
+This is bounded evidence, not exactly-once execution: a provider can accept input
+whose response is lost. Such input is `unknown`, never replayed. A chat whose
+head entry is `blocked`, `unknown` or `uncertain` stays held: later sends are
+`SESSION_BUSY` naming that entry. No resubmit/interrupt/force-resolve API is
+provided in V1. Discard/conclude through the existing lifecycle operations when
+the session cannot continue safely.
+
+**Cutover (migration 0020).** User input still `queued` in the former Hiveryn
+queue becomes `rejected` with `QUEUED_BEFORE_CUTOVER` (text and history kept,
+never dispatched); former `started` input with a native turn becomes `running`,
+other `started` input `unknown`. Settled receipts with native turn evidence get
+an approximate `accepted_at` (the hand-off or admission time). At startup any
+attempt the previous daemon left `delivering` becomes `rejected`
+(`DELIVERY_INTERRUPTED`, never handed over) or `unknown` (a hand-off was reserved).
 
 ## Read history and old-item updates
 
@@ -145,13 +212,14 @@ POST /api/sessions/SESSION_ID/intents/INTENT_ID/deny
 
 Chat messages never answer questions or approve tools. Hiveryn MCP tools and
 phone notification acceptance use the existing daemon paths. Agent-message
-outbox notifications join the same durable chat queue under a distinct origin;
-the outbox reservation names that receipt before admission. Completed native
-turn evidence acknowledges delivery, not task review.
+outbox notifications to a chat session enter the chat owner's internal queue
+under a distinct origin (the outbox reservation names that receipt before
+admission); they are the only entries besides the kickoff that wait there.
+Completed native turn evidence acknowledges delivery, not task review.
 
 Native permission UI is deferred. Policies remain configured: Claude stdio
 control requests, Codex server approval requests and OpenCode permission waits
-surface as blocked without being answered. Unsupported profile flags are errors,
+surface as blocked (holding the chat) without being answered. Unsupported profile flags are errors,
 not silently discarded. Codex chat forwards app-server configuration/feature
 flags; TUI-only raw flags are rejected. OpenCode accepts its agent selector;
 other TUI-only raw args are rejected. Model, additive instructions, writable
@@ -182,7 +250,8 @@ It builds into a temporary directory and uses a deterministic provider fixture,
 private state/workspace/ports and a loopback notification sink. It does not read
 authentication or target the live daemon. It exercises create/list/read/send,
 concurrent admission, replay/conflict, pagination, question/answer, restart and
-discard. Fixture success is not native acceptance. See
+discard, including a single synchronous acceptance among concurrent sends and
+the others refused as busy. Fixture success is not native acceptance. See
 [the native acceptance record](conversation-api-verification.md) for installed
 provider evidence and limitations. No UI build, live restart, package release or
 deployment is part of this delivery.
@@ -194,10 +263,10 @@ returns `{submissions, next_sequence, has_more}`. Follow `next_sequence` while
 `has_more` is true. Sequence is stable admission order (gaps are normal). Limits
 are 1–200; omitted/zero uses 100. Negative cursors and limits over 200 are rejected.
 This is a live receipt list, not a revision snapshot: restart at zero to refresh
-old statuses, or poll known receipt IDs. New clients discover the same queue
-without browser storage. Kickoff text is redacted and queued entries include the
-blocking/uncertain head's reason. Discovering a receipt never sends or replays it.
-Queued admission is not evidence of native execution or completion.
+old statuses, or poll known receipt IDs. New clients discover other clients'
+sends (including unknown ones to reconcile) without browser storage. Kickoff text
+is redacted and internal queued entries include the holding head's reason.
+Discovering a receipt never sends or replays it.
 
 `GET /api/archived-chats?architect_key=PROJECT&after_sequence=0&limit=100`
 returns `{chats, next_sequence, has_more}` in archive insertion order with the
@@ -209,7 +278,7 @@ termination). It contains no prompt, instructions, launch environment or native
 credentials. Use its ID with the existing history and receipt endpoints.
 Archives are read-only, cannot launch or admit new input, and do not participate
 in ordinary active-session discovery or ownership. Exact prior request-ID replay
-still returns its receipt; it does not dispatch again.
+still returns its recorded outcome; it does not dispatch again.
 
 Archive descriptors, unfinished receipt disposition and final item revisions
 are committed together before active records are deleted. Unfinished tool/permission
@@ -271,28 +340,40 @@ workflows) is hidden; developer instructions, hidden reasoning and hook
 plumbing are never read. An unreadable record is an error, never an empty
 page.
 
-Submissions use the same request-id replay/conflict rules and receipts, with
-these terminal meanings:
+Sends are synchronous with the same codes, replay/conflict rules and receipts
+as above. Per route:
 
-- `queued` — waiting; `error` says why (agent busy, no Claude waiter armed yet,
-  previous input not yet in the record, session not running).
-- `started` — reserved durably (provider reference, hand-off time, receiving
-  terminal) before the hand-off; `error` says whether it is queued natively or
-  running in the native conversation.
-- `completed` — explicit native completion of the turn containing the input.
-- `failed` — native turn interrupted/failed, or the session ended before the
-  hand-off.
-- `uncertain` — never resent automatically: not found in a record that moved
-  past the hand-off after the agent went idle; the provider process was
-  restarted during the turn (the resumed process never completes it);
-  OpenCode merged later laptop input into the turn so its final reply belongs
-  to that later input; or the session ended before completion was observed.
+- **Claude** — refused `SESSION_BUSY` unless the agent is idle, `SEND_UNAVAILABLE`
+  without an armed waiter. The daemon holds laptop keystrokes, re-checks idle
+  after 300 ms, hands the input to the waiter and then waits for it in Claude's
+  transcript: found → `running` (200); not found within the bound →
+  `DELIVERY_UNKNOWN`. A waiter that leaves before taking it is `SEND_UNAVAILABLE`
+  (nothing was sent).
+- **Codex** — `thread/queue/add` answered → `accepted` (200), also while the
+  agent is busy; it runs as its own native turn once idle. An error answer, or a
+  failure before the request was sent, is `DELIVERY_REJECTED`; a lost response or
+  timeout is `DELIVERY_UNKNOWN` (the queue and rollout are checked afterwards).
+- **OpenCode** — the TUI server's own status must say idle (`SESSION_BUSY`
+  otherwise; re-checked under the hold); `prompt_async` 2xx → `accepted` (200).
+  A 4xx or a failure before the POST is `DELIVERY_REJECTED`; a transport
+  failure or 5xx is `DELIVERY_UNKNOWN` (the database is checked afterwards).
 
-Unlike the chat queue, an `uncertain` terminal input does not hold later
-input (the laptop is not held either). One hand-off per session is in flight
-at a time, shared with outbox notifications. A daemon restart restores the
-TUI sessions; open receipts are reconciled from the record, and Claude/OpenCode
-gates come from the resumed waiter and the server's own status.
+For Claude and OpenCode, earlier input to the session (an API send or an outbox
+notification) that has not yet reached the native record makes a send
+`SESSION_BUSY`. One native hand-off per session is in progress at a time, shared
+with the outbox dispatcher; a send that finds it taken is `SESSION_BUSY`, and the
+outbox waits for a send. Notifications to the session also wait while its API
+input is unsettled.
+
+After acceptance, receipts follow native evidence: `running` once the input is
+in the record, then `completed` (explicit native completion of the turn holding
+it) or `failed` (interrupted/failed turn). `uncertain`, never resent: not found
+in a record that moved past the hand-off after the agent went idle; the provider
+process was restarted during the turn; OpenCode merged later laptop input into
+the turn so its final reply belongs to that later input; or the session ended
+before completion (or acceptance) was observed. An `uncertain` terminal input
+does not hold later input. A daemon restart restores the TUI sessions; open
+receipts are reconciled from the record.
 
 Questions, approvals and notifications are unchanged: answer through
 `/controls` operations; chat text never answers or approves. Worker

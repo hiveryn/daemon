@@ -11,14 +11,24 @@ import (
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
-const submissionColumns = "seq,id,session_id,request_id,origin,text,status,native_turn_id,error,created_at,updated_at"
+const submissionColumns = "seq,id,session_id,request_id,origin,text,status,native_turn_id,error_code,error,accepted_at,acceptance,created_at,updated_at"
 
-func scanSubmission(row interface{ Scan(...any) error }) (domain.Submission, error) {
+// submissionFinal are statuses no later evidence changes.
+const submissionFinal = "('completed','failed','rejected')"
+
+func scanSubmission(row interface{ Scan(...any) error }, extra ...any) (domain.Submission, error) {
 	var s domain.Submission
-	var created, updated string
-	err := row.Scan(&s.Sequence, &s.ID, &s.SessionID, &s.RequestID, &s.Origin, &s.Text, &s.Status, &s.NativeTurnID, &s.Error, &created, &updated)
+	var created, updated, accepted string
+	err := row.Scan(append([]any{&s.Sequence, &s.ID, &s.SessionID, &s.RequestID, &s.Origin, &s.Text, &s.Status, &s.NativeTurnID, &s.ErrorCode, &s.Error, &accepted, &s.Acceptance, &created, &updated}, extra...)...)
 	if err != nil {
 		return s, err
+	}
+	if accepted != "" {
+		at, err := time.Parse(time.RFC3339Nano, accepted)
+		if err != nil {
+			return s, err
+		}
+		s.AcceptedAt = &at
 	}
 	s.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
 	if err != nil {
@@ -27,43 +37,57 @@ func scanSubmission(row interface{ Scan(...any) error }) (domain.Submission, err
 	s.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated)
 	return s, err
 }
-func (s *SessionStore) EnqueueSubmission(ctx context.Context, sid string, req domain.SubmissionRequest, origin string) (domain.Submission, error) {
+
+func formatOptionalTime(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
+// InsertSubmission records a request identity, or returns the existing record
+// of the same request (created=false). Reuse with different text or origin is
+// a conflict. status is the initial state: delivering (a user send about to be
+// attempted), rejected (refused before any attempt, with code and reason) or
+// queued (an internal chat entry).
+func (s *SessionStore) InsertSubmission(ctx context.Context, sid string, req domain.SubmissionRequest, origin, status, code, reason string) (domain.Submission, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return domain.Submission{}, err
+		return domain.Submission{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	prior, err := scanSubmission(tx.QueryRowContext(ctx, "SELECT "+submissionColumns+" FROM conversation_submissions WHERE session_id=? AND request_id=?", sid, req.RequestID))
 	if err == nil {
 		if prior.Text != req.Text || prior.Origin != origin {
-			return domain.Submission{}, &domain.ConflictError{Resource: "submission", Field: "request_id", Message: "request_id was already used with different text or origin"}
+			return domain.Submission{}, false, &domain.ConflictError{Resource: "submission", Field: "request_id", Message: "request_id was already used with different text or origin"}
 		}
-		return prior, nil
+		return prior, false, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return domain.Submission{}, err
+		return domain.Submission{}, false, err
 	}
 	var archived int
 	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM chat_archives WHERE session_id=?", sid).Scan(&archived); err != nil {
-		return domain.Submission{}, err
+		return domain.Submission{}, false, err
 	}
 	if archived != 0 {
-		return domain.Submission{}, &domain.ConflictError{Resource: "session", Message: "chat is archived"}
+		return domain.Submission{}, false, &domain.DeliveryError{Code: domain.DeliverySessionArchived, Message: "chat is archived"}
 	}
 	now := time.Now().UTC()
 	id := domain.SubmissionIdentity(sid, req.RequestID)
-	result, err := tx.ExecContext(ctx, `INSERT INTO conversation_submissions(id,session_id,request_id,origin,text,status,created_at,updated_at) VALUES(?,?,?,?,?,'queued',?,?)`, id, sid, req.RequestID, origin, req.Text, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	result, err := tx.ExecContext(ctx, `INSERT INTO conversation_submissions(id,session_id,request_id,origin,text,status,error_code,error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		id, sid, req.RequestID, origin, req.Text, status, code, reason, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
-		return domain.Submission{}, fmt.Errorf("enqueue conversation: %w", err)
+		return domain.Submission{}, false, fmt.Errorf("record conversation submission: %w", err)
 	}
 	seq, err := result.LastInsertId()
 	if err != nil {
-		return domain.Submission{}, err
+		return domain.Submission{}, false, err
 	}
 	if err = tx.Commit(); err != nil {
-		return domain.Submission{}, err
+		return domain.Submission{}, false, err
 	}
-	return domain.Submission{ID: id, SessionID: sid, RequestID: req.RequestID, Sequence: seq, Origin: origin, Text: req.Text, Status: "queued", CreatedAt: now, UpdatedAt: now}, nil
+	return domain.Submission{ID: id, SessionID: sid, RequestID: req.RequestID, Sequence: seq, Origin: origin, Text: req.Text, Status: status, ErrorCode: code, Error: reason, CreatedAt: now, UpdatedAt: now}, true, nil
 }
 func (s *SessionStore) GetSubmission(ctx context.Context, sid, id string) (domain.Submission, error) {
 	result, err := scanSubmission(s.db.QueryRowContext(ctx, "SELECT "+submissionColumns+" FROM conversation_submissions WHERE session_id=? AND id=?", sid, id))
@@ -72,26 +96,32 @@ func (s *SessionStore) GetSubmission(ctx context.Context, sid, id string) (domai
 	}
 	return result, err
 }
+
+// ReserveSubmission hands the chat owner its next entry: the oldest open
+// entry, when it is an internal queued entry or a user send awaiting the
+// owner. The reservation (delivering + handed_at) is durable before the turn.
 func (s *SessionStore) ReserveSubmission(ctx context.Context, sid string) (*domain.Submission, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	// An uncertain/blocked turn holds the queue. Never skip it or blindly resend.
-	sub, err := scanSubmission(tx.QueryRowContext(ctx, "SELECT "+submissionColumns+" FROM conversation_submissions WHERE session_id=? AND status NOT IN ('completed','failed') ORDER BY seq LIMIT 1", sid))
+	// An open blocked/unknown/uncertain turn holds the chat. Never skip it or blindly resend.
+	var handed string
+	sub, err := scanSubmission(tx.QueryRowContext(ctx, "SELECT "+submissionColumns+",handed_at FROM conversation_submissions WHERE session_id=? AND status NOT IN "+submissionFinal+" ORDER BY seq LIMIT 1", sid), &handed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if sub.Status != "queued" {
+	if sub.Status != domain.SubmissionQueued && (sub.Status != domain.SubmissionDelivering || handed != "") {
 		return nil, nil
 	}
-	sub.Status = "started"
-	sub.UpdatedAt = time.Now().UTC()
-	if _, err = tx.ExecContext(ctx, "UPDATE conversation_submissions SET status='started',updated_at=? WHERE id=?", sub.UpdatedAt.Format(time.RFC3339Nano), sub.ID); err != nil {
+	now := time.Now().UTC()
+	sub.Status = domain.SubmissionDelivering
+	sub.UpdatedAt = now
+	if _, err = tx.ExecContext(ctx, "UPDATE conversation_submissions SET status='delivering',handed_at=?,updated_at=? WHERE id=?", now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), sub.ID); err != nil {
 		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -99,8 +129,46 @@ func (s *SessionStore) ReserveSubmission(ctx context.Context, sid string) (*doma
 	}
 	return &sub, nil
 }
+
+// UpdateSubmission writes the evidence-derived state. Final states are never
+// changed again, and acceptance once recorded is kept.
 func (s *SessionStore) UpdateSubmission(ctx context.Context, sub domain.Submission) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE conversation_submissions SET status=?,native_turn_id=?,error=?,updated_at=? WHERE id=? AND session_id=? AND status NOT IN ('completed','failed')`, sub.Status, sub.NativeTurnID, sub.Error, time.Now().UTC().Format(time.RFC3339Nano), sub.ID, sub.SessionID)
+	_, err := s.db.ExecContext(ctx, `UPDATE conversation_submissions SET status=?,native_turn_id=?,error_code=?,error=?,
+		accepted_at=CASE WHEN accepted_at='' THEN ? ELSE accepted_at END,
+		acceptance=CASE WHEN acceptance='' THEN ? ELSE acceptance END,updated_at=?
+		WHERE id=? AND session_id=? AND status NOT IN `+submissionFinal,
+		sub.Status, sub.NativeTurnID, sub.ErrorCode, sub.Error, formatOptionalTime(sub.AcceptedAt), sub.Acceptance, time.Now().UTC().Format(time.RFC3339Nano), sub.ID, sub.SessionID)
+	return err
+}
+
+// SettleDelivery concludes a delivery attempt that is still delivering: to
+// rejected only while no hand-off was reserved (nothing can have reached the
+// provider), otherwise to the given status. It reports whether it changed the
+// record; false means other evidence already moved it on.
+func (s *SessionStore) SettleDelivery(ctx context.Context, sid, id, status, code, reason string) (bool, error) {
+	guard := ""
+	if status == domain.SubmissionRejected {
+		guard = " AND handed_at=''"
+	}
+	result, err := s.db.ExecContext(ctx, "UPDATE conversation_submissions SET status=?,error_code=?,error=?,updated_at=? WHERE session_id=? AND id=? AND status='delivering'"+guard,
+		status, code, reason, time.Now().UTC().Format(time.RFC3339Nano), sid, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
+}
+
+// ReconcileDeliveries settles attempts a previous daemon left delivering:
+// never handed over is rejected, a reserved hand-off is unknown.
+func (s *SessionStore) ReconcileDeliveries(ctx context.Context) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := s.db.ExecContext(ctx, "UPDATE conversation_submissions SET status='rejected',error_code=?,error=?,updated_at=? WHERE status='delivering' AND handed_at=''",
+		domain.DeliveryInterrupted, "Not sent: the daemon stopped before the hand-off", now); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, "UPDATE conversation_submissions SET status='unknown',error_code=?,error=?,updated_at=? WHERE status='delivering'",
+		domain.DeliveryUnknown, "The daemon stopped during the hand-off; acceptance is reconciled from the native record and the input is never resent", now)
 	return err
 }
 func (s *SessionStore) PutConversationItem(ctx context.Context, sid string, item domain.ConversationItem) error {
@@ -190,17 +258,20 @@ func (s *SessionStore) ReadConversation(ctx context.Context, sid string, q domai
 	}
 	return page, rows.Err()
 }
+
+// SettleSubmissions ends a chat's open entries: status failed settles
+// everything open; uncertain settles accepted/running/blocked turns only.
 func (s *SessionStore) SettleSubmissions(ctx context.Context, sid, status, reason string) error {
-	predicate := "status NOT IN ('completed','failed')"
-	if status == "uncertain" {
-		predicate = "status IN ('started','blocked')"
+	predicate := "status NOT IN " + submissionFinal
+	if status == domain.SubmissionUncertain {
+		predicate = "status IN ('accepted','running','blocked')"
 	}
 	_, err := s.db.ExecContext(ctx, "UPDATE conversation_submissions SET status=?,error=?,updated_at=? WHERE session_id=? AND "+predicate, status, reason, time.Now().UTC().Format(time.RFC3339Nano), sid)
 	return err
 }
 
 func (s *SessionStore) PendingSubmission(ctx context.Context, sid string) (*domain.Submission, error) {
-	sub, err := scanSubmission(s.db.QueryRowContext(ctx, "SELECT "+submissionColumns+" FROM conversation_submissions WHERE session_id=? AND status NOT IN ('completed','failed') ORDER BY seq LIMIT 1", sid))
+	sub, err := scanSubmission(s.db.QueryRowContext(ctx, "SELECT "+submissionColumns+" FROM conversation_submissions WHERE session_id=? AND status NOT IN "+submissionFinal+" ORDER BY seq LIMIT 1", sid))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -215,8 +286,10 @@ func (s *SessionStore) FailQueuedSubmissions(ctx context.Context, sid, reason st
 	return err
 }
 
+// OpenTerminalSubmissions lists submissions whose delivery or turn is still
+// settled from native evidence, in admission order.
 func (s *SessionStore) OpenTerminalSubmissions(ctx context.Context, sid string) ([]domain.TerminalSubmission, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT "+submissionColumns+",provider_ref,handed_at,handed_terminal FROM conversation_submissions WHERE session_id=? AND status IN ('queued','started') ORDER BY seq", sid)
+	rows, err := s.db.QueryContext(ctx, "SELECT "+submissionColumns+",provider_ref,handed_at,handed_terminal FROM conversation_submissions WHERE session_id=? AND status IN ('delivering','unknown','accepted','running') ORDER BY seq", sid)
 	if err != nil {
 		return nil, err
 	}
@@ -224,14 +297,8 @@ func (s *SessionStore) OpenTerminalSubmissions(ctx context.Context, sid string) 
 	var out []domain.TerminalSubmission
 	for rows.Next() {
 		var t domain.TerminalSubmission
-		var created, updated, handed string
-		if err := rows.Scan(&t.Sequence, &t.ID, &t.SessionID, &t.RequestID, &t.Origin, &t.Text, &t.Status, &t.NativeTurnID, &t.Error, &created, &updated, &t.ProviderRef, &handed, &t.HandedTerminal); err != nil {
-			return nil, err
-		}
-		if t.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
-			return nil, err
-		}
-		if t.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated); err != nil {
+		var handed string
+		if t.Submission, err = scanSubmission(rows, &t.ProviderRef, &handed, &t.HandedTerminal); err != nil {
 			return nil, err
 		}
 		if handed != "" {
@@ -244,20 +311,17 @@ func (s *SessionStore) OpenTerminalSubmissions(ctx context.Context, sid string) 
 	return out, rows.Err()
 }
 
+// ReserveTerminalSubmission records the provider reference, hand-off time and
+// receiving terminal of a delivering submission before the hand-off; false if
+// it is no longer an unreserved delivery.
 func (s *SessionStore) ReserveTerminalSubmission(ctx context.Context, sid, id, providerRef, terminalID string, handedAt time.Time) (bool, error) {
-	result, err := s.db.ExecContext(ctx, "UPDATE conversation_submissions SET status='started',provider_ref=?,handed_at=?,handed_terminal=?,error='',updated_at=? WHERE session_id=? AND id=? AND status='queued'",
+	result, err := s.db.ExecContext(ctx, "UPDATE conversation_submissions SET provider_ref=?,handed_at=?,handed_terminal=?,updated_at=? WHERE session_id=? AND id=? AND status='delivering' AND handed_at=''",
 		providerRef, handedAt.UTC().Format(time.RFC3339Nano), terminalID, time.Now().UTC().Format(time.RFC3339Nano), sid, id)
 	if err != nil {
 		return false, err
 	}
 	n, err := result.RowsAffected()
 	return n == 1, err
-}
-
-func (s *SessionStore) ReleaseTerminalSubmission(ctx context.Context, sid, id, reason string) error {
-	_, err := s.db.ExecContext(ctx, "UPDATE conversation_submissions SET status='queued',provider_ref='',handed_at='',handed_terminal='',error=?,updated_at=? WHERE session_id=? AND id=? AND status='started'",
-		reason, time.Now().UTC().Format(time.RFC3339Nano), sid, id)
-	return err
 }
 
 func (s *SessionStore) TerminalProviderRefs(ctx context.Context, sid string) (map[string]string, error) {

@@ -25,12 +25,15 @@ func (h *sessionsHandler) submitMessage(w http.ResponseWriter, r *http.Request) 
 		writeError(w, r, 400, string(domain.ErrCodeValidation), "invalid request body: "+err.Error(), nil)
 		return
 	}
+	// Synchronous: 200 only once the provider accepted the input. A send
+	// that did not establish acceptance is a DeliveryError carrying its code
+	// and durable receipt (writeDomainError).
 	receipt, err := service.SubmitMessage(r.Context(), r.PathValue("id"), req)
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
 	}
-	writeJSON(w, r, http.StatusAccepted, receipt)
+	writeJSON(w, r, http.StatusOK, receipt)
 }
 func (h *sessionsHandler) getSubmission(w http.ResponseWriter, r *http.Request) {
 	service := h.conversationService(w, r)

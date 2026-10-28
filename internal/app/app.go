@@ -102,6 +102,11 @@ func Run(configPath, databasePath string, portOverride int) error {
 	if err := service.ReconcileQuestions(ctx); err != nil {
 		return fmt.Errorf("reconcile questions: %w", err)
 	}
+	// Before restore: conversation sends the previous daemon left mid-attempt
+	// are rejected (never handed over) or unknown (reconciled, never resent).
+	if err := service.ReconcileSubmissions(ctx); err != nil {
+		return fmt.Errorf("reconcile conversation submissions: %w", err)
+	}
 	if err := service.RestoreRunningSessions(ctx); err != nil {
 		return err
 	}

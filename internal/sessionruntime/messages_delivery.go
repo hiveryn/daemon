@@ -68,8 +68,8 @@ func (s *Service) dispatchAgentMessages(ctx context.Context) error {
 		}
 		s.persistMessageChange(ctx, before, *m)
 	}
-	// Conversation-API input into terminal sessions shares the one-hand-off-
-	// per-session rule with the outbox (terminal_conversation.go).
+	// Conversation-API input into terminal sessions that has not settled yet
+	// holds notifications to that session (terminal_conversation.go).
 	if s.dispatchTerminalSubmissions(ctx, sessions, inflight) {
 		s.kickMessagesSoon()
 	}
@@ -230,6 +230,14 @@ func (s *Service) attemptMessageDelivery(ctx context.Context, m *domain.AgentMes
 		m.Condition = fmt.Sprintf("agent %s cannot receive messages; the message is retained", target.agent)
 		return
 	}
+	// One native hand-off per session: a synchronous conversation send in
+	// progress goes first (submit.go).
+	release, free := s.tryHandoff(target.session.ID)
+	if !free {
+		m.Condition = "waiting: a conversation input is being handed to this session"
+		return
+	}
+	defer release()
 	if target.run.NativeID == "" {
 		m.Condition = "the agent's native session id is not known yet (no hook event received); retried on its next event"
 		return

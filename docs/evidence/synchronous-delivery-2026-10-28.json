@@ -1,0 +1,164 @@
+{
+  "date": "2026-10-28",
+  "ticket": "2026-10-28-0115-make-chat-message-delivery-synchronous-without-a-hiveryn-queue",
+  "setup": "scripts/continuity_lab.py isolated lab (private HIVERYN_HOME/ports, copied credentials removed afterwards); terminal-mode architect sessions launched through the daemon API as the desktop launches them; laptop input typed through the desktop terminal WebSocket; synthetic conversations only",
+  "versions": {
+    "claude": "Claude Code 2.1.312 (sonnet)",
+    "codex": "codex-cli 0.164.0 (gpt-5.6-sol)",
+    "opencode": "OpenCode 1.19.4 (deepseek/deepseek-v4-flash)"
+  },
+  "delivery_bound_seconds": 20,
+  "providers": {
+    "claude": {
+      "send_while_kickoff_runs": {
+        "http": 409,
+        "code": "SESSION_BUSY",
+        "status": "rejected",
+        "acceptance": null,
+        "seconds": 0.0
+      },
+      "idle_send_long_task": {
+        "http": 200,
+        "code": null,
+        "status": "running",
+        "acceptance": "claude_native_record",
+        "seconds": 0.64
+      },
+      "send_while_that_turn_runs": {
+        "http": 409,
+        "code": "SESSION_BUSY",
+        "status": "rejected",
+        "acceptance": null,
+        "seconds": 0.0
+      },
+      "long_task_settled_seconds_after_post": 4.7,
+      "long_task_final_status": "completed",
+      "laptop_context_recalled_by_api_turn": true,
+      "api_user_item_native_origin": "task_notification",
+      "laptop_after_api_reply": "You asked me what code word you'd given me earlier, and then to write the numbers 1 to 60, one per line, with no tools.",
+      "refused_send_after_idle": {
+        "status": "rejected",
+        "appeared_in_history": false
+      }
+    },
+    "codex": {
+      "send_while_kickoff_runs": {
+        "http": 200,
+        "code": null,
+        "status": "accepted",
+        "acceptance": "codex_thread_queue",
+        "seconds": 0.09
+      },
+      "idle_send_long_task": {
+        "http": 200,
+        "code": null,
+        "status": "accepted",
+        "acceptance": "codex_thread_queue",
+        "seconds": 0.08
+      },
+      "send_while_that_turn_runs": {
+        "http": 200,
+        "code": null,
+        "status": "accepted",
+        "acceptance": "codex_thread_queue",
+        "seconds": 0.06
+      },
+      "long_task_settled_seconds_after_post": 7.1,
+      "long_task_final_status": "completed",
+      "laptop_context_recalled_by_api_turn": true,
+      "api_user_item_native_origin": "queue",
+      "laptop_after_api_reply": "You asked me to reply with exactly \u201cSECOND.\u201d"
+    },
+    "opencode": {
+      "send_while_kickoff_runs": {
+        "http": 409,
+        "code": "SESSION_BUSY",
+        "status": "rejected",
+        "acceptance": null,
+        "seconds": 0.06
+      },
+      "idle_send_long_task": {
+        "http": 200,
+        "code": null,
+        "status": "accepted",
+        "acceptance": "opencode_prompt_async",
+        "seconds": 0.33
+      },
+      "send_while_that_turn_runs": {
+        "http": 409,
+        "code": "SESSION_BUSY",
+        "status": "rejected",
+        "acceptance": null,
+        "seconds": 0.01
+      },
+      "long_task_settled_seconds_after_post": 4.4,
+      "long_task_final_status": "completed",
+      "laptop_context_recalled_by_api_turn": true,
+      "api_user_item_native_origin": "prompt",
+      "laptop_after_api_reply": "You asked me to recall the code word and write the numbers 1 to 60, one per line.",
+      "refused_send_after_idle": {
+        "status": "rejected",
+        "appeared_in_history": false
+      }
+    }
+  },
+  "after_daemon_restart": {
+    "claude": {
+      "fresh": {
+        "http": 200,
+        "status": "running",
+        "acceptance": "claude_native_record",
+        "seconds": 0.83
+      },
+      "refused_second_in_history": 0,
+      "fresh_reply_seen": true,
+      "replays": "recorded outcomes replayed (output partially truncated in capture)"
+    },
+    "codex": {
+      "replay_long_task": {
+        "http": 200,
+        "status": "completed",
+        "seconds": 0.0
+      },
+      "replay_second": {
+        "http": 200,
+        "status": "completed",
+        "seconds": 0.0
+      },
+      "fresh": {
+        "http": 200,
+        "status": "accepted",
+        "acceptance": "codex_thread_queue",
+        "seconds": 0.14
+      },
+      "second_in_history": 1,
+      "fresh_reply_seen": "after the isolated TUI's own update prompt was dismissed"
+    },
+    "opencode": {
+      "replay_long_task": {
+        "http": 200,
+        "status": "completed",
+        "seconds": 0.0
+      },
+      "replay_refused": {
+        "http": 409,
+        "code": "SESSION_BUSY",
+        "status": "rejected",
+        "seconds": 0.0
+      },
+      "fresh": {
+        "http": 200,
+        "status": "accepted",
+        "acceptance": "opencode_prompt_async",
+        "seconds": 0.35
+      },
+      "refused_second_in_history": 0,
+      "fresh_reply_seen": true
+    }
+  },
+  "limits": [
+    "Acceptance is not model completion; none of this shows the agent did what was asked.",
+    "Ambiguous hand-offs, lost responses, concurrent duplicates and teardown races are covered by deterministic Go tests and the fixture HTTP smoke; no real provider was forced into an ambiguous hand-off.",
+    "Claude provenance remains task_notification (asyncRewake)."
+  ]
+}

@@ -29,13 +29,14 @@ import (
 //   - OpenCode: prompt_async on the TUI's embedded server with a daemon-chosen
 //     message id, only while idle.
 //
-// None of these touch the TUI's composer, so a laptop draft is preserved. The
-// dispatcher (messages_delivery.go) runs these with the outbox under one
-// in-flight-per-session rule. A dispatch reservation (status started, provider
-// reference, hand-off time) is durable before any hand-off. Completion is only
-// explicit native turn-end evidence for the turn containing that input; an
-// input that cannot be found after the record passed the hand-off and the agent
-// went idle becomes uncertain and is never sent again automatically.
+// None of these touch the TUI's composer, so a laptop draft is preserved. A
+// send hands over synchronously (submit.go) under the session's hand-off slot,
+// shared with the outbox. The reservation (provider reference, hand-off time,
+// receiving terminal) is durable before any hand-off. The dispatcher only
+// reconciles afterwards: completion is explicit native turn-end evidence for
+// the turn containing that input; an input that cannot be found after the
+// record passed the hand-off and the agent went idle becomes uncertain and is
+// never sent again automatically.
 
 // terminalHistoryMinInterval throttles native record reads per session
 // (a variable so tests can read on every pass).
@@ -80,7 +81,7 @@ type terminalRoute struct {
 func terminalRouteFor(kind agentruntime.AgentKind) (terminalRoute, bool) {
 	switch kind {
 	case agentruntime.AgentClaude:
-		return terminalRoute{kind, "claude_async_rewake", "Sent through Claude's asyncRewake hook only while the agent is idle at its prompt; Claude records it as a task notification (native provenance), not as typed terminal input. Waits while the agent is busy."}, true
+		return terminalRoute{kind, "claude_async_rewake", "Sent through Claude's asyncRewake hook only while the agent is idle at its prompt; Claude records it as a task notification (native provenance), not as typed terminal input. Refused while the agent is busy."}, true
 	case agentruntime.AgentCodex:
 		return terminalRoute{kind, "codex_thread_queue", "Queued in Codex's durable thread queue and run as its own native user turn once the thread is idle. After an Esc-interrupted turn Codex holds the queue until the next laptop turn completes."}, true
 	case agentruntime.AgentOpenCode:
@@ -375,28 +376,11 @@ func (s *Service) classifyTerminalHistory(session domain.Session, history agentr
 	return out
 }
 
-// submitTerminal admits a conversation-API input for a terminal session.
-func (s *Service) submitTerminal(ctx context.Context, session domain.Session, req domain.SubmissionRequest) (domain.Submission, error) {
-	caps := s.terminalCapabilities(session)
-	if !caps.Send {
-		return domain.Submission{}, &domain.ConflictError{Resource: "session", Message: "send is unavailable: " + caps.Limitation}
-	}
-	repo, err := s.conversationRepo()
-	if err != nil {
-		return domain.Submission{}, err
-	}
-	sub, err := repo.EnqueueSubmission(ctx, session.ID, req, "user")
-	if err != nil {
-		return sub, err
-	}
-	s.kickMessages()
-	return sub, nil
-}
-
-// dispatchTerminalSubmissions confirms started submissions and hands over the
-// next queued one per running local terminal session. inflight is shared with
-// the outbox: one native hand-off per session at a time. It reports whether
-// any terminal submission is still open (the caller re-checks soon).
+// dispatchTerminalSubmissions settles accepted and unknown input from native
+// evidence (delivery itself is synchronous: submit.go). inflight is shared
+// with the outbox: a notification waits while this session's input is still
+// open. It reports whether any terminal submission is still open (the caller
+// re-checks soon).
 func (s *Service) dispatchTerminalSubmissions(ctx context.Context, sessions []domain.Session, inflight map[string]bool) bool {
 	trepo, err := s.terminalConversationRepo()
 	if err != nil {
@@ -427,7 +411,6 @@ func (s *Service) progressTerminalSession(ctx context.Context, session domain.Se
 	if err != nil {
 		return
 	}
-	running := session.CurrentRun != nil && session.CurrentRun.Status == domain.SessionRunStatusRunning
 	var history agentruntime.History
 	var historyErr error
 	if session.CurrentRun != nil && session.CurrentRun.NativeID != "" {
@@ -435,63 +418,57 @@ func (s *Service) progressTerminalSession(ctx context.Context, session domain.Se
 		history, historyErr = s.syncTerminalHistory(ctx, session, false)
 	}
 	for _, sub := range subs {
-		if sub.Status != "started" {
+		if sub.Status == domain.SubmissionDelivering {
+			// Its synchronous attempt owns it (and the hand-off slot).
+			inflight[session.ID] = true
 			continue
 		}
 		before := sub.Submission
 		s.confirmTerminalSubmission(ctx, session, &sub, history, historyErr)
-		if sub.Status == "started" {
+		if terminalSubmissionOpen(sub.Status) {
 			inflight[session.ID] = true
 		}
-		if sub.Submission != before {
+		if !sameSubmission(sub.Submission, before) {
 			if err := repo.UpdateSubmission(ctx, sub.Submission); err != nil {
 				s.logger.Error("update terminal submission", "submission_id", sub.ID, "error", err)
 			}
 		}
 	}
-	for _, sub := range subs {
-		if sub.Status != "queued" {
-			continue
-		}
-		before := sub.Error
-		switch {
-		case !running:
-			sub.Error = "Waiting: the session is not running"
-		case inflight[session.ID]:
-			sub.Error = "Waiting for the previous input to this session to appear in its native record"
-		default:
-			s.handOffTerminalSubmission(ctx, session, &sub)
-			if sub.Status == "started" {
-				inflight[session.ID] = true
-			}
-		}
-		if sub.Status != "queued" || sub.Error != before {
-			if err := repo.UpdateSubmission(ctx, sub.Submission); err != nil {
-				s.logger.Error("record terminal submission wait", "submission_id", sub.ID, "error", err)
-			}
-		}
-		// Only the oldest queued input is considered: admission order is kept.
-		break
-	}
 }
 
-// confirmTerminalSubmission settles a started submission from native evidence.
+func terminalSubmissionOpen(status string) bool {
+	switch status {
+	case domain.SubmissionDelivering, domain.SubmissionUnknown, domain.SubmissionAccepted, domain.SubmissionRunning:
+		return true
+	}
+	return false
+}
+
+func sameSubmission(a, b domain.Submission) bool {
+	return a.Status == b.Status && a.Error == b.Error && a.ErrorCode == b.ErrorCode && a.NativeTurnID == b.NativeTurnID &&
+		(a.AcceptedAt == nil) == (b.AcceptedAt == nil)
+}
+
+// acceptTerminal records established provider acceptance.
+func (s *Service) acceptTerminal(sub *domain.TerminalSubmission, status, evidence, detail string) {
+	if sub.AcceptedAt == nil {
+		now := s.terminalNow().UTC()
+		sub.AcceptedAt, sub.Acceptance = &now, evidence
+	}
+	sub.Status, sub.ErrorCode, sub.Error = status, "", detail
+}
+
+// confirmTerminalSubmission settles accepted/unknown/running input from
+// native evidence. Unknown input found in the record (or Codex's queue) was
+// accepted after all; input never found is settled uncertain and never resent.
 func (s *Service) confirmTerminalSubmission(ctx context.Context, session domain.Session, sub *domain.TerminalSubmission, history agentruntime.History, historyErr error) {
 	turn := ""
 	if historyErr == nil {
-		subs := map[string]domain.Submission{sub.ID: sub.Submission}
-		if sub.ProviderRef != "" {
-			subs["ref:"+sub.ProviderRef] = sub.Submission
-		}
-		for _, item := range history.Items {
-			if item.Role == "user" && classifyTerminalInput(session, item, subs).submission == sub.ID {
-				turn = item.TurnID
-				break
-			}
-		}
+		turn = terminalInputTurn(session, history, sub)
 	}
 	if turn != "" {
 		sub.NativeTurnID = turn
+		s.acceptTerminal(sub, domain.SubmissionRunning, "native_record", "Running in the native conversation")
 		laterEnded := false
 		seen := false
 		for _, item := range history.Items {
@@ -500,11 +477,11 @@ func (s *Service) confirmTerminalSubmission(ctx context.Context, session domain.
 				if item.TurnEnd {
 					switch item.Status {
 					case "completed":
-						sub.Status, sub.Error = "completed", ""
+						sub.Status, sub.Error = domain.SubmissionCompleted, ""
 					case "interrupted":
-						sub.Status, sub.Error = "failed", "The native turn was interrupted"
+						sub.Status, sub.Error = domain.SubmissionFailed, "The native turn was interrupted"
 					default:
-						sub.Status, sub.Error = "failed", "The native turn failed: "+item.Text
+						sub.Status, sub.Error = domain.SubmissionFailed, "The native turn failed: "+item.Text
 					}
 					return
 				}
@@ -515,47 +492,61 @@ func (s *Service) confirmTerminalSubmission(ctx context.Context, session domain.
 			}
 		}
 		if laterEnded {
-			sub.Status = "uncertain"
+			sub.Status = domain.SubmissionUncertain
 			sub.Error = "The input appeared in the native conversation, but its turn has no completion record while a later turn completed (the provider merged later input into it); visible replies are in history"
 			return
 		}
 		// A provider process that died mid-turn never completes it; the resumed
 		// process starts from the next input.
 		if s.processReplaced(session.ID, sub) {
-			sub.Status = "uncertain"
+			sub.Status = domain.SubmissionUncertain
 			sub.Error = "The provider process was restarted during this turn and its completion was never recorded; visible output is in history. Not resent"
-			return
 		}
-		sub.Error = "Running in the native conversation"
 		return
 	}
 	now := s.terminalNow()
 	idle, idleAt := s.messageIdle(session.ID)
 	running := session.CurrentRun != nil && session.CurrentRun.Status == domain.SessionRunStatusRunning
+	// What could not be found: the input (acceptance unknown) or its turn.
+	what := "The input"
+	if sub.AcceptedAt == nil {
+		what = "The input, whose acceptance was never established,"
+	}
 	switch {
 	case historyErr != nil:
-		sub.Error = "Handed over; the native record is not readable yet: " + historyErr.Error()
 		if now.Sub(sub.HandedAt) > terminalHandedCap {
-			sub.Status = "uncertain"
+			sub.Status = domain.SubmissionUncertain
 			sub.Error = "The native record could not be read for " + terminalHandedCap.String() + " after the hand-off: " + historyErr.Error() + "; not resent"
 		}
 	case s.terminalInputQueued(ctx, session, sub):
-		sub.Error = "Queued natively; it runs as the agent's next turn once idle"
+		s.acceptTerminal(sub, domain.SubmissionAccepted, "codex_thread_queue", "Queued natively; it runs as the agent's next turn once idle")
 	case !running:
-		sub.Status = "uncertain"
-		sub.Error = "The session stopped before the input appeared in its native record; not resent"
+		sub.Status = domain.SubmissionUncertain
+		sub.Error = what + " did not appear in the native record before the session stopped; not resent"
 	case s.processReplaced(session.ID, sub) && history.RecordedThrough.After(sub.HandedAt) && idle && idleAt.After(sub.HandedAt.Add(terminalLostAfter)):
-		sub.Status = "uncertain"
+		sub.Status = domain.SubmissionUncertain
 		sub.Error = "The provider process was restarted after the hand-off and the input is not in the native record; not resent"
 	case history.RecordedThrough.After(sub.HandedAt) && idle && idleAt.After(sub.HandedAt.Add(terminalLostAfter)):
-		sub.Status = "uncertain"
-		sub.Error = "Not found in the native record after the agent went idle again; not resent"
+		sub.Status = domain.SubmissionUncertain
+		sub.Error = what + " was not found in the native record after the agent went idle again; not resent"
 	case now.Sub(sub.HandedAt) > terminalHandedCap:
-		sub.Status = "uncertain"
-		sub.Error = "Not found in the native record " + terminalHandedCap.String() + " after the hand-off; not resent"
-	default:
-		sub.Error = "Handed over; awaiting the native record"
+		sub.Status = domain.SubmissionUncertain
+		sub.Error = what + " was not found in the native record " + terminalHandedCap.String() + " after the hand-off; not resent"
 	}
+}
+
+// terminalInputTurn returns the native turn holding the submission's input.
+func terminalInputTurn(session domain.Session, history agentruntime.History, sub *domain.TerminalSubmission) string {
+	subs := map[string]domain.Submission{sub.ID: sub.Submission}
+	if sub.ProviderRef != "" {
+		subs["ref:"+sub.ProviderRef] = sub.Submission
+	}
+	for _, item := range history.Items {
+		if item.Role == "user" && classifyTerminalInput(session, item, subs).submission == sub.ID {
+			return item.TurnID
+		}
+	}
+	return ""
 }
 
 // processReplaced reports that the provider process which received the input
@@ -587,58 +578,90 @@ func (s *Service) terminalInputQueued(ctx context.Context, session domain.Sessio
 	return err == nil && receipt.Queued
 }
 
-// handOffTerminalSubmission reserves and hands over one queued submission.
-func (s *Service) handOffTerminalSubmission(ctx context.Context, session domain.Session, sub *domain.TerminalSubmission) {
-	run := *session.CurrentRun
-	if run.ProfileSnapshot == nil || run.NativeID == "" {
-		sub.Error = "Waiting: the native session id is not known yet"
-		return
+// terminalRecordPoll is how often the native record is read while a hand-off
+// waits for its acceptance evidence there.
+var terminalRecordPoll = 250 * time.Millisecond
+
+// deliverTerminalInput hands one input to a terminal session's provider route
+// while holding the session's hand-off slot, and records the outcome: accepted
+// (with its evidence), rejected (nothing reached the provider) or unknown.
+func (s *Service) deliverTerminalInput(ctx context.Context, session domain.Session, submission domain.Submission) {
+	sub := domain.TerminalSubmission{Submission: submission}
+	s.handOffTerminalInput(ctx, session, &sub)
+	if sub.Status == domain.SubmissionDelivering {
+		sub.Status, sub.ErrorCode, sub.Error = domain.SubmissionUnknown, domain.DeliveryUnknown, "The hand-off ended without an outcome; acceptance is reconciled from the native record and the input is never resent"
 	}
+	s.persistSubmission(sub.Submission)
+	s.logger.Info("conversation input delivery", "session_id", session.ID, "submission_id", sub.ID, "status", sub.Status, "code", sub.ErrorCode, "acceptance", sub.Acceptance)
+}
+
+func (s *Service) handOffTerminalInput(ctx context.Context, session domain.Session, sub *domain.TerminalSubmission) {
+	reject := func(code, reason string) {
+		sub.Status, sub.ErrorCode, sub.Error = domain.SubmissionRejected, code, "Not sent: "+reason
+	}
+	unknown := func(reason string) {
+		sub.Status, sub.ErrorCode, sub.Error = domain.SubmissionUnknown, domain.DeliveryUnknown, reason+"; acceptance is reconciled from the native record and the input is never resent"
+	}
+	run := *session.CurrentRun
 	kind, err := parseAgentKind(run.ProfileSnapshot.Agent)
 	if err != nil {
-		sub.Error = "Waiting: " + err.Error()
+		reject(domain.DeliverySendUnsupported, err.Error())
 		return
 	}
 	trepo, err := s.terminalConversationRepo()
 	if err != nil {
-		sub.Error = err.Error()
+		reject(domain.DeliveryRejected, err.Error())
 		return
 	}
 	deliverer, _, ok := s.messageDeliverer(kind)
-	if !ok {
-		sub.Error = fmt.Sprintf("Waiting: %s cannot receive input", kind)
+	if !ok || s.messages == nil {
+		reject(domain.DeliverySendUnsupported, fmt.Sprintf("%s cannot receive input", kind))
 		return
 	}
-	idle, _ := s.messageIdle(session.ID)
+	// Claude and OpenCode take input only at idle; earlier input that has not
+	// reached the record yet still owns that idle slot. Codex queues natively.
+	if kind != agentruntime.AgentCodex {
+		if pending := s.terminalInputPending(ctx, session.ID, sub.ID); pending != "" {
+			reject(domain.DeliverySessionBusy, pending)
+			return
+		}
+	}
 	reserve := func(ref string) bool {
+		if err := ctx.Err(); err != nil {
+			reject(domain.DeliveryRejected, "the delivery bound expired before the hand-off")
+			return false
+		}
 		now := s.terminalNow().UTC()
 		terminalID := s.mainTerminalID(session.ID)
 		reserved, err := trepo.ReserveTerminalSubmission(ctx, session.ID, sub.ID, ref, terminalID, now)
-		if err != nil {
-			sub.Error = "Waiting: could not record the dispatch reservation: " + err.Error()
+		if err != nil || !reserved {
+			reject(domain.DeliveryRejected, fmt.Sprintf("the hand-off reservation could not be recorded (reserved=%v, error=%v)", reserved, err))
 			return false
 		}
-		if !reserved {
-			return false
-		}
-		sub.Status, sub.ProviderRef, sub.HandedAt, sub.HandedTerminal, sub.Error = "started", ref, now, terminalID, ""
+		sub.ProviderRef, sub.HandedAt, sub.HandedTerminal = ref, now, terminalID
 		return true
 	}
+	req := agentruntime.DeliverRequest{Env: cloneStringMap(run.ProfileSnapshot.Env), NativeSessionID: run.NativeID, MessageID: sub.ID, Text: sub.Text}
+	idle, _ := s.messageIdle(session.ID)
 	switch kind {
 	case agentruntime.AgentClaude:
-		if _, armed := s.messages.mailbox.Armed(session.ID); !armed {
-			sub.Error = "Waiting: Claude has no armed input waiter yet; its next turn end arms one"
+		if !idle {
+			reject(domain.DeliverySessionBusy, "the agent is working; Claude takes input only at its idle prompt")
 			return
 		}
-		if !idle {
-			sub.Error = "Waiting: the agent is busy; sent at its next idle point"
+		if _, armed := s.messages.mailbox.Armed(session.ID); !armed {
+			reject(domain.DeliverySendUnavailable, "Claude has no armed input waiter (one arms when the agent stops at its prompt)")
 			return
 		}
 		release := s.holdTerminalInput(session)
-		time.Sleep(terminalHoldSettle)
+		if !sleepContext(ctx, terminalHoldSettle) {
+			release()
+			reject(domain.DeliveryRejected, "the delivery bound expired before the hand-off")
+			return
+		}
 		if idle, _ = s.messageIdle(session.ID); !idle {
 			release()
-			sub.Error = "Waiting: laptop input started a turn; sent at the next idle point"
+			reject(domain.DeliverySessionBusy, "laptop input started a turn at the same moment")
 			return
 		}
 		if !reserve(sub.ID) {
@@ -648,107 +671,167 @@ func (s *Service) handOffTerminalSubmission(ctx context.Context, session domain.
 		text := claudeInputHeader + sub.ID + " — a message from the user sent from the Hiveryn conversation client (not typed in this terminal). Reply to it as you would to the user here:\n\n" + sub.Text
 		if _, delivered := s.messages.mailbox.Deliver(session.ID, ingest.MailboxMessage{ID: sub.ID, Text: text}); !delivered {
 			release()
-			// The waiter left before taking it: nothing reached the provider.
-			if err := trepo.ReleaseTerminalSubmission(ctx, session.ID, sub.ID, "Waiting: the waiter left before the hand-off"); err != nil {
-				s.logger.Error("release terminal submission", "submission_id", sub.ID, "error", err)
-				return
-			}
-			sub.Status, sub.Error = "queued", "Waiting: the waiter left before the hand-off"
+			reject(domain.DeliverySendUnavailable, "Claude's input waiter left before the hand-off")
 			return
 		}
 		s.setMessageIdle(session.ID, false)
-		sub.Error = "Handed to Claude's asyncRewake waiter; awaiting the native record"
+		// The waiter taking it is not Claude consuming it: wait for the input
+		// in Claude's own record.
+		if turn := s.awaitTerminalRecord(ctx, session, sub); turn != "" {
+			sub.NativeTurnID = turn
+			s.acceptTerminal(sub, domain.SubmissionRunning, "claude_native_record", "Running in the native conversation")
+			return
+		}
+		unknown("Handed to Claude's input waiter, but it did not appear in Claude's record within " + submitDeliveryBound.String())
 	case agentruntime.AgentCodex:
 		if !reserve(sub.ID) {
 			return
 		}
-		deliverCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		_, err := deliverer.DeliverMessage(deliverCtx, agentruntime.DeliverRequest{Env: cloneStringMap(run.ProfileSnapshot.Env), NativeSessionID: run.NativeID, MessageID: sub.ID, Text: sub.Text})
-		cancel()
-		if err != nil {
-			sub.Error = "Hand-off acceptance unknown: " + err.Error() + "; the native queue and record are checked before anything else happens"
+		if _, err := deliverer.DeliverMessage(ctx, req); err != nil {
+			if agentruntime.IsNotDelivered(err) {
+				reject(domain.DeliveryRejected, "Codex did not take the input: "+err.Error())
+				return
+			}
+			unknown("Codex queue hand-off acceptance unknown: " + err.Error())
 			return
 		}
-		sub.Error = "Queued natively; it runs as the agent's next turn once idle"
+		s.acceptTerminal(sub, domain.SubmissionAccepted, "codex_thread_queue", "Queued in Codex's durable thread queue; it runs as the agent's next turn once idle")
 	case agentruntime.AgentOpenCode:
 		endpoint, ok := s.messageEndpoint(session.ID)
 		if !ok {
-			sub.Error = "Waiting: the TUI's session server is unknown to this daemon process"
+			reject(domain.DeliverySendUnavailable, "the TUI's session server is unknown to this daemon process")
 			return
 		}
-		req := agentruntime.DeliverRequest{Env: cloneStringMap(run.ProfileSnapshot.Env), NativeSessionID: run.NativeID, MessageID: sub.ID, Text: sub.Text, ServerPort: endpoint.port, ServerPassword: endpoint.password}
+		req.ServerPort, req.ServerPassword = endpoint.port, endpoint.password
 		// The TUI's own server is authoritative for idle; the hook-fed gate can
 		// lag (or be unset after a daemon restart).
-		if prober, ok := deliverer.(agentruntime.IdleProber); ok {
-			probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			idle, err = prober.ProbeIdle(probeCtx, req)
-			cancel()
-			if err != nil {
-				sub.Error = "Waiting: the session server's run state is unreadable: " + err.Error()
-				return
+		probe := func() (bool, error) {
+			prober, ok := deliverer.(agentruntime.IdleProber)
+			if !ok {
+				idle, _ := s.messageIdle(session.ID)
+				return idle, nil
 			}
+			return prober.ProbeIdle(ctx, req)
+		}
+		if idle, err = probe(); err != nil {
+			reject(domain.DeliveryRejected, "the session server's run state is unreadable: "+err.Error())
+			return
 		}
 		if !idle {
-			sub.Error = "Waiting: the agent is busy; sent at its next idle point"
+			reject(domain.DeliverySessionBusy, "the agent is working; OpenCode takes input only while idle")
 			return
 		}
 		release := s.holdTerminalInput(session)
-		time.Sleep(terminalHoldSettle)
-		if prober, ok := deliverer.(agentruntime.IdleProber); ok {
-			probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			idle, err = prober.ProbeIdle(probeCtx, req)
-			cancel()
-			if err != nil || !idle {
-				release()
-				sub.Error = "Waiting: laptop input started a turn; sent at the next idle point"
-				return
-			}
-		}
 		handed := false
 		defer func() {
 			if !handed {
 				release()
 			}
 		}()
-		preparer, ok := deliverer.(agentruntime.MessagePreparer)
-		if !ok {
-			sub.Error = "Waiting: the OpenCode adapter cannot choose a message identity"
+		if !sleepContext(ctx, terminalHoldSettle) {
+			reject(domain.DeliveryRejected, "the delivery bound expired before the hand-off")
 			return
 		}
-		prepareCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		ref, err := preparer.PrepareMessage(prepareCtx, req)
-		cancel()
+		if idle, err = probe(); err != nil || !idle {
+			reject(domain.DeliverySessionBusy, "laptop input started a turn at the same moment")
+			return
+		}
+		preparer, ok := deliverer.(agentruntime.MessagePreparer)
+		if !ok {
+			reject(domain.DeliverySendUnsupported, "the OpenCode adapter cannot choose a message identity")
+			return
+		}
+		ref, err := preparer.PrepareMessage(ctx, req)
 		if err != nil {
-			sub.Error = "Waiting: " + err.Error()
+			reject(domain.DeliveryRejected, "could not prepare the OpenCode message: "+err.Error())
 			return
 		}
 		if !reserve(ref) {
 			return
 		}
 		req.ProviderRef = ref
-		deliverCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		_, err = deliverer.DeliverMessage(deliverCtx, req)
-		cancel()
-		if err != nil {
-			sub.Error = "Hand-off acceptance unknown: " + err.Error() + "; the native record is checked before anything else happens"
+		if _, err := deliverer.DeliverMessage(ctx, req); err != nil {
+			if agentruntime.IsNotDelivered(err) {
+				reject(domain.DeliveryRejected, "OpenCode did not take the input: "+err.Error())
+				return
+			}
+			handed = true // it may be running: the hold ends on its own
+			unknown("OpenCode hand-off acceptance unknown: " + err.Error())
 			return
 		}
 		handed = true
 		s.setMessageIdle(session.ID, false)
-		sub.Error = "Accepted by the session server; awaiting the native record"
+		s.acceptTerminal(sub, domain.SubmissionAccepted, "opencode_prompt_async", "Accepted by the TUI's session server")
 	default:
-		sub.Error = fmt.Sprintf("Waiting: %s terminal input is unsupported", kind)
+		reject(domain.DeliverySendUnsupported, fmt.Sprintf("%s terminal input is unsupported", kind))
+	}
+}
+
+// terminalInputPending names earlier input to the session that has not
+// reached its native record yet, or "".
+func (s *Service) terminalInputPending(ctx context.Context, sessionID, except string) string {
+	if trepo, err := s.terminalConversationRepo(); err == nil {
+		subs, err := trepo.OpenTerminalSubmissions(ctx, sessionID)
+		if err != nil {
+			return "the session's open input is unreadable: " + err.Error()
+		}
+		for _, other := range subs {
+			if other.ID != except && other.NativeTurnID == "" {
+				return "earlier input " + other.ID + " (" + other.Status + ") has not reached the native conversation yet"
+			}
+		}
+	}
+	open, err := s.messages.repo.ListOpenAgentMessages(ctx)
+	if err != nil {
+		return "the session's open notifications are unreadable: " + err.Error()
+	}
+	for _, m := range open {
+		if m.State == domain.AgentMessageHanded && m.TargetSessionID == sessionID {
+			return "a Hiveryn notification handed to this session has not reached its record yet"
+		}
+	}
+	return ""
+}
+
+// awaitTerminalRecord polls the native record until the input appears (its
+// native turn id) or the attempt's bound ends ("").
+func (s *Service) awaitTerminalRecord(ctx context.Context, session domain.Session, sub *domain.TerminalSubmission) string {
+	for {
+		if history, err := s.syncTerminalHistory(ctx, session, true); err == nil {
+			if turn := terminalInputTurn(session, history, sub); turn != "" {
+				return turn
+			}
+		}
+		if !sleepContext(ctx, terminalRecordPoll) {
+			return ""
+		}
+	}
+}
+
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 
 // settleTerminalConversation runs a final native sync at session end and
-// settles open submissions: never-handed input failed, handed input whose
-// completion was not observed uncertain. Errors are logged; teardown proceeds.
+// settles open submissions: input whose acceptance or completion was not
+// observed becomes uncertain; an attempt never handed over is rejected.
+// Errors are logged; teardown proceeds.
 func (s *Service) settleTerminalConversation(ctx context.Context, session domain.Session) {
 	if session.InteractionMode == domain.InteractionChat || session.Machine != "" {
 		return
 	}
 	defer s.forgetTerminalHistory(session.ID)
+	// A synchronous hand-off in progress finishes (bounded) before settling.
+	if err := s.waitHandoff(ctx, session.ID); err != nil {
+		s.logger.Warn("wait for conversation hand-off before settling", "session_id", session.ID, "error", err)
+	}
 	trepo, err := s.terminalConversationRepo()
 	if err != nil {
 		return
@@ -769,13 +852,17 @@ func (s *Service) settleTerminalConversation(ctx context.Context, session domain
 		s.logger.Warn("final terminal history sync", "session_id", session.ID, "error", historyErr)
 	}
 	for _, sub := range subs {
-		if sub.Status == "started" {
+		switch {
+		case sub.Status == domain.SubmissionDelivering && sub.HandedAt.IsZero():
+			sub.Status, sub.ErrorCode, sub.Error = domain.SubmissionRejected, domain.DeliverySessionEnding, "Not sent: the session ended before the hand-off"
+		default:
 			s.confirmTerminalSubmission(ctx, session, &sub, history, historyErr)
-			if sub.Status == "started" {
-				sub.Status, sub.Error = "uncertain", "The session ended before native completion of this input was observed"
+			if terminalSubmissionOpen(sub.Status) {
+				sub.Status, sub.Error = domain.SubmissionUncertain, "The session ended before native completion of this input was observed"
+				if sub.AcceptedAt == nil {
+					sub.Error = "The session ended before acceptance of this input was established; not resent"
+				}
 			}
-		} else {
-			sub.Status, sub.Error = "failed", "Session ended before the input was handed over"
 		}
 		if err := repo.UpdateSubmission(ctx, sub.Submission); err != nil {
 			s.logger.Error("settle terminal submission", "submission_id", sub.ID, "error", err)

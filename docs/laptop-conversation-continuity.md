@@ -23,8 +23,8 @@ outbox). The conversation API uses exactly those:
   `client_id`, OpenCode message id or a header Claude carries in its hook text),
   outbox notification, or the hidden launch prompt. The provider's own
   provenance is kept unmodified in `native_origin`.
-- **Send**: durable submissions dispatched through the provider route, one
-  hand-off per session shared with the outbox, reservation before hand-off,
+- **Send**: synchronous delivery through the provider route (28 October, below),
+  one hand-off per session shared with the outbox, reservation before hand-off,
   completion only from the native turn end of the turn holding that input,
   never an automatic resend.
 - **Coordination**: the routes never touch the TUI composer (drafts survive).
@@ -85,6 +85,36 @@ Side effect: the first lab OpenCode TUI ran OpenCode's default auto-update and
 replaced the global binary 1.17.18 → 1.19.4 (Kareem notified; Kareem's config
 has no `autoupdate` setting, so his own sessions would have done the same). The
 lab now sets `OPENCODE_DISABLE_AUTOUPDATE`.
+
+## 28 October: synchronous delivery
+
+Ticket `2026-10-28-0115-make-chat-message-delivery-synchronous-without-a-hiveryn-queue`
+replaced the Hiveryn-side queue: a send is now answered with provider
+acceptance, a definitive refusal (for example `SESSION_BUSY`) or
+`DELIVERY_UNKNOWN` ([contract](conversation-api.md#send-synchronous-delivery)).
+This supersedes the "phone input while laptop turn busy: waits, then own turn"
+rows above for Claude and OpenCode: a busy send is now refused at once and never
+delivered later; Codex still accepts it into its own native queue.
+
+Isolated native lab (`scripts/continuity_lab.py`, Claude Code 2.1.312, Codex
+0.164.0, OpenCode 1.19.4), terminal-mode architects, laptop input through the
+desktop terminal WebSocket:
+
+| Check | Claude | Codex | OpenCode |
+| --- | --- | --- | --- |
+| Send while the kickoff runs | 409 `SESSION_BUSY`, 0.0 s | 200 `codex_thread_queue`, 0.09 s, then completed | 409 `SESSION_BUSY`, 0.06 s |
+| Idle send of a long task | 200 `claude_native_record`, 0.64 s | 200 `codex_thread_queue`, 0.08 s | 200 `opencode_prompt_async`, 0.33 s |
+| That turn completed (from the POST) | 4.7 s | 7.1 s | 4.4 s |
+| Send while that turn runs | 409 `SESSION_BUSY` | 200, run as the next native turn | 409 `SESSION_BUSY` |
+| Refused send after idle | never in history | — | never in history |
+| Laptop context recalled by the API turn, and vice versa | pass | pass | pass |
+| Daemon restart: prior request IDs replay, nothing resent; fresh send accepted | pass | pass (after the restored TUI's own update prompt was dismissed) | pass |
+
+Summary: [evidence/synchronous-delivery-2026-10-28.json](evidence/synchronous-delivery-2026-10-28.json).
+Ambiguous hand-offs, lost responses, duplicate/conflicting request IDs,
+competing notifications, teardown and restart are covered deterministically
+(Go tests and `scripts/conversation-smoke.py`); no real provider was forced
+into an ambiguous hand-off.
 
 ## Not covered
 

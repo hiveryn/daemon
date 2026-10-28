@@ -45,8 +45,10 @@ type Service struct {
 	chatMu sync.Mutex
 	chats  map[string]*chatOwner
 	// terminalHistory caches per-session native history sync (terminal_conversation.go).
-	terminalHistoryMu  sync.Mutex
-	terminalHistory    map[string]*terminalHistoryState
+	terminalHistoryMu sync.Mutex
+	terminalHistory   map[string]*terminalHistoryState
+	// deliveries coordinates synchronous conversation sends (submit.go).
+	deliveries         deliveryState
 	workspaceMutation  func(context.Context, string, []string, func() error) error
 	workspaceReconcile func(context.Context, string) error
 	remoteStop         chan struct{}

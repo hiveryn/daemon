@@ -338,7 +338,30 @@ func cloneStringMap(input map[string]string) map[string]string {
 	return cloned
 }
 
+// deliveryHTTPStatus maps a conversation delivery code: the session's state
+// refused it (409), the route is unsupported (422), the provider refused it
+// (502), or its acceptance is unknown (504).
+func deliveryHTTPStatus(code string) int {
+	switch code {
+	case domain.DeliverySendUnsupported:
+		return http.StatusUnprocessableEntity
+	case domain.DeliveryRejected:
+		return http.StatusBadGateway
+	case domain.DeliveryUnknown:
+		return http.StatusGatewayTimeout
+	}
+	return http.StatusConflict
+}
+
 func writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
+	var deliveryErr *domain.DeliveryError
+	if errors.As(err, &deliveryErr) {
+		writeError(w, r, deliveryHTTPStatus(deliveryErr.Code), deliveryErr.Code, deliveryErr.Message, map[string]any{
+			"submission": deliveryErr.Submission,
+		})
+		return
+	}
+
 	var validationErr *domain.ValidationError
 	if errors.As(err, &validationErr) {
 		writeError(w, r, http.StatusBadRequest, string(domain.ErrCodeValidation), err.Error(), map[string]string{

@@ -51,23 +51,24 @@ func (s *Service) chatCapabilities(session domain.Session) domain.ConversationCa
 	if c.Send {
 		c.InputRoute = "chat"
 	}
-	c.Limitation = "Native permission controls are unavailable; permission requests block the queue"
+	c.Limitation = "Native permission controls are unavailable; a permission request holds the chat"
 	return c
 }
-func (s *Service) SubmitMessage(ctx context.Context, id string, req domain.SubmissionRequest) (domain.Submission, error) {
-	return s.enqueueChat(ctx, id, req, "user")
-}
+
+// enqueueChat admits an internal entry (an outbox notification) into a chat
+// owner's queue; it runs after the entries before it. User input never queues:
+// it is delivered synchronously (submit.go).
 func (s *Service) enqueueChat(ctx context.Context, id string, req domain.SubmissionRequest, origin string) (domain.Submission, error) {
-	if strings.TrimSpace(req.RequestID) == "" || len(req.RequestID) > 200 {
-		return domain.Submission{}, &domain.ValidationError{Field: "request_id", Message: "must contain 1–200 characters"}
-	}
-	if strings.TrimSpace(req.Text) == "" || len(req.Text) > 1<<20 {
-		return domain.Submission{}, &domain.ValidationError{Field: "text", Message: "must contain 1–1048576 bytes"}
+	if err := validateSubmission(req); err != nil {
+		return domain.Submission{}, err
 	}
 	repo, err := s.conversationRepo()
 	if err != nil {
 		return domain.Submission{}, err
 	}
+	// Serialize admission with teardown and synchronous sends.
+	s.launchMu.Lock()
+	defer s.launchMu.Unlock()
 	prior, lookupErr := repo.GetSubmission(ctx, id, domain.SubmissionIdentity(id, req.RequestID))
 	if lookupErr == nil {
 		if prior.Text != req.Text || prior.Origin != origin {
@@ -79,17 +80,6 @@ func (s *Service) enqueueChat(ctx context.Context, id string, req domain.Submiss
 	if !errors.As(lookupErr, &missing) {
 		return domain.Submission{}, lookupErr
 	}
-	archived, err := repo.IsArchivedChat(ctx, id)
-	if err != nil {
-		return domain.Submission{}, err
-	}
-	if archived {
-		return domain.Submission{}, &domain.ConflictError{Resource: "session", Message: "chat is archived"}
-	}
-	// Serialize admission with teardown. The database serializes all callers'
-	// arrival order and enforces request identity across reconnects/restarts.
-	s.launchMu.Lock()
-	defer s.launchMu.Unlock()
 	if _, ending := s.ending[id]; ending {
 		return domain.Submission{}, &domain.ConflictError{Resource: "session", Message: "session is ending"}
 	}
@@ -97,25 +87,96 @@ func (s *Service) enqueueChat(ctx context.Context, id string, req domain.Submiss
 	if err != nil {
 		return domain.Submission{}, err
 	}
-	if session.Machine != "" {
-		return domain.Submission{}, &domain.ConflictError{Resource: "session", Message: "send to remote SSH sessions is unsupported"}
-	}
 	if session.InteractionMode != domain.InteractionChat {
-		if origin != "user" {
-			return domain.Submission{}, &domain.ConflictError{Resource: "session", Message: "only user input is admitted into terminal sessions"}
-		}
-		return s.submitTerminal(ctx, session, req)
+		return domain.Submission{}, &domain.ConflictError{Resource: "session", Message: "only chat sessions have an internal queue"}
 	}
 	if session.CurrentRun == nil || session.CurrentRun.Status != domain.SessionRunStatusRunning {
 		return domain.Submission{}, &domain.ConflictError{Resource: "session", Message: "session is not running"}
 	}
-	sub, err := repo.EnqueueSubmission(ctx, id, req, origin)
+	sub, _, err := repo.InsertSubmission(ctx, id, req, origin, domain.SubmissionQueued, "", "")
 	if err != nil {
 		return sub, err
 	}
 	s.wakeChat(id)
 	return sub, nil
 }
+
+// chatAdmissionRefusal: user input enters a chat only when its owner is ready
+// and nothing is open in it — never behind another entry.
+func (s *Service) chatAdmissionRefusal(ctx context.Context, session domain.Session) (string, string) {
+	s.chatMu.Lock()
+	owner := s.chats[session.ID]
+	s.chatMu.Unlock()
+	ready := false
+	if owner != nil {
+		select {
+		case <-owner.ready:
+			ready = true
+		default:
+		}
+	}
+	if !ready {
+		return domain.DeliverySendUnavailable, "Not sent: the chat owner is not ready to take input"
+	}
+	repo, err := s.conversationRepo()
+	if err != nil {
+		return domain.DeliveryRejected, "Not sent: " + err.Error()
+	}
+	head, err := repo.PendingSubmission(ctx, session.ID)
+	if err != nil {
+		return domain.DeliveryRejected, "Not sent: the chat state is unreadable: " + err.Error()
+	}
+	if head != nil {
+		reason := "Not sent: the agent is busy with " + head.Origin + " input " + head.ID + " (" + head.Status + ")"
+		if head.Status == domain.SubmissionUnknown || head.Status == domain.SubmissionUncertain || head.Status == domain.SubmissionBlocked {
+			reason += "; it holds the chat until it is reconciled"
+		}
+		return domain.DeliverySessionBusy, reason
+	}
+	return "", ""
+}
+
+// deliverChatInput waits for the chat owner to take the input and for the
+// provider's acceptance evidence, within the attempt's bound.
+func (s *Service) deliverChatInput(ctx context.Context, session domain.Session, sub domain.Submission) {
+	repo, err := s.conversationRepo()
+	if err != nil {
+		return
+	}
+	signal, stop := s.deliverySignal(sub.ID)
+	defer stop()
+	s.chatMu.Lock()
+	owner := s.chats[session.ID]
+	s.chatMu.Unlock()
+	var exited <-chan struct{}
+	if owner != nil {
+		exited = owner.exited
+	}
+	s.wakeChat(session.ID)
+	for {
+		current, err := repo.GetSubmission(context.WithoutCancel(ctx), session.ID, sub.ID)
+		if err == nil && (current.AcceptedAt != nil || current.Status != domain.SubmissionDelivering) {
+			return
+		}
+		select {
+		case <-signal:
+			continue
+		case <-exited:
+		case <-ctx.Done():
+		}
+		break
+	}
+	settleCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	settled, err := repo.SettleDelivery(settleCtx, session.ID, sub.ID, domain.SubmissionRejected, domain.DeliveryRejected, "Not sent: the chat owner did not take the input within the delivery bound")
+	if err == nil && !settled {
+		_, err = repo.SettleDelivery(settleCtx, session.ID, sub.ID, domain.SubmissionUnknown, domain.DeliveryUnknown, "The chat owner started the turn but provider acceptance was not established within the delivery bound; it is reconciled from the native turn and never resent")
+	}
+	if err != nil {
+		s.logger.Error("settle chat delivery", "submission_id", sub.ID, "error", err)
+	}
+}
+
 func (s *Service) GetSubmission(ctx context.Context, id, submissionID string) (domain.Submission, error) {
 	repo, err := s.conversationRepo()
 	if err != nil {
@@ -127,7 +188,7 @@ func (s *Service) GetSubmission(ctx context.Context, id, submissionID string) (d
 		if headErr != nil {
 			return sub, headErr
 		}
-		if head != nil && head.ID != sub.ID && (head.Status == "blocked" || head.Status == "uncertain") {
+		if head != nil && head.ID != sub.ID && holdsChat(head.Status) {
 			sub.Error = "Waiting for submission " + head.ID + " (" + head.Status + "): " + head.Error
 		}
 	}
@@ -402,7 +463,7 @@ func (s *Service) launchChat(ctx context.Context, session domain.Session, run do
 		if err = s.reconcileChat(ctx, session.ID, owner.conn); err != nil {
 			s.logger.Error("reconcile native chat receipt", "session_id", session.ID, "error", err)
 		}
-		if err = repo.SettleSubmissions(ctx, session.ID, "uncertain", "Provider owner restarted; prior in-flight delivery/completion is unconfirmed. Not replayed."); err != nil {
+		if err = repo.SettleSubmissions(ctx, session.ID, domain.SubmissionUncertain, "Provider owner restarted; prior in-flight delivery/completion is unconfirmed. Not replayed."); err != nil {
 			_ = stdout.Close()
 			_ = s.stopChat(context.Background(), session.ID, false)
 			return err
@@ -410,7 +471,7 @@ func (s *Service) launchChat(ctx context.Context, session domain.Session, run do
 	} else {
 		// Queue the unchanged launch prompt before exposing the live session. It
 		// remains internal context and is never returned as conversation text.
-		if _, err = repo.EnqueueSubmission(ctx, session.ID, domain.SubmissionRequest{RequestID: "kickoff:" + run.ID, Text: req.Prompt}, "kickoff"); err != nil {
+		if _, _, err = repo.InsertSubmission(ctx, session.ID, domain.SubmissionRequest{RequestID: "kickoff:" + run.ID, Text: req.Prompt}, "kickoff", domain.SubmissionQueued, "", ""); err != nil {
 			_ = stdout.Close()
 			_ = s.stopChat(context.Background(), session.ID, false)
 			return err
@@ -457,6 +518,11 @@ func (s *Service) runChat(ctx context.Context, session domain.Session, run domai
 				if e.TurnID != "" {
 					sub.NativeTurnID = e.TurnID
 				}
+				if e.Acceptance != "" && sub.AcceptedAt == nil {
+					now := time.Now().UTC()
+					sub.AcceptedAt, sub.Acceptance = &now, e.Acceptance
+					sub.Status, sub.ErrorCode, sub.Error = domain.SubmissionRunning, "", ""
+				}
 				if e.Status == "blocked" {
 					sub.Status = "blocked"
 					sub.Error = e.Text
@@ -479,11 +545,20 @@ func (s *Service) runChat(ctx context.Context, session domain.Session, run domai
 						return err
 					}
 				}
-				return repo.UpdateSubmission(ctx, *sub)
+				if err := repo.UpdateSubmission(ctx, *sub); err != nil {
+					return err
+				}
+				s.signalDelivery(sub.ID)
+				return nil
 			})
 			if err != nil || !complete {
-				sub.Status = "uncertain"
-				sub.Error = "Native delivery/completion is unconfirmed; not replayed"
+				// Without acceptance evidence the input itself is unconfirmed.
+				sub.Status = domain.SubmissionUncertain
+				sub.Error = "Native completion is unconfirmed; not replayed"
+				if sub.AcceptedAt == nil {
+					sub.Status, sub.ErrorCode = domain.SubmissionUnknown, domain.DeliveryUnknown
+					sub.Error = "Provider acceptance is unconfirmed; not replayed"
+				}
 				if err != nil {
 					sub.Error += ": " + err.Error()
 				}
@@ -501,6 +576,7 @@ func (s *Service) runChat(ctx context.Context, session domain.Session, run domai
 				if saveErr != nil {
 					s.logger.Error("persist uncertain chat submission", "error", saveErr)
 				}
+				s.signalDelivery(sub.ID)
 				if ctx.Err() == nil {
 					s.logger.Error("chat turn interrupted", "session_id", session.ID, "error", err)
 				}
@@ -607,7 +683,7 @@ func (s *Service) deliverChatNotification(ctx context.Context, m *domain.AgentMe
 		m.Condition = "chat notification admission failed: " + err.Error()
 		return
 	}
-	s.markMessageHanded(m, "chat:"+sub.ID, "queued with user turns under the chat session's sole submitter")
+	s.markMessageHanded(m, "chat:"+sub.ID, "queued in the chat owner's internal queue under its sole submitter")
 }
 func (s *Service) confirmChatNotification(ctx context.Context, m *domain.AgentMessage) {
 	sub, err := s.GetSubmission(ctx, m.TargetSessionID, strings.TrimPrefix(m.ProviderRef, "chat:"))
@@ -636,6 +712,8 @@ func (s *Service) confirmChatNotification(ctx context.Context, m *domain.AgentMe
 		m.AppearedAt = &now
 		m.AcknowledgedAt = &now
 		m.Condition = ""
+	case domain.SubmissionRejected:
+		s.repend(m, "chat session ended before notification dispatch")
 	case "failed":
 		if sub.NativeTurnID == "" && strings.HasPrefix(sub.Error, "Session ended") {
 			s.repend(m, "chat session ended before notification dispatch")
@@ -656,7 +734,7 @@ func (s *Service) reconcileChat(ctx context.Context, id string, conn agentruntim
 		return err
 	}
 	sub, err := repo.PendingSubmission(ctx, id)
-	if err != nil || sub == nil || sub.Status == "queued" {
+	if err != nil || sub == nil || sub.Status == domain.SubmissionQueued {
 		return err
 	}
 	reconciler, ok := conn.(agentruntime.ConversationReconciler)
@@ -672,6 +750,11 @@ func (s *Service) reconcileChat(ctx context.Context, id string, conn agentruntim
 			return err
 		}
 		if e.Complete {
+			// Explicit native completion of the turn is also its acceptance.
+			if sub.AcceptedAt == nil {
+				now := time.Now().UTC()
+				sub.AcceptedAt, sub.Acceptance, sub.ErrorCode = &now, "native_record", ""
+			}
 			sub.Status = e.Status
 			sub.Error = e.Text
 			if err = repo.UpdateSubmission(ctx, *sub); err != nil {
@@ -696,7 +779,7 @@ func (s *Service) failChatRestore(ctx context.Context, id string, cause error) {
 		return
 	}
 	reason := "Chat owner could not be restored: " + cause.Error()
-	if err = repo.SettleSubmissions(ctx, id, "uncertain", reason+"; prior delivery/completion remains unconfirmed"); err != nil {
+	if err = repo.SettleSubmissions(ctx, id, domain.SubmissionUncertain, reason+"; prior delivery/completion remains unconfirmed"); err != nil {
 		s.logger.Error("settle interrupted chat", "error", err)
 	}
 	if err = repo.FailQueuedSubmissions(ctx, id, reason); err != nil {
@@ -746,11 +829,16 @@ func (s *Service) ListSubmissions(ctx context.Context, id string, q domain.Seque
 		if sub.Origin == "kickoff" {
 			sub.Text = ""
 		}
-		if chat && sub.Status == "queued" && head != nil && head.ID != sub.ID && (head.Status == "blocked" || head.Status == "uncertain") {
+		if chat && sub.Status == "queued" && head != nil && head.ID != sub.ID && holdsChat(head.Status) {
 			sub.Error = "Waiting for submission " + head.ID + " (" + head.Status + "): " + head.Error
 		}
 	}
 	return page, nil
+}
+
+// holdsChat reports a head entry that holds a chat until it is reconciled.
+func holdsChat(status string) bool {
+	return status == domain.SubmissionBlocked || status == domain.SubmissionUncertain || status == domain.SubmissionUnknown
 }
 
 // isChatSession reports a chat-mode session; archived chats count as chat.

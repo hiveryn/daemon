@@ -80,6 +80,8 @@ def main():
             response = error
         with response:
             payload = json.load(response)
+            if expected is None:
+                return {'status': response.status, **payload}
             assert response.status == expected, (response.status, payload)
             return payload.get('data') if expected < 400 else payload
 
@@ -135,13 +137,25 @@ def main():
             launch = call(prefix + '/runs', {'profile_name': 'fixture'}, 201)
             assert 'main_terminal_id' not in launch and 'ws_url' not in launch
             assert any(s['id'] == sid and s['conversation']['send'] for s in call('/api/sessions')['sessions'])
+            # The kickoff runs first; user input is never queued behind it.
+            wait(lambda: all(s['status'] == 'completed' for s in call(prefix + '/submissions')['submissions']))
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-                receipts = list(pool.map(lambda i: call(prefix + '/messages', {'request_id': f'input-{i}', 'text': f'hello {i}'}, 202), range(8)))
-            replay = call(prefix + '/messages', {'request_id': 'input-0', 'text': 'hello 0'}, 202)
-            assert replay['id'] == receipts[0]['id']
-            call(prefix + '/messages', {'request_id': 'input-0', 'text': 'different'}, 409)
-            for receipt in receipts:
-                wait(lambda: call(prefix + '/submissions/' + receipt['id'])['status'] == 'completed')
+                results = list(pool.map(lambda i: call(prefix + '/messages', {'request_id': f'input-{i}', 'text': f'hello {i}'}, None), range(8)))
+            accepted = [r for r in results if r['status'] == 200]
+            busy = [r for r in results if r['status'] == 409]
+            # Exactly one is taken synchronously; the rest are refused at once and never sent later.
+            assert len(accepted) == 1 and len(busy) == 7, results
+            receipt = accepted[0]['data']
+            assert receipt['accepted_at'] and receipt['acceptance'] == 'codex_turn_start', receipt
+            assert all(r['error']['code'] == 'SESSION_BUSY' and r['error']['details']['submission']['status'] == 'rejected' for r in busy)
+            replay = call(prefix + '/messages', {'request_id': receipt['request_id'], 'text': receipt['text']})
+            assert replay['id'] == receipt['id']
+            rejected = busy[0]['error']['details']['submission']
+            again = call(prefix + '/messages', {'request_id': rejected['request_id'], 'text': rejected['text']}, 409)
+            assert again['error']['code'] == 'SESSION_BUSY' and again['error']['details']['submission']['id'] == rejected['id']
+            call(prefix + '/messages', {'request_id': receipt['request_id'], 'text': 'different'}, 409)
+            wait(lambda: call(prefix + '/submissions/' + receipt['id'])['status'] == 'completed')
+            receipts = [receipt] + [r['error']['details']['submission'] for r in busy]
             submissions = []
             sp = call(prefix + '/submissions?limit=2')
             while True:
@@ -150,6 +164,7 @@ def main():
                     break
                 sp = call(prefix + f'/submissions?limit=2&after_sequence={sp["next_sequence"]}')
             assert len(submissions) == 9 and len({s['id'] for s in submissions}) == 9
+            assert sum(s['status'] == 'rejected' for s in submissions) == 7
             assert all(s['text'] == '' for s in submissions if s['origin'] == 'kickoff')
             call(prefix + '/submissions?after_sequence=-1', expected=400)
             page = call(prefix + '/conversation?limit=2')
@@ -167,20 +182,20 @@ def main():
                 evidence['question_answer'] = question.result()
             stop()
             start()
-            receipt = call(prefix + '/messages', {'request_id': 'resumed', 'text': 'resumed hello'}, 202)
+            receipt = call(prefix + '/messages', {'request_id': 'resumed', 'text': 'resumed hello'})
             wait(lambda: call(prefix + '/submissions/' + receipt['id'])['status'] == 'completed')
-            queued = call(prefix + '/messages', {'request_id': 'discarded', 'text': 'queued'}, 202)
+            accepted = call(prefix + '/messages', {'request_id': 'discarded', 'text': 'in flight'})
             call(prefix + '/discard', {})
-            settled = call(prefix + '/submissions/' + queued['id'])
-            assert settled['status'] in ['failed', 'completed']
-            replay = call(prefix + '/messages', {'request_id': 'discarded', 'text': 'queued'}, 202)
-            assert replay['id'] == queued['id']
+            settled = call(prefix + '/submissions/' + accepted['id'])
+            assert settled['status'] in ['failed', 'completed'] and settled['accepted_at']
+            replay = call(prefix + '/messages', {'request_id': 'discarded', 'text': 'in flight'})
+            assert replay['id'] == accepted['id']
             archives = call('/api/archived-chats?architect_key=fixture&limit=1')
             assert len(archives['chats']) == 1 and archives['chats'][0]['id'] == sid
             assert archives['chats'][0]['lifecycle'] == 'discarded'
             assert archives['chats'][0]['agent'] == 'codex'
             assert not any(s['id'] == sid for s in call('/api/sessions')['sessions'])
-            call(prefix + '/messages', {'request_id': 'new-after-end', 'text': 'must not run'}, 409)
+            assert call(prefix + '/messages', {'request_id': 'new-after-end', 'text': 'must not run'}, 409)['error']['code'] == 'SESSION_ARCHIVED'
             call(prefix + '/runs', {'profile_name': 'fixture'}, 404)
             retained = call(prefix + '/conversation')
             assert not any(i['role'] == 'tool' and i['status'] == 'started' for i in {i['id']: i for i in retained['items']}.values())
@@ -192,7 +207,7 @@ def main():
             evidence.update(result='passed' , receipts=receipts, snapshot_revision=snapshot, discarded=settled)
             stop()
         (root / 'evidence.json').write_text(json.dumps(evidence, indent=2))
-        print('Passed isolated create/list/read/send/retry/conflict/poll/answer/restart/discard HTTP smoke.')
+        print('Passed isolated create/list/read/synchronous send/busy/replay/conflict/poll/answer/restart/discard HTTP smoke.')
     finally:
         stop()
         if notifier:

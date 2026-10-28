@@ -22,6 +22,32 @@ type ConversationItem = sd.ConversationItem
 type ConversationPage = sd.ConversationPage
 type ConversationQuery = sd.ConversationQuery
 
+type DeliveryError = sd.DeliveryError
+
+const (
+	SubmissionQueued     = sd.SubmissionQueued
+	SubmissionDelivering = sd.SubmissionDelivering
+	SubmissionRejected   = sd.SubmissionRejected
+	SubmissionUnknown    = sd.SubmissionUnknown
+	SubmissionAccepted   = sd.SubmissionAccepted
+	SubmissionRunning    = sd.SubmissionRunning
+	SubmissionBlocked    = sd.SubmissionBlocked
+	SubmissionCompleted  = sd.SubmissionCompleted
+	SubmissionFailed     = sd.SubmissionFailed
+	SubmissionUncertain  = sd.SubmissionUncertain
+
+	DeliverySessionBusy         = sd.DeliverySessionBusy
+	DeliverySessionNotRunning   = sd.DeliverySessionNotRunning
+	DeliverySessionEnding       = sd.DeliverySessionEnding
+	DeliverySessionArchived     = sd.DeliverySessionArchived
+	DeliverySendUnavailable     = sd.DeliverySendUnavailable
+	DeliverySendUnsupported     = sd.DeliverySendUnsupported
+	DeliveryRejected            = sd.DeliveryRejected
+	DeliveryInterrupted         = sd.DeliveryInterrupted
+	DeliveryQueuedBeforeCutover = sd.DeliveryQueuedBeforeCutover
+	DeliveryUnknown             = sd.DeliveryUnknown
+)
+
 type SequenceQuery = sd.SequenceQuery
 type SubmissionPage = sd.SubmissionPage
 type ArchivedChat = sd.ArchivedChat
@@ -32,11 +58,18 @@ type ConversationRepository interface {
 	ArchiveChat(context.Context, ArchivedChat) error
 	ListArchivedChats(context.Context, SequenceQuery) (ArchivedChatPage, error)
 	IsArchivedChat(context.Context, string) (bool, error)
-	EnqueueSubmission(context.Context, string, SubmissionRequest, string) (Submission, error)
+	// InsertSubmission records a request identity in its initial status, or
+	// returns the existing record of the same request (created=false).
+	InsertSubmission(ctx context.Context, sessionID string, req SubmissionRequest, origin, status, code, reason string) (sub Submission, created bool, err error)
 	GetSubmission(context.Context, string, string) (Submission, error)
 	PendingSubmission(context.Context, string) (*Submission, error)
 	ReserveSubmission(context.Context, string) (*Submission, error)
 	UpdateSubmission(context.Context, Submission) error
+	// SettleDelivery concludes a still-delivering attempt; rejected applies
+	// only while no hand-off was reserved. False: other evidence moved it on.
+	SettleDelivery(ctx context.Context, sessionID, id, status, code, reason string) (bool, error)
+	// ReconcileDeliveries settles attempts a previous daemon left delivering.
+	ReconcileDeliveries(context.Context) error
 	PutConversationItem(context.Context, string, ConversationItem) error
 	ReadConversation(context.Context, string, ConversationQuery) (ConversationPage, error)
 	SettleSubmissions(context.Context, string, string, string) error
@@ -56,14 +89,12 @@ type TerminalSubmission struct {
 // TerminalConversationRepository persists dispatch reservations for input into
 // existing terminal-owned sessions.
 type TerminalConversationRepository interface {
-	// OpenTerminalSubmissions lists queued and started submissions in admission order.
+	// OpenTerminalSubmissions lists delivering, unknown, accepted and running
+	// submissions in admission order.
 	OpenTerminalSubmissions(context.Context, string) ([]TerminalSubmission, error)
-	// ReserveTerminalSubmission moves a queued submission to started with its
-	// provider reference before any native hand-off; false if it was not queued.
+	// ReserveTerminalSubmission records the provider reference of a delivering
+	// submission before any native hand-off; false if it is not an unreserved delivery.
 	ReserveTerminalSubmission(ctx context.Context, sessionID, id, providerRef, terminalID string, handedAt time.Time) (bool, error)
-	// ReleaseTerminalSubmission returns a started submission to queued when the
-	// hand-off demonstrably never reached the provider.
-	ReleaseTerminalSubmission(ctx context.Context, sessionID, id, reason string) error
 	// TerminalProviderRefs maps provider references to submission ids.
 	TerminalProviderRefs(context.Context, string) (map[string]string, error)
 }
@@ -76,8 +107,8 @@ type ConversationService interface {
 	ReadConversation(context.Context, string, ConversationQuery) (ConversationPage, error)
 }
 
-// SubmissionIdentity makes an outbox reservation name its queue receipt before
-// enqueue, closing the crash window between the two durable aggregates.
+// SubmissionIdentity makes an outbox reservation name its chat receipt before
+// admission, closing the crash window between the two durable aggregates.
 func SubmissionIdentity(sessionID, requestID string) string {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(sessionID+"\x00"+requestID)).String()
 }
