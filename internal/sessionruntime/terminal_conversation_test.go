@@ -122,7 +122,11 @@ func (f *terminalFixture) setMainTerminal(sessionID, terminalID string) {
 
 func (f *terminalFixture) submission(sessionID, id string) domain.Submission {
 	f.t.Helper()
-	sub, err := f.service.GetSubmission(context.Background(), sessionID, id)
+	repo, err := f.service.conversationRepo()
+	if err != nil {
+		f.t.Fatalf("conversation repo: %v", err)
+	}
+	sub, err := repo.GetSubmission(context.Background(), sessionID, id)
 	if err != nil {
 		f.t.Fatalf("get submission: %v", err)
 	}
@@ -588,9 +592,12 @@ func TestTerminalSessionEndSettlesOpenSubmissionsAndRetainsHistory(t *testing.T)
 	if got := f.submission(session.ID, accepted.ID); got.Status != domain.SubmissionUncertain || got.AcceptedAt == nil {
 		t.Fatalf("accepted at end = %+v", got)
 	}
-	page, err := f.service.ListArchivedChats(ctx, domain.SequenceQuery{})
-	if err != nil || len(page.Chats) != 1 || page.Chats[0].InteractionMode != domain.InteractionTerminal {
-		t.Fatalf("archive = %+v, %v", page, err)
+	conversations, err := f.service.conversationRepo()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived, err := conversations.IsArchivedChat(ctx, session.ID); err != nil || !archived {
+		t.Fatalf("archived = %v, %v", archived, err)
 	}
 	if replay, err := f.service.SubmitMessage(ctx, session.ID, domain.SubmissionRequest{RequestID: "a", Text: "first"}); err != nil || replay.ID != accepted.ID {
 		t.Fatalf("replay after end = %+v, %v", replay, err)

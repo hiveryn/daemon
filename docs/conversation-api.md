@@ -115,11 +115,15 @@ characters; text is nonblank and at most 1 MiB.
 
 ### Receipts
 
-`GET /api/sessions/SESSION_ID/submissions/SUBMISSION_ID` returns `id`,
-`session_id`, `request_id`, `sequence`, `origin`, `text`, `status`,
-`native_turn_id`, `error_code`, `error`, `accepted_at`, `acceptance`,
-`created_at`, `updated_at`. A normal successful send needs no polling to know it
-was delivered; poll a receipt to follow its turn, or to reconcile an unknown send.
+A receipt is returned only by `POST /messages`: as `data` on 200, or in
+`error.details.submission` with a refusal. It has `id`, `session_id`,
+`request_id`, `sequence`, `origin`, `text`, `status`, `native_turn_id`,
+`error_code`, `error`, `accepted_at`, `acceptance`, `created_at`, `updated_at`.
+There is no receipt read or list endpoint. The API assumes one connected client
+at a time: that client keeps its own request IDs and unsent/unknown text (across
+reloads too) and reconciles by repeating the same POST, which returns the
+receipt's current state. Follow the turn itself in `GET /conversation`. Another
+client does not discover sends that never entered the conversation history.
 
 | `status` | Meaning |
 | --- | --- |
@@ -194,8 +198,8 @@ To continue a page, send `after_revision=next_revision` and the same
 `snapshot_revision`. Once `has_more` is false, the next poll starts at that
 snapshot revision and omits `snapshot_revision`. A change to an old item is a
 new revision. Provider compaction/resume never removes observed history. Page
-size is at most 200. Already-observed history and submission receipts survive
-session deletion; unknown/unsupported session history returns an explicit error.
+size is at most 200. Already-observed history survives session deletion and stays
+readable by the session's known ID; unknown/unsupported session history returns an explicit error.
 Retention pruning is not implemented in V1.
 
 **Order.** Three separate things: `revision` is the feed cursor (discovery
@@ -289,43 +293,23 @@ the others refused as busy. Fixture success is not native acceptance. See
 provider evidence and limitations. No UI build, live restart, package release or
 deployment is part of this delivery.
 
-## Cross-client receipt discovery and archived chats
+## Ended sessions
 
-`GET /api/sessions/SESSION_ID/submissions?after_sequence=0&limit=100`
-returns `{submissions, next_sequence, has_more}`. Follow `next_sequence` while
-`has_more` is true. Sequence is stable admission order (gaps are normal). Limits
-are 1–200; omitted/zero uses 100. Negative cursors and limits over 200 are rejected.
-This is a live receipt list, not a revision snapshot: restart at zero to refresh
-old statuses, or poll known receipt IDs. New clients discover other clients'
-sends (including unknown ones to reconcile) without browser storage. Internal
-queued entries include the holding head's reason.
-Discovering a receipt never sends or replays it.
+An ended (concluded or discarded) session leaves `GET /api/sessions`; there is
+no archive listing. The daemon keeps a retention record of the session, the
+unfinished receipt disposition and final item revisions, committed together
+before active records are deleted. A client that knows the ID still reads its
+retained history with `GET /conversation`; exact prior request-ID replay still
+returns the recorded outcome without dispatching again; new input is refused as
+`SESSION_ARCHIVED`, and the session cannot be launched again.
 
-`GET /api/archived-chats?architect_key=PROJECT&after_sequence=0&limit=100`
-returns `{chats, next_sequence, has_more}` in archive insertion order with the
-same bounds. The optional project filter scopes discovery. Each descriptor has
-`id` (the former session ID), `sequence`, `architect_key`, `session_type`,
-`context_id`, `agent`, optional `model`, `profile_name`, `created_at`, `ended_at`
-and `lifecycle` (`concluded`, `discarded`, or `interrupted` for administrative
-termination). It contains no prompt, instructions, launch environment or native
-credentials. Use its ID with the existing history and receipt endpoints.
-Archives are read-only, cannot launch or admit new input, and do not participate
-in ordinary active-session discovery or ownership. Exact prior request-ID replay
-still returns its recorded outcome; it does not dispatch again.
-
-Archive descriptors, unfinished receipt disposition and final item revisions
-are committed together before active records are deleted. Unfinished tool/permission
-items become `interrupted`; their names/output remain. Existing native errors and
-successful results remain unchanged. Late native output cannot resurrect archived
-activity. A conclusion tool interrupted by its own session end is not claimed to
-have returned native success. Tool names are retained across result revisions.
-Claude string and text-block user echoes share stable UUID-based IDs; internal
-origins remain labelled; hidden thinking stays excluded.
-
-Migration 0018 adds retained archive discovery. Sessions already deleted before
-that migration cannot be reliably backfilled: their metadata is gone. Their
-previously observed history remains readable by known ID. No retention pruning
-or new active-session ownership rules are introduced.
+Unfinished tool/permission items become `interrupted`; their names/output remain.
+Existing native errors and successful results remain unchanged. Late native
+output cannot resurrect ended activity. A conclusion tool interrupted by its own
+session end is not claimed to have returned native success. Tool names are
+retained across result revisions. Claude string and text-block user echoes share
+stable UUID-based IDs; internal origins remain labelled; hidden thinking stays
+excluded. Retention pruning is not implemented.
 
 ## Existing terminal sessions (laptop continuity)
 
@@ -411,9 +395,8 @@ receipts are reconciled from the record.
 Questions, approvals and notifications are unchanged: answer through
 `/controls` operations; chat text never answers or approves. Worker
 conclusions reach the architect through the outbox and appear in its history
-as `via: notification`. Ended terminal sessions get an archive descriptor
-(`interaction_mode: "terminal"`) and retain the history observed up to a
-final sync at session end.
+as `via: notification`. Ended terminal sessions retain the history observed up
+to a final sync at session end (see [Ended sessions](#ended-sessions)).
 
 Known limits: Claude provenance as above; OpenCode laptop input sent while a
 turn runs merges into it (native behaviour, reported as above); Codex holds

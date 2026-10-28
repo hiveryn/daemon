@@ -92,6 +92,11 @@ with `TZ=UTC go test -p 1 ./...`. No unrelated SSH or timezone test was changed.
 
 ## Cross-client history and archive verification (2026-10-26)
 
+Historical record. The receipt list/read and archived-chat discovery endpoints
+it verified were removed on 2026-10-28 for the single-client API (see
+[Receipts](conversation-api.md#receipts) and [Ended sessions](conversation-api.md#ended-sessions));
+retention, replay and archived-send refusal remain.
+
 The follow-up delivery adds migration 0018, receipt discovery and explicit archived
 chat descriptors. Focused regressions cover stable string/block Claude user IDs,
 foreign-echo/hidden-thinking exclusion, tool-name retention and native tool errors,

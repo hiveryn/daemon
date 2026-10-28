@@ -48,15 +48,40 @@ const (
 	DeliveryUnknown             = sd.DeliveryUnknown
 )
 
-type SequenceQuery = sd.SequenceQuery
-type SubmissionPage = sd.SubmissionPage
-type ArchivedChat = sd.ArchivedChat
-type ArchivedChatPage = sd.ArchivedChatPage
+// SequenceQuery pages a session's submissions by admission sequence (daemon
+// internal: the single-client API exposes no receipt reads).
+type SequenceQuery struct {
+	AfterSequence int64
+	Limit         int
+}
+type SubmissionPage struct {
+	Submissions  []Submission
+	NextSequence int64
+	HasMore      bool
+}
+
+// ArchivedChat is the retention record of an ended session's observed
+// history, stored as JSON. It is not exposed: an ended session's history is
+// read by its known ID and sends to it are refused as SESSION_ARCHIVED.
+type ArchivedChat struct {
+	ID           string      `json:"id"`
+	ArchitectKey string      `json:"architect_key"`
+	SessionType  SessionType `json:"session_type"`
+	ContextID    string      `json:"context_id"`
+	Agent        string      `json:"agent"`
+	Model        string      `json:"model,omitempty"`
+	ProfileName  string      `json:"profile_name"`
+	CreatedAt    time.Time   `json:"created_at"`
+	EndedAt      time.Time   `json:"ended_at"`
+	Lifecycle    string      `json:"lifecycle"`
+	// InteractionMode of the ended session; empty on records archived before
+	// terminal-session history was retained (all of those were chat).
+	InteractionMode InteractionMode `json:"interaction_mode,omitempty"`
+}
 
 type ConversationRepository interface {
 	ListSubmissions(context.Context, string, SequenceQuery) (SubmissionPage, error)
 	ArchiveChat(context.Context, ArchivedChat) error
-	ListArchivedChats(context.Context, SequenceQuery) (ArchivedChatPage, error)
 	IsArchivedChat(context.Context, string) (bool, error)
 	// InsertSubmission records a request identity in its initial status, or
 	// returns the existing record of the same request (created=false).
@@ -102,10 +127,7 @@ type TerminalConversationRepository interface {
 }
 
 type ConversationService interface {
-	ListSubmissions(context.Context, string, SequenceQuery) (SubmissionPage, error)
-	ListArchivedChats(context.Context, SequenceQuery) (ArchivedChatPage, error)
 	SubmitMessage(context.Context, string, SubmissionRequest) (Submission, error)
-	GetSubmission(context.Context, string, string) (Submission, error)
 	ReadConversation(context.Context, string, ConversationQuery) (ConversationPage, error)
 }
 

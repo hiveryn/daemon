@@ -81,37 +81,6 @@ func (s *SessionStore) ArchiveChat(ctx context.Context, chat domain.ArchivedChat
 	return tx.Commit()
 }
 
-func (s *SessionStore) ListArchivedChats(ctx context.Context, q domain.SequenceQuery) (domain.ArchivedChatPage, error) {
-	page := domain.ArchivedChatPage{Chats: []domain.ArchivedChat{}, NextSequence: q.AfterSequence}
-	if q.Limit <= 0 || q.Limit > 200 {
-		q.Limit = 100
-	}
-	rows, err := s.db.QueryContext(ctx, "SELECT seq,descriptor_json FROM chat_archives WHERE seq>? AND (?='' OR architect_key=?) ORDER BY seq LIMIT ?", q.AfterSequence, q.ArchitectKey, q.ArchitectKey, q.Limit+1)
-	if err != nil {
-		return page, err
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		if len(page.Chats) == q.Limit {
-			page.HasMore = true
-			break
-		}
-		var chat domain.ArchivedChat
-		var raw string
-		if err = rows.Scan(&chat.Sequence, &raw); err != nil {
-			return page, err
-		}
-		seq := chat.Sequence
-		if err = json.Unmarshal([]byte(raw), &chat); err != nil {
-			return page, err
-		}
-		chat.Sequence = seq
-		page.Chats = append(page.Chats, chat)
-		page.NextSequence = seq
-	}
-	return page, rows.Err()
-}
-
 func (s *SessionStore) ListSubmissions(ctx context.Context, sid string, q domain.SequenceQuery) (domain.SubmissionPage, error) {
 	page := domain.SubmissionPage{Submissions: []domain.Submission{}, NextSequence: q.AfterSequence}
 	if q.Limit <= 0 || q.Limit > 200 {

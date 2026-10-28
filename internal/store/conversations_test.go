@@ -200,13 +200,11 @@ func TestChatArchiveRetainsIdentityAndInterruptsWithoutSuccess(t *testing.T) {
 	if len(page.Items) != 1 || page.Items[0].Status != "interrupted" || page.Items[0].Tool != "conclude" {
 		t.Fatalf("final revisions: %#v", page)
 	}
-	archives, err := repo.ListArchivedChats(ctx, domain.SequenceQuery{ArchitectKey: "project", Limit: 1})
-	if err != nil || len(archives.Chats) != 1 || archives.Chats[0].Agent != "claude" || archives.Chats[0].Lifecycle != "concluded" {
-		t.Fatalf("archives: %#v %v", archives, err)
+	if archived, err := repo.IsArchivedChat(ctx, "s"); err != nil || !archived {
+		t.Fatalf("archived = %v, %v", archived, err)
 	}
-	other, err := repo.ListArchivedChats(ctx, domain.SequenceQuery{ArchitectKey: "other"})
-	if err != nil || len(other.Chats) != 0 {
-		t.Fatalf("scope: %#v %v", other, err)
+	if archived, err := repo.IsArchivedChat(ctx, "other"); err != nil || archived {
+		t.Fatalf("unrelated archived = %v, %v", archived, err)
 	}
 	receipt, err := repo.GetSubmission(ctx, "s", sub.ID)
 	if err != nil || receipt.Status != "failed" {

@@ -177,24 +177,6 @@ func (s *Service) deliverChatInput(ctx context.Context, session domain.Session, 
 	}
 }
 
-func (s *Service) GetSubmission(ctx context.Context, id, submissionID string) (domain.Submission, error) {
-	repo, err := s.conversationRepo()
-	if err != nil {
-		return domain.Submission{}, err
-	}
-	sub, err := repo.GetSubmission(ctx, id, submissionID)
-	if err == nil && sub.Status == "queued" && s.isChatSession(ctx, id) {
-		head, headErr := repo.PendingSubmission(ctx, id)
-		if headErr != nil {
-			return sub, headErr
-		}
-		if head != nil && head.ID != sub.ID && holdsChat(head.Status) {
-			sub.Error = "Waiting for submission " + head.ID + " (" + head.Status + "): " + head.Error
-		}
-	}
-	return sub, err
-}
-
 // chatItem is the conversation item of one native event of sub's turn. A user
 // item is the provider's echo of the input; via names how that input entered
 // (the kickoff, an API submission or an outbox notification).
@@ -697,7 +679,12 @@ func (s *Service) deliverChatNotification(ctx context.Context, m *domain.AgentMe
 	s.markMessageHanded(m, "chat:"+sub.ID, "queued in the chat owner's internal queue under its sole submitter")
 }
 func (s *Service) confirmChatNotification(ctx context.Context, m *domain.AgentMessage) {
-	sub, err := s.GetSubmission(ctx, m.TargetSessionID, strings.TrimPrefix(m.ProviderRef, "chat:"))
+	repo, err := s.conversationRepo()
+	if err != nil {
+		m.Condition = "chat receipt unavailable: " + err.Error()
+		return
+	}
+	sub, err := repo.GetSubmission(ctx, m.TargetSessionID, strings.TrimPrefix(m.ProviderRef, "chat:"))
 	if err != nil {
 		var missing *domain.NotFoundError
 		if errors.As(err, &missing) { // reservation survived but queue insert did not
@@ -802,57 +789,6 @@ func (s *Service) failChatRestore(ctx context.Context, id string, cause error) {
 	if err = repo.FailQueuedSubmissions(ctx, id, reason); err != nil {
 		s.logger.Error("settle queued chat", "error", err)
 	}
-}
-
-func validateSequenceQuery(q domain.SequenceQuery) error {
-	if q.AfterSequence < 0 || q.Limit < 0 || q.Limit > 200 {
-		return &domain.ValidationError{Field: "pagination", Message: "after_sequence must be nonnegative and limit at most 200"}
-	}
-	return nil
-}
-func (s *Service) ListArchivedChats(ctx context.Context, q domain.SequenceQuery) (domain.ArchivedChatPage, error) {
-	if err := validateSequenceQuery(q); err != nil {
-		return domain.ArchivedChatPage{}, err
-	}
-	repo, err := s.conversationRepo()
-	if err != nil {
-		return domain.ArchivedChatPage{}, err
-	}
-	return repo.ListArchivedChats(ctx, q)
-}
-func (s *Service) ListSubmissions(ctx context.Context, id string, q domain.SequenceQuery) (domain.SubmissionPage, error) {
-	if err := validateSequenceQuery(q); err != nil {
-		return domain.SubmissionPage{}, err
-	}
-	// Reuse the history capability/existence check, including retained histories.
-	if _, err := s.ReadConversation(ctx, id, domain.ConversationQuery{Limit: 1}); err != nil {
-		return domain.SubmissionPage{}, err
-	}
-	repo, err := s.conversationRepo()
-	if err != nil {
-		return domain.SubmissionPage{}, err
-	}
-	page, err := repo.ListSubmissions(ctx, id, q)
-	if err != nil {
-		return page, err
-	}
-	head, err := repo.PendingSubmission(ctx, id)
-	if err != nil {
-		return page, err
-	}
-	chat := s.isChatSession(ctx, id)
-	for i := range page.Submissions {
-		sub := &page.Submissions[i]
-		if chat && sub.Status == "queued" && head != nil && head.ID != sub.ID && holdsChat(head.Status) {
-			sub.Error = "Waiting for submission " + head.ID + " (" + head.Status + "): " + head.Error
-		}
-	}
-	return page, nil
-}
-
-// holdsChat reports a head entry that holds a chat until it is reconciled.
-func holdsChat(status string) bool {
-	return status == domain.SubmissionBlocked || status == domain.SubmissionUncertain || status == domain.SubmissionUnknown
 }
 
 // isChatSession reports a chat-mode session; archived chats count as chat.

@@ -383,7 +383,7 @@ func TestChatLaunchDiagnosticsRedactConfiguredCredentials(t *testing.T) {
 	}
 }
 
-func TestCrossClientDiscoveryKickoffReceiptAndEmptyArchive(t *testing.T) {
+func TestKickoffReceiptAndEmptyArchive(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -411,26 +411,16 @@ func TestCrossClientDiscoveryKickoffReceiptAndEmptyArchive(t *testing.T) {
 	if _, _, err = repo.InsertSubmission(ctx, session.ID, domain.SubmissionRequest{RequestID: "notice", Text: "notice"}, "notification", domain.SubmissionQueued, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	page, err := service.ListSubmissions(ctx, session.ID, domain.SequenceQuery{Limit: 1})
+	page, err := repo.ListSubmissions(ctx, session.ID, domain.SequenceQuery{Limit: 1})
 	// The kickoff receipt carries its recorded launch text; it asserts no
 	// acceptance it does not have.
 	if err != nil || len(page.Submissions) != 1 || page.Submissions[0].Text != "PRIVATE INSTRUCTIONS" || page.Submissions[0].AcceptedAt != nil || !page.HasMore {
 		t.Fatalf("kickoff receipt %#v %v", page, err)
 	}
-	if got, err := service.GetSubmission(ctx, session.ID, hidden.ID); err != nil || got.Text != "PRIVATE INSTRUCTIONS" {
-		t.Fatalf("kickoff receipt read %#v %v", got, err)
-	}
-	next, err := service.ListSubmissions(ctx, session.ID, domain.SequenceQuery{AfterSequence: page.NextSequence})
-	if err != nil || len(next.Submissions) != 1 || !strings.Contains(next.Submissions[0].Error, hidden.ID) || next.Submissions[0].Status != "queued" {
-		t.Fatalf("queued %#v %v", next, err)
-	}
 	// A user send to a session that is not running is refused, durably.
 	var refused *domain.DeliveryError
 	if _, err = service.SubmitMessage(ctx, session.ID, domain.SubmissionRequest{RequestID: "user", Text: "hello"}); !errors.As(err, &refused) || refused.Code != domain.DeliverySessionNotRunning {
 		t.Fatalf("held chat send = %v", err)
-	}
-	if _, err = service.ListSubmissions(ctx, session.ID, domain.SequenceQuery{Limit: 201}); err == nil {
-		t.Fatal("unbounded page accepted")
 	}
 	if err = service.archiveChat(ctx, session, "discarded"); err != nil {
 		t.Fatal(err)
@@ -444,9 +434,6 @@ func TestCrossClientDiscoveryKickoffReceiptAndEmptyArchive(t *testing.T) {
 	}
 	if _, err = service.ReadConversation(ctx, session.ID, domain.ConversationQuery{}); err != nil {
 		t.Fatal("empty retained archive unreadable", err)
-	}
-	if _, err = service.ListSubmissions(ctx, session.ID, domain.SequenceQuery{}); err != nil {
-		t.Fatal(err)
 	}
 	if _, err = service.ReadConversation(ctx, "unknown", domain.ConversationQuery{}); err == nil {
 		t.Fatal("unknown archive accepted")

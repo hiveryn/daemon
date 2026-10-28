@@ -1,0 +1,28 @@
+{
+  "ticket": "2026-10-28-0744-remove-chat-archive-and-submission-read-endpoints",
+  "date": "2026-10-28",
+  "environment": "Isolated: daemon built from the working tree with a private HIVERYN_HOME on 127.0.0.1:49477 (chat-ui-poc scripts/isolated-daemon.py, deterministic Codex fixture provider, no credentials, no model calls); POC dev server from a separate worktree (branch single-client) on 127.0.0.1:3291; headless Chromium via Playwright. Live daemon 4201 and UI 3217 were not touched.",
+  "provider_evidence": "Fixture only; no real-provider probe (endpoint removal changes no provider route).",
+  "removed_routes": {
+    "daemon GET /api/archived-chats": 404,
+    "daemon GET /api/sessions/{id}/submissions": 404,
+    "daemon GET /api/sessions/{id}/submissions/{submissionID}": 404,
+    "poc proxy (same three)": "refused (404)",
+    "ui requests to removed routes during the full flow": 0
+  },
+  "ui_flow": [
+    "Session list shows Architect and Workers only (no ended-session group); worker selected; kickoff rendered first",
+    "Synchronous send accepted; reply shown by conversation polling",
+    "FIXTURE_SLOW_ACCEPT answered DELIVERY_UNKNOWN (504) after the 20 s bound; following send refused SESSION_BUSY with text retained",
+    "Reload kept both request identities and texts",
+    "Unknown send reconciled to accepted by repeating the same request ID; exactly one native user item for its submission",
+    "Refused text sent again under a new request ID; delivered once",
+    "Response lost before admission (POST aborted in the browser): NO_RESPONSE, reload, Check delivery with the same ID delivered it once",
+    "Response lost after admission: same-ID check reconciled to accepted; three concurrent duplicate replays returned the same receipt; one native delivery",
+    "Native order: kickoff, hello, FIXTURE_SLOW_ACCEPT, refused text, lost before admission, lost after admission (API sequence and rendered order)",
+    "Selected worker concluded via the desktop route: view shows Session ended, header badge Ended, no composer/controls, worker gone from list, no further requests for it over 6 s, no polling errors, last history still shown",
+    "Architect selectable afterwards; after reload the ended worker is not offered; mobile 390x844 rendered"
+  ],
+  "result": "passed (final clean replay on a fresh worker session)",
+  "daemon_smoke": "python3 scripts/conversation-smoke.py passed (now asserts the removed routes are 404 and reconciles via same-ID POST)"
+}

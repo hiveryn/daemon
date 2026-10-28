@@ -165,6 +165,24 @@ func TestSessionsListEndpoint(t *testing.T) {
 	}
 }
 
+// The single-client conversation API has no archive or receipt reads: a send
+// is reconciled by repeating POST /messages and history comes from
+// GET /conversation.
+func TestRemovedConversationReadRoutesAreNotRegistered(t *testing.T) {
+	t.Parallel()
+
+	handler := newSessionTestHandler(t, &fakeSessionService{})
+	for _, path := range []string{
+		"/api/archived-chats",
+		"/api/sessions/session-1/submissions",
+		"/api/sessions/session-1/submissions/submission-1",
+	} {
+		if status, body := request(t, handler, http.MethodGet, path, nil); status != http.StatusNotFound {
+			t.Fatalf("GET %s = %d, want 404: %s", path, status, string(body))
+		}
+	}
+}
+
 func TestSessionWebSocketBridge(t *testing.T) {
 	t.Parallel()
 

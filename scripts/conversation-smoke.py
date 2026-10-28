@@ -137,8 +137,20 @@ def main():
             launch = call(prefix + '/runs', {'profile_name': 'fixture'}, 201)
             assert 'main_terminal_id' not in launch and 'ws_url' not in launch
             assert any(s['id'] == sid and s['conversation']['send'] for s in call('/api/sessions')['sessions'])
+            # Receipts are not readable on their own: repeating a send's request
+            # ID replays its current receipt and never sends it again.
+            def replayed(receipt):
+                return call(prefix + '/messages', {'request_id': receipt['request_id'], 'text': receipt['text']})
+
+            def history():
+                page = call(prefix + '/conversation?limit=200')
+                items = page['items']
+                while page['has_more']:
+                    page = call(prefix + f'/conversation?limit=200&after_revision={page["next_revision"]}&snapshot_revision={page["snapshot_revision"]}')
+                    items.extend(page['items'])
+                return {i['id']: i for i in items}.values()
             # The kickoff runs first; user input is never queued behind it.
-            wait(lambda: all(s['status'] == 'completed' for s in call(prefix + '/submissions')['submissions']))
+            wait(lambda: any(i['role'] == 'assistant' and i.get('text') == 'ACK' for i in history()))
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
                 results = list(pool.map(lambda i: call(prefix + '/messages', {'request_id': f'input-{i}', 'text': f'hello {i}'}, None), range(8)))
             accepted = [r for r in results if r['status'] == 200]
@@ -154,19 +166,18 @@ def main():
             again = call(prefix + '/messages', {'request_id': rejected['request_id'], 'text': rejected['text']}, 409)
             assert again['error']['code'] == 'SESSION_BUSY' and again['error']['details']['submission']['id'] == rejected['id']
             call(prefix + '/messages', {'request_id': receipt['request_id'], 'text': 'different'}, 409)
-            wait(lambda: call(prefix + '/submissions/' + receipt['id'])['status'] == 'completed')
+            wait(lambda: replayed(receipt)['status'] == 'completed')
             receipts = [receipt] + [r['error']['details']['submission'] for r in busy]
-            submissions = []
-            sp = call(prefix + '/submissions?limit=2')
-            while True:
-                submissions.extend(sp['submissions'])
-                if not sp['has_more']:
-                    break
-                sp = call(prefix + f'/submissions?limit=2&after_sequence={sp["next_sequence"]}')
-            assert len(submissions) == 9 and len({s['id'] for s in submissions}) == 9
-            assert sum(s['status'] == 'rejected' for s in submissions) == 7
-            assert all(s['text'] == '' for s in submissions if s['origin'] == 'kickoff')
-            call(prefix + '/submissions?after_sequence=-1', expected=400)
+            assert len({r['id'] for r in receipts}) == 8
+            # Refused sends never entered the conversation.
+            assert not any(i.get('submission_id') == r['id'] for i in history() for r in receipts[1:])
+            # The removed archive and receipt reads are not routes.
+            for removed in ['/api/archived-chats', prefix + '/submissions', prefix + '/submissions/' + receipt['id']]:
+                try:
+                    urllib.request.urlopen(base + removed, timeout=30).close()
+                    raise AssertionError(f'{removed} is still served')
+                except urllib.error.HTTPError as error:
+                    assert error.code == 404, (removed, error.code)
             page = call(prefix + '/conversation?limit=2')
             snapshot = page['snapshot_revision']
             items = page['items']
@@ -174,7 +185,10 @@ def main():
                 page = call(prefix + f'/conversation?limit=2&after_revision={page["next_revision"]}&snapshot_revision={snapshot}')
                 items.extend(page['items'])
             assert any(item['role'] == 'assistant' and item.get('text') == 'ACK' for item in items)
-            assert all('Synthetic fixture.' not in item.get('text', '') for item in items)
+            # The recorded kickoff (with the injected Overview) is shown verbatim
+            # under kickoff provenance; nothing else carries it.
+            assert any(i.get('origin') == 'kickoff' and 'Synthetic fixture.' in i.get('text', '') for i in items)
+            assert all('Synthetic fixture.' not in i.get('text', '') for i in items if i.get('origin') != 'kickoff')
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 question = pool.submit(call, prefix + '/questions', {'question': 'Fixture choice?', 'answers': ['A', 'B'], 'recommended_index': 0})
                 required = wait(lambda: next((e for e in call(prefix + '/controls')['events'] if e['type'] == 'question' and e['status'] == 'required'), None))
@@ -183,27 +197,22 @@ def main():
             stop()
             start()
             receipt = call(prefix + '/messages', {'request_id': 'resumed', 'text': 'resumed hello'})
-            wait(lambda: call(prefix + '/submissions/' + receipt['id'])['status'] == 'completed')
+            wait(lambda: replayed(receipt)['status'] == 'completed')
             accepted = call(prefix + '/messages', {'request_id': 'discarded', 'text': 'in flight'})
             call(prefix + '/discard', {})
-            settled = call(prefix + '/submissions/' + accepted['id'])
+            # The ended session still replays its recorded outcome by request ID.
+            settled = replayed(accepted)
+            assert settled['id'] == accepted['id']
             assert settled['status'] in ['failed', 'completed'] and settled['accepted_at']
-            replay = call(prefix + '/messages', {'request_id': 'discarded', 'text': 'in flight'})
-            assert replay['id'] == accepted['id']
-            archives = call('/api/archived-chats?architect_key=fixture&limit=1')
-            assert len(archives['chats']) == 1 and archives['chats'][0]['id'] == sid
-            assert archives['chats'][0]['lifecycle'] == 'discarded'
-            assert archives['chats'][0]['agent'] == 'codex'
             assert not any(s['id'] == sid for s in call('/api/sessions')['sessions'])
             assert call(prefix + '/messages', {'request_id': 'new-after-end', 'text': 'must not run'}, 409)['error']['code'] == 'SESSION_ARCHIVED'
             call(prefix + '/runs', {'profile_name': 'fixture'}, 404)
             retained = call(prefix + '/conversation')
             assert not any(i['role'] == 'tool' and i['status'] == 'started' for i in {i['id']: i for i in retained['items']}.values())
-            assert call(prefix + '/submissions')['submissions']
             stop()
             start()
-            assert call('/api/archived-chats')['chats'][0]['lifecycle'] == 'discarded'
-            evidence['archived_chat'] = archives['chats'][0]
+            # Retained history stays readable by known ID across a restart.
+            assert call(prefix + '/conversation')['items']
             evidence.update(result='passed' , receipts=receipts, snapshot_revision=snapshot, discarded=settled)
             stop()
         (root / 'evidence.json').write_text(json.dumps(evidence, indent=2))
