@@ -198,7 +198,8 @@ func (s *SessionStore) PutConversationItem(ctx context.Context, sid string, item
 		if !old.At.IsZero() {
 			item.At = old.At
 		}
-		if old.Text == item.Text && old.Status == item.Status && old.Tool == item.Tool && old.NativeTurnID == item.NativeTurnID {
+		if old.Text == item.Text && old.Status == item.Status && old.Tool == item.Tool && old.NativeTurnID == item.NativeTurnID &&
+			old.Origin == item.Origin && old.Via == item.Via && old.NativeOrigin == item.NativeOrigin && old.SubmissionID == item.SubmissionID {
 			return nil
 		}
 	} else if !errors.Is(err, sql.ErrNoRows) {

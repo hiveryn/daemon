@@ -335,34 +335,39 @@ func classifyTerminalInput(session domain.Session, item agentruntime.HistoryItem
 			return terminalInput{via: "api", submission: sub.ID, text: sub.Text}
 		}
 	}
+	// The launch message: the stored kickoff, followed for workers by the
+	// injected Overview/workflows. The record's own text is kept verbatim.
+	if prompt := strings.TrimSpace(session.Prompt); prompt != "" && strings.HasPrefix(strings.TrimSpace(text), prompt) {
+		return terminalInput{via: "kickoff", text: text}
+	}
 	// Outbox notifications (messageText); Claude prefixes hook text with its
 	// own label, which is not part of the message.
 	if at := strings.Index(text, "Hiveryn message "); at >= 0 && at < 200 {
 		return terminalInput{via: "notification", text: strings.TrimSpace(text[at:])}
 	}
-	if prompt := strings.TrimSpace(session.Prompt); prompt != "" && strings.HasPrefix(strings.TrimSpace(text), prompt) {
-		return terminalInput{via: "kickoff"}
-	}
 	return terminalInput{via: "terminal", text: text}
 }
 
 // classifyTerminalHistory turns native items into conversation items. The
-// launch prompt (role/kickoff instructions and injected context) is hidden;
-// API submissions show the text the client submitted, without correlation
-// framing, and name their submission; items of a submission's turn name it too.
+// launch message is shown as recorded with kickoff provenance, and the items
+// of its turn carry origin kickoff; API submissions show the text the client
+// submitted, without correlation framing, and name their submission; items of
+// a submission's turn name it too.
 func (s *Service) classifyTerminalHistory(session domain.Session, history agentruntime.History, subs map[string]domain.Submission) []domain.ConversationItem {
 	turnSubmission := map[string]string{}
+	kickoffTurn := map[string]bool{}
 	out := make([]domain.ConversationItem, 0, len(history.Items))
 	for _, item := range history.Items {
 		ci := domain.ConversationItem{ID: item.ID, NativeTurnID: item.TurnID, Role: item.Role, Origin: "user", Text: item.Text, Tool: item.Tool, Status: item.Status, At: item.At}
 		if item.Role == "user" {
 			input := classifyTerminalInput(session, item, subs)
-			if input.via == "kickoff" {
-				continue
-			}
 			ci.Via, ci.NativeOrigin, ci.Text = input.via, item.NativeOrigin, input.text
-			if input.via == "notification" {
-				ci.Origin = "notification"
+			switch input.via {
+			case "notification", "kickoff":
+				ci.Origin = input.via
+			}
+			if input.via == "kickoff" && item.TurnID != "" {
+				kickoffTurn[item.TurnID] = true
 			}
 			if input.submission != "" && item.TurnID != "" {
 				turnSubmission[item.TurnID] = input.submission
@@ -370,6 +375,9 @@ func (s *Service) classifyTerminalHistory(session domain.Session, history agentr
 			ci.SubmissionID = input.submission
 		} else {
 			ci.SubmissionID = turnSubmission[item.TurnID]
+			if kickoffTurn[item.TurnID] {
+				ci.Origin = "kickoff"
+			}
 		}
 		out = append(out, ci)
 	}

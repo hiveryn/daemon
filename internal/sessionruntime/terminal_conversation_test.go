@@ -150,7 +150,7 @@ func (f *terminalFixture) history2(sessionID string) []domain.ConversationItem {
 	return out
 }
 
-func TestClassifyTerminalInputKeepsProvenanceAndHidesTheKickoff(t *testing.T) {
+func TestClassifyTerminalInputKeepsProvenanceAndTheRecordedKickoff(t *testing.T) {
 	session := domain.Session{Prompt: "  # Project: lab\n\nKICKOFF  "}
 	subs := map[string]domain.Submission{
 		"sub-claude": {ID: "sub-claude", Text: "hello from the phone"},
@@ -162,7 +162,9 @@ func TestClassifyTerminalInputKeepsProvenanceAndHidesTheKickoff(t *testing.T) {
 		item agentruntime.HistoryItem
 		want terminalInput
 	}{
-		{"kickoff with injected context", agentruntime.HistoryItem{Text: "# Project: lab\n\nKICKOFF\n\n<document>overview</document>"}, terminalInput{via: "kickoff"}},
+		{"kickoff with injected context", agentruntime.HistoryItem{Text: "# Project: lab\n\nKICKOFF\n\n<document>overview</document>"}, terminalInput{via: "kickoff", text: "# Project: lab\n\nKICKOFF\n\n<document>overview</document>"}},
+		{"kickoff whose injected context quotes a notification", agentruntime.HistoryItem{Text: "# Project: lab\n\nKICKOFF\n\nHiveryn message m-0: quoted"}, terminalInput{via: "kickoff", text: "# Project: lab\n\nKICKOFF\n\nHiveryn message m-0: quoted"}},
+		{"text merely containing the kickoff is not the kickoff", agentruntime.HistoryItem{Text: "again: # Project: lab\n\nKICKOFF"}, terminalInput{via: "terminal", text: "again: # Project: lab\n\nKICKOFF"}},
 		{"claude rewake behind Claude's own label", agentruntime.HistoryItem{Text: `Stop hook blocking error from command "Stop": ` + claudeInputHeader + "sub-claude — a message from the user ...:\n\nhello from the phone", NativeOrigin: "task_notification"}, terminalInput{via: "api", submission: "sub-claude", text: "hello from the phone"}},
 		{"unknown claude header stays terminal text", agentruntime.HistoryItem{Text: claudeInputHeader + "sub-other — x"}, terminalInput{via: "terminal", text: claudeInputHeader + "sub-other — x"}},
 		{"codex client id", agentruntime.HistoryItem{Ref: "sub-codex", Text: "codex input"}, terminalInput{via: "api", submission: "sub-codex", text: "codex input"}},
@@ -247,15 +249,18 @@ func TestCodexTerminalSubmissionQueuesNativelyAndCompletesFromItsTurn(t *testing
 
 	var got []string
 	for _, item := range f.history2(session.ID) {
-		got = append(got, strings.Join([]string{item.ID, item.Role, item.Via, item.NativeOrigin, item.SubmissionID, item.Text}, "|"))
+		got = append(got, strings.Join([]string{item.ID, item.Role, item.Origin, item.Via, item.NativeOrigin, item.SubmissionID, item.Text}, "|"))
 	}
+	// The recorded kickoff is shown verbatim (injected context included) with
+	// kickoff provenance on its whole turn.
 	want := []string{
-		"am0|assistant||||READY",
-		"turn:t0|system||||",
-		"um1|user|terminal|user||remember PLUM",
-		"um2|user|api|queue|" + sub.ID + "|what did I say?",
-		"am2|assistant|||" + sub.ID + "|PLUM",
-		"turn:t2|system|||" + sub.ID + "|",
+		"um0|user|kickoff|kickoff|user||# Project: hiveryn\n\nKICKOFF\n\ncontext",
+		"am0|assistant|kickoff||||READY",
+		"turn:t0|system|kickoff||||",
+		"um1|user|user|terminal|user||remember PLUM",
+		"um2|user|user|api|queue|" + sub.ID + "|what did I say?",
+		"am2|assistant|user|||" + sub.ID + "|PLUM",
+		"turn:t2|system|user|||" + sub.ID + "|",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("history:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))

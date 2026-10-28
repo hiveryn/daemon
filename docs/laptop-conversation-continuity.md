@@ -21,7 +21,8 @@ outbox). The conversation API uses exactly those:
   the existing version feed. Inputs are classified by the daemon: typed in the
   TUI (`via: terminal`), API submission (`api`, correlated by Codex
   `client_id`, OpenCode message id or a header Claude carries in its hook text),
-  outbox notification, or the hidden launch prompt. The provider's own
+  outbox notification, or the launch message (`kickoff`, shown verbatim as
+  recorded, injected Overview/workflows included). The provider's own
   provenance is kept unmodified in `native_origin`.
 - **Send**: synchronous delivery through the provider route (28 October, below),
   one hand-off per session shared with the outbox, reservation before hand-off,

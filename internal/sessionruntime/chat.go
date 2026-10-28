@@ -192,10 +192,21 @@ func (s *Service) GetSubmission(ctx context.Context, id, submissionID string) (d
 			sub.Error = "Waiting for submission " + head.ID + " (" + head.Status + "): " + head.Error
 		}
 	}
-	if sub.Origin == "kickoff" {
-		sub.Text = ""
-	}
 	return sub, err
+}
+
+// chatItem is the conversation item of one native event of sub's turn. A user
+// item is the provider's echo of the input; via names how that input entered
+// (the kickoff, an API submission or an outbox notification).
+func chatItem(sub domain.Submission, e agentruntime.ConversationEvent) domain.ConversationItem {
+	item := domain.ConversationItem{ID: e.ID, SubmissionID: sub.ID, NativeTurnID: e.TurnID, Role: e.Role, Origin: sub.Origin, Text: e.Text, Tool: e.Tool, Status: e.Status, At: e.At}
+	if e.Role == "user" {
+		item.Via = sub.Origin
+		if sub.Origin == "user" {
+			item.Via = "api"
+		}
+	}
+	return item
 }
 func (s *Service) ReadConversation(ctx context.Context, id string, q domain.ConversationQuery) (domain.ConversationPage, error) {
 	if q.AfterRevision < 0 || q.SnapshotRevision < 0 || q.Limit < 0 || q.Limit > 200 {
@@ -469,8 +480,8 @@ func (s *Service) launchChat(ctx context.Context, session domain.Session, run do
 			return err
 		}
 	} else {
-		// Queue the unchanged launch prompt before exposing the live session. It
-		// remains internal context and is never returned as conversation text.
+		// Queue the unchanged launch prompt before exposing the live session. Its
+		// native echo is the kickoff shown in the conversation.
 		if _, _, err = repo.InsertSubmission(ctx, session.ID, domain.SubmissionRequest{RequestID: "kickoff:" + run.ID, Text: req.Prompt}, "kickoff", domain.SubmissionQueued, "", ""); err != nil {
 			_ = stdout.Close()
 			_ = s.stopChat(context.Background(), session.ID, false)
@@ -538,10 +549,10 @@ func (s *Service) runChat(ctx context.Context, session domain.Session, run domai
 						sub.Error = e.Text
 					}
 				}
-				// Hide the kickoff and its native user echo. Public history includes only
-				// user/assistant/tool output, not the role/workflow instruction material.
-				if (sub.Origin != "kickoff" || e.Role != "user") && e.ID != "" {
-					if err := repo.PutConversationItem(ctx, session.ID, domain.ConversationItem{ID: e.ID, SubmissionID: sub.ID, NativeTurnID: e.TurnID, Role: e.Role, Origin: sub.Origin, Text: e.Text, Tool: e.Tool, Status: e.Status, At: e.At}); err != nil {
+				// The native user echo is the recorded input, the kickoff's
+				// included; its submission's origin names how it entered.
+				if e.ID != "" {
+					if err := repo.PutConversationItem(ctx, session.ID, chatItem(*sub, e)); err != nil {
 						return err
 					}
 				}
@@ -746,7 +757,7 @@ func (s *Service) reconcileChat(ctx context.Context, id string, conn agentruntim
 		return err
 	}
 	for _, e := range events {
-		if err = repo.PutConversationItem(ctx, id, domain.ConversationItem{ID: e.ID, SubmissionID: sub.ID, NativeTurnID: e.TurnID, Role: e.Role, Origin: sub.Origin, Text: e.Text, Tool: e.Tool, Status: e.Status, At: e.At}); err != nil {
+		if err = repo.PutConversationItem(ctx, id, chatItem(*sub, e)); err != nil {
 			return err
 		}
 		if e.Complete {
@@ -826,9 +837,6 @@ func (s *Service) ListSubmissions(ctx context.Context, id string, q domain.Seque
 	chat := s.isChatSession(ctx, id)
 	for i := range page.Submissions {
 		sub := &page.Submissions[i]
-		if sub.Origin == "kickoff" {
-			sub.Text = ""
-		}
 		if chat && sub.Status == "queued" && head != nil && head.ID != sub.ID && holdsChat(head.Status) {
 			sub.Error = "Waiting for submission " + head.ID + " (" + head.Status + "): " + head.Error
 		}

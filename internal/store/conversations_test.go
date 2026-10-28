@@ -130,6 +130,18 @@ func TestConversationRevisionSnapshotSurvivesUpdatesAndCompaction(t *testing.T) 
 	if err != nil || len(all.Items) != 4 {
 		t.Fatalf("history lost: %#v %v", all, err)
 	}
+	// Provenance is part of an item's content: an unchanged put adds no
+	// revision, a changed origin/via does.
+	if err = repo.PutConversationItem(ctx, "s", domain.ConversationItem{ID: "1", Text: "original", Role: "assistant"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.PutConversationItem(ctx, "s", domain.ConversationItem{ID: "1", Text: "original", Role: "user", Origin: "kickoff", Via: "kickoff"}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := repo.ReadConversation(ctx, "s", domain.ConversationQuery{AfterRevision: all.SnapshotRevision})
+	if err != nil || len(after.Items) != 1 || after.Items[0].Via != "kickoff" || after.Items[0].Origin != "kickoff" {
+		t.Fatalf("provenance revision: %#v %v", after, err)
+	}
 }
 
 func TestChatArchiveRetainsIdentityAndInterruptsWithoutSuccess(t *testing.T) {

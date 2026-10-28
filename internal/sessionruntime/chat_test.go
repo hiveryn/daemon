@@ -212,6 +212,65 @@ func TestChatSendIsAcceptedSynchronouslyOrRejectedWhileBusy(t *testing.T) {
 	}
 }
 
+func TestChatKickoffEchoIsShownOnceWithKickoffProvenance(t *testing.T) {
+	ctx := context.Background()
+	h := newChatHarness(t, ctx, true)
+	// A large launch message with injected context and markup-like text: the
+	// recorded echo is kept verbatim and in full.
+	kickoff := "# Project: lab\n\nKICKOFF\n\n<document name=\"OVERVIEW.md\">\n<script>alert(1)</script>\n" + strings.Repeat("overview line\n", 30000) + "</document>"
+	sub, _, err := h.repo.InsertSubmission(ctx, "chat", domain.SubmissionRequest{RequestID: "kickoff:" + h.run.ID, Text: kickoff}, "kickoff", domain.SubmissionQueued, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.service.wakeChat("chat")
+	if in := <-h.conn.entered; in.ID != sub.ID || in.Text != kickoff || in.Origin != "kickoff" {
+		t.Fatalf("kickoff turn input %#v", in.ID)
+	}
+	h.conn.release <- nil
+	waitFor(t, func() bool {
+		got, _ := h.repo.GetSubmission(ctx, "chat", sub.ID)
+		return got.Status == domain.SubmissionCompleted
+	})
+	user := postMessage(t, h.url, "after", "hello")
+	if user.status != 200 {
+		t.Fatalf("send after kickoff %#v", user)
+	}
+	<-h.conn.entered
+	h.conn.release <- nil
+	waitFor(t, func() bool {
+		got, _ := h.repo.GetSubmission(ctx, "chat", user.data.ID)
+		return got.Status == domain.SubmissionCompleted
+	})
+	for range 2 { // repeated polls neither duplicate nor re-revise
+		page, err := h.service.ReadConversation(ctx, "chat", domain.ConversationQuery{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, item := range page.Items {
+			text := item.Text
+			if item.Role == "user" && item.Origin == "kickoff" {
+				if text != kickoff {
+					t.Fatalf("kickoff text truncated or altered: %d of %d bytes", len(text), len(kickoff))
+				}
+				text = "<kickoff>"
+			}
+			got = append(got, strings.Join([]string{item.Role, item.Origin, item.Via, item.SubmissionID, text}, "|"))
+		}
+		want := []string{
+			"user|kickoff|kickoff|" + sub.ID + "|<kickoff>",
+			"tool|kickoff||" + sub.ID + "|fixture tool failed",
+			"system|kickoff||" + sub.ID + "|",
+			"user|user|api|" + user.data.ID + "|hello",
+			"tool|user||" + user.data.ID + "|fixture tool failed",
+			"system|user||" + user.data.ID + "|",
+		}
+		if strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Fatalf("history:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	}
+}
+
 func TestChatSendWithoutAcceptanceIsUnknownAndUntakenIsRejected(t *testing.T) {
 	bound := submitDeliveryBound
 	submitDeliveryBound = 200 * time.Millisecond
@@ -324,7 +383,7 @@ func TestChatLaunchDiagnosticsRedactConfiguredCredentials(t *testing.T) {
 	}
 }
 
-func TestCrossClientDiscoveryRedactionAndEmptyArchive(t *testing.T) {
+func TestCrossClientDiscoveryKickoffReceiptAndEmptyArchive(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -353,8 +412,13 @@ func TestCrossClientDiscoveryRedactionAndEmptyArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	page, err := service.ListSubmissions(ctx, session.ID, domain.SequenceQuery{Limit: 1})
-	if err != nil || len(page.Submissions) != 1 || page.Submissions[0].Text != "" || !page.HasMore {
-		t.Fatalf("redaction %#v %v", page, err)
+	// The kickoff receipt carries its recorded launch text; it asserts no
+	// acceptance it does not have.
+	if err != nil || len(page.Submissions) != 1 || page.Submissions[0].Text != "PRIVATE INSTRUCTIONS" || page.Submissions[0].AcceptedAt != nil || !page.HasMore {
+		t.Fatalf("kickoff receipt %#v %v", page, err)
+	}
+	if got, err := service.GetSubmission(ctx, session.ID, hidden.ID); err != nil || got.Text != "PRIVATE INSTRUCTIONS" {
+		t.Fatalf("kickoff receipt read %#v %v", got, err)
 	}
 	next, err := service.ListSubmissions(ctx, session.ID, domain.SequenceQuery{AfterSequence: page.NextSequence})
 	if err != nil || len(next.Submissions) != 1 || !strings.Contains(next.Submissions[0].Error, hidden.ID) || next.Submissions[0].Status != "queued" {

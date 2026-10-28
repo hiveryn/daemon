@@ -142,8 +142,9 @@ transcript — the asyncRewake waiter taking it is not enough), Codex terminal
 `opencode_prompt_async` (the TUI server answered 2xx), chat `claude_stream_output`,
 `codex_turn_start` or `opencode_prompt_async` (the structured transport's first
 output for the input), and `native_record` when an unknown input was later found
-in the record (or for receipts migrated at the cutover). Internal kickoff text is
-redacted in receipt reads.
+in the record (or for receipts migrated at the cutover). A chat kickoff receipt
+carries the launch text recorded when it was queued; that alone asserts no
+acceptance (its acceptance fields follow the turn like any other entry).
 
 This is bounded evidence, not exactly-once execution: a provider can accept input
 whose response is lost. Such input is `unknown`, never replayed. A chat whose
@@ -170,9 +171,22 @@ The page contains `items`, `snapshot_revision`, `next_revision`, `has_more`.
 Each item has stable `id`, `sequence`, `revision`, `submission_id`, native turn ID
 when known, `role`, `origin`, `status`, available timestamp, text and tool name.
 Roles are `user`, `assistant`, `tool`, `system`; origins are `user`, `kickoff`,
-`notification`. Native SDK user messages are not relabelled as terminal human
-input. Internal notifications are explicitly labelled even when the provider's
-structured transport represents their input as a user message.
+`notification` (every item of a turn carries its input's origin). User items carry
+`via`: `terminal`, `api`, `notification` or `kickoff`. Native SDK user messages
+are not relabelled as terminal human input. Internal notifications are explicitly
+labelled even when the provider's structured transport represents their input as
+a user message.
+
+**Kickoff.** The launch message is conversation content: the user item with
+`origin`/`via` `kickoff` is the provider's own record of it (terminal: the native
+transcript/rollout/database entry; chat: the transport's echo of the queued
+launch text), verbatim and complete, including the Overview and selected
+workflows injected into a worker's first message. Its replies and tools follow in
+the same turn. It appears once per launch (a stable native id; a later run of the
+same session that launches again records its own kickoff). Separate role
+instructions (SYSTEM/developer prompts), hidden reasoning, hook plumbing and
+credentials are never part of it. Nothing is reconstructed: a session whose
+record (or, for chat, stored history) has no kickoff entry shows none.
 
 This endpoint is an append-only **version feed**, not a list of just new messages:
 upsert items by `id`, retain the greatest revision, display by `sequence`.
@@ -185,7 +199,7 @@ session deletion; unknown/unsupported session history returns an explicit error.
 Retention pruning is not implemented in V1.
 
 Only visible message text/tool output is normalized. Hidden reasoning, raw
-provider payloads, launch instructions and kickoff user echoes are excluded.
+provider payloads and role instructions (SYSTEM/developer prompts) are excluded.
 Tool failures retain their own status separately from the enclosing turn.
 Conversation records have the same local trust boundary as other daemon state;
 tools can of course produce sensitive user-requested output.
@@ -264,8 +278,8 @@ returns `{submissions, next_sequence, has_more}`. Follow `next_sequence` while
 are 1–200; omitted/zero uses 100. Negative cursors and limits over 200 are rejected.
 This is a live receipt list, not a revision snapshot: restart at zero to refresh
 old statuses, or poll known receipt IDs. New clients discover other clients'
-sends (including unknown ones to reconcile) without browser storage. Kickoff text
-is redacted and internal queued entries include the holding head's reason.
+sends (including unknown ones to reconcile) without browser storage. Internal
+queued entries include the holding head's reason.
 Discovering a receipt never sends or replays it.
 
 `GET /api/archived-chats?architect_key=PROJECT&after_sequence=0&limit=100`
@@ -287,7 +301,7 @@ successful results remain unchanged. Late native output cannot resurrect archive
 activity. A conclusion tool interrupted by its own session end is not claimed to
 have returned native success. Tool names are retained across result revisions.
 Claude string and text-block user echoes share stable UUID-based IDs; internal
-origins remain labelled and kickoff echoes/hidden thinking stay excluded.
+origins remain labelled; hidden thinking stays excluded.
 
 Migration 0018 adds retained archive discovery. Sessions already deleted before
 that migration cannot be reliably backfilled: their metadata is gone. Their
@@ -332,13 +346,13 @@ running turn.
 
 History is read from the native record (Claude transcript, Codex rollout
 segments, OpenCode database) into the same version feed on each read and while
-input is open. User items carry `via` (`terminal` typed in the TUI, `api`, or
-`notification` for the outbox) and the unmodified `native_origin`. API items
-show the submitted text and `submission_id`; items of that native turn carry
-it too. The launch prompt (role/kickoff instructions, injected Overview and
-workflows) is hidden; developer instructions, hidden reasoning and hook
-plumbing are never read. An unreadable record is an error, never an empty
-page.
+input is open. User items carry `via` (`terminal` typed in the TUI, `api`,
+`notification` for the outbox, or `kickoff`) and the unmodified `native_origin`.
+API items show the submitted text and `submission_id`; items of that native turn
+carry it too. The launch message (the kickoff, with a worker's injected Overview
+and workflows) is shown as recorded with `via`/`origin` `kickoff`; developer
+instructions, hidden reasoning and hook plumbing are never read. An unreadable
+record is an error, never an empty page.
 
 Sends are synchronous with the same codes, replay/conflict rules and receipts
 as above. Per route:

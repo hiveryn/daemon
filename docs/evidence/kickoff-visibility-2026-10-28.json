@@ -1,0 +1,583 @@
+{
+ "ticket": "2026-10-28-0232-show-recorded-kickoff-in-chat-conversation-history",
+ "date": "2026-10-28",
+ "setup": "Isolated hiverynd built from this checkout (scripts/continuity_lab.py: private HIVERYN_HOME, loopback port, per-provider config roots). Synthetic workspaces: OVERVIEW.md with a marker, a '<b>markup stays text</b>' line and 300 filler lines; workflow LAB_FLOW selected for workers. Per provider: terminal architect, terminal worker, chat worker. One API send ('Reply with exactly: PONG') to each architect and chat worker.",
+ "cli": {
+  "claude": "2.1.312 (sonnet)",
+  "codex": "codex-cli 0.164.0 (gpt-5.6-sol)",
+  "opencode": "1.19.4 (terminal deepseek/deepseek-v4-flash; chat deepseek/deepseek-v4-pro)"
+ },
+ "api_checks": "kickoff_items: exactly one user item with via/origin kickoff; ids/revisions identical across two full reads; no new revision after the snapshot; text starts with the stored session prompt; workers' text contains the Overview marker, the <workflow name=\"LAB_FLOW\"> block and the markup line verbatim; every item of the kickoff turn has origin kickoff; no long line of the session's SYSTEM instructions appears in any item.",
+ "sessions": {
+  "codex/architect-terminal": {
+   "interaction_mode": "terminal",
+   "session_type": "architect",
+   "kickoff_items": 1,
+   "kickoff_ids_stable": true,
+   "kickoff_revision_stable": true,
+   "delta_after_snapshot": 0,
+   "kickoff_origin": "kickoff",
+   "native_origin": "user",
+   "kickoff_bytes": 59,
+   "starts_with_session_prompt": true,
+   "has_overview_marker": false,
+   "has_workflow_block": false,
+   "markup_kept_as_text": false,
+   "kickoff_first_in_turn": true,
+   "turn_items_origin": [
+    "kickoff"
+   ],
+   "turn_roles": [
+    "user",
+    "assistant",
+    "tool",
+    "tool",
+    "assistant",
+    "system"
+   ],
+   "instructions_absent": true,
+   "other_user_items": [
+    {
+     "via": "api",
+     "origin": "user",
+     "native_origin": "queue",
+     "text": "Reply with exactly: PONG"
+    }
+   ],
+   "assistant_after_kickoff": [
+    "I\u2019m loading the project brief, repositor",
+    "READY"
+   ]
+  },
+  "codex/worker-terminal": {
+   "interaction_mode": "terminal",
+   "session_type": "ticket",
+   "kickoff_items": 1,
+   "kickoff_ids_stable": true,
+   "kickoff_revision_stable": true,
+   "delta_after_snapshot": 0,
+   "kickoff_origin": "kickoff",
+   "native_origin": "user",
+   "kickoff_bytes": 18072,
+   "starts_with_session_prompt": true,
+   "has_overview_marker": true,
+   "has_workflow_block": true,
+   "markup_kept_as_text": true,
+   "kickoff_first_in_turn": true,
+   "turn_items_origin": [
+    "kickoff"
+   ],
+   "turn_roles": [
+    "user",
+    "assistant",
+    "tool",
+    "assistant",
+    "system"
+   ],
+   "instructions_absent": true,
+   "other_user_items": [],
+   "assistant_after_kickoff": [
+    "I\u2019ll read the ticket and follow the sele",
+    "READY"
+   ]
+  },
+  "codex/worker-chat": {
+   "interaction_mode": "chat",
+   "session_type": "ticket",
+   "kickoff_items": 1,
+   "kickoff_ids_stable": true,
+   "kickoff_revision_stable": true,
+   "delta_after_snapshot": 0,
+   "kickoff_origin": "kickoff",
+   "native_origin": null,
+   "kickoff_bytes": 18072,
+   "starts_with_session_prompt": true,
+   "has_overview_marker": true,
+   "has_workflow_block": true,
+   "markup_kept_as_text": true,
+   "kickoff_first_in_turn": false,
+   "turn_items_origin": [
+    "kickoff"
+   ],
+   "turn_roles": [
+    "system",
+    "user",
+    "assistant",
+    "tool",
+    "assistant",
+    "system"
+   ],
+   "instructions_absent": true,
+   "other_user_items": [
+    {
+     "via": "api",
+     "origin": "user",
+     "native_origin": null,
+     "text": "Reply with exactly: PONG"
+    }
+   ],
+   "assistant_after_kickoff": [
+    "I\u2019m reading the ticket now and will foll",
+    "READY"
+   ]
+  },
+  "opencode/architect-terminal": {
+   "interaction_mode": "terminal",
+   "session_type": "architect",
+   "kickoff_items": 1,
+   "kickoff_ids_stable": true,
+   "kickoff_revision_stable": true,
+   "delta_after_snapshot": 0,
+   "kickoff_origin": "kickoff",
+   "native_origin": "prompt",
+   "kickoff_bytes": 62,
+   "starts_with_session_prompt": true,
+   "has_overview_marker": false,
+   "has_workflow_block": false,
+   "markup_kept_as_text": false,
+   "kickoff_first_in_turn": true,
+   "turn_items_origin": [
+    "kickoff"
+   ],
+   "turn_roles": [
+    "user",
+    "tool",
+    "tool",
+    "tool",
+    "tool",
+    "tool",
+    "tool",
+    "tool",
+    "tool",
+    "system",
+    "assistant"
+   ],
+   "instructions_absent": true,
+   "other_user_items": [
+    {
+     "via": "api",
+     "origin": "user",
+     "native_origin": "prompt",
+     "text": "Reply with exactly: PONG"
+    }
+   ],
+   "assistant_after_kickoff": [
+    "Ready. I've reviewed the workspace: this"
+   ]
+  },
+  "opencode/worker-terminal": {
+   "interaction_mode": "terminal",
+   "session_type": "ticket",
+   "kickoff_items": 1,
+   "kickoff_ids_stable": true,
+   "kickoff_revision_stable": true,
+   "delta_after_snapshot": 0,
+   "kickoff_origin": "kickoff",
+   "native_origin": "prompt",
+   "kickoff_bytes": 18084,
+   "starts_with_session_prompt": true,
+   "has_overview_marker": true,
+   "has_workflow_block": true,
+   "markup_kept_as_text": true,
+   "kickoff_first_in_turn": true,
+   "turn_items_origin": [
+    "kickoff"
+   ],
+   "turn_roles": [
+    "user",
+    "tool",
+    "system",
+    "assistant"
+   ],
+   "instructions_absent": true,
+   "other_user_items": [],
+   "assistant_after_kickoff": [
+    "READY"
+   ]
+  },
+  "claude/architect-terminal": {
+   "interaction_mode": "terminal",
+   "session_type": "architect",
+   "kickoff_items": 1,
+   "kickoff_ids_stable": true,
+   "kickoff_revision_stable": true,
+   "delta_after_snapshot": 0,
+   "kickoff_origin": "kickoff",
+   "native_origin": "human",
+   "kickoff_bytes": 53,
+   "starts_with_session_prompt": true,
+   "has_overview_marker": false,
+   "has_workflow_block": false,
+   "markup_kept_as_text": false,
+   "kickoff_first_in_turn": true,
+   "turn_items_origin": [
+    "kickoff"
+   ],
+   "turn_roles": [
+    "user",
+    "tool",
+    "tool",
+    "tool",
+    "assistant",
+    "system"
+   ],
+   "instructions_absent": true,
+   "other_user_items": [
+    {
+     "via": "api",
+     "origin": "user",
+     "native_origin": "task_notification",
+     "text": "Reply with exactly: PONG"
+    }
+   ],
+   "assistant_after_kickoff": [
+    "Oriented. The workspace is a synthetic c"
+   ]
+  },
+  "claude/worker-terminal": {
+   "interaction_mode": "terminal",
+   "session_type": "ticket",
+   "kickoff_items": 1,
+   "kickoff_ids_stable": true,
+   "kickoff_revision_stable": true,
+   "delta_after_snapshot": 0,
+   "kickoff_origin": "kickoff",
+   "native_origin": "human",
+   "kickoff_bytes": 18062,
+   "starts_with_session_prompt": true,
+   "has_overview_marker": true,
+   "has_workflow_block": true,
+   "markup_kept_as_text": true,
+   "kickoff_first_in_turn": true,
+   "turn_items_origin": [
+    "kickoff"
+   ],
+   "turn_roles": [
+    "user",
+    "tool",
+    "tool",
+    "assistant",
+    "system"
+   ],
+   "instructions_absent": true,
+   "other_user_items": [],
+   "assistant_after_kickoff": [
+    "READY"
+   ]
+  },
+  "claude/worker-chat": {
+   "interaction_mode": "chat",
+   "session_type": "ticket",
+   "kickoff_items": 1,
+   "kickoff_ids_stable": true,
+   "kickoff_revision_stable": true,
+   "delta_after_snapshot": 0,
+   "kickoff_origin": "kickoff",
+   "native_origin": null,
+   "kickoff_bytes": 18062,
+   "starts_with_session_prompt": true,
+   "has_overview_marker": true,
+   "has_workflow_block": true,
+   "markup_kept_as_text": true,
+   "kickoff_first_in_turn": true,
+   "turn_items_origin": [
+    "kickoff"
+   ],
+   "turn_roles": [
+    "user",
+    "tool",
+    "assistant",
+    "system"
+   ],
+   "instructions_absent": true,
+   "other_user_items": [
+    {
+     "via": "api",
+     "origin": "user",
+     "native_origin": null,
+     "text": "Reply with exactly: PONG"
+    }
+   ],
+   "assistant_after_kickoff": [
+    "READY"
+   ]
+  },
+  "opencode/worker-chat": {
+   "interaction_mode": "chat",
+   "session_type": "ticket",
+   "kickoff_items": 1,
+   "kickoff_ids_stable": true,
+   "kickoff_revision_stable": true,
+   "delta_after_snapshot": 0,
+   "kickoff_origin": "kickoff",
+   "native_origin": null,
+   "kickoff_bytes": 18084,
+   "starts_with_session_prompt": true,
+   "has_overview_marker": true,
+   "has_workflow_block": true,
+   "markup_kept_as_text": true,
+   "kickoff_first_in_turn": true,
+   "turn_items_origin": [
+    "kickoff"
+   ],
+   "turn_roles": [
+    "user",
+    "tool",
+    "assistant",
+    "system"
+   ],
+   "instructions_absent": true,
+   "other_user_items": [
+    {
+     "via": "api",
+     "origin": "user",
+     "native_origin": null,
+     "text": "Reply with exactly: PONG"
+    }
+   ],
+   "assistant_after_kickoff": [
+    "READY"
+   ]
+  }
+ },
+ "ui": {
+  "build": "chat-ui-poc branch kickoff-visibility, next start (production build) against the lab daemon, headless Chromium",
+  "checks": "one [data-kickoff] row per session after polls and a full reload; no 'instructions are hidden' marker; label 'Session kickoff \u00b7 Launch message sent by Hiveryn \u00b7 native: \u2026'; long kickoff collapsed with 'Show full kickoff (N lines)' and expanding to the full text incl. the workflow block; markup line rendered as text (no <b> element); kickoff is the first message of the conversation; phone width 390px without horizontal overflow",
+  "results": [
+   {
+    "project": "Continuity lab (claude)",
+    "index": 0,
+    "title": "lab architect",
+    "kickoff_rows": 1,
+    "hidden_marker": 0,
+    "collapsible": false,
+    "label": true,
+    "full_text_has_workflow": false,
+    "markup_as_text": false,
+    "kickoff_before_reply": true,
+    "api_label": 1,
+    "kickoff_rows_after_reload_and_polls": 1
+   },
+   {
+    "project": "Continuity lab (claude)",
+    "index": 1,
+    "title": "2026-10-28-0301-kickoff-lab-term",
+    "kickoff_rows": 1,
+    "hidden_marker": 0,
+    "collapsible": true,
+    "label": true,
+    "full_text_has_workflow": true,
+    "markup_as_text": true,
+    "kickoff_before_reply": true,
+    "api_label": 0,
+    "kickoff_rows_after_reload_and_polls": 1
+   },
+   {
+    "project": "Continuity lab (claude)",
+    "index": 2,
+    "title": "2026-10-28-0302-kickoff-lab-chat",
+    "kickoff_rows": 1,
+    "hidden_marker": 0,
+    "collapsible": true,
+    "label": true,
+    "full_text_has_workflow": true,
+    "markup_as_text": true,
+    "kickoff_before_reply": true,
+    "api_label": 0,
+    "kickoff_rows_after_reload_and_polls": 1
+   },
+   {
+    "project": "Continuity lab (claude)",
+    "index": 3,
+    "title": "lab architect",
+    "kickoff_rows": 1,
+    "hidden_marker": 0,
+    "collapsible": false,
+    "label": true,
+    "full_text_has_workflow": false,
+    "markup_as_text": false,
+    "kickoff_before_reply": true,
+    "api_label": 0,
+    "kickoff_rows_after_reload_and_polls": 1
+   },
+   {
+    "project": "Continuity lab (claude)",
+    "index": 4,
+    "title": "2026-10-28-0301-kickoff-lab-term",
+    "kickoff_rows": 1,
+    "hidden_marker": 0,
+    "collapsible": true,
+    "label": true,
+    "full_text_has_workflow": true,
+    "markup_as_text": true,
+    "kickoff_before_reply": true,
+    "api_label": 0,
+    "kickoff_rows_after_reload_and_polls": 1
+   },
+   {
+    "project": "Continuity lab (claude)",
+    "index": 5,
+    "title": "2026-10-28-0302-kickoff-lab-chat",
+    "kickoff_rows": 1,
+    "hidden_marker": 0,
+    "collapsible": true,
+    "label": true,
+    "full_text_has_workflow": true,
+    "markup_as_text": true,
+    "kickoff_before_reply": true,
+    "api_label": 0,
+    "kickoff_rows_after_reload_and_polls": 1
+   },
+   {
+    "project": "Continuity lab (claude)",
+    "index": 6,
+    "title": "lab architect",
+    "kickoff_rows": 1,
+    "hidden_marker": 0,
+    "collapsible": false,
+    "label": true,
+    "full_text_has_workflow": false,
+    "markup_as_text": false,
+    "kickoff_before_reply": true,
+    "api_label": 0,
+    "kickoff_rows_after_reload_and_polls": 1
+   },
+   {
+    "project": "Continuity lab (claude)",
+    "index": 7,
+    "title": "2026-10-28-0301-kickoff-lab-term",
+    "kickoff_rows": 1,
+    "hidden_marker": 0,
+    "collapsible": true,
+    "label": true,
+    "full_text_has_workflow": true,
+    "markup_as_text": true,
+    "kickoff_before_reply": true,
+    "api_label": 0,
+    "kickoff_rows_after_reload_and_polls": 1
+   },
+   {
+    "project": "Continuity lab (claude)",
+    "index": 8,
+    "title": "2026-10-28-0302-kickoff-lab-chat",
+    "kickoff_rows": 1,
+    "hidden_marker": 0,
+    "collapsible": true,
+    "label": true,
+    "full_text_has_workflow": true,
+    "markup_as_text": true,
+    "kickoff_before_reply": true,
+    "api_label": 1,
+    "kickoff_rows_after_reload_and_polls": 1
+   },
+   {
+    "project": "Continuity lab (codex)",
+    "index": 0,
+    "title": "lab-codex architect",
+    "kickoff_rows": 1,
+    "hidden_marker": 0,
+    "collapsible": false,
+    "label": true,
+    "full_text_has_workflow": false,
+    "markup_as_text": false,
+    "kickoff_before_reply": true,
+    "api_label": 1,
+    "kickoff_rows_after_reload_and_polls": 1
+   },
+   {
+    "project": "Continuity lab (codex)",
+    "index": 1,
+    "title": "2026-10-28-0302-kickoff-lab-codex-chat",
+    "kickoff_rows": 1,
+    "hidden_marker": 0,
+    "collapsible": true,
+    "label": true,
+    "full_text_has_workflow": true,
+    "markup_as_text": true,
+    "kickoff_before_reply": true,
+    "api_label": 1,
+    "kickoff_rows_after_reload_and_polls": 1
+   },
+   {
+    "project": "Continuity lab (codex)",
+    "index": 2,
+    "title": "2026-10-28-0301-kickoff-lab-codex-term",
+    "kickoff_rows": 1,
+    "hidden_marker": 0,
+    "collapsible": true,
+    "label": true,
+    "full_text_has_workflow": true,
+    "markup_as_text": true,
+    "kickoff_before_reply": true,
+    "api_label": 0,
+    "kickoff_rows_after_reload_and_polls": 1
+   },
+   {
+    "project": "Continuity lab (opencode)",
+    "index": 0,
+    "title": "lab-opencode architect",
+    "kickoff_rows": 1,
+    "hidden_marker": 0,
+    "collapsible": false,
+    "label": true,
+    "full_text_has_workflow": false,
+    "markup_as_text": false,
+    "kickoff_before_reply": true,
+    "api_label": 1,
+    "kickoff_rows_after_reload_and_polls": 1
+   },
+   {
+    "project": "Continuity lab (opencode)",
+    "index": 1,
+    "title": "2026-10-28-0302-kickoff-lab-opencode-chat",
+    "kickoff_rows": 1,
+    "hidden_marker": 0,
+    "collapsible": true,
+    "label": true,
+    "full_text_has_workflow": true,
+    "markup_as_text": true,
+    "kickoff_before_reply": false,
+    "api_label": 0,
+    "kickoff_rows_after_reload_and_polls": 1
+   },
+   {
+    "project": "Continuity lab (opencode)",
+    "index": 2,
+    "title": "2026-10-28-0302-kickoff-lab-opencode-chat",
+    "kickoff_rows": 1,
+    "hidden_marker": 0,
+    "collapsible": true,
+    "label": true,
+    "full_text_has_workflow": true,
+    "markup_as_text": true,
+    "kickoff_before_reply": true,
+    "api_label": 1,
+    "kickoff_rows_after_reload_and_polls": 1
+   },
+   {
+    "project": "Continuity lab (opencode)",
+    "index": 3,
+    "title": "2026-10-28-0301-kickoff-lab-opencode-term",
+    "kickoff_rows": 1,
+    "hidden_marker": 0,
+    "collapsible": true,
+    "label": true,
+    "full_text_has_workflow": true,
+    "markup_as_text": true,
+    "kickoff_before_reply": true,
+    "api_label": 0,
+    "kickoff_rows_after_reload_and_polls": 1
+   },
+   {
+    "phone_horizontal_overflow": false
+   }
+  ]
+ },
+ "notes": [
+  "Claude lab credentials: the ~/.claude-work copy had expired (Claude answered 'Login expired'); those sessions were ended and the run used a read-only copy of the default profile's access token without its refresh token.",
+  "OpenCode chat with deepseek/deepseek-v4-flash failed natively ('Model not found', OpenCode 1.19.4); its kickoff item was still shown once. Relaunched with an isolated deepseek/deepseek-v4-pro variant.",
+  "Codex chat emits a quiet 'started' system marker before every turn (existing behaviour, not rendered); the kickoff echo is the first visible item.",
+  "OpenCode terminal records can place the turn-end item before the turn's final assistant text (existing reader ordering); kickoff still precedes its replies.",
+  "Ended sessions (discarded/concluded during setup) keep their observed history; the UI shows their kickoff once as well."
+ ]
+}
