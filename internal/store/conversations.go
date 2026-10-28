@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/hiveryn/daemon/internal/domain"
@@ -171,7 +172,24 @@ func (s *SessionStore) ReconcileDeliveries(ctx context.Context) error {
 		domain.DeliveryUnknown, "The daemon stopped during the hand-off; acceptance is reconciled from the native record and the input is never resent", now)
 	return err
 }
-func (s *SessionStore) PutConversationItem(ctx context.Context, sid string, item domain.ConversationItem) error {
+
+// conversationGap separates appended display positions so later-discovered
+// items can be placed between existing ones without renumbering.
+const conversationGap = 1024
+
+// PutConversationItems records items given in native record order. Changed
+// items get a new revision. Display order (sequence) follows native order: the
+// longest run of already stored items whose positions agree with this order
+// stays put, and every other item — newly seen, or stored out of native order
+// (an earlier input persisted only after its replies) — is placed directly
+// after its native predecessor, or before its first native successor, or else
+// appended. Stored items absent from the batch keep their positions. A moved
+// item is a new revision, so incremental readers and fresh reads converge; the
+// whole batch is one transaction, so every snapshot is consistently ordered.
+func (s *SessionStore) PutConversationItems(ctx context.Context, sid string, items []domain.ConversationItem) error {
+	if len(items) == 0 {
+		return nil
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -184,41 +202,214 @@ func (s *SessionStore) PutConversationItem(ctx context.Context, sid string, item
 	if archived != 0 {
 		return nil
 	} // Session end wins over late native output.
-	var previous string
-	err = tx.QueryRowContext(ctx, "SELECT item_json FROM conversation_items WHERE session_id=? AND item_id=? ORDER BY revision DESC LIMIT 1", sid, item.ID).Scan(&previous)
-	if err == nil {
-		var old domain.ConversationItem
-		if err = json.Unmarshal([]byte(previous), &old); err != nil {
-			return err
+	stored, err := latestConversationItems(ctx, tx, sid)
+	if err != nil {
+		return err
+	}
+	batch := make([]domain.ConversationItem, 0, len(items))
+	seen := map[string]int{}
+	for _, item := range items {
+		if i, ok := seen[item.ID]; ok {
+			batch[i] = item // the latest state; the first position
+			continue
+		}
+		seen[item.ID] = len(batch)
+		batch = append(batch, item)
+	}
+	changed := map[string]bool{}
+	for i := range batch {
+		item := &batch[i]
+		old, ok := stored[item.ID]
+		if !ok {
+			item.Sequence = 0
+			changed[item.ID] = true
+			continue
 		}
 		if item.Tool == "" {
 			item.Tool = old.Tool
 		}
-		item.Sequence = old.Sequence
 		if !old.At.IsZero() {
 			item.At = old.At
 		}
-		if old.Text == item.Text && old.Status == item.Status && old.Tool == item.Tool && old.NativeTurnID == item.NativeTurnID &&
-			old.Origin == item.Origin && old.Via == item.Via && old.NativeOrigin == item.NativeOrigin && old.SubmissionID == item.SubmissionID {
-			return nil
+		item.Sequence = old.Sequence
+		if old.Text != item.Text || old.Status != item.Status || old.Tool != item.Tool || old.NativeTurnID != item.NativeTurnID ||
+			old.Origin != item.Origin || old.Via != item.Via || old.NativeOrigin != item.NativeOrigin || old.SubmissionID != item.SubmissionID {
+			changed[item.ID] = true
 		}
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return err
 	}
-	if item.Sequence == 0 {
-		if err = tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(revision),0)+1 FROM conversation_items").Scan(&item.Sequence); err != nil {
+	others := make([]domain.ConversationItem, 0, len(stored))
+	for id, item := range stored {
+		if _, ok := seen[id]; !ok {
+			others = append(others, item)
+		}
+	}
+	for _, item := range orderConversation(others, batch) {
+		if item.Sequence != stored[item.ID].Sequence {
+			changed[item.ID] = true
+		}
+		if !changed[item.ID] {
+			continue
+		}
+		item.Revision = 0
+		data, err := json.Marshal(item)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO conversation_items(session_id,item_id,item_json) VALUES(?,?,?)", sid, item.ID, string(data)); err != nil {
 			return err
 		}
 	}
-	data, err := json.Marshal(item)
-	if err != nil {
-		return err
-	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO conversation_items(session_id,item_id,item_json) VALUES(?,?,?)", sid, item.ID, string(data)); err != nil {
-		return err
-	}
 	return tx.Commit()
 }
+
+// latestConversationItems is the current state of every item of a session.
+func latestConversationItems(ctx context.Context, tx *sql.Tx, sid string) (map[string]domain.ConversationItem, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT item_json FROM conversation_items WHERE revision IN
+		(SELECT MAX(revision) FROM conversation_items WHERE session_id=? GROUP BY item_id)`, sid)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]domain.ConversationItem{}
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		var item domain.ConversationItem
+		if err := json.Unmarshal([]byte(data), &item); err != nil {
+			return nil, err
+		}
+		out[item.ID] = item
+	}
+	return out, rows.Err()
+}
+
+// orderConversation returns every item (others: stored items outside the
+// batch; batch: in native order, stored ones carrying their sequence, new ones
+// zero) in display order with sequences assigned: unchanged where order
+// allows, otherwise between their display neighbours, renumbering the whole
+// session only when no gap is left.
+func orderConversation(others, batch []domain.ConversationItem) []domain.ConversationItem {
+	fixed := nativeOrderRun(batch)
+	display := make([]domain.ConversationItem, 0, len(others)+len(batch))
+	display = append(display, others...)
+	for i, item := range batch {
+		if fixed[i] {
+			display = append(display, item)
+		}
+	}
+	sort.Slice(display, func(i, j int) bool {
+		if display[i].Sequence != display[j].Sequence {
+			return display[i].Sequence < display[j].Sequence
+		}
+		return display[i].ID < display[j].ID
+	})
+	position := func(id string) int {
+		for i := range display {
+			if display[i].ID == id {
+				return i
+			}
+		}
+		return -1
+	}
+	firstFixed := -1
+	for i := range batch {
+		if fixed[i] {
+			firstFixed = i
+			break
+		}
+	}
+	for i, item := range batch {
+		if fixed[i] {
+			continue
+		}
+		at := len(display)
+		switch {
+		case i > 0:
+			at = position(batch[i-1].ID) + 1
+		case firstFixed >= 0:
+			at = position(batch[firstFixed].ID)
+		}
+		item.Sequence = 0
+		display = append(display, domain.ConversationItem{})
+		copy(display[at+1:], display[at:])
+		display[at] = item
+	}
+	assignSequences(display)
+	return display
+}
+
+// nativeOrderRun marks the longest subsequence of already stored batch items
+// whose sequences increase in native order (ties broken by earliest index):
+// those keep their positions, all others are placed anew.
+func nativeOrderRun(batch []domain.ConversationItem) []bool {
+	var idx []int // batch indexes of stored items
+	for i, item := range batch {
+		if item.Sequence > 0 {
+			idx = append(idx, i)
+		}
+	}
+	fixed := make([]bool, len(batch))
+	if len(idx) == 0 {
+		return fixed
+	}
+	// Patience sorting: tails[k] is the batch index ending the best run of length k+1.
+	tails := []int{}
+	prev := make([]int, len(idx))
+	for n, i := range idx {
+		k := sort.Search(len(tails), func(k int) bool { return batch[idx[tails[k]]].Sequence >= batch[i].Sequence })
+		if k > 0 {
+			prev[n] = tails[k-1]
+		} else {
+			prev[n] = -1
+		}
+		if k == len(tails) {
+			tails = append(tails, n)
+		} else {
+			tails[k] = n
+		}
+	}
+	for n := tails[len(tails)-1]; n >= 0; n = prev[n] {
+		fixed[idx[n]] = true
+	}
+	return fixed
+}
+
+// assignSequences gives every unplaced item (zero sequence) a position between
+// its neighbours, or renumbers the whole list when a run does not fit.
+func assignSequences(display []domain.ConversationItem) {
+	for start := 0; start < len(display); start++ {
+		if display[start].Sequence != 0 {
+			continue
+		}
+		end := start
+		for end < len(display) && display[end].Sequence == 0 {
+			end++
+		}
+		var low int64
+		if start > 0 {
+			low = display[start-1].Sequence
+		}
+		count := int64(end - start)
+		step := int64(conversationGap)
+		if end < len(display) {
+			step = (display[end].Sequence - low) / (count + 1)
+			if step < 1 {
+				for i := range display {
+					display[i].Sequence = int64(i+1) * conversationGap
+				}
+				return
+			}
+		}
+		for i := start; i < end; i++ {
+			low += step
+			display[i].Sequence = low
+		}
+		start = end
+	}
+}
+
 func (s *SessionStore) ReadConversation(ctx context.Context, sid string, q domain.ConversationQuery) (domain.ConversationPage, error) {
 	page := domain.ConversationPage{Items: []domain.ConversationItem{}, SnapshotRevision: q.SnapshotRevision, NextRevision: q.AfterRevision}
 	if q.Limit <= 0 || q.Limit > 200 {

@@ -198,6 +198,25 @@ size is at most 200. Already-observed history and submission receipts survive
 session deletion; unknown/unsupported session history returns an explicit error.
 Retention pruning is not implemented in V1.
 
+**Order.** Three separate things: `revision` is the feed cursor (discovery
+order, for incremental synchronization only); `sequence` is the display
+position within the session; `native_turn_id`/`submission_id` are turn
+identity. Display order follows the native record's order, never timestamps
+(missing, equal or skewed times do not reorder anything). The daemon writes
+each native read (terminal: the whole record; chat: each transport event as it arrives, or a
+turn's recovered events) in
+record order: items already shown in that order keep their `sequence`; an item
+seen for the first time — or stored out of record order, such as a launch
+message first persisted after its replies — is placed directly after its native
+predecessor, or before its first native successor, or else at the end. Moving
+an item is a new revision of it, and each write is one transaction, so an
+incremental client and a fresh read converge on the same order. Sequences are
+gapped and only comparable within one session; when a gap runs out the session
+is renumbered (every moved item is a new revision). Order items by `sequence`,
+then `id`. Items of one native turn are contiguous only as far as the record
+itself places them; clients group adjacent items by turn identity and must not
+merge turns merely because an identifier is missing.
+
 Only visible message text/tool output is normalized. Hidden reasoning, raw
 provider payloads and role instructions (SYSTEM/developer prompts) are excluded.
 Tool failures retain their own status separately from the enclosing turn.

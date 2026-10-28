@@ -104,7 +104,7 @@ func TestConversationRevisionSnapshotSurvivesUpdatesAndCompaction(t *testing.T) 
 	defer func() { _ = db.Close() }()
 	repo := NewSessionStore(db)
 	for i := range 3 {
-		if err = repo.PutConversationItem(ctx, "s", domain.ConversationItem{ID: fmt.Sprint(i), Text: "original", Role: "assistant", At: time.Now()}); err != nil {
+		if err = repo.PutConversationItems(ctx, "s", []domain.ConversationItem{{ID: fmt.Sprint(i), Text: "original", Role: "assistant", At: time.Now()}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -113,7 +113,7 @@ func TestConversationRevisionSnapshotSurvivesUpdatesAndCompaction(t *testing.T) 
 		t.Fatalf("page: %#v %v", page, err)
 	}
 	snapshot := page.SnapshotRevision
-	if err = repo.PutConversationItem(ctx, "s", domain.ConversationItem{ID: "0", Text: "updated", Role: "assistant"}); err != nil {
+	if err = repo.PutConversationItems(ctx, "s", []domain.ConversationItem{{ID: "0", Text: "updated", Role: "assistant"}}); err != nil {
 		t.Fatal(err)
 	}
 	rest, err := repo.ReadConversation(ctx, "s", domain.ConversationQuery{AfterRevision: page.NextRevision, SnapshotRevision: snapshot, Limit: 200})
@@ -132,10 +132,10 @@ func TestConversationRevisionSnapshotSurvivesUpdatesAndCompaction(t *testing.T) 
 	}
 	// Provenance is part of an item's content: an unchanged put adds no
 	// revision, a changed origin/via does.
-	if err = repo.PutConversationItem(ctx, "s", domain.ConversationItem{ID: "1", Text: "original", Role: "assistant"}); err != nil {
+	if err = repo.PutConversationItems(ctx, "s", []domain.ConversationItem{{ID: "1", Text: "original", Role: "assistant"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err = repo.PutConversationItem(ctx, "s", domain.ConversationItem{ID: "1", Text: "original", Role: "user", Origin: "kickoff", Via: "kickoff"}); err != nil {
+	if err = repo.PutConversationItems(ctx, "s", []domain.ConversationItem{{ID: "1", Text: "original", Role: "user", Origin: "kickoff", Via: "kickoff"}}); err != nil {
 		t.Fatal(err)
 	}
 	after, err := repo.ReadConversation(ctx, "s", domain.ConversationQuery{AfterRevision: all.SnapshotRevision})
@@ -175,7 +175,7 @@ func TestChatArchiveRetainsIdentityAndInterruptsWithoutSuccess(t *testing.T) {
 		{ID: "complete", Role: "tool", Tool: "Read", Status: "started", SubmissionID: sub.ID},
 		{ID: "complete", Role: "tool", Status: "completed", Text: "output", SubmissionID: sub.ID},
 	} {
-		if err = repo.PutConversationItem(ctx, "s", item); err != nil {
+		if err = repo.PutConversationItems(ctx, "s", []domain.ConversationItem{item}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -190,7 +190,7 @@ func TestChatArchiveRetainsIdentityAndInterruptsWithoutSuccess(t *testing.T) {
 	if err = repo.ArchiveChat(ctx, chat); err != nil {
 		t.Fatal(err)
 	}
-	if err = repo.PutConversationItem(ctx, "s", domain.ConversationItem{ID: "tool", Status: "completed"}); err != nil {
+	if err = repo.PutConversationItems(ctx, "s", []domain.ConversationItem{{ID: "tool", Status: "completed"}}); err != nil {
 		t.Fatal(err)
 	}
 	page, err := repo.ReadConversation(ctx, "s", domain.ConversationQuery{AfterRevision: before.SnapshotRevision})

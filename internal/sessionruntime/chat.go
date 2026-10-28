@@ -552,7 +552,7 @@ func (s *Service) runChat(ctx context.Context, session domain.Session, run domai
 				// The native user echo is the recorded input, the kickoff's
 				// included; its submission's origin names how it entered.
 				if e.ID != "" {
-					if err := repo.PutConversationItem(ctx, session.ID, chatItem(*sub, e)); err != nil {
+					if err := repo.PutConversationItems(ctx, session.ID, []domain.ConversationItem{chatItem(*sub, e)}); err != nil {
 						return err
 					}
 				}
@@ -756,10 +756,16 @@ func (s *Service) reconcileChat(ctx context.Context, id string, conn agentruntim
 	if err != nil {
 		return err
 	}
+	// The recovered events are native order: an item recorded before one
+	// already shown is placed before it.
+	items := make([]domain.ConversationItem, 0, len(events))
 	for _, e := range events {
-		if err = repo.PutConversationItem(ctx, id, chatItem(*sub, e)); err != nil {
-			return err
-		}
+		items = append(items, chatItem(*sub, e))
+	}
+	if err = repo.PutConversationItems(ctx, id, items); err != nil {
+		return err
+	}
+	for _, e := range events {
 		if e.Complete {
 			// Explicit native completion of the turn is also its acceptance.
 			if sub.AcceptedAt == nil {

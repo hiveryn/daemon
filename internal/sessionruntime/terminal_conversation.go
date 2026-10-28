@@ -258,15 +258,25 @@ func (s *Service) syncTerminalHistory(ctx context.Context, session domain.Sessio
 		st.err = err
 		return history, err
 	}
-	for _, item := range s.classifyTerminalHistory(session, history, subs) {
-		if previous, ok := st.put[item.ID]; ok && previous == item {
-			continue
+	// The whole record goes to the store in native order whenever anything
+	// changed, so an item first seen late is placed among its native
+	// neighbours instead of after everything already shown.
+	items := s.classifyTerminalHistory(session, history, subs)
+	changed := false
+	for _, item := range items {
+		if previous, ok := st.put[item.ID]; !ok || previous != item {
+			changed = true
+			break
 		}
-		if err := repo.PutConversationItem(ctx, session.ID, item); err != nil {
+	}
+	if changed {
+		if err := repo.PutConversationItems(ctx, session.ID, items); err != nil {
 			st.err = err
 			return history, err
 		}
-		st.put[item.ID] = item
+		for _, item := range items {
+			st.put[item.ID] = item
+		}
 	}
 	st.history = history
 	return history, nil

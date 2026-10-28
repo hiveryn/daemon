@@ -1,0 +1,344 @@
+{
+ "ticket": "2026-10-28-0737-preserve-native-conversation-order-for-late-discovered-items",
+ "date": "2026-10-28",
+ "setup": "Isolated lab (scripts/continuity_lab.py; private HIVERYN_HOME/port under a scratch dir; synthetic workspaces). One terminal architect per provider. The same SQLite state was served in turn by three hiverynd builds: 1195656 (kickoff hidden, as the live daemon was), e0b3eef (kickoff shown, first-seen positions frozen) and this fix. Isolated production build of the POC branch native-order in headless Chromium (Codex at 1280x900, OpenCode at 390x844). Metadata only; no conversation text recorded.",
+ "cli": {
+  "codex": "codex-cli 0.164.0 (gpt-5.6-sol)",
+  "opencode": "1.19.4 (deepseek/deepseek-v4-flash)",
+  "claude": "not run natively: the lab login (~/.claude-work) had expired; see claude_recorded_evidence"
+ },
+ "steps": [
+  "1195656: kickoff turn completed, one typed terminal turn (T2)",
+  "e0b3eef: kickoff discovered from the native record and appended after T2 (bug reproduced natively, same shape as the live data-load-e2e session)",
+  "fix: next native read moved the kickoff before its replies; an open UI reunited the turn by polling alone",
+  "fix: one API send per session"
+ ],
+ "api": {
+  "A_old_hidden": {
+   "codex": {
+    "groups": [
+     {
+      "n": 1,
+      "user": false,
+      "origin": "user",
+      "turn": "-7f21-910f-6"
+     },
+     {
+      "n": 1,
+      "user": false,
+      "origin": "user",
+      "turn": "-7f21-910f-6"
+     },
+     {
+      "n": 1,
+      "user": false,
+      "origin": "user",
+      "turn": "-7f21-910f-6"
+     },
+     {
+      "n": 1,
+      "user": false,
+      "origin": "user",
+      "turn": "-7f21-910f-6"
+     },
+     {
+      "n": 1,
+      "user": false,
+      "origin": "user",
+      "turn": "-7f21-910f-6"
+     },
+     {
+      "n": 1,
+      "user": true,
+      "origin": "user",
+      "turn": "-7a41-bc27-5"
+     },
+     {
+      "n": 1,
+      "user": false,
+      "origin": "user",
+      "turn": "-7a41-bc27-5"
+     },
+     {
+      "n": 1,
+      "user": false,
+      "origin": "user",
+      "turn": "-7a41-bc27-5"
+     }
+    ],
+    "incremental_equals_fresh": true,
+    "unique_ids": true,
+    "items": 8
+   },
+   "opencode": {
+    "groups": [
+     {
+      "n": 1,
+      "user": false,
+      "origin": "user",
+      "turn": "001daTjbJz1N"
+     },
+     {
+      "n": 1,
+      "user": false,
+      "origin": "user",
+      "turn": "001daTjbJz1N"
+     },
+     {
+      "n": 1,
+      "user": false,
+      "origin": "user",
+      "turn": "001daTjbJz1N"
+     },
+     {
+      "n": 1,
+      "user": false,
+      "origin": "user",
+      "turn": "001daTjbJz1N"
+     },
+     {
+      "n": 1,
+      "user": false,
+      "origin": "user",
+      "turn": "001daTjbJz1N"
+     },
+     {
+      "n": 1,
+      "user": false,
+      "origin": "user",
+      "turn": "001daTjbJz1N"
+     },
+     {
+      "n": 1,
+      "user": true,
+      "origin": "user",
+      "turn": "0018337tMDtD"
+     },
+     {
+      "n": 1,
+      "user": false,
+      "origin": "user",
+      "turn": "0018337tMDtD"
+     },
+     {
+      "n": 1,
+      "user": false,
+      "origin": "user",
+      "turn": "0018337tMDtD"
+     }
+    ],
+    "incremental_equals_fresh": true,
+    "unique_ids": true,
+    "items": 9
+   }
+  },
+  "B_e0b3eef_appended": {
+   "codex": {
+    "groups": [
+     {
+      "n": 5,
+      "user": false,
+      "origin": "kickoff",
+      "turn": "-7f21-910f-6"
+     },
+     {
+      "n": 3,
+      "user": true,
+      "origin": "user",
+      "turn": "-7a41-bc27-5"
+     },
+     {
+      "n": 1,
+      "user": true,
+      "origin": "kickoff",
+      "turn": "-7f21-910f-6"
+     }
+    ],
+    "incremental_equals_fresh": true,
+    "unique_ids": true,
+    "items": 9
+   },
+   "opencode": {
+    "groups": [
+     {
+      "n": 6,
+      "user": false,
+      "origin": "kickoff",
+      "turn": "001daTjbJz1N"
+     },
+     {
+      "n": 3,
+      "user": true,
+      "origin": "user",
+      "turn": "0018337tMDtD"
+     },
+     {
+      "n": 1,
+      "user": true,
+      "origin": "kickoff",
+      "turn": "001daTjbJz1N"
+     }
+    ],
+    "incremental_equals_fresh": true,
+    "unique_ids": true,
+    "items": 10
+   }
+  },
+  "C_fixed": {
+   "codex": {
+    "groups": [
+     {
+      "n": 6,
+      "user": true,
+      "origin": "kickoff",
+      "turn": "-7f21-910f-6"
+     },
+     {
+      "n": 3,
+      "user": true,
+      "origin": "user",
+      "turn": "-7a41-bc27-5"
+     }
+    ],
+    "incremental_equals_fresh": true,
+    "unique_ids": true,
+    "items": 9
+   },
+   "opencode": {
+    "groups": [
+     {
+      "n": 7,
+      "user": true,
+      "origin": "kickoff",
+      "turn": "001daTjbJz1N"
+     },
+     {
+      "n": 3,
+      "user": true,
+      "origin": "user",
+      "turn": "0018337tMDtD"
+     }
+    ],
+    "incremental_equals_fresh": true,
+    "unique_ids": true,
+    "items": 10
+   }
+  },
+  "D_fixed_after_api_send": {
+   "codex": {
+    "groups": [
+     {
+      "n": 6,
+      "user": true,
+      "origin": "kickoff",
+      "turn": "-7f21-910f-6"
+     },
+     {
+      "n": 3,
+      "user": true,
+      "origin": "user",
+      "turn": "-7a41-bc27-5"
+     },
+     {
+      "n": 3,
+      "user": true,
+      "origin": "user",
+      "turn": "503-0ce453e6"
+     }
+    ],
+    "incremental_equals_fresh": true,
+    "unique_ids": true,
+    "items": 12
+   },
+   "opencode": {
+    "groups": [
+     {
+      "n": 7,
+      "user": true,
+      "origin": "kickoff",
+      "turn": "001daTjbJz1N"
+     },
+     {
+      "n": 3,
+      "user": true,
+      "origin": "user",
+      "turn": "0018337tMDtD"
+     },
+     {
+      "n": 3,
+      "user": true,
+      "origin": "user",
+      "turn": "2a6-7059d9b4"
+     }
+    ],
+    "incremental_equals_fresh": true,
+    "unique_ids": true,
+    "items": 13
+   }
+  }
+ },
+ "moves_on_fix": {
+  "opencode": "only the kickoff got a new revision (placed in the gap before its first reply)",
+  "codex": "stored sequences were consecutive legacy values with no gap before the first reply, so the session was renumbered in one transaction: 9 items each got one new revision, order otherwise unchanged; ids, text and provenance unchanged"
+ },
+ "ui": {
+  "markers": "order of 'Session kickoff \u00b7 Launch message' (KICKOFF), the 'not in the record yet' marker (FALSE_MARKER) and typed-input labels in the rendered page",
+  "codex": {
+   "before": {
+    "order": [
+     "FALSE_MARKER",
+     "TYPED_INPUT",
+     "KICKOFF"
+    ],
+    "kickoff_rows": 1
+   },
+   "polled_after_swap": {
+    "order": [
+     "KICKOFF",
+     "TYPED_INPUT"
+    ],
+    "kickoff_rows": 1
+   },
+   "reloaded": {
+    "order": [
+     "KICKOFF",
+     "TYPED_INPUT"
+    ],
+    "kickoff_rows": 1
+   }
+  },
+  "opencode": {
+   "before": {
+    "order": [
+     "FALSE_MARKER",
+     "TYPED_INPUT",
+     "KICKOFF"
+    ],
+    "kickoff_rows": 1
+   },
+   "polled_after_swap": {
+    "order": [
+     "KICKOFF",
+     "TYPED_INPUT"
+    ],
+    "kickoff_rows": 1
+   },
+   "reloaded": {
+    "order": [
+     "KICKOFF",
+     "TYPED_INPUT"
+    ],
+    "kickoff_rows": 1
+   }
+  }
+ },
+ "api_send_on_fix": {
+  "codex": "accepted codex_thread_queue 0.09 s; via api, appended after T2 with gapped sequence",
+  "opencode": "accepted opencode_prompt_async 0.34 s; via api, appended"
+ },
+ "claude_recorded_evidence": "agentruntime adapter/claude history_test: transcript reader yields record order with the kickoff first in its turn and updates in place; daemon docs/evidence/kickoff-visibility-2026-10-28.json: native Claude terminal architect/worker and chat worker had kickoff_first_in_turn true. The ordering fix is in the daemon store and provider-independent; the Claude-specific late-discovery replay was not run natively.",
+ "deterministic": "store tests (conversation_order_test.go) and sessionruntime TestLateDiscoveredKickoffKeepsNativeOrder use fixture items, not native evidence; the sessionruntime test fails on e0b3eef ([r1 tool1 end1 u2 r2 kick]) and passes on the fix.",
+ "notes": [
+  "After the daemon swap the resumed Codex TUI showed its native 'update available' prompt; it was skipped with Esc in the lab session (no update), after which the queued API input ran."
+ ]
+}

@@ -23,7 +23,10 @@ outbox). The conversation API uses exactly those:
   `client_id`, OpenCode message id or a header Claude carries in its hook text),
   outbox notification, or the launch message (`kickoff`, shown verbatim as
   recorded, injected Overview/workflows included). The provider's own
-  provenance is kept unmodified in `native_origin`.
+  provenance is kept unmodified in `native_origin`. Each read is written in
+  record order, so display order follows the record: an item first seen late
+  (an earlier daemon hid the kickoff) moves before its replies on the next read
+  (`docs/conversation-api.md`, Order).
 - **Send**: synchronous delivery through the provider route (28 October, below),
   one hand-off per session shared with the outbox, reservation before hand-off,
   completion only from the native turn end of the turn holding that input,

@@ -70,7 +70,9 @@ type ConversationRepository interface {
 	SettleDelivery(ctx context.Context, sessionID, id, status, code, reason string) (bool, error)
 	// ReconcileDeliveries settles attempts a previous daemon left delivering.
 	ReconcileDeliveries(context.Context) error
-	PutConversationItem(context.Context, string, ConversationItem) error
+	// PutConversationItems records items given in native record order; see
+	// store.PutConversationItems for how display order (sequence) follows it.
+	PutConversationItems(context.Context, string, []ConversationItem) error
 	ReadConversation(context.Context, string, ConversationQuery) (ConversationPage, error)
 	SettleSubmissions(context.Context, string, string, string) error
 	FailQueuedSubmissions(context.Context, string, string) error
