@@ -22,6 +22,20 @@ type ConversationItem = sd.ConversationItem
 type ConversationPage = sd.ConversationPage
 type ConversationQuery = sd.ConversationQuery
 
+type ConversationStreamStatus = sd.ConversationStreamStatus
+type ConversationStreamError = sd.ConversationStreamError
+type ConversationStreamControls = sd.ConversationStreamControls
+type ConversationStreamReset = sd.ConversationStreamReset
+
+const (
+	StreamEventStatus       = sd.StreamEventStatus
+	StreamEventControls     = sd.StreamEventControls
+	StreamEventConversation = sd.StreamEventConversation
+	StreamEventReset        = sd.StreamEventReset
+	StreamStateLive         = sd.StreamStateLive
+	StreamStateEnded        = sd.StreamStateEnded
+)
+
 type DeliveryError = sd.DeliveryError
 type ConversationError = sd.ConversationError
 
@@ -134,6 +148,21 @@ type TerminalConversationRepository interface {
 type ConversationService interface {
 	SubmitMessage(context.Context, string, SubmissionRequest) (Submission, error)
 	ReadConversation(context.Context, string, ConversationQuery) (ConversationPage, error)
+	// WatchConversation subscribes to the stream sources of a live or ended
+	// session; HISTORY_UNSUPPORTED sessions and unknown ids are errors.
+	WatchConversation(context.Context, string) (ConversationWatch, error)
+	// ReadConversationFeed reads stored revisions only (no native read).
+	ReadConversationFeed(context.Context, string, ConversationQuery) (ConversationPage, error)
+}
+
+// ConversationWatch is one conversation stream subscription: Changed signals
+// (coalesced) that a durable source may have changed, Done that the daemon is
+// stopping, HistoryError the latest native read failure.
+type ConversationWatch interface {
+	Changed() <-chan struct{}
+	Done() <-chan struct{}
+	HistoryError() error
+	Close()
 }
 
 // SubmissionIdentity makes an outbox reservation name its chat receipt before

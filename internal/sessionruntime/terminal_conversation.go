@@ -39,9 +39,11 @@ import (
 // record passed the hand-off and the agent went idle becomes uncertain and is
 // never sent again automatically.
 
-// terminalHistoryMinInterval throttles native record reads per session
+// terminalHistoryMinInterval throttles native record reads per session: it
+// coalesces a recovery read with the stream observer's (which already waits
+// at least observeMinGap between passes) and the dispatcher's reads
 // (a variable so tests can read on every pass).
-var terminalHistoryMinInterval = time.Second
+var terminalHistoryMinInterval = 250 * time.Millisecond
 
 const (
 	// terminalLostAfter: idle this long after a hand-off without the input in
@@ -322,6 +324,7 @@ func (s *Service) syncTerminalHistory(ctx context.Context, session domain.Sessio
 		for _, item := range items {
 			st.put[item.ID] = item
 		}
+		s.conversationChanged(session.ID)
 	}
 	st.history = history
 	return history, nil

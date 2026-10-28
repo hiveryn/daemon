@@ -542,6 +542,7 @@ func (s *Service) runChat(ctx context.Context, session domain.Session, run domai
 					if err := repo.PutConversationItems(ctx, session.ID, []domain.ConversationItem{chatItem(*sub, e)}); err != nil {
 						return err
 					}
+					s.conversationChanged(session.ID)
 				}
 				if err := repo.UpdateSubmission(ctx, *sub); err != nil {
 					return err
@@ -757,6 +758,7 @@ func (s *Service) reconcileChat(ctx context.Context, id string, conn agentruntim
 	if err = repo.PutConversationItems(ctx, id, items); err != nil {
 		return err
 	}
+	s.conversationChanged(id)
 	for _, e := range events {
 		if e.Complete {
 			// Explicit native completion of the turn is also its acceptance.

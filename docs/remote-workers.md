@@ -199,6 +199,13 @@ ownership records; the database is restricted to the local account.
 The conversation API reads and sends to remote Claude and Codex workers over
 SSH (no remote install; remote OpenCode is explicitly unsupported there): see
 [remote workers in the conversation API](conversation-api.md#remote-workers-over-ssh).
+A [conversation stream](conversation-api.md#stream) on a remote worker reuses
+that master and record mirror: one observer per watched session reads the
+record at most once a second (one SSH command, about 1.3 s on ka), woken by the
+worker's hook events, and reports a failed read (an unreachable machine, a
+dead master) as the stream status's `history_error` until a redial succeeds;
+it never opens a connection per update. Remote OpenCode streams are refused
+(`HISTORY_UNSUPPORTED`) before streaming.
 Its commands run over a session-scoped OpenSSH master separate from the
 launch's, and Claude's input waiter uses the gateway's token-scoped
 `/hooks/<token>/claude/wait` route, bound to the gateway's own session. Claude

@@ -51,6 +51,8 @@ type Service struct {
 	// sessions' conversations (remote_conversation.go).
 	remoteConvMu sync.Mutex
 	remoteConvs  map[string]*remoteConversation
+	// streams holds the conversation stream observers (conversation_stream.go).
+	streams conversationStreams
 	// deliveries coordinates synchronous conversation sends (submit.go).
 	deliveries         deliveryState
 	workspaceMutation  func(context.Context, string, []string, func() error) error
@@ -2225,6 +2227,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	// connection, and the desktop stops offering an answer nobody would read.
 	s.interruptQuestions(ctx)
 	s.stopMessageDelivery()
+	s.stopConversationStreams(ctx)
 	s.remoteMu.Lock()
 	ids := []string{}
 	for id := range s.remotes {
@@ -2486,6 +2489,12 @@ func (s *Service) markRunFailed(runID string, reason domain.SessionRunFailureRea
 }
 
 func (s *Service) publishEvent(sessionID string, event domain.SessionEvent) {
+	// Controls and status of a conversation stream are re-read on any event;
+	// other events are agent activity, after which the native record is read.
+	s.conversationChanged(sessionID)
+	if event.Type != "question" && event.Type != "intent" {
+		s.sessionActivity(sessionID)
+	}
 	s.eventMu.RLock()
 	defer s.eventMu.RUnlock()
 	for _, ch := range s.eventStreams[sessionID] {

@@ -1,0 +1,65 @@
+{
+  "ticket": "2026-10-28-1137-stream-conversation-controls-and-status-over-sse",
+  "date": "2026-10-28",
+  "environment": {
+    "daemon": "isolated hiverynd built from this checkout (continuity_lab.py: private HIVERYN_HOME, port, SQLite, ntfy sink, run dir under /private/tmp); live daemon 4201 and UI 3217 untouched",
+    "ui": "chat-ui-poc branch streaming (isolated worktree), next build + next start on a private loopback port, headless Chromium via Playwright",
+    "laptop": "macOS arm64",
+    "remote": "machine ka (SSH alias ka), Darwin arm64",
+    "providers": {
+      "claude": "Claude Code 2.1.312 (sonnet); local: read-only copy of the ~/.claude login (token valid >2 h, so never refreshed); ka: its default profile",
+      "codex": "codex-cli 0.164.0 (gpt-5.6-sol); local: copy of ~/.codex-personal/auth.json; ka: run-owned CODEX_HOME with a ka-side copy of ka's own auth (0600, removed)",
+      "opencode": "OpenCode 1.19.4 (deepseek/deepseek-v4-pro), local only"
+    },
+    "method": "Each turn: one SSE stream open on the session, a sampler watching the provider's own record (local: file size / OpenCode part rows every 50 ms; remote: stat over a separate SSH session every 200 ms, so remote record times include ~0.2-0.5 s sampling/transport), one POST /messages asking for a single shell command and a 20-30 item list."
+  },
+  "granularity": {
+    "claude": "Transcript entries are appended per completed content block: tool_use (stream: tool 'started'), tool_result (tool 'completed'), then the whole final text (1956-2915 chars) in one write. No partial text in the record.",
+    "codex": "Rollout items are complete messages and tool calls (preamble message, CommandExecution, final message 1461-2256 chars in one write). No partial text.",
+    "opencode": "The database gets an empty text part when generation starts and the full text (2278-3418 chars) when it ends; no intermediate text writes at 50 ms sampling. Tool parts move pending -> running -> completed and those states are visible. The empty part is not shown (blank text is skipped by the reader).",
+    "remote": "Same per-provider granularity on ka (Claude transcript and Codex rollout mirrored over SSH).",
+    "conclusion": "No provider exposes token-level text through its native record in these TUI sessions; the stream delivers whole messages and tool steps. Nothing is sliced or animated."
+  },
+  "latency_record_to_daemon_stream_s": {
+    "local_claude": [0.097, 0.047, 0.139, 0.343, 0.748, 0.534, 0.247, 0.326],
+    "local_codex": [0.054, 0.82, 0.525, 0.16, 0.207, 0.778, 0.062, 0.166],
+    "local_opencode": [0.664, 0.058, 0.856, 0.182, 0.098],
+    "remote_claude_ka": [1.575, 1.154, 0.318],
+    "remote_codex_ka": [0.94, 0.934, 0.48, 0.319],
+    "notes": "First runs used a 1 s observer timer; the delivered observer wakes on hook/status events (250 ms local / 1 s remote minimum gap, 2 s fallback). Remote values include the SSH sampler's own delay. One OpenCode sample (7.2 s) is a sampler artifact (the stream event preceded the sampled write) and is excluded."
+  },
+  "latency_daemon_to_proxy_s": [0.003, 0.0, 0.0, 0.0, 0.001],
+  "ui_send_to_rendered_reply_s": 5.75,
+  "sends_with_stream_open": {
+    "local_accepted_s": { "claude": [0.57, 0.83], "codex": [0.31, 0.14], "opencode": [0.35, 0.36] },
+    "remote_codex_ka_steady_s": [3.48, 3.65],
+    "remote_cold_first_send_s": { "claude": 8.18, "codex": 18.99 },
+    "cold_note": "The first remote sends waited for the conversation master the observer was dialling (5.3-8.8 s) and, for Codex, the first app-server start in a fresh CODEX_HOME. Steady sends with a stream open matched the 0956 measurements (3.2-3.9 s); the 20 s bound was not changed."
+  },
+  "ui_e2e": {
+    "live": "Codex architect history rendered live; a message typed in the UI was accepted and its turn and reply appeared through the stream (5.75 s); draft survived reload; view follows the reply without jumping (after the scroll-anchor fix below)",
+    "controls": "Question raised by the agent route appeared 0.11 s later, survived a reload while open, answered by clicking 'red' (agent got answered/red/user) and left with the next snapshot; a conclusion intent was denied from the UI (agent got denied_by_user with the reason)",
+    "switching": "6 reload switches and an in-app list switch between Claude and Codex architects: each view showed only its own session",
+    "remote_phone": "ka Claude worker at 390x844: Live, remote badge, granularity note, no horizontal overflow",
+    "daemon_restart": "Isolated daemon stopped with the UI open: 'Reconnecting in Ns'; restarted (26.8 s, remote reattach): Live again 3.9 s later, 88 rendered elements before and after (no duplicates), composer draft kept",
+    "session_end": "Conclusion intent approved from the UI: final history kept, 'Session ended', no composer or approvals, session gone from the list; the stream closed without reconnecting",
+    "remote_intents": "ka Claude worker asked through the UI to call concludeTicketSession: the approval intent raised through its authenticated gateway appeared in the UI 9.96 s after the send, was denied from the UI (the agent reported the denial); asked again (5.92 s), approved from the UI: the worker concluded (rejected), its view showed the final history and 'Session ended' with no composer",
+    "network": "No request to archived-chats, submissions, /conversation or /controls in any phase; one stream request per selected session/reconnect"
+  },
+  "faults": {
+    "remote_master_killed": "SIGKILL of the run-owned conversation master while streaming a ka Codex worker: status history_error HISTORY_READ_FAILED naming the master exit within 0.1 s, cleared 10.5 s later after one redial; one new master, no per-update handshakes (6 conversation masters over the whole lab: launches, restarts and this fault)",
+    "slow_reader": "Deterministic (Go): a client that never reads is cut off after the 10 s write bound; observer reads and GET /conversation continue meanwhile",
+    "idle_after_streams": "Lab daemon 0.0-0.1% CPU with no stream open; observers released (Go tests assert observer count and no further native reads)"
+  },
+  "found_and_fixed": [
+    "UI jumped to an old turn when a sent message's native echo replaced its local bubble: every user turn was a scroll anchor, and the scroller re-anchors to the first unhandled one when the item count is unchanged. Only the local pending bubble is an anchor now.",
+    "Stream observer: a 1 s timer gave up to ~1.25 s record-to-stream latency; it now wakes on the session's hook/status events.",
+    "Lab scripts no longer default to the expired ~/.claude-work login: an explicit --claude-config is required and refused within 2 h of token expiry."
+  ],
+  "not_covered": [
+    "Remote OpenCode natively (deterministic test: 422 HISTORY_UNSUPPORTED before streaming)",
+    "Physical phone network path, authentication",
+    "Remote Linux hosts"
+  ],
+  "cleanup": "Isolated daemon, sink and next server stopped; lab sessions discarded (ka tmux sessions and runtime dirs removed by the daemon); ka run dir /private/tmp/hv-gate-111601 and its Claude project/transcript dirs removed; copied credentials deleted. The ka trust entry for /private/tmp/hv-gate-111601/repo pre-existed from ticket 1054 and was reused, adding none."
+}

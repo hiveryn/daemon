@@ -1,6 +1,6 @@
 # Local conversation API V1
 
-The same polling API serves two kinds of session. Ordinary laptop sessions
+The same API serves two kinds of session. Ordinary laptop sessions
 (terminal mode, launched normally from the desktop) are read and continued
 through the provider's own route into their running TUI conversation — see
 [Existing terminal sessions](#existing-terminal-sessions-laptop-continuity).
@@ -13,8 +13,9 @@ or attached as another submitter.
 
 The daemon owns Claude's structured CLI, Codex app-server or a private loopback
 OpenCode server. These provider transports are internal. Public clients use
-ordinary HTTP and polling; no streaming/authentication/gateway is added. Listener
-exposure is unchanged. Remote SSH chat is rejected; remote terminal workers are
+ordinary HTTP requests plus one server-sent-events [stream](#stream) for the
+selected session; no authentication/gateway is added. Listener exposure is
+unchanged. Remote SSH chat is rejected; remote terminal workers are
 covered in [Remote workers](#remote-workers-over-ssh).
 
 ## Create, launch and discover
@@ -233,6 +234,74 @@ Tool failures retain their own status separately from the enclosing turn.
 Conversation records have the same local trust boundary as other daemon state;
 tools can of course produce sensitive user-requested output.
 
+## Stream
+
+```http
+GET /api/sessions/SESSION_ID/stream
+Last-Event-ID: 42          (or ?after_revision=42; omitted = 0)
+```
+
+One server-sent-events connection for the selected session carries its
+conversation, controls and status. Sends and question/intent actions stay the
+POSTs above/below; `GET /conversation` and `GET /controls` remain the
+snapshot/recovery reads. Nothing a client does with the stream (connect,
+disconnect, stall) affects the agent, a native send in progress or a remote
+worker.
+
+**Before streaming** the usual error envelope is returned and the client must
+not reconnect: 404 unknown session (neither live nor retained history), 422
+`HISTORY_UNSUPPORTED` (remote OpenCode, remote chat, an agent without a
+reader), 400 an invalid cursor, 409 the daemon is shutting down (retry later).
+
+**Events** (`event:` name, `data:` JSON, shared contract `ConversationStream*`):
+
+| Event | Data | Rule |
+| --- | --- | --- |
+| `status` | `{state, session?, history_error?}` | Authoritative snapshot; latest replaces previous. `state` `live` carries the session record (`conversation` capabilities, run/agent status, `connection`) without kickoff prompt, role instructions and variant env/args/MCP. `history_error` (`code`, original `message`) is the latest native read failure and clears after a successful read; history already sent stays valid. `ended`: the session was concluded or discarded — its final history was sent before this event and the stream then closes; do not reconnect |
+| `controls` | `{events}` | Authoritative snapshot: every durable question/intent event in `seq` order, reduced exactly as `GET /controls`. Sent on connect and when it changes |
+| `conversation` | a `ConversationPage` | Incremental: upsert by `id`, highest `revision` wins, display by `sequence` then `id`. SSE `id:` is its `next_revision` — the reconnect cursor. Each connect replays every revision after the cursor in pages of at most 200 (`has_more` true until the replay is complete; the first page is sent even when empty so a client knows the replay is done) |
+| `reset` | `{reason}` | The cursor is not part of this conversation (another daemon database, a corrupted client). Keep showing what you have, replay from revision 0 (which follows on the same connection) and replace your items when that replay completes |
+
+A comment (`: heartbeat`) is written every 15 s. Treat 45 s without bytes as a
+dead connection.
+
+**Recovery.** Conversation, controls and status have different durable
+sources, so only the conversation is incremental: reconnect with the last
+processed `next_revision` (never a revision taken from an item: revisions of
+one page are not processed until the page is) and you receive exactly the
+revisions you missed, including old items that moved or changed. Controls and
+status are re-sent in full on every connect, so anything missed while
+disconnected (a question answered elsewhere, an intent resolved by its policy,
+a run that failed) is corrected by the first snapshots. Order within a
+connect: `status`, `controls`, then the conversation replay; a snapshot always
+supersedes earlier ones regardless of the conversation cursor. After a daemon
+restart the cursor stays valid (revisions are durable); pending questions the
+previous daemon held arrive resolved `interrupted`.
+
+**How it works.** Each subscriber holds a one-slot change signal and re-reads
+the durable sources when signalled — nothing is buffered per client, so a slow
+reader only lags and catches up from the store, and a reader that stops
+reading is cut off after 10 s of blocked writes and reconnects from its cursor.
+A terminal session's native record has no push source: one observer per
+watched session (shared by its subscribers, started by the first, stopped by
+the last) reads it with the same throttled, serialized read as `GET
+/conversation`, waking on the session's hook/status events and otherwise every
+2 s (at least 250 ms apart locally; remote reads are one SSH command over the
+session's existing master, at least 1 s apart, never a new handshake per
+update). Failed reads back off to 15 s and are reported in `status`. The
+observer only reads: it never changes Claude activity/idle evidence, the
+hand-off slot or deliveries. Chat sessions are written as their transport
+events arrive. Daemon shutdown ends every stream; clients reconnect.
+
+**Granularity (measured 28 October; [evidence](evidence/conversation-stream-2026-10-28.json)).**
+The stream delivers what the provider has recorded, never synthesized deltas.
+Claude transcripts, Codex rollouts and the OpenCode database all record a
+message when it is complete (OpenCode writes an empty text part first and the
+full text at the end) and each tool step as it starts/finishes (OpenCode also
+records `pending`/`running` tool states). So text arrives a whole message at
+a time, tool steps one at a time, locally and remotely. See the evidence for
+measured record-to-stream latency.
+
 ## Questions, approvals and notifications
 
 `GET /api/sessions/SESSION_ID/controls` returns the durable question/intent event
@@ -419,7 +488,8 @@ Known limits: Claude provenance as above; OpenCode laptop input sent while a
 turn runs merges into it (native behaviour, reported as above); Codex holds
 its queue after an Esc-interrupted turn until the next laptop turn completes;
 a tool interrupted by a provider crash can stay `running` in the native
-record; no streaming or authentication. Localhost is not a phone
+record; no authentication; the stream carries recorded items, not token
+deltas (see [Stream](#stream)). Localhost is not a phone
 network path. Acceptance evidence: [laptop continuity](laptop-conversation-continuity.md).
 
 ## Remote workers over SSH

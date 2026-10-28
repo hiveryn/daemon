@@ -165,6 +165,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}/conversation", sh.conversation)
 	mux.HandleFunc("POST /api/sessions/{id}/messages", sh.submitMessage)
 	mux.HandleFunc("GET /api/sessions/{id}/controls", sh.conversationControls)
+	mux.HandleFunc("GET /api/sessions/{id}/stream", sh.conversationStream)
 	mux.HandleFunc("POST /api/sessions/{id}/runs", sh.createRun)
 	mux.HandleFunc("POST /api/sessions/{id}/conclude", sh.conclude)
 	mux.HandleFunc("POST /api/sessions/{id}/discard", sh.discard)

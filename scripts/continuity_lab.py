@@ -3,8 +3,8 @@
 Creates a private HIVERYN_HOME, one project per provider (architect + fixture
 repo; "lab" for the first provider, "lab-<provider>" for the rest),
 per-provider config roots with read-only copies of existing credentials
-(~/.claude-work login, ~/.codex-personal/auth.json, the DeepSeek entry of the
-OpenCode auth file) and a loopback notification sink, then runs a hiverynd
+(the Claude login of an explicitly named config dir, ~/.codex-personal/auth.json,
+the DeepSeek entry of the OpenCode auth file) and a loopback notification sink, then runs a hiverynd
 built from this checkout. Nothing touches the live daemon, global provider
 settings or existing conversations; OpenCode auto-update is disabled and
 secret-like environment variables are scrubbed. Credentials are copied, never
@@ -17,7 +17,7 @@ verification entry requires, so that build can be pointed at it
 (HIVERYN_ISOLATED_RUN=RUN_DIR, HIVERYN_HOME=RUN_DIR/home).
 
 Usage (from the daemon checkout):
-  python3 scripts/continuity_lab.py setup RUN_DIR [claude codex opencode]
+  python3 scripts/continuity_lab.py setup RUN_DIR [claude codex opencode] [--claude-config DIR]
   python3 scripts/continuity_lab.py start RUN_DIR          # builds and starts hiverynd
   python3 scripts/continuity_lab.py stop RUN_DIR
   python3 scripts/continuity_lab.py cleanup RUN_DIR        # stop + remove copied credentials
@@ -50,7 +50,7 @@ class Lab:
         self.state_path.write_text(json.dumps(self.state, indent=2))
 
     # ---------------------------------------------------------------- setup
-    def setup(self, providers):
+    def setup(self, providers, claude_config=None):
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         home = self.root / "home"
         home.mkdir(parents=True, exist_ok=True)
@@ -100,15 +100,28 @@ class Lab:
                     + "[tui]\nscreen_reader_detection_done = true\n")
                 env, model = {"CODEX_HOME": str(config)}, "gpt-5.6-sol"
             elif kind == "claude":
-                original = json.loads((HOME / ".claude-work/.claude.json").read_text())
+                # An explicit, authenticated login (e.g. ~/.claude): its token is
+                # copied read-only and must outlive the lab, so the lab never
+                # refreshes it (a refresh could rotate the original login away).
+                if not claude_config:
+                    raise SystemExit("claude needs --claude-config DIR (an authenticated CLAUDE_CONFIG_DIR)")
+                source = pathlib.Path(claude_config).expanduser().resolve()
+                state = source / ".claude.json" if source != HOME / ".claude" else HOME / ".claude.json"
+                original = json.loads(state.read_text())
                 keep = {k: original[k] for k in ["oauthAccount", "hasCompletedOnboarding", "lastOnboardingVersion", "userID"] if k in original}
                 keep["bypassPermissionsModeAccepted"] = True
                 keep["projects"] = {str(p): {"hasTrustDialogAccepted": True, "hasCompletedProjectOnboarding": True}
                                     for p in self.root.iterdir() if p.name.startswith(("repo", "workspace"))}
                 (config / ".claude.json").write_text(json.dumps(keep))
                 cred = config / ".credentials.json"
-                service = "Claude Code-credentials-" + hashlib.sha256(str(HOME / ".claude-work").encode()).hexdigest()[:8]
-                cred.write_bytes(subprocess.run(["security", "find-generic-password", "-s", service, "-w"], capture_output=True, check=True).stdout.strip())
+                service = "Claude Code-credentials"
+                if source != HOME / ".claude":
+                    service += "-" + hashlib.sha256(str(source).encode()).hexdigest()[:8]
+                token = subprocess.run(["security", "find-generic-password", "-s", service, "-w"], capture_output=True, check=True).stdout.strip()
+                expires = json.loads(token).get("claudeAiOauth", {}).get("expiresAt", 0) / 1000
+                if expires - time.time() < 2 * 3600:
+                    raise SystemExit("the %s login expires in under 2 hours; refresh it with claude first" % source)
+                cred.write_bytes(token)
                 env, model = {"CLAUDE_CONFIG_DIR": str(config), "DISABLE_AUTOUPDATER": "1"}, "sonnet"
             else:
                 for key in ["DATA", "CONFIG", "CACHE", "STATE"]:
@@ -278,7 +291,11 @@ if __name__ == "__main__":
     cmd, root = sys.argv[1], sys.argv[2]
     lab = Lab(root)
     if cmd == "setup":
-        lab.setup(sys.argv[3:] or ["claude", "codex", "opencode"])
+        args, claude_config = sys.argv[3:], None
+        if "--claude-config" in args:
+            i = args.index("--claude-config")
+            claude_config, args = args[i + 1], args[:i] + args[i + 2:]
+        lab.setup(args or ["claude", "codex", "opencode"], claude_config)
     elif cmd == "start":
         print(lab.start())
     elif cmd == "stop":
