@@ -32,13 +32,19 @@ type historyAdapter struct {
 	history agentruntime.History
 	err     error
 	reads   []agentruntime.HistoryRequest
+	// onRead runs after the record is read, before it is returned.
+	onRead func()
 }
 
 func (h *historyAdapter) ReadHistory(_ context.Context, req agentruntime.HistoryRequest) (agentruntime.History, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.reads = append(h.reads, req)
-	return h.history, h.err
+	history, err, onRead := h.history, h.err, h.onRead
+	h.mu.Unlock()
+	if onRead != nil {
+		onRead()
+	}
+	return history, err
 }
 
 // PrepareMessage chooses an OpenCode-style provider identity.

@@ -86,7 +86,10 @@ SSH disconnect, laptop sleep and daemon restart leave remote processes alive.
 Hiveryn reattaches existing workers and auxiliary shells; reconnect never
 launches another provider. Recovered auxiliary terminals return as ordinary
 tabs. The session banner separates
-connection state from worker activity. Lost connections clear stale activity.
+connection state from worker activity. Lost connections clear stale activity,
+including the Claude input gate: hooks sent while the tunnel was down are lost,
+so input waits for a new hook event or the remote transcript's recorded turn end
+(a re-arming waiter is not idle evidence).
 A missing or exited managed worker is reported as unavailable without starting
 a replacement; inspect its retained tmux pane, then discard/recreate as needed.
 Stop, discard and conclusion first confirm owned remote resources are stopped.

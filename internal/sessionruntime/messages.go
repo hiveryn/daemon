@@ -89,11 +89,20 @@ type messageRuntime struct {
 
 	mu sync.Mutex
 	// idle holds the gate per session: true after the primary agent's turn
-	// ended (Stop / session.idle) or a Claude waiter armed by a resumed or
-	// cleared SessionStart, false once a turn starts. idleAt is when it last
-	// turned true.
-	idle      map[string]bool
-	idleAt    map[string]time.Time
+	// ended (Stop / session.idle) or a SessionStart that resumed or cleared a
+	// conversation, false once a turn starts. A session without an entry has
+	// unknown activity (nothing observed by this daemon process, or hooks
+	// possibly lost while a remote attachment was down) and is never idle
+	// until fresh evidence says so. idleAt is when it last turned true.
+	// activity stamps each session's latest gate change from activitySeq, so
+	// evidence gathered meanwhile (a native-record probe) never overrides a
+	// newer hook event.
+	idle        map[string]bool
+	idleAt      map[string]time.Time
+	activity    map[string]uint64
+	activitySeq uint64
+	// probing marks sessions with a native-record idle probe in flight.
+	probing   map[string]bool
 	endpoints map[string]messageEndpoint
 	// holds are the release functions of active terminal input holds.
 	holds map[string]func()
@@ -138,6 +147,8 @@ func newMessageRuntime() *messageRuntime {
 		mailbox:      ingest.NewMailbox(),
 		idle:         map[string]bool{},
 		idleAt:       map[string]time.Time{},
+		activity:     map[string]uint64{},
+		probing:      map[string]bool{},
 		endpoints:    map[string]messageEndpoint{},
 		failures:     map[string]int{},
 		commitChecks: map[domain.AgentMessageKind]messageCommitCheck{},
@@ -357,7 +368,10 @@ func (s *Service) messageEndpoint(sessionID string) (messageEndpoint, bool) {
 }
 
 // observeAgentStatusForMessages feeds the idle gate from the primary agent's
-// hook events; subagent events never count.
+// hook events; subagent events never count. Hook events are the ordered
+// activity stream: a Claude SessionStart that resumes or clears a
+// conversation leaves the agent at its prompt, a startup one is followed by
+// the kickoff turn.
 func (s *Service) observeAgentStatusForMessages(event agentruntime.Event) {
 	if s.messages == nil || event.NativeSessionRole == agentruntime.NativeSessionRoleSubsession {
 		return
@@ -365,6 +379,18 @@ func (s *Service) observeAgentStatusForMessages(event agentruntime.Event) {
 	switch event.Status {
 	case agentruntime.StatusIdle:
 		s.setMessageIdle(event.ID, true)
+	case agentruntime.StatusStarting:
+		if event.Agent != agentruntime.AgentClaude {
+			return
+		}
+		switch event.Metadata["source"] {
+		case "resume", "clear":
+			s.setMessageIdle(event.ID, true)
+		case "startup":
+			s.setMessageIdle(event.ID, false)
+		default:
+			return
+		}
 	case agentruntime.StatusWorking, agentruntime.StatusAwaitingInput, agentruntime.StatusEnded, agentruntime.StatusError:
 		s.setMessageIdle(event.ID, false)
 		s.releaseTerminalInput(event.ID)
@@ -380,10 +406,16 @@ func (s *Service) setMessageIdle(sessionID string, idle bool) {
 	}
 	s.messages.mu.Lock()
 	defer s.messages.mu.Unlock()
+	s.setMessageIdleLocked(sessionID, idle)
+}
+
+func (s *Service) setMessageIdleLocked(sessionID string, idle bool) {
 	s.messages.idle[sessionID] = idle
 	if idle {
 		s.messages.idleAt[sessionID] = s.messages.now()
 	}
+	s.messages.activitySeq++
+	s.messages.activity[sessionID] = s.messages.activitySeq
 }
 
 func (s *Service) messageIdle(sessionID string) (bool, time.Time) {
@@ -395,6 +427,47 @@ func (s *Service) messageIdle(sessionID string) (bool, time.Time) {
 	return s.messages.idle[sessionID], s.messages.idleAt[sessionID]
 }
 
+// messageActivity reports the gate with whether it is known at all, and the
+// stamp of its latest change for setMessageIdleUnchanged.
+func (s *Service) messageActivity(sessionID string) (idle, known bool, stamp uint64) {
+	if s.messages == nil {
+		return false, false, 0
+	}
+	s.messages.mu.Lock()
+	defer s.messages.mu.Unlock()
+	idle, known = s.messages.idle[sessionID]
+	return idle, known, s.messages.activity[sessionID]
+}
+
+// setMessageIdleUnchanged marks the session idle only if nothing changed its
+// gate since stamp was read; it reports whether it did.
+func (s *Service) setMessageIdleUnchanged(sessionID string, stamp uint64) bool {
+	if s.messages == nil {
+		return false
+	}
+	s.messages.mu.Lock()
+	defer s.messages.mu.Unlock()
+	if s.messages.activity[sessionID] != stamp {
+		return false
+	}
+	s.setMessageIdleLocked(sessionID, true)
+	return true
+}
+
+// forgetMessageActivity makes the session's activity unknown: hook events may
+// have been lost (a remote attachment and its reverse tunnel went down), so
+// the last observed state no longer says what the agent is doing now.
+func (s *Service) forgetMessageActivity(sessionID string) {
+	if s.messages == nil {
+		return
+	}
+	s.messages.mu.Lock()
+	delete(s.messages.idle, sessionID)
+	s.messages.activitySeq++
+	s.messages.activity[sessionID] = s.messages.activitySeq
+	s.messages.mu.Unlock()
+}
+
 // forgetMessageSession drops a session's gate and endpoint when it ends.
 func (s *Service) forgetMessageSession(sessionID string) {
 	if s.messages == nil {
@@ -403,20 +476,20 @@ func (s *Service) forgetMessageSession(sessionID string) {
 	s.messages.mu.Lock()
 	delete(s.messages.idle, sessionID)
 	delete(s.messages.idleAt, sessionID)
+	delete(s.messages.activity, sessionID)
 	delete(s.messages.endpoints, sessionID)
 	s.messages.mu.Unlock()
 	s.kickMessages()
 }
 
-// waiterArmed is the mailbox observer: a waiter armed by Stop, or by a
-// SessionStart that resumes or clears a conversation, means the agent sits at
-// its prompt. A startup SessionStart does not: the kickoff turn follows.
+// waiterArmed is the mailbox observer. A waiter arming — first or again after
+// its receiver restarted or its tunnel dropped, re-posting the envelope of the
+// hook that started it — only says a hand-off can reach the session; whether
+// the agent is idle comes from hook events or, while unknown, from the native
+// record (probeClaudeIdle).
 func (s *Service) waiterArmed(w ingest.Waiter) {
-	switch {
-	case w.HookEvent == "Stop":
-		s.setMessageIdle(w.SessionID, true)
-	case w.HookEvent == "SessionStart" && (w.Source == "resume" || w.Source == "clear"):
-		s.setMessageIdle(w.SessionID, true)
+	if _, known, _ := s.messageActivity(w.SessionID); !known {
+		s.probeClaudeIdleAsync(w.SessionID)
 	}
 	s.kickMessages()
 }

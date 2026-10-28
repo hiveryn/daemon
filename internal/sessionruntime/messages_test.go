@@ -275,8 +275,12 @@ func TestClaudeMessageIsHandedOnlyToAnArmedWaiterWhileIdle(t *testing.T) {
 	f.dispatch()
 	f.expect(m.ID, domain.AgentMessagePending, "no waiter armed")
 
-	// A startup SessionStart arms a waiter but the kickoff turn follows: busy.
+	// A startup SessionStart arms a waiter but the kickoff turn follows:
+	// unknown until its hook event says busy.
 	startup := f.armWaiter("arch-1", "SessionStart", "startup")
+	f.dispatch()
+	f.expect(m.ID, domain.AgentMessagePending, "agent activity unknown")
+	f.service.observeAgentStatusForMessages(agentruntime.Event{ID: "arch-1", Agent: agentruntime.AgentClaude, Status: agentruntime.StatusStarting, Metadata: map[string]string{"source": "startup"}})
 	f.dispatch()
 	f.expect(m.ID, domain.AgentMessagePending, "agent busy")
 

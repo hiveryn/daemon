@@ -733,6 +733,20 @@ func (s *Service) handOffTerminalInput(ctx context.Context, session domain.Sessi
 			reject(domain.DeliverySendUnavailable, "the remote worker's SSH attachment is "+state+"; Claude's input waiter is reachable only through it")
 			return
 		}
+		// A waiter re-arming after a restart or reconnect is no idle evidence:
+		// without hook evidence the native record must show the turn ended.
+		if _, known, _ := s.messageActivity(session.ID); !known {
+			probed, err := s.probeClaudeIdle(ctx, session)
+			if err != nil {
+				reject(domain.DeliverySendUnavailable, claudeActivityUnknown+" and its native record could not be read: "+err.Error())
+				return
+			}
+			if !probed {
+				reject(domain.DeliverySessionBusy, claudeActivityUnknown+" and its native record shows no completed turn after the latest input; treated as working until it stops at its prompt")
+				return
+			}
+			idle = true
+		}
 		if !idle {
 			reject(domain.DeliverySessionBusy, "the agent is working; Claude takes input only at its idle prompt")
 			return

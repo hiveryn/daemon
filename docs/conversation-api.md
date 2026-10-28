@@ -368,7 +368,17 @@ Sends are synchronous with the same codes, replay/conflict rules and receipts
 as above. Per route:
 
 - **Claude** — refused `SESSION_BUSY` unless the agent is idle, `SEND_UNAVAILABLE`
-  without an armed waiter. The daemon holds laptop keystrokes, re-checks idle
+  without an armed waiter. Idle comes only from the ordered hook events (Stop;
+  a resume/clear SessionStart; any working/permission hook closes it). A waiter
+  arming — including a retry re-posting its old Stop envelope after a daemon
+  restart or a dropped tunnel — is never idle evidence. When the daemon holds no
+  hook evidence (it restarted, or a remote attachment dropped and hooks may have
+  been lost) activity is unknown: the send reads the native record and proceeds
+  only if a `turn_duration` turn end follows the latest input and no hook event
+  arrived meanwhile; otherwise `SESSION_BUSY` (the record shows no completed
+  turn after the latest input — a running turn, or one that ended abnormally)
+  or `SEND_UNAVAILABLE` (the record could not be read). Nothing is queued; the
+  next genuine Stop reopens the gate. The daemon holds laptop keystrokes, re-checks idle
   after 300 ms, hands the input to the waiter and then waits for it in Claude's
   transcript: found → `running` (200); not found within the bound →
   `DELIVERY_UNKNOWN`. A waiter that leaves before taking it is `SEND_UNAVAILABLE`
@@ -456,8 +466,14 @@ turns completed (21–34 s).
 **Disconnects and restarts.** The worker keeps running in its tmux pane when the
 attachment drops; history keeps working over the conversation master. A daemon
 restart restores the attachment; the remote Claude waiter is released with a
-retryable answer at shutdown and re-arms through the restored tunnel (local
-waiters still exit, their TUIs are resumed). A remote attachment reconnect is not
+retryable answer (503) at shutdown and re-arms through the restored tunnel (local
+waiters still exit, their TUIs are resumed). Re-arming restores only the route:
+the restarted daemon (and a daemon whose attachment dropped) treats the agent's
+activity as unknown until a hook event or the remote transcript's recorded turn
+end establishes it (see Claude above), so a turn started while hooks could not
+arrive is never joined by a send. A late retry of an earlier waiter never
+displaces a waiter whose hook started later (the waiter reports its hook start
+and attempt; the older one is answered 204 and exits). A remote attachment reconnect is not
 a provider restart, so open turns are not marked uncertain for it. Questions,
 approvals and notifications use the worker's existing gateway and controls.
 Inbound agent-message outbox notifications to remote sessions remain retained,

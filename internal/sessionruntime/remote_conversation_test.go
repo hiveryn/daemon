@@ -446,3 +446,72 @@ func TestRemoteCodexSendQueuesOnTheWorkerMachine(t *testing.T) {
 		t.Fatalf("refusal = %+v", down)
 	}
 }
+
+func claudeTurnEnd(uuid string) string {
+	b, _ := json.Marshal(map[string]any{"type": "system", "subtype": "turn_duration", "uuid": uuid, "timestamp": time.Now().UTC().Format(time.RFC3339Nano)})
+	return string(b)
+}
+
+// The attachment (and the reverse tunnel hooks travel through) drops while a
+// turn runs: its hooks are lost and the waiter retries with its old Stop
+// envelope once the tunnel is back. The gate forgets what it knew at the
+// disconnect; the remote record decides — busy while the turn runs, idle and
+// sendable once it records the turn end — without restarting the worker.
+func TestRemoteClaudeReconnectNeedsFreshIdleEvidence(t *testing.T) {
+	f := newRemoteConversationFixture(t)
+	ctx := context.Background()
+	session := f.remoteSession("rc-gate", agentruntime.AgentClaude, nil)
+	transcript := filepath.Join(f.home, ".claude", "projects", "-work", remoteNative+".jsonl")
+	writeTranscript(t, transcript, claudeUser("u0", "p0", "human", "# Project: hiveryn\n\nKICKOFF"), claudeAssistant("a0", "READY"), claudeTurnEnd("e0"))
+	worker := &remoteWorker{session: session, connection: "connected"}
+	f.service.remoteMu.Lock()
+	if f.service.remotes == nil {
+		f.service.remotes = map[string]*remoteWorker{}
+	}
+	f.service.remotes[session.ID] = worker
+	f.service.remoteMu.Unlock()
+	f.service.observeAgentStatusForMessages(agentruntime.Event{ID: session.ID, Status: agentruntime.StatusIdle})
+	stop := f.armWaiter(session.ID, "Stop", "")
+
+	// The tunnel drops (a reconnect is already under way, so no new attempt
+	// starts here); meanwhile the laptop user starts a turn whose hooks are lost.
+	worker.mu.Lock()
+	worker.reconnecting = true
+	worker.mu.Unlock()
+	f.service.remoteDisconnected(worker)
+	f.service.messages.mailbox.Interrupt(session.ID)
+	if status, _ := waiterResponse(t, stop); status != http.StatusServiceUnavailable {
+		t.Fatalf("released waiter status %d", status)
+	}
+	appendTranscript(t, transcript, claudeUser("u1", "p1", "human", "typed during the outage"))
+	sub, err := f.service.SubmitMessage(ctx, session.ID, domain.SubmissionRequest{RequestID: "down", Text: "x"})
+	expectRefused(t, sub, err, domain.DeliverySendUnavailable, domain.SubmissionRejected)
+
+	// Back up: the old waiter re-arms. Not idle evidence.
+	worker.mu.Lock()
+	worker.connection = "connected"
+	worker.mu.Unlock()
+	retry := f.armWaiter(session.ID, "Stop", "")
+	f.waitProbes()
+	sub, err = f.service.SubmitMessage(ctx, session.ID, domain.SubmissionRequest{RequestID: "running", Text: "x"})
+	expectRefused(t, sub, err, domain.DeliverySessionBusy, domain.SubmissionRejected)
+
+	// The turn ends on the worker (its Stop hook not seen): the record shows it.
+	appendTranscript(t, transcript, claudeAssistant("a1", "done"), claudeTurnEnd("e1"))
+	result := make(chan error, 1)
+	go func() {
+		var err error
+		sub, err = f.service.SubmitMessage(ctx, session.ID, domain.SubmissionRequest{RequestID: "idle", Text: "after the turn"})
+		result <- err
+	}()
+	status, body := waiterResponse(t, retry)
+	if status != http.StatusOK || !strings.Contains(body, "after the turn") {
+		t.Fatalf("waiter = %d %s", status, body)
+	}
+	var msg struct{ Text string }
+	_ = json.Unmarshal([]byte(body), &msg)
+	appendTranscript(t, transcript, claudeUser("u2", "p2", "task_notification", "<system-reminder>Stop hook blocking error from command: "+msg.Text+"</system-reminder>"))
+	if err := <-result; err != nil || sub.Acceptance != "claude_native_record" || sub.NativeTurnID != "p2" {
+		t.Fatalf("send = %+v, %v", sub, err)
+	}
+}

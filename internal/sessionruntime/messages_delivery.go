@@ -264,6 +264,9 @@ func (s *Service) attemptMessageDelivery(ctx context.Context, m *domain.AgentMes
 			return
 		case !idle:
 			m.Condition = "agent busy; handed over at its next idle point"
+			if _, known, _ := s.messageActivity(target.session.ID); !known {
+				m.Condition = "agent activity unknown (no hook evidence since this daemon started observing it or since its remote attachment was lost); handed over once a hook event or its native record shows it idle"
+			}
 			return
 		}
 		if !s.reserveMessageAttempt(ctx, m) {

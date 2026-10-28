@@ -18,8 +18,8 @@ github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aN
 github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
 github.com/hashicorp/golang-lru/v2 v2.0.7 h1:a+bsQ5rvGLjzHuww6tVxozPZFVghXaHOwFs4luLUK2k=
 github.com/hashicorp/golang-lru/v2 v2.0.7/go.mod h1:QeFd9opnmA6QUJc5vARoKUSoFhyfM2/ZepoAG6RGpeM=
-github.com/hiveryn/agentruntime v0.9.1-0.20261028104945-eee58a5ad42b h1:zJ6j8Y4vWlwPTxPlPVO9Szzws+n/hdkvVF44OBnQ6Jg=
-github.com/hiveryn/agentruntime v0.9.1-0.20261028104945-eee58a5ad42b/go.mod h1:Xt8Hk/DuNsjEATDwWHsqNTbeXQqBpZjLpDTv/fqvvb8=
+github.com/hiveryn/agentruntime v0.9.1-0.20261028111141-973be4a3f0b6 h1:pVyqNeV8QA7sr31BNeKo/Dt6qxOGKZna2Suj58ItkJM=
+github.com/hiveryn/agentruntime v0.9.1-0.20261028111141-973be4a3f0b6/go.mod h1:Xt8Hk/DuNsjEATDwWHsqNTbeXQqBpZjLpDTv/fqvvb8=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/modelcontextprotocol/go-sdk v1.2.0 h1:Y23co09300CEk8iZ/tMxIX1dVmKZkzoSBZOpJwUnc/s=

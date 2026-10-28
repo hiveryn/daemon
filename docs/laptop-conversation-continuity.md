@@ -32,7 +32,8 @@ outbox). The conversation API uses exactly those:
   completion only from the native turn end of the turn holding that input,
   never an automatic resend.
 - **Coordination**: the routes never touch the TUI composer (drafts survive).
-  Claude/OpenCode hand-offs happen only at idle (Claude waiter + Stop; OpenCode
+  Claude/OpenCode hand-offs happen only at idle (Claude waiter + Stop hook, or
+  the native record's turn end when no hook evidence is held; OpenCode
   `GET /session/status`) under a ≤3 s hold of laptop keystrokes to that
   terminal; Codex's durable queue waits for the running turn itself.
 

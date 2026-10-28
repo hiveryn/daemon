@@ -315,6 +315,9 @@ func (s *Service) remoteDisconnected(w *remoteWorker) {
 		return
 	}
 	w.connection = "disconnected"
+	// Hook events travel through the attachment's reverse tunnel: any sent
+	// while it is down are lost, so the input gate no longer knows.
+	s.forgetMessageActivity(w.session.ID)
 	if w.reconnecting {
 		w.mu.Unlock()
 		return

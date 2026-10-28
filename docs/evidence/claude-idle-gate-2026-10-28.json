@@ -1,0 +1,44 @@
+{
+  "ticket": "2026-10-28-1054-prevent-reconnected-claude-waiters-from-reopening-a-stale-idle-gate",
+  "date": "2026-10-28",
+  "environment": {
+    "daemon": "isolated hiverynd built from this checkout (private HIVERYN_HOME under a run-owned /private/tmp directory, own port/SQLite/notification sink); live daemon 4201 and UI 3217 untouched",
+    "remote": "machine ka (SSH alias ka), Darwin arm64, Claude Code 2.1.312, ka default profile, model sonnet",
+    "fixture": "synthetic git repo under run-owned /tmp/hv-gate-<id> on ka; one ticket worker launched through POST /api/sessions + /runs (launch 24.4 s); laptop input typed through the desktop terminal WebSocket",
+    "global_settings": "ka ~/.claude/settings.json sha256 identical before launch and after cleanup",
+    "cleanup": "session discarded (no worker process left on ka), run dir, synthetic transcript project dir and session-env dir removed on ka, isolated daemon/sink stopped and run dir removed; Claude's folder-trust prompt was accepted for the synthetic repo path, which left one trust entry for that (now removed) path in ka ~/.claude.json"
+  },
+  "results": {
+    "restart_while_idle": {
+      "setup": "the model backgrounded a long command and ended its turn; daemon SIGTERM (waiter released 503), restarted, attachment restored",
+      "send": {"http": 200, "seconds": 7.84, "acceptance": "claude_native_record", "note": "no hook event after restart: idle established from the remote transcript's turn end (logged 'claude activity established from the native record'); input handed to the retried waiter, cold SSH master included"}
+    },
+    "restart_while_turn_runs": {
+      "setup": "laptop-typed turn of six sequential foreground `sleep 9` tool calls; daemon SIGTERM 14 s in, restarted, attachment restored",
+      "send_during_turn": {"http": 409, "code": "SESSION_BUSY", "seconds": 6.24, "reason": "activity unknown and the native record shows no completed turn after the latest input"},
+      "send_after_genuine_stop": {"http": 200, "seconds": 3.02, "acceptance": "claude_native_record"},
+      "refused_text_in_history": 0
+    },
+    "attachment_killed_while_turn_runs": {
+      "setup": "same six-sleep turn; the run-owned attachment ssh (reverse tunnel) killed 13 s in; daemon reconnected on its own after ~15 s",
+      "send_while_disconnected": {"http": 409, "code": "SEND_UNAVAILABLE"},
+      "send_after_reconnect_during_turn": {"http": 409, "code": "SESSION_BUSY", "reason": "activity forgotten at the disconnect; record shows the turn unfinished"},
+      "send_after_genuine_stop": {"http": 200, "seconds": 3.51, "acceptance": "claude_native_record"},
+      "refused_text_in_history": 0
+    },
+    "transcript_turn_ends": "8 inputs with turnOrigin, 8 system/turn_duration and 8 stop_hook_summary entries in the lab transcript (every turn ended natively, including a background-task wake-up); local 2.1.28x-2.1.312 transcripts show turn_duration right after stop_hook_summary at normal turn ends and none for turns ended abnormally"
+  },
+  "deterministic": [
+    "old Stop waiter -> working hook -> 503 release and retry with the old envelope: API send SESSION_BUSY, outbox notice stays pending 'agent busy', nothing handed; the genuine Stop hands the notice to the retried waiter (reproduced as DELIVERY_UNKNOWN hand-off into the running turn before the fix)",
+    "no hook evidence (restarted daemon): running turn in record -> SESSION_BUSY, outbox 'agent activity unknown'; unreadable record -> SEND_UNAVAILABLE; recorded turn end -> handed once, accepted from the record, outbox notice not handed alongside",
+    "hook event arriving during the record read wins over the record's idle verdict",
+    "SessionStart resume/clear opens the gate, startup closes it, compact leaves it",
+    "remote (real Claude reader over fake SSH): attachment loss forgets activity; retried waiter -> SESSION_BUSY while the remote record shows the turn running; recorded turn end -> accepted from the remote record (fails without the forget)",
+    "agentruntime: waiter posts carry hook start and attempt (retry = same start, next attempt); mailbox answers a late retry of an earlier waiter 204 and keeps the later one armed"
+  ],
+  "not_covered": [
+    "a native race in which an older waiter's delayed retry arrives after a newer waiter (deterministic only)",
+    "turns that end without a turn_duration entry (Esc without marker, crash) stay unknown until the next hook event; not provoked natively",
+    "remote Linux hosts"
+  ]
+}
