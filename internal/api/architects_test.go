@@ -242,6 +242,8 @@ func TestArchitectsStatusAPI(t *testing.T) {
 				ArchitectKey: "hiveryn",
 				SessionType:  domain.SessionTypeTicket,
 				ContextID:    ticket.ID,
+				Machine:      "ka",
+				Connection:   "disconnected",
 				CurrentRun: &domain.SessionRun{
 					ID:          "run-ticket",
 					Status:      domain.SessionRunStatusRunning,
@@ -291,6 +293,9 @@ func TestArchitectsStatusAPI(t *testing.T) {
 	if hiveryn.Status == nil || *hiveryn.Status != domain.AgentStatusActive {
 		t.Fatalf("expected running architect status, got %#v", hiveryn.Status)
 	}
+	if hiveryn.SessionID == nil || *hiveryn.SessionID != "architect-session" {
+		t.Fatalf("expected running architect session id, got %#v", hiveryn.SessionID)
+	}
 	if len(hiveryn.Sessions) != 1 {
 		t.Fatalf("expected 1 running worker session, got %#v", hiveryn.Sessions)
 	}
@@ -303,13 +308,16 @@ func TestArchitectsStatusAPI(t *testing.T) {
 	if !hiveryn.Sessions[0].StartedAt.Equal(ticketStartedAt) {
 		t.Fatalf("unexpected ticket started_at %#v", hiveryn.Sessions[0].StartedAt)
 	}
+	if hiveryn.Sessions[0].Machine != "ka" || hiveryn.Sessions[0].Connection != "disconnected" {
+		t.Fatalf("expected remote worker machine and connection, got %#v", hiveryn.Sessions[0])
+	}
 
 	litho := payload.Architects[1]
 	if litho.Key != "litho" || litho.Path != lithoPath {
 		t.Fatalf("unexpected litho architect payload %#v", litho)
 	}
-	if litho.Status != nil {
-		t.Fatalf("expected nil status for inactive architect, got %#v", litho.Status)
+	if litho.Status != nil || litho.SessionID != nil {
+		t.Fatalf("expected nil status and session id for inactive architect, got %#v", litho)
 	}
 	if len(litho.Sessions) != 0 {
 		t.Fatalf("expected no worker sessions for inactive architect, got %#v", litho.Sessions)

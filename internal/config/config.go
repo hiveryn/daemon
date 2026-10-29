@@ -171,19 +171,25 @@ type TabEntry struct {
 func defaultShortcuts() map[string]map[string]string {
 	return map[string]map[string]string{
 		"global": {
-			"focus-left":      "Cmd+Shift+h",
-			"focus-right":     "Cmd+Shift+l",
-			"focus-down":      "Cmd+Shift+j",
-			"focus-up":        "Cmd+Shift+k",
-			"focus-main":      "Cmd+1",
-			"command-palette": "Cmd+p",
-			"first-session":   "Cmd+Shift+0",
-			"prev-session":    "Cmd+Shift+[",
-			"next-session":    "Cmd+Shift+]",
-			"close-tab":       "Cmd+w",
-			"new-terminal":    "Cmd+t",
-			"maximize-pane":   "Cmd+m",
-			"quit":            "q",
+			"focus-left":     "Cmd+Shift+h",
+			"focus-right":    "Cmd+Shift+l",
+			"focus-down":     "Cmd+Shift+j",
+			"focus-up":       "Cmd+Shift+k",
+			"focus-main":     "Cmd+1",
+			"first-session":  "Cmd+Shift+0",
+			"prev-session":   "Cmd+Shift+[",
+			"next-session":   "Cmd+Shift+]",
+			"close-tab":      "Cmd+w",
+			"new-terminal":   "Cmd+t",
+			"maximize-pane":  "Cmd+m",
+			"toggle-sidebar": "Cmd+b",
+			"sidebar-search": "Cmd+k",
+			"quit":           "q",
+		},
+		// System-wide bindings the desktop registers with the OS. sidebar-search
+		// brings the workbench window forward with its sidebar search focused.
+		"os-global": {
+			"sidebar-search": "Option+Space",
 		},
 		"kanban": {
 			"left":    "h",

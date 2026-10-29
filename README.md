@@ -215,17 +215,25 @@ Terminal entries only support `type` and optional `command`. Entries without `co
 
 ```yaml
 global:
-  focus-left:    "Cmd+Shift+h"
-  focus-right:   "Cmd+Shift+l"
-  focus-down:    "Cmd+Shift+j"
-  focus-up:      "Cmd+Shift+k"
-  focus-main:    "Cmd+1"
-  first-session: "Cmd+Shift+0"
-  prev-session:  "Cmd+Shift+["
-  next-session:  "Cmd+Shift+]"
-  close-tab:     "Cmd+w"
-  new-terminal:  "Cmd+t"
-  quit:          "q"
+  focus-left:     "Cmd+Shift+h"
+  focus-right:    "Cmd+Shift+l"
+  focus-down:     "Cmd+Shift+j"
+  focus-up:       "Cmd+Shift+k"
+  focus-main:     "Cmd+1"
+  first-session:  "Cmd+Shift+0"   # within the selected project
+  prev-session:   "Cmd+Shift+["
+  next-session:   "Cmd+Shift+]"
+  close-tab:      "Cmd+w"
+  new-terminal:   "Cmd+t"
+  maximize-pane:  "Cmd+m"
+  toggle-sidebar: "Cmd+b"         # collapse/expand the session sidebar
+  sidebar-search: "Cmd+k"         # expand the sidebar and focus its search
+  quit:           "q"
+
+os-global:
+  # Registered system-wide by the desktop: brings the window forward with the
+  # sidebar expanded and its search focused.
+  sidebar-search: "Option+Space"
 
 kanban:
   left:    "h"
@@ -235,6 +243,7 @@ kanban:
   open:    "o"
   spawn:   "s"
   refresh: "r"
+  search:  "/"
 
 event-log:
   down: "j"
@@ -262,7 +271,7 @@ The daemon also writes append-only structured JSONL logs to `HIVERYN_HOME/logs/d
 | `GET` | `/api/agent-profiles` | List all agent profiles |
 | `GET` | `/api/agent-profiles/{name}` | Get one agent profile by name |
 | `GET` | `/api/architects` | List configured architects |
-| `GET` | `/api/architects/status` | List all configured architects plus their running architect status and nested running ticket worker sessions for desktop command-palette/session pickers |
+| `GET` | `/api/architects/status` | List all configured architects with their running architect session (`status`, `session_id`; null when none) and nested running ticket worker sessions (remote ones carry `machine`/`connection`) for the desktop session sidebar |
 | `GET` | `/api/architects/{key}` | Get one configured architect by key |
 | `GET` | `/api/architects/{key}/tickets` | List ticket board columns; supports `?q=keyword` (keep tickets whose title, body or conclusion contains it, case-insensitively, in list order — the desktop's kanban search), `?status=backlog\|progress\|done` and `?limit=N` |
 | `POST` | `/api/architects/{key}/tickets` | Create a backlog ticket with required primary `repo` and optional `additional_repos` keys |

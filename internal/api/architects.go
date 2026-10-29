@@ -13,20 +13,28 @@ import (
 	"github.com/hiveryn/daemon/internal/domain"
 )
 
+// architectStatusResponse lists one configured architect for the desktop
+// session sidebar. Status is the running architect session's agent status and
+// SessionID its id; both are null when no architect session is running.
 type architectStatusResponse struct {
-	Key      string                           `json:"key"`
-	Name     string                           `json:"name"`
-	Path     string                           `json:"path"`
-	Status   *string                          `json:"status"`
-	Sessions []architectWorkerSessionResponse `json:"sessions"`
+	Key       string                           `json:"key"`
+	Name      string                           `json:"name"`
+	Path      string                           `json:"path"`
+	Status    *string                          `json:"status"`
+	SessionID *string                          `json:"session_id"`
+	Sessions  []architectWorkerSessionResponse `json:"sessions"`
 }
 
+// architectWorkerSessionResponse is a running ticket worker. Machine and
+// Connection are set for a remote (SSH) worker only.
 type architectWorkerSessionResponse struct {
 	ID          string                  `json:"id"`
 	Title       string                  `json:"title"`
 	Status      domain.SessionRunStatus `json:"status"`
 	AgentStatus string                  `json:"agent_status"`
 	StartedAt   time.Time               `json:"started_at"`
+	Machine     string                  `json:"machine,omitempty"`
+	Connection  string                  `json:"connection,omitempty"`
 }
 
 func (h *architectsHandler) list(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +106,9 @@ func (h *architectsHandler) listStatus(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			status := session.CurrentRun.AgentStatus
+			sessionID := session.ID
 			architectStatus.Status = &status
+			architectStatus.SessionID = &sessionID
 		case domain.SessionTypeTicket:
 			session, err := h.buildArchitectWorkerSession(r.Context(), architectStatus.Path, session)
 			if err != nil {
@@ -163,6 +173,8 @@ func (h *architectsHandler) buildArchitectWorkerSession(ctx context.Context, arc
 		Status:      session.CurrentRun.Status,
 		AgentStatus: session.CurrentRun.AgentStatus,
 		StartedAt:   session.CurrentRun.StartedAt.UTC(),
+		Machine:     session.Machine,
+		Connection:  session.Connection,
 	}, nil
 }
 
