@@ -89,8 +89,13 @@ itself right after its `required` event, so a `resolved` event never precedes it
 
 Desktop: `GET /api/sessions/{id}/actions` → `{actions: ActionRequest[]}` (pending);
 `POST /api/sessions/{id}/actions/{actionID}/decision` with `ActionDecisionRequest{decision:
-accept|deny|reply, message (reply only)}` → the resolved `ActionRequest`; a settled request is a
-`ConflictError` naming why, another session's id `NotFound`. Events: `action_request` `required` (raw
+accept|deny|reply, message (reply only)}` → the resolved `ActionRequest`. A decision on a request that
+is already resolved — including the retry of a decision that won but whose response was lost — is 409
+`ACTION_REQUEST_RESOLVED` whose `details.action` is the recorded request with its authoritative `status`
+(`accepted`/`denied`/`replied` with `message`/`decided_at`, or `expired`/`cancelled`/`interrupted` with
+`reason`); nothing is decided again. An unknown id or another session's id is `NotFound`: resolved
+requests are retained in memory only briefly past their expiry and not across a restart, so a 404 means
+the outcome is not known here — never that nothing was authorized. Events: `action_request` `required` (raw
 `action_id, title, description, origin, created_at, expires_at`) and `resolved` (raw `action_id, status,
 message?, reason?`); `companion_changed` on the architect stream.
 
@@ -107,15 +112,23 @@ message?, reason?`); `companion_changed` on the architect stream.
 - `completeCompanionShutdown(request_id, handoff)` (companion) → `POST /api/sessions/{id}/companion/shutdown-completion`.
   Only the request recorded for this companion session and its owning architect session is accepted
   (anything else `NotFound`). Records the handoff (`completing`, companion `stopping`) and returns
-  `accepted`. The stop waits until that acknowledgement has been written and flushed to the last transport
-  the daemon observes (the per-session gateway's `/mcp` response into the SSH reverse tunnel for a remote
-  companion, the API response to the local stdio MCP server otherwise) for at most `companionAckWait`
-  (30 s; past it the stop proceeds and logs that no write was observed), then `companionStopGrace` (2 s)
-  for the hop it cannot observe (tunnel or stdio pipe to the agent). It then ends the session (remote
+  `accepted`. The stop waits for the acknowledgement of that very completion: the successful response
+  for the bound `request_id`, written and flushed to the last transport the daemon observes, for at most
+  `companionAckWait` (30 s), then `companionStopGrace` (2 s) for the hop it cannot observe (tunnel or
+  stdio pipe to the agent). Remote: the per-session gateway records, per `/mcp` HTTP request, the
+  `request_id` of a completion the daemon accepted while serving it (request-context recorder in
+  `internal/mcp`), and releases the stop only after that request's 200 response was written and flushed
+  without a write error while its caller was still connected. Local: the API handler releases it after
+  the successful completion response to the stdio MCP server was flushed — this proves only the API →
+  stdio-MCP hop. Other requests of the same companion (another tool call, `tools/list`), error responses,
+  a refused or foreign `request_id`, or the other transport's hop release nothing. If the transport
+  disappears (caller disconnected, write failed) nothing is acknowledged: after the bounded wait the stop
+  proceeds and both the log and the architect's `companion_shutdown_outcome` say the acknowledgement was
+  not observed written, so the companion may not have received it. It then ends the session (remote
   termination confirmed first) and sends `companion_shutdown_outcome` (request id, handoff, actual
-  outcome) to the architect. Limits: receipt by the agent itself is not observable; a concurrent gateway
-  `/mcp` request of the same companion finishing first can release the wait early (the grace still
-  applies); after a daemon restart a recorded handoff is terminated without waiting.
+  outcome) to the architect. Limits: receipt by the agent itself is not observable; after a daemon
+  restart a recorded handoff is terminated without waiting, and the outcome says whether its
+  acknowledgement arrived is not known.
   Same id + handoff → recorded acceptance; changed handoff → `ConflictError`.
 - Unconfirmed termination → `stop_failed` (session kept, conclusion blocked, outcome message says so).
   The only further route is the user's `POST /api/sessions/{id}/discard` on that companion session, which

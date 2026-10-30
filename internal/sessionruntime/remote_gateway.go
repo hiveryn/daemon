@@ -48,12 +48,7 @@ func (s *Service) remoteGateway(session domain.Session) (*http.Server, int, erro
 			return
 		}
 		if r.URL.Path == "/mcp" {
-			mcpHandler.ServeHTTP(w, r)
-			// A companion's completeCompanionShutdown acknowledgement has now
-			// been written into the tunnel: its stop may proceed.
-			if r.Method == http.MethodPost && http.NewResponseController(w).Flush() == nil && s.companionRT.acknowledged(session.ID, companionAckGateway) {
-				s.logger.Info("companion shutdown acknowledgement written", "session_id", session.ID, "transport", companionAckGateway)
-			}
+			s.serveGatewayMCP(w, r, session, mcpHandler)
 			return
 		}
 		if !hook || r.Method != http.MethodPost {
@@ -100,6 +95,72 @@ func (s *Service) remoteGateway(session domain.Session) (*http.Server, int, erro
 	}()
 	return httpServer, ln.Addr().(*net.TCPAddr).Port, nil
 }
+
+// serveGatewayMCP serves one /mcp request. A companion's stop waits for the
+// acknowledgement of its completeCompanionShutdown (companions.go): it is
+// released only by the response of the request whose tool call the daemon
+// accepted, for the bound request_id, once that response was written and
+// flushed into the tunnel without error while its caller was still
+// connected. Any other response — another tool call, an error, a refused
+// request_id — and a response the transport lost release nothing; the stop
+// then waits out its bounded wait and reports that.
+func (s *Service) serveGatewayMCP(w http.ResponseWriter, r *http.Request, session domain.Session, mcpHandler http.Handler) {
+	if session.SessionType != domain.SessionTypeCompanion || r.Method != http.MethodPost {
+		mcpHandler.ServeHTTP(w, r)
+		return
+	}
+	ctx, completion := daemonmcp.WithShutdownCompletion(r.Context())
+	rw := &observedResponse{ResponseWriter: w, status: http.StatusOK}
+	mcpHandler.ServeHTTP(rw, r.WithContext(ctx))
+	requestID := completion.Accepted()
+	if requestID == "" {
+		return
+	}
+	if !rw.written() || http.NewResponseController(rw).Flush() != nil || rw.failed() || r.Context().Err() != nil {
+		s.logger.Warn("companion shutdown acknowledgement not written; the transport lost it", "session_id", session.ID, "request_id", requestID, "transport", companionAckGateway, "status", rw.status, "write_error", rw.err)
+		return
+	}
+	if s.companionRT.acknowledged(session.ID, requestID, companionAckGateway) {
+		s.logger.Info("companion shutdown acknowledgement written", "session_id", session.ID, "request_id", requestID, "transport", companionAckGateway)
+	}
+}
+
+// observedResponse records whether a response was written successfully.
+type observedResponse struct {
+	http.ResponseWriter
+	status int
+	wrote  bool
+	err    error
+}
+
+func (o *observedResponse) WriteHeader(status int) {
+	o.status = status
+	o.ResponseWriter.WriteHeader(status)
+}
+
+func (o *observedResponse) Write(b []byte) (int, error) {
+	n, err := o.ResponseWriter.Write(b)
+	if n > 0 {
+		o.wrote = true
+	}
+	if err != nil && o.err == nil {
+		o.err = err
+	}
+	return n, err
+}
+
+// Flush keeps streaming responses flushable through the wrapper.
+func (o *observedResponse) Flush() {
+	if err := http.NewResponseController(o.ResponseWriter).Flush(); err != nil && o.err == nil {
+		o.err = err
+	}
+}
+
+func (o *observedResponse) Unwrap() http.ResponseWriter { return o.ResponseWriter }
+
+func (o *observedResponse) written() bool { return o.wrote && o.status == http.StatusOK }
+
+func (o *observedResponse) failed() bool { return o.err != nil }
 
 // serveRemoteWaiter admits a remote Claude worker's asyncRewake waiter (its
 // long poll arrives through the reverse tunnel at the token-scoped hook path)

@@ -108,9 +108,12 @@ func (h *companionsHandler) completeShutdown(w http.ResponseWriter, r *http.Requ
 	if input, ok := decodeBody[domain.CompleteCompanionShutdownRequest](w, r); ok {
 		res, err := h.companions.CompleteCompanionShutdown(r.Context(), r.PathValue("id"), input)
 		respond(w, r, res, err)
-		// The companion is stopped only once this acknowledgement is out.
-		if err == nil && http.NewResponseController(w).Flush() == nil {
-			h.companions.CompanionShutdownAcknowledged(r.PathValue("id"))
+		// The companion is stopped only once this acknowledgement is out:
+		// the successful response for the bound request_id, written and
+		// flushed (for a local companion this proves the API to stdio MCP
+		// hop, not receipt by the agent).
+		if err == nil && r.Context().Err() == nil && http.NewResponseController(w).Flush() == nil {
+			h.companions.CompanionShutdownAcknowledged(r.PathValue("id"), res.RequestID)
 		}
 	}
 }

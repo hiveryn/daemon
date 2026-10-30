@@ -619,9 +619,16 @@ func TestRequestActionDecisions(t *testing.T) {
 		if out := waitAction(t, done); out.err != nil || out.res != tc.want {
 			t.Fatalf("%s: %+v %v", tc.decision.Decision, out.res, out.err)
 		}
-		// The first decision wins.
-		if _, err := f.service.DecideAction(ctx, browser.SessionID, request.ID, domain.ActionDecisionRequest{Decision: domain.ActionDecisionAccept}); !errors.As(err, new(*domain.ConflictError)) {
-			t.Fatalf("second decision = %v", err)
+		// The first decision wins. A repeat — such as the retry of a decision
+		// whose response was lost — is refused with the recorded outcome.
+		for _, again := range []domain.ActionDecisionRequest{tc.decision, {Decision: domain.ActionDecisionAccept}} {
+			var resolved *domain.ActionResolvedError
+			if _, err := f.service.DecideAction(ctx, browser.SessionID, request.ID, again); !errors.As(err, &resolved) {
+				t.Fatalf("second decision = %v", err)
+			}
+			if string(resolved.Action.Status) != tc.want.Outcome || resolved.Action.Message != tc.want.Message || resolved.Action.ID != request.ID || resolved.Action.DecidedAt == nil {
+				t.Fatalf("recorded outcome = %+v", resolved.Action)
+			}
 		}
 	}
 	if sent := f.publisher.sent(); len(sent) != 3 || !strings.Contains(sent[0].Title, "browser") || !strings.Contains(sent[0].Body, "Create three Jira tickets") {
@@ -658,11 +665,15 @@ func TestRequestActionTimeoutNotificationFailureAndShutdownCancellation(t *testi
 	browser := f.record(t, "browser")
 
 	f.service.actionTimeout = 50 * time.Millisecond
-	_, done := f.requestAction(t, browser.SessionID)
+	expired, done := f.requestAction(t, browser.SessionID)
 	if out := waitAction(t, done); out.err != nil || out.res.ErrorCode != domain.ActionRequestTimeoutCode || out.res.Error != domain.ActionRequestTimeoutText {
 		t.Fatalf("timeout = %+v %v", out.res, out.err)
 	}
 	f.service.actionTimeout = 0
+	var resolved *domain.ActionResolvedError
+	if _, err := f.service.DecideAction(ctx, browser.SessionID, expired.ID, domain.ActionDecisionRequest{Decision: domain.ActionDecisionAccept}); !errors.As(err, &resolved) || resolved.Action.Status != domain.ActionExpired || resolved.Action.DecidedAt != nil {
+		t.Fatalf("accepting an expired request = %v", err)
+	}
 
 	f.publisher.err = errors.New("ntfy 500")
 	res, err := f.service.RequestAction(ctx, browser.SessionID, domain.RequestActionRequest{Title: "t", Description: "d"})
@@ -679,7 +690,7 @@ func TestRequestActionTimeoutNotificationFailureAndShutdownCancellation(t *testi
 	if out.err != nil || out.res.ErrorCode != domain.ActionRequestCancelledCode || !strings.Contains(out.res.Error, "completeCompanionShutdown") {
 		t.Fatalf("shutdown cancellation = %+v %v", out.res, out.err)
 	}
-	if _, err := f.service.DecideAction(ctx, browser.SessionID, request.ID, domain.ActionDecisionRequest{Decision: domain.ActionDecisionAccept}); !errors.As(err, new(*domain.ConflictError)) {
+	if _, err := f.service.DecideAction(ctx, browser.SessionID, request.ID, domain.ActionDecisionRequest{Decision: domain.ActionDecisionAccept}); !errors.As(err, &resolved) || resolved.Action.Status != domain.ActionCancelled || resolved.Action.Reason == "" {
 		t.Fatalf("accepting a withdrawn request = %v", err)
 	}
 	// While shutting down, no new requests are raised.
@@ -903,11 +914,17 @@ func TestCompanionStopWaitsForTheWrittenAcknowledgement(t *testing.T) {
 	if c := f.record(t, "browser"); c.Status != domain.CompanionStopping || !f.sessionExists(t, browser.SessionID) {
 		t.Fatalf("stopped before the acknowledgement was written: %+v", c)
 	}
-	// A remote companion's stop is released by the gateway, not the API hop.
-	if f.service.companionRT.acknowledged(browser.SessionID, companionAckGateway) {
+	// A remote companion's stop is released by the gateway, not the API hop;
+	// nor does an acknowledgement for another request_id release it.
+	if f.service.companionRT.acknowledged(browser.SessionID, id, companionAckGateway) {
 		t.Fatal("a local companion's stop released by the gateway")
 	}
-	f.service.CompanionShutdownAcknowledged(browser.SessionID)
+	f.service.CompanionShutdownAcknowledged(browser.SessionID, shutdownID())
+	time.Sleep(100 * time.Millisecond)
+	if c := f.record(t, "browser"); c.Status != domain.CompanionStopping {
+		t.Fatalf("stopped by another request_id's acknowledgement: %+v", c)
+	}
+	f.service.CompanionShutdownAcknowledged(browser.SessionID, id)
 	f.service.companionRT.wg.Wait()
 	if c := f.record(t, "browser"); c.Status != domain.CompanionStopped || f.sessionExists(t, browser.SessionID) {
 		t.Fatalf("after the acknowledgement: %+v", c)
@@ -925,5 +942,16 @@ func TestCompanionStopWaitsForTheWrittenAcknowledgement(t *testing.T) {
 	f.service.companionRT.wg.Wait()
 	if c := f.record(t, "research"); c.Status != domain.CompanionStopped {
 		t.Fatalf("without an observed acknowledgement: %+v", c)
+	}
+	// The architect is told the acknowledgement was not observed.
+	all, _ := f.messages.ListAgentMessages(ctx, "hiveryn", 100)
+	noted := false
+	for _, m := range all {
+		if m.Kind == domain.AgentMessageCompanionShutdownOutcome && strings.Contains(m.Body, id) {
+			noted = strings.Contains(m.Body, "not observed written") && strings.Contains(m.Body, "may not have received it")
+		}
+	}
+	if !noted {
+		t.Fatal("stop without an observed acknowledgement not reported as such")
 	}
 }

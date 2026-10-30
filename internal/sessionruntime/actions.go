@@ -296,8 +296,8 @@ func actionResult(r domain.ActionRequest) domain.RequestActionResult {
 }
 
 // DecideAction records the user's decision. Only a request pending in this
-// session is decidable: anything else is a ConflictError saying why, or
-// NotFound for an unknown id or another session's request.
+// session is decidable: a resolved one is an ActionResolvedError carrying its
+// recorded outcome, an unknown id or another session's request NotFound.
 func (s *Service) DecideAction(ctx context.Context, sessionID, actionID string, req domain.ActionDecisionRequest) (domain.ActionRequest, error) {
 	req, err := req.Normalize()
 	if err != nil {
@@ -315,12 +315,10 @@ func (s *Service) DecideAction(ctx context.Context, sessionID, actionID string, 
 	if final, won := s.finishAction(ctx, actionID, status, req.Message, ""); won {
 		return final, nil
 	}
+	// Already resolved: the recorded outcome is authoritative, including for
+	// a retry whose earlier decision won but whose response was lost.
 	resolved, _ := s.actions.lookup(actionID)
-	reason := resolved.Reason
-	if reason == "" {
-		reason = "it was already " + string(resolved.Status)
-	}
-	return domain.ActionRequest{}, &domain.ConflictError{Resource: "action request", Field: "status", Message: "no longer decidable: " + reason}
+	return domain.ActionRequest{}, &domain.ActionResolvedError{Action: resolved}
 }
 
 // ListActions returns the session's pending requests.

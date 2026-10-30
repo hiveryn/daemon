@@ -36,12 +36,15 @@ import (
 const companionLaunchConcurrency = 4
 
 // The acknowledgement of completeCompanionShutdown must reach the agent
-// before its process is stopped. The stop waits until the acknowledgement has
-// been written and flushed to the transport the daemon can observe last — the
-// remote gateway's /mcp response into the SSH reverse tunnel for a remote
-// companion, the API response to the local stdio MCP server otherwise — at
-// most companionAckWait, and then companionStopGrace more for the remaining
-// hop the daemon cannot observe (stdio pipe or tunnel to the agent).
+// before its process is stopped. The stop waits until the successful response
+// to that very completion — the bound request_id — has been written and
+// flushed to the transport the daemon can observe last: the remote gateway's
+// /mcp response into the SSH reverse tunnel for a remote companion, the API
+// response to the local stdio MCP server otherwise. No other response, and no
+// error response, releases it. The wait is bounded by companionAckWait (the
+// transport may be gone); then companionStopGrace more covers the remaining
+// hop the daemon cannot observe (stdio pipe or tunnel to the agent). Receipt
+// by the agent itself is never observed.
 var (
 	companionStopGrace = 2 * time.Second
 	companionAckWait   = 30 * time.Second
@@ -63,29 +66,31 @@ type companionRuntime struct {
 }
 
 type companionAck struct {
-	hop     string
-	written chan struct{}
+	requestID string
+	hop       string
+	written   chan struct{}
 }
 
-// awaitAck registers the stop of sessionID as waiting for its
-// acknowledgement on hop.
-func (rt *companionRuntime) awaitAck(sessionID, hop string) chan struct{} {
+// awaitAck registers the stop of sessionID as waiting for the written
+// acknowledgement of requestID's completion on hop.
+func (rt *companionRuntime) awaitAck(sessionID, requestID, hop string) chan struct{} {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	if rt.acks == nil {
 		rt.acks = map[string]*companionAck{}
 	}
-	ack := &companionAck{hop: hop, written: make(chan struct{})}
+	ack := &companionAck{requestID: requestID, hop: hop, written: make(chan struct{})}
 	rt.acks[sessionID] = ack
 	return ack.written
 }
 
-// acknowledged releases a stop waiting for hop; any other call is a no-op.
-func (rt *companionRuntime) acknowledged(sessionID, hop string) bool {
+// acknowledged releases the stop waiting for requestID's acknowledgement on
+// hop; anything else is a no-op.
+func (rt *companionRuntime) acknowledged(sessionID, requestID, hop string) bool {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	ack, ok := rt.acks[sessionID]
-	if !ok || ack.hop != hop {
+	if !ok || ack.hop != hop || ack.requestID != requestID {
 		return false
 	}
 	close(ack.written)
@@ -99,11 +104,11 @@ func (rt *companionRuntime) forgetAck(sessionID string) {
 	delete(rt.acks, sessionID)
 }
 
-// CompanionShutdownAcknowledged is called by the API once a completion's
-// accepted response is written and flushed to the caller.
-func (s *Service) CompanionShutdownAcknowledged(companionSessionID string) {
-	if s.companionRT.acknowledged(companionSessionID, companionAckAPI) {
-		s.logger.Info("companion shutdown acknowledgement written", "session_id", companionSessionID, "transport", companionAckAPI)
+// CompanionShutdownAcknowledged is called by the API once the successful
+// response to requestID's completion is written and flushed to its caller.
+func (s *Service) CompanionShutdownAcknowledged(companionSessionID, requestID string) {
+	if s.companionRT.acknowledged(companionSessionID, requestID, companionAckAPI) {
+		s.logger.Info("companion shutdown acknowledgement written", "session_id", companionSessionID, "request_id", requestID, "transport", companionAckAPI)
 	}
 }
 
@@ -637,7 +642,7 @@ func (s *Service) ReconcileCompanions(ctx context.Context) error {
 			}
 			if sd.Status == domain.ShutdownCompleting {
 				c.Status = domain.CompanionStopping
-				s.finishCompanionShutdown(ctx, c, sd)
+				s.finishCompanionShutdown(ctx, c, sd, "Hiveryn restarted after its completion was recorded, so whether the acknowledgement of its completeCompanionShutdown call reached the companion is not known")
 			}
 		}
 	}

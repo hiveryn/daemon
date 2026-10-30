@@ -159,27 +159,31 @@ func (s *Service) CompleteCompanionShutdown(ctx context.Context, companionSessio
 	if c.Machine != "" {
 		hop = companionAckGateway
 	}
-	written, ackWait, grace := s.companionRT.awaitAck(c.SessionID, hop), companionAckWait, companionStopGrace
+	written, ackWait, grace := s.companionRT.awaitAck(c.SessionID, requestID, hop), companionAckWait, companionStopGrace
 	s.companionRT.wg.Add(1)
 	go func() {
 		defer s.companionRT.wg.Done()
 		timer := time.NewTimer(ackWait)
 		defer timer.Stop()
+		ackNote := ""
 		select {
 		case <-written:
 		case <-timer.C:
+			ackNote = fmt.Sprintf("the acknowledgement of its completeCompanionShutdown call was not observed written to its transport within %s, so the companion may not have received it", ackWait)
 			s.companionRT.forgetAck(c.SessionID)
 			s.logger.Warn("companion shutdown acknowledgement not observed as written; stopping anyway (the handoff is recorded)", "companion", c.Name, "session_id", c.SessionID, "request_id", requestID, "transport", hop, "waited", ackWait)
 		}
 		time.Sleep(grace)
-		s.finishCompanionShutdown(context.Background(), c, sd)
+		s.finishCompanionShutdown(context.Background(), c, sd, ackNote)
 	}()
 	return accepted, nil
 }
 
 // finishCompanionShutdown terminates a companion whose handoff is recorded
 // and reports the actual outcome to its architect session.
-func (s *Service) finishCompanionShutdown(ctx context.Context, c domain.Companion, sd domain.CompanionShutdown) {
+// ackNote, when set, says why the completion's acknowledgement was not
+// observed written before the stop; the report carries it.
+func (s *Service) finishCompanionShutdown(ctx context.Context, c domain.Companion, sd domain.CompanionShutdown, ackNote string) {
 	err := s.stopCompanion(ctx, c.SessionID, sd)
 	now := time.Now().UTC()
 	if err != nil {
@@ -194,7 +198,7 @@ func (s *Service) finishCompanionShutdown(ctx context.Context, c domain.Companio
 		s.logger.Error("record companion shutdown outcome", "request_id", sd.RequestID, "error", updateErr)
 	}
 	_ = s.updateCompanion(ctx, &c)
-	s.reportShutdownOutcome(ctx, c, sd)
+	s.reportShutdownOutcome(ctx, c, sd, ackNote)
 }
 
 // stopCompanion ends the companion session; an already removed session is
@@ -215,10 +219,13 @@ func (s *Service) stopCompanion(ctx context.Context, sessionID string, sd domain
 	return s.endCompanionSession(ctx, session, "shutdown", "companion shut down", map[string]any{"request_id": sd.RequestID, "handoff": sd.Handoff})
 }
 
-func (s *Service) reportShutdownOutcome(ctx context.Context, c domain.Companion, sd domain.CompanionShutdown) {
+func (s *Service) reportShutdownOutcome(ctx context.Context, c domain.Companion, sd domain.CompanionShutdown, ackNote string) {
 	outcome := "stopped; termination confirmed"
 	if sd.Status == domain.ShutdownStopFailed {
 		outcome = "termination NOT confirmed: " + sd.Error + ". The companion may still be running; it stays stop_failed and blocks your conclusion until its termination is confirmed (the user can retry it by discarding the companion session)"
+	}
+	if ackNote != "" {
+		outcome += ". Note: " + ackNote + "; its handoff was recorded before the stop"
 	}
 	body := fmt.Sprintf("Companion %s shutdown (request_id %s): %s.\n\nHandoff:\n%s", c.Name, sd.RequestID, outcome, sd.Handoff)
 	if _, err := s.EnqueueAgentMessage(ctx, AgentMessageParams{
@@ -264,7 +271,7 @@ func (s *Service) DiscardCompanion(ctx context.Context, sessionID string) error 
 			if err := repo.UpdateShutdown(ctx, sd); err != nil {
 				s.logger.Error("record companion shutdown outcome", "request_id", sd.RequestID, "error", err)
 			}
-			s.reportShutdownOutcome(ctx, c, sd)
+			s.reportShutdownOutcome(ctx, c, sd, "")
 		} else {
 			s.notifyCompanionFailed(ctx, c, "its termination was confirmed after the user discarded it")
 		}

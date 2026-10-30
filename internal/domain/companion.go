@@ -27,6 +27,7 @@ type (
 	RequestActionResult   = sd.RequestActionResult
 	ActionDecision        = sd.ActionDecision
 	ActionDecisionRequest = sd.ActionDecisionRequest
+	ActionResolvedError   = sd.ActionResolvedError
 )
 
 const (
@@ -67,6 +68,7 @@ const (
 	ActionRequestCancelledCode          = sd.ActionRequestCancelledCode
 	ActionRequestInterruptedCode        = sd.ActionRequestInterruptedCode
 	ActionRequestNotificationFailedCode = sd.ActionRequestNotificationFailedCode
+	ActionRequestResolvedCode           = sd.ActionRequestResolvedCode
 )
 
 var NormalizeCompanionText = sd.NormalizeCompanionText
@@ -102,9 +104,9 @@ type CompanionService interface {
 	ReplyToCompanionMessage(ctx context.Context, architectSessionID string, req CompanionReplyRequest) (CompanionMessageResult, error)
 	RequestCompanionShutdown(ctx context.Context, architectSessionID string, req CompanionShutdownRequest) (CompanionShutdownResult, error)
 	CompleteCompanionShutdown(ctx context.Context, companionSessionID string, req CompleteCompanionShutdownRequest) (CompanionShutdownResult, error)
-	// CompanionShutdownAcknowledged: the accepted completion response was
-	// written and flushed; the companion's stop may proceed.
-	CompanionShutdownAcknowledged(companionSessionID string)
+	// CompanionShutdownAcknowledged: the accepted response to requestID's
+	// completion was written and flushed; the companion's stop may proceed.
+	CompanionShutdownAcknowledged(companionSessionID, requestID string)
 	RequestAction(ctx context.Context, sessionID string, req RequestActionRequest) (RequestActionResult, error)
 	DecideAction(ctx context.Context, sessionID, actionID string, req ActionDecisionRequest) (ActionRequest, error)
 	ListActions(ctx context.Context, sessionID string) ([]ActionRequest, error)

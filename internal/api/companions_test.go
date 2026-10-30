@@ -46,11 +46,14 @@ func (f *fakeCompanionService) RequestCompanionShutdown(_ context.Context, id st
 	return domain.CompanionShutdownResult{RequestID: req.RequestID, Status: "accepted"}, nil
 }
 func (f *fakeCompanionService) CompleteCompanionShutdown(_ context.Context, id string, req domain.CompleteCompanionShutdownRequest) (domain.CompanionShutdownResult, error) {
-	f.record("complete " + id)
+	f.record("complete " + id + " " + req.RequestID)
+	if req.RequestID == "unknown" {
+		return domain.CompanionShutdownResult{}, &domain.NotFoundError{Resource: "shutdown request for this companion session", ID: req.RequestID}
+	}
 	return domain.CompanionShutdownResult{RequestID: req.RequestID, Status: "accepted"}, nil
 }
-func (f *fakeCompanionService) CompanionShutdownAcknowledged(id string) {
-	f.record("acknowledged " + id)
+func (f *fakeCompanionService) CompanionShutdownAcknowledged(id, requestID string) {
+	f.record("acknowledged " + id + " " + requestID)
 }
 func (f *fakeCompanionService) RequestAction(_ context.Context, id string, req domain.RequestActionRequest) (domain.RequestActionResult, error) {
 	f.record("action " + id + " " + req.Title)
@@ -58,6 +61,9 @@ func (f *fakeCompanionService) RequestAction(_ context.Context, id string, req d
 }
 func (f *fakeCompanionService) DecideAction(_ context.Context, id, actionID string, req domain.ActionDecisionRequest) (domain.ActionRequest, error) {
 	f.record("decide " + id + " " + actionID)
+	if actionID == "act-done" {
+		return domain.ActionRequest{}, &domain.ActionResolvedError{Action: domain.ActionRequest{ID: actionID, Status: domain.ActionAccepted}}
+	}
 	f.decision = req
 	return domain.ActionRequest{ID: actionID, Status: domain.ActionAccepted}, nil
 }
@@ -82,6 +88,7 @@ func TestCompanionRoutes(t *testing.T) {
 		{http.MethodGet, "/api/architects/hiveryn/companions", "", 200},
 		{http.MethodPost, "/api/sessions/comp/companion/messages", `{"message":"hi"}`, 200},
 		{http.MethodPost, "/api/sessions/comp/companion/replies", `{"message_id":"a1","message":"hi"}`, 200},
+		{http.MethodPost, "/api/sessions/comp/companion/shutdown-completion", `{"request_id":"unknown","handoff":"h"}`, 404},
 		{http.MethodPost, "/api/sessions/comp/companion/shutdown-completion", `{"request_id":"r","handoff":"h"}`, 200},
 		{http.MethodPost, "/api/sessions/comp/actions", `{"title":"t","description":"d"}`, 200},
 		{http.MethodGet, "/api/sessions/comp/actions", "", 200},
@@ -100,9 +107,15 @@ func TestCompanionRoutes(t *testing.T) {
 			t.Fatalf("%s %s = %d %s", tc.method, tc.path, status, raw)
 		}
 	}
-	want := "list hiveryn|toArchitect comp hi|replyArchitect comp a1|complete comp|acknowledged comp|action comp t|actions comp|decide comp act-1|toCompanion arch browser|replyCompanion arch x|shutdown arch browser"
+	want := "list hiveryn|toArchitect comp hi|replyArchitect comp a1|complete comp unknown|complete comp r|acknowledged comp r|action comp t|actions comp|decide comp act-1|toCompanion arch browser|replyCompanion arch x|shutdown arch browser"
 	if got := strings.Join(companions.calls, "|"); got != want {
 		t.Fatalf("calls = %s", got)
+	}
+	// A decision on a resolved request carries the recorded outcome.
+	status, rawBody := request(t, handler, http.MethodPost, "/api/sessions/comp/actions/act-done/decision", strings.NewReader(`{"decision":"accept"}`))
+	raw := string(rawBody)
+	if status != http.StatusConflict || !strings.Contains(raw, `"code":"ACTION_REQUEST_RESOLVED"`) || !strings.Contains(raw, `"action":{"id":"act-done"`) || !strings.Contains(raw, `"status":"accepted"`) {
+		t.Fatalf("resolved decision = %d %s", status, raw)
 	}
 	if companions.decision.Decision != domain.ActionDecisionReply || companions.decision.Message != "no" || companions.discarded != "comp" {
 		t.Fatalf("decision = %+v discarded = %q", companions.decision, companions.discarded)

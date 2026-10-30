@@ -405,6 +405,14 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 
+	var resolvedErr *domain.ActionResolvedError
+	if errors.As(err, &resolvedErr) {
+		writeError(w, r, http.StatusConflict, domain.ActionRequestResolvedCode, err.Error(), map[string]any{
+			"action": resolvedErr.Action,
+		})
+		return
+	}
+
 	var conflictErr *domain.ConflictError
 	if errors.As(err, &conflictErr) {
 		writeError(w, r, http.StatusConflict, string(domain.ErrCodeConflict), err.Error(), map[string]string{

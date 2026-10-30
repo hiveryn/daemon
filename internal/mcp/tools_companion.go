@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/hiveryn/daemon/internal/domain"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -200,7 +201,45 @@ func (s *Server) handleCompleteCompanionShutdown(ctx context.Context, _ *mcp.Cal
 	if strings.TrimSpace(input.Handoff) == "" {
 		return nil, CompanionShutdownOutput{}, newValidationError("handoff", "is required")
 	}
-	return s.shutdownCall(ctx, "companion/shutdown-completion", domain.CompleteCompanionShutdownRequest{RequestID: input.RequestID, Handoff: input.Handoff})
+	result, out, err := s.shutdownCall(ctx, "companion/shutdown-completion", domain.CompleteCompanionShutdownRequest{RequestID: input.RequestID, Handoff: input.Handoff})
+	if err == nil {
+		if rec, ok := ctx.Value(shutdownCompletionKey{}).(*ShutdownCompletion); ok {
+			rec.accept(out.RequestID)
+		}
+	}
+	return result, out, err
+}
+
+// ShutdownCompletion records, for one HTTP request to the MCP handler, the
+// request_id of a completeCompanionShutdown the daemon accepted while serving
+// it. The remote gateway releases a companion's stop only once that request's
+// response — carrying exactly this acceptance — has been written.
+type ShutdownCompletion struct {
+	mu        sync.Mutex
+	requestID string
+}
+
+type shutdownCompletionKey struct{}
+
+// WithShutdownCompletion returns a context whose completeCompanionShutdown
+// acceptance is recorded in the returned ShutdownCompletion. The streamable
+// HTTP handler passes the request's context to tool handlers.
+func WithShutdownCompletion(ctx context.Context) (context.Context, *ShutdownCompletion) {
+	rec := &ShutdownCompletion{}
+	return context.WithValue(ctx, shutdownCompletionKey{}, rec), rec
+}
+
+func (c *ShutdownCompletion) accept(requestID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.requestID = requestID
+}
+
+// Accepted is the request_id of the accepted completion, "" if none.
+func (c *ShutdownCompletion) Accepted() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.requestID
 }
 
 func (s *Server) shutdownCall(ctx context.Context, subPath string, body any) (*mcp.CallToolResult, CompanionShutdownOutput, error) {
