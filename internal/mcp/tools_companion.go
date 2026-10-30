@@ -223,7 +223,8 @@ type shutdownCompletionKey struct{}
 
 // WithShutdownCompletion returns a context whose completeCompanionShutdown
 // acceptance is recorded in the returned ShutdownCompletion. The streamable
-// HTTP handler passes the request's context to tool handlers.
+// HTTP handler passes the request context's values to tool handlers, not its
+// cancellation: the caller decides from its own request context.
 func WithShutdownCompletion(ctx context.Context) (context.Context, *ShutdownCompletion) {
 	rec := &ShutdownCompletion{}
 	return context.WithValue(ctx, shutdownCompletionKey{}, rec), rec

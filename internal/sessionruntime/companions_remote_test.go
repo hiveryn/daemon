@@ -494,6 +494,14 @@ func TestRemoteCompanionStopReleasedOnlyByItsCompletionResponse(t *testing.T) {
 	if res := <-completion; res.err == nil {
 		t.Fatalf("the cancelled call got a response: %d %s", res.status, res.body)
 	}
+	// The tool call itself is not cancelled by the disconnect (the MCP SDK
+	// keeps context values but not cancellation), so its accepted result
+	// still comes back once released; the gateway's own request context and
+	// write then decide. Give the gateway's server time to notice the closed
+	// connection (its background read sees EOF at once): before that, a write
+	// into the vanished connection can still succeed — an acknowledgement
+	// means written and flushed to the transport, never received.
+	time.Sleep(time.Second)
 	release()
 	f.service.companionRT.wg.Wait()
 	if c := f.record(t, "rx"); c.Status != domain.CompanionStopped {

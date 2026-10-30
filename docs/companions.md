@@ -126,7 +126,9 @@ message?, reason?`); `companion_changed` on the architect stream.
   proceeds and both the log and the architect's `companion_shutdown_outcome` say the acknowledgement was
   not observed written, so the companion may not have received it. It then ends the session (remote
   termination confirmed first) and sends `companion_shutdown_outcome` (request id, handoff, actual
-  outcome) to the architect. Limits: receipt by the agent itself is not observable; after a daemon
+  outcome) to the architect. Limits: receipt by the agent itself is not observable, and a response
+  written into a connection whose peer vanished before the server noticed can still count as written;
+  after a daemon
   restart a recorded handoff is terminated without waiting, and the outcome says whether its
   acknowledgement arrived is not known.
   Same id + handoff → recorded acceptance; changed handoff → `ConflictError`.
