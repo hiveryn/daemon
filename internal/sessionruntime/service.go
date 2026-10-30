@@ -39,6 +39,9 @@ const (
 
 var defaultTabsBySessionType = map[string][]config.TabEntry{
 	"ticket": {{Type: "ticket"}},
+	// A companion's right pane: its activity log (terminals are added by the
+	// user); the desktop needs at least one tab to show a session.
+	"companion": {{Type: "event-log"}},
 }
 
 type Service struct {
@@ -1761,7 +1764,7 @@ func (s *Service) appendAndPublishSessionEnded(ctx context.Context, sessionID, r
 	// claimed, so it is skipped rather than resolved twice.
 	s.failPendingIntents(ctx, sessionID, "session ended before this intent was resolved")
 	s.cancelSessionQuestions(ctx, sessionID)
-	s.failSessionActions(ctx, sessionID, domain.ActionCancelled, actionReasonEnded)
+	s.closeSessionActions(ctx, sessionID, actionReasonEnded)
 
 	raw = cloneAnyMap(raw)
 	raw["lifecycle"] = lifecycle

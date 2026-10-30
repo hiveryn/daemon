@@ -30,6 +30,9 @@ type remoteCompanionFixture struct {
 func newRemoteCompanionFixture(t *testing.T) *remoteCompanionFixture {
 	t.Helper()
 	f := &remoteCompanionFixture{remoteLaunchFixture: newRemoteLaunchFixture(t, 2)}
+	ackWait := companionAckWait
+	companionAckWait = 0
+	t.Cleanup(func() { companionAckWait = ackWait })
 	if err := os.WriteFile(filepath.Join(f.stubs, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}

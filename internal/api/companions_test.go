@@ -49,6 +49,9 @@ func (f *fakeCompanionService) CompleteCompanionShutdown(_ context.Context, id s
 	f.record("complete " + id)
 	return domain.CompanionShutdownResult{RequestID: req.RequestID, Status: "accepted"}, nil
 }
+func (f *fakeCompanionService) CompanionShutdownAcknowledged(id string) {
+	f.record("acknowledged " + id)
+}
 func (f *fakeCompanionService) RequestAction(_ context.Context, id string, req domain.RequestActionRequest) (domain.RequestActionResult, error) {
 	f.record("action " + id + " " + req.Title)
 	return domain.RequestActionResult{Outcome: "accepted"}, nil
@@ -97,7 +100,7 @@ func TestCompanionRoutes(t *testing.T) {
 			t.Fatalf("%s %s = %d %s", tc.method, tc.path, status, raw)
 		}
 	}
-	want := "list hiveryn|toArchitect comp hi|replyArchitect comp a1|complete comp|action comp t|actions comp|decide comp act-1|toCompanion arch browser|replyCompanion arch x|shutdown arch browser"
+	want := "list hiveryn|toArchitect comp hi|replyArchitect comp a1|complete comp|acknowledged comp|action comp t|actions comp|decide comp act-1|toCompanion arch browser|replyCompanion arch x|shutdown arch browser"
 	if got := strings.Join(companions.calls, "|"); got != want {
 		t.Fatalf("calls = %s", got)
 	}

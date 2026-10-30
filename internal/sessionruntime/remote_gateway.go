@@ -49,6 +49,11 @@ func (s *Service) remoteGateway(session domain.Session) (*http.Server, int, erro
 		}
 		if r.URL.Path == "/mcp" {
 			mcpHandler.ServeHTTP(w, r)
+			// A companion's completeCompanionShutdown acknowledgement has now
+			// been written into the tunnel: its stop may proceed.
+			if r.Method == http.MethodPost && http.NewResponseController(w).Flush() == nil && s.companionRT.acknowledged(session.ID, companionAckGateway) {
+				s.logger.Info("companion shutdown acknowledgement written", "session_id", session.ID, "transport", companionAckGateway)
+			}
 			return
 		}
 		if !hook || r.Method != http.MethodPost {

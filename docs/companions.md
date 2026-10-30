@@ -81,6 +81,12 @@ the approved text), shutdown request / session end / call ended (`ACTION_REQUEST
 shutdown case directs to `completeCompanionShutdown`), daemon stop or restart (`ACTION_REQUEST_INTERRUPTED`).
 No auto-acceptance, no architect escalation; the id never reaches the agent.
 
+Admission and withdrawal are decided under one lock: a shutdown request, session end, failed process or
+daemon stop closes the session to new requests and withdraws the raised ones. A request whose phone alert
+was still in flight when its session closed is never admitted (the call returns the withdrawal error; the
+alert already went out, but no decidable request exists), and one admitted but not yet raised resolves
+itself right after its `required` event, so a `resolved` event never precedes its `required` event.
+
 Desktop: `GET /api/sessions/{id}/actions` → `{actions: ActionRequest[]}` (pending);
 `POST /api/sessions/{id}/actions/{actionID}/decision` with `ActionDecisionRequest{decision:
 accept|deny|reply, message (reply only)}` → the resolved `ActionRequest`; a settled request is a
@@ -101,8 +107,15 @@ message?, reason?`); `companion_changed` on the architect stream.
 - `completeCompanionShutdown(request_id, handoff)` (companion) → `POST /api/sessions/{id}/companion/shutdown-completion`.
   Only the request recorded for this companion session and its owning architect session is accepted
   (anything else `NotFound`). Records the handoff (`completing`, companion `stopping`) and returns
-  `accepted`; after `companionStopGrace` (2 s) the daemon ends the session (remote termination confirmed
-  first) and sends `companion_shutdown_outcome` (request id, handoff, actual outcome) to the architect.
+  `accepted`. The stop waits until that acknowledgement has been written and flushed to the last transport
+  the daemon observes (the per-session gateway's `/mcp` response into the SSH reverse tunnel for a remote
+  companion, the API response to the local stdio MCP server otherwise) for at most `companionAckWait`
+  (30 s; past it the stop proceeds and logs that no write was observed), then `companionStopGrace` (2 s)
+  for the hop it cannot observe (tunnel or stdio pipe to the agent). It then ends the session (remote
+  termination confirmed first) and sends `companion_shutdown_outcome` (request id, handoff, actual
+  outcome) to the architect. Limits: receipt by the agent itself is not observable; a concurrent gateway
+  `/mcp` request of the same companion finishing first can release the wait early (the grace still
+  applies); after a daemon restart a recorded handoff is terminated without waiting.
   Same id + handoff → recorded acceptance; changed handoff → `ConflictError`.
 - Unconfirmed termination → `stop_failed` (session kept, conclusion blocked, outcome message says so).
   The only further route is the user's `POST /api/sessions/{id}/discard` on that companion session, which
@@ -118,7 +131,8 @@ message?, reason?`); `companion_changed` on the architect stream.
 - Companion sessions are ordinary sessions (`session_type: companion`, `context_id` = name,
   `owner_session_id`): terminals, tabs, events, terminal workdirs (companion repo first) and the
   conversation API work by session id. `session_started`/`session_ended` and `companion_changed` are
-  published on the architect stream.
+  published on the architect stream. Their right-pane tabs come from the `companion` entry of
+  `tabs.yaml`, defaulting to the activity log (`event-log`); the desktop shows no session without a tab.
 
 ## MCP
 

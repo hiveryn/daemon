@@ -35,15 +35,76 @@ import (
 // architect session.
 const companionLaunchConcurrency = 4
 
-// companionStopGrace is how long the daemon waits after acknowledging a
-// companion's completeCompanionShutdown before terminating it, so the
-// acknowledgement reaches the agent first.
-var companionStopGrace = 2 * time.Second
+// The acknowledgement of completeCompanionShutdown must reach the agent
+// before its process is stopped. The stop waits until the acknowledgement has
+// been written and flushed to the transport the daemon can observe last — the
+// remote gateway's /mcp response into the SSH reverse tunnel for a remote
+// companion, the API response to the local stdio MCP server otherwise — at
+// most companionAckWait, and then companionStopGrace more for the remaining
+// hop the daemon cannot observe (stdio pipe or tunnel to the agent).
+var (
+	companionStopGrace = 2 * time.Second
+	companionAckWait   = 30 * time.Second
+)
+
+// Transports whose written acknowledgement releases a companion stop.
+const (
+	companionAckAPI     = "api"
+	companionAckGateway = "gateway"
+)
 
 // companionRuntime holds the background companion work of this process.
 type companionRuntime struct {
 	// wg tracks background launches and stops (tests wait on it).
 	wg sync.WaitGroup
+	// acks: stops waiting for their acknowledgement, by companion session.
+	mu   sync.Mutex
+	acks map[string]*companionAck
+}
+
+type companionAck struct {
+	hop     string
+	written chan struct{}
+}
+
+// awaitAck registers the stop of sessionID as waiting for its
+// acknowledgement on hop.
+func (rt *companionRuntime) awaitAck(sessionID, hop string) chan struct{} {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.acks == nil {
+		rt.acks = map[string]*companionAck{}
+	}
+	ack := &companionAck{hop: hop, written: make(chan struct{})}
+	rt.acks[sessionID] = ack
+	return ack.written
+}
+
+// acknowledged releases a stop waiting for hop; any other call is a no-op.
+func (rt *companionRuntime) acknowledged(sessionID, hop string) bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	ack, ok := rt.acks[sessionID]
+	if !ok || ack.hop != hop {
+		return false
+	}
+	close(ack.written)
+	delete(rt.acks, sessionID)
+	return true
+}
+
+func (rt *companionRuntime) forgetAck(sessionID string) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	delete(rt.acks, sessionID)
+}
+
+// CompanionShutdownAcknowledged is called by the API once a completion's
+// accepted response is written and flushed to the caller.
+func (s *Service) CompanionShutdownAcknowledged(companionSessionID string) {
+	if s.companionRT.acknowledged(companionSessionID, companionAckAPI) {
+		s.logger.Info("companion shutdown acknowledgement written", "session_id", companionSessionID, "transport", companionAckAPI)
+	}
 }
 
 // SetCompanionRepository wires companion persistence; without it architect
@@ -383,7 +444,7 @@ func (s *Service) companionRunFailed(ctx context.Context, session domain.Session
 	if err := s.updateCompanion(ctx, &c); err != nil {
 		return
 	}
-	s.failSessionActions(ctx, session.ID, domain.ActionCancelled, "the companion's process ended")
+	s.closeSessionActions(ctx, session.ID, "the companion's process ended")
 	s.notifyCompanionFailed(ctx, c, reason)
 }
 

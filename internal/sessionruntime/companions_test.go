@@ -16,6 +16,7 @@ import (
 	"github.com/hiveryn/agentruntime"
 	"github.com/hiveryn/daemon/internal/config"
 	"github.com/hiveryn/daemon/internal/domain"
+	"github.com/hiveryn/daemon/internal/ntfy"
 	"github.com/hiveryn/daemon/internal/store"
 )
 
@@ -83,6 +84,11 @@ type companionFixture struct {
 func newCompanionFixture(t *testing.T, companions map[string]config.CompanionConfig) *companionFixture {
 	t.Helper()
 	f := &companionFixture{serviceFixture: newServiceFixture(t)}
+	// Service-level calls have no API response to wait for; tests of the
+	// acknowledgement set their own wait.
+	ackWait := companionAckWait
+	companionAckWait = 0
+	t.Cleanup(func() { companionAckWait = ackWait })
 	f.reopen(t)
 	f.repos = map[string]string{}
 	for _, key := range []string{"alpha", "beta"} {
@@ -206,6 +212,10 @@ func TestCompanionsStartWithArchitectSessionAndReportOutcomes(t *testing.T) {
 	}
 	for name, adapter := range map[string]*recordingAdapter{"browser": f.claude, "research": f.codex} {
 		c := f.record(t, name)
+		// The desktop shows a session only with a right-pane tab.
+		if tabs, err := f.service.ListSessionTabs(context.Background(), c.SessionID); err != nil || len(tabs) != 1 || tabs[0].Type != "event-log" {
+			t.Fatalf("%s tabs = %+v %v", name, tabs, err)
+		}
 		if c.Status != domain.CompanionRunning || c.SessionID == "" || c.Agent != string(adapter.kind) {
 			t.Fatalf("%s = %+v", name, c)
 		}
@@ -776,5 +786,144 @@ func TestCompanionSystemPromptIsTheApprovedText(t *testing.T) {
 	kickoff, err := promptFS.ReadFile(companionKickoffPromptName)
 	if err != nil || strings.TrimSpace(string(kickoff)) != "Session started: {{.CurrentDate}}" {
 		t.Fatalf("companion kickoff = %q %v", kickoff, err)
+	}
+}
+
+// gatedPublisher holds each phone alert until released, so a test can act
+// while a requestAction's alert is in flight.
+type gatedPublisher struct {
+	fakePublisher
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g *gatedPublisher) Publish(ctx context.Context, msg ntfy.Message) error {
+	g.entered <- struct{}{}
+	<-g.release
+	return g.fakePublisher.Publish(ctx, msg)
+}
+
+// A shutdown request or session end that lands while a request's phone alert
+// is still in flight withdraws it: the late request never becomes pending,
+// is never raised in the desktop and cannot be accepted.
+func TestRequestActionClosedWhileAlertInFlight(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		close func(f *companionFixture, sessionID string)
+		want  string
+	}{
+		{"shutdown requested", func(f *companionFixture, _ string) {
+			if _, err := f.service.RequestCompanionShutdown(context.Background(), f.architect.ID, domain.CompanionShutdownRequest{Companion: "browser", RequestID: shutdownID()}); err != nil {
+				t.Fatal(err)
+			}
+		}, "completeCompanionShutdown"},
+		{"session ended", func(f *companionFixture, sessionID string) {
+			// The funnel every session end runs (appendAndPublishSessionEnded).
+			f.service.closeSessionActions(context.Background(), sessionID, actionReasonEnded)
+		}, actionReasonEnded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCompanionFixture(t, twoCompanions())
+			f.start(t)
+			ctx := context.Background()
+			browser := f.record(t, "browser")
+			gate := &gatedPublisher{entered: make(chan struct{}), release: make(chan struct{})}
+			f.service.notifier = gate
+
+			done := make(chan actionOutcome, 1)
+			go func() {
+				res, err := f.service.RequestAction(ctx, browser.SessionID, domain.RequestActionRequest{Title: "Push", Description: "Push main"})
+				done <- actionOutcome{res, err}
+			}()
+			<-gate.entered // the status check passed; the alert is in flight
+			tc.close(f, browser.SessionID)
+			close(gate.release)
+
+			out := waitAction(t, done)
+			if out.err != nil || out.res.ErrorCode != domain.ActionRequestCancelledCode || out.res.Outcome != "" || !strings.Contains(out.res.Error, tc.want) {
+				t.Fatalf("late request = %+v %v", out.res, out.err)
+			}
+			if pending := f.service.actions.pendingFor(browser.SessionID); len(pending) != 0 {
+				t.Fatalf("late request pending: %+v", pending)
+			}
+			events, _ := f.sessions.ListSessionEvents(ctx, browser.SessionID)
+			for _, e := range events {
+				if e.Type == domain.SessionEventTypeActionRequest {
+					t.Fatalf("late request raised in the session: %+v", e)
+				}
+			}
+		})
+	}
+}
+
+// A session closing between admission and the required event: the request
+// is resolved by its own call, after its required event, never before.
+func TestActionStoreCloseBeforeRaise(t *testing.T) {
+	st := newActionStore()
+	w := &actionWaiter{request: domain.ActionRequest{ID: "a", Origin: domain.ActionOrigin{SessionID: "s"}}, done: make(chan struct{})}
+	if _, ok := st.add(w); !ok {
+		t.Fatal("add refused")
+	}
+	if ids := st.close("s", actionReasonShutdown); len(ids) != 0 {
+		t.Fatalf("close withdrew an unraised request: %v", ids)
+	}
+	if reason, ok := st.raise("a"); ok || reason != actionReasonShutdown {
+		t.Fatalf("raise after close = %q %v", reason, ok)
+	}
+	if _, ok := st.add(&actionWaiter{request: domain.ActionRequest{ID: "b", Origin: domain.ActionOrigin{SessionID: "s"}}, done: make(chan struct{})}); ok {
+		t.Fatal("closed session admitted a request")
+	}
+	if _, ok := st.add(&actionWaiter{request: domain.ActionRequest{ID: "c", Origin: domain.ActionOrigin{SessionID: "other"}}, done: make(chan struct{})}); !ok {
+		t.Fatal("another session's request refused")
+	}
+	st.close("", actionReasonStopped)
+	if reason, ok := st.add(&actionWaiter{request: domain.ActionRequest{ID: "d", Origin: domain.ActionOrigin{SessionID: "other"}}, done: make(chan struct{})}); ok || reason != actionReasonStopped {
+		t.Fatalf("stopped daemon admitted a request: %q", reason)
+	}
+}
+
+// The companion is stopped only after its completion's acknowledgement was
+// written to the caller's transport (then the grace); without one it stops
+// after the bounded wait, the handoff already recorded.
+func TestCompanionStopWaitsForTheWrittenAcknowledgement(t *testing.T) {
+	f := newCompanionFixture(t, twoCompanions())
+	companionStopGrace, companionAckWait = 0, time.Hour
+	t.Cleanup(func() { companionStopGrace = 0 })
+	f.start(t)
+	ctx := context.Background()
+	browser := f.record(t, "browser")
+	id := shutdownID()
+	if _, err := f.service.RequestCompanionShutdown(ctx, f.architect.ID, domain.CompanionShutdownRequest{Companion: "browser", RequestID: id}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.CompleteCompanionShutdown(ctx, browser.SessionID, domain.CompleteCompanionShutdownRequest{RequestID: id, Handoff: "h"}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if c := f.record(t, "browser"); c.Status != domain.CompanionStopping || !f.sessionExists(t, browser.SessionID) {
+		t.Fatalf("stopped before the acknowledgement was written: %+v", c)
+	}
+	// A remote companion's stop is released by the gateway, not the API hop.
+	if f.service.companionRT.acknowledged(browser.SessionID, companionAckGateway) {
+		t.Fatal("a local companion's stop released by the gateway")
+	}
+	f.service.CompanionShutdownAcknowledged(browser.SessionID)
+	f.service.companionRT.wg.Wait()
+	if c := f.record(t, "browser"); c.Status != domain.CompanionStopped || f.sessionExists(t, browser.SessionID) {
+		t.Fatalf("after the acknowledgement: %+v", c)
+	}
+
+	companionAckWait = 50 * time.Millisecond
+	research := f.record(t, "research")
+	id = shutdownID()
+	if _, err := f.service.RequestCompanionShutdown(ctx, f.architect.ID, domain.CompanionShutdownRequest{Companion: "research", RequestID: id}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.CompleteCompanionShutdown(ctx, research.SessionID, domain.CompleteCompanionShutdownRequest{RequestID: id, Handoff: "h"}); err != nil {
+		t.Fatal(err)
+	}
+	f.service.companionRT.wg.Wait()
+	if c := f.record(t, "research"); c.Status != domain.CompanionStopped {
+		t.Fatalf("without an observed acknowledgement: %+v", c)
 	}
 }

@@ -113,7 +113,7 @@ func (s *Service) RequestCompanionShutdown(ctx context.Context, architectSession
 	if err := s.CommitAgentMessage(ctx, notice.ID); err != nil {
 		return domain.CompanionShutdownResult{}, fmt.Errorf("the shutdown request is recorded but its instruction could not be queued (repeat the call with the same request_id): %w", err)
 	}
-	s.failSessionActions(ctx, c.SessionID, domain.ActionCancelled, actionReasonShutdown)
+	s.closeSessionActions(ctx, c.SessionID, actionReasonShutdown)
 	s.emitCompanionChanged(c.ArchitectKey, c.SessionID)
 	s.logger.Info("companion shutdown requested", "architect_session_id", architectSessionID, "companion", c.Name, "session_id", c.SessionID, "request_id", requestID)
 	return accepted, nil
@@ -154,11 +154,24 @@ func (s *Service) CompleteCompanionShutdown(ctx context.Context, companionSessio
 	}
 	c.Status, c.Error = domain.CompanionStopping, ""
 	_ = s.updateCompanion(ctx, &c)
-	s.logger.Info("companion shutdown completed; stopping", "companion", c.Name, "session_id", c.SessionID, "request_id", requestID)
+	s.logger.Info("companion shutdown completed; stopping after the acknowledgement", "companion", c.Name, "session_id", c.SessionID, "request_id", requestID)
+	hop := companionAckAPI
+	if c.Machine != "" {
+		hop = companionAckGateway
+	}
+	written, ackWait, grace := s.companionRT.awaitAck(c.SessionID, hop), companionAckWait, companionStopGrace
 	s.companionRT.wg.Add(1)
 	go func() {
 		defer s.companionRT.wg.Done()
-		time.Sleep(companionStopGrace)
+		timer := time.NewTimer(ackWait)
+		defer timer.Stop()
+		select {
+		case <-written:
+		case <-timer.C:
+			s.companionRT.forgetAck(c.SessionID)
+			s.logger.Warn("companion shutdown acknowledgement not observed as written; stopping anyway (the handoff is recorded)", "companion", c.Name, "session_id", c.SessionID, "request_id", requestID, "transport", hop, "waited", ackWait)
+		}
+		time.Sleep(grace)
 		s.finishCompanionShutdown(context.Background(), c, sd)
 	}()
 	return accepted, nil

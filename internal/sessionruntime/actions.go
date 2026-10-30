@@ -42,24 +42,89 @@ type actionWaiter struct {
 	request domain.ActionRequest
 	done    chan struct{}
 	final   domain.ActionRequest
+	// raised: its required event is published. Closing a session resolves
+	// only raised waiters, so a resolved event never precedes its required
+	// event; an unraised one resolves itself in raise.
+	raised bool
 }
 
 // actionStore holds pending requests and, briefly, resolved ones so a late
-// decision gets a precise reason.
+// decision gets a precise reason. closed records the sessions that admit no
+// more requests (shutdown requested, session ended, process failed), and
+// stopped the daemon's own shutdown. Admission and withdrawal are decided
+// under the same lock, so a request whose phone alert was still in flight
+// when its session closed can never become pending afterwards. Markers are
+// never removed — removing one would readmit such a late request — at one
+// short entry per ended session for the daemon's lifetime.
 type actionStore struct {
 	mu      sync.Mutex
 	pending map[string]*actionWaiter
 	recent  map[string]domain.ActionRequest
+	closed  map[string]string
+	stopped string
 }
 
 func newActionStore() *actionStore {
-	return &actionStore{pending: map[string]*actionWaiter{}, recent: map[string]domain.ActionRequest{}}
+	return &actionStore{pending: map[string]*actionWaiter{}, recent: map[string]domain.ActionRequest{}, closed: map[string]string{}}
 }
 
-func (st *actionStore) add(w *actionWaiter) {
+// add admits a request unless its session is closed, returning why not.
+func (st *actionStore) add(w *actionWaiter) (string, bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	if reason, closed := st.closedReason(w.request.Origin.SessionID); closed {
+		return reason, false
+	}
 	st.pending[w.request.ID] = w
+	return "", true
+}
+
+// raise marks a request's required event published. False with the reason
+// when its session closed meanwhile: the caller resolves it.
+func (st *actionStore) raise(id string) (string, bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	w, ok := st.pending[id]
+	if !ok {
+		return "", true // already decided; the waiter is done
+	}
+	if reason, closed := st.closedReason(w.request.Origin.SessionID); closed {
+		return reason, false
+	}
+	w.raised = true
+	return "", true
+}
+
+func (st *actionStore) closedReason(sessionID string) (string, bool) {
+	if st.stopped != "" {
+		return st.stopped, true
+	}
+	reason, ok := st.closed[sessionID]
+	return reason, ok
+}
+
+// close stops admitting requests for sessionID ("" = every session, the
+// daemon stopping) and returns the raised requests to withdraw.
+func (st *actionStore) close(sessionID, reason string) []string {
+	if st == nil {
+		return nil
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if sessionID == "" {
+		if st.stopped == "" {
+			st.stopped = reason
+		}
+	} else if _, ok := st.closed[sessionID]; !ok {
+		st.closed[sessionID] = reason
+	}
+	ids := []string{}
+	for id, w := range st.pending {
+		if w.raised && (sessionID == "" || w.request.Origin.SessionID == sessionID) {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // resolve is the single-winner transition out of pending.
@@ -100,21 +165,6 @@ func (st *actionStore) lookup(id string) (domain.ActionRequest, bool) {
 	}
 	r, ok := st.recent[id]
 	return r, ok
-}
-
-func (st *actionStore) pendingIDs(sessionID string) []string {
-	if st == nil {
-		return nil
-	}
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	ids := []string{}
-	for id, w := range st.pending {
-		if sessionID == "" || w.request.Origin.SessionID == sessionID {
-			ids = append(ids, id)
-		}
-	}
-	return ids
 }
 
 // pendingFor lists a session's pending requests, oldest first.
@@ -189,13 +239,24 @@ func (s *Service) RequestAction(ctx context.Context, sessionID string, req domai
 			Error:     fmt.Sprintf("The phone notification failed, so the request was NOT raised and no action is authorized: %v", err),
 		}, nil
 	}
+	// The phone alert can take seconds; the session may have closed (its
+	// shutdown requested, its session ended) meanwhile. Admission is checked
+	// again atomically with that withdrawal, so a late request never becomes
+	// pending and can never be accepted.
 	waiter := &actionWaiter{request: request, done: make(chan struct{})}
-	s.actions.add(waiter)
+	if reason, ok := s.actions.add(waiter); !ok {
+		request.Status, request.Reason = withdrawnStatus(reason), reason
+		s.logger.Info("action request withdrawn before it was raised", "session_id", sessionID, "action_id", request.ID, "reason", reason)
+		return actionResult(request), nil
+	}
 	if err := s.publishActionRequired(ctx, request); err != nil {
 		if final, won := s.actions.resolve(request.ID, domain.ActionCancelled, "", "the request could not be recorded in the desktop session", time.Now().UTC()); won {
 			s.publishActionResolved(ctx, final)
 		}
 		return domain.RequestActionResult{}, fmt.Errorf("record the action request in the session: %w; no request was raised and no action is authorized", err)
+	}
+	if reason, ok := s.actions.raise(request.ID); !ok {
+		s.finishAction(ctx, request.ID, withdrawnStatus(reason), "", reason)
 	}
 	s.emitCompanionChanged(session.ArchitectKey, session.ID)
 	s.logger.Info("action request pending", "session_id", sessionID, "action_id", request.ID, "expires_at", request.ExpiresAt)
@@ -280,16 +341,27 @@ func (s *Service) finishAction(ctx context.Context, id string, status domain.Act
 	return final, won
 }
 
-// failSessionActions resolves every request still pending on a session.
-func (s *Service) failSessionActions(ctx context.Context, sessionID string, status domain.ActionRequestStatus, reason string) {
-	for _, id := range s.actions.pendingIDs(sessionID) {
-		s.finishAction(ctx, id, status, "", reason)
+// closeSessionActions stops admitting requests for a session and withdraws
+// the pending ones. A session never reopens: it is called when shutdown is
+// requested, the session ends or its process failed for good.
+func (s *Service) closeSessionActions(ctx context.Context, sessionID, reason string) {
+	for _, id := range s.actions.close(sessionID, reason) {
+		s.finishAction(ctx, id, domain.ActionCancelled, "", reason)
 	}
 }
 
-// interruptActions resolves every pending request at shutdown.
+// withdrawnStatus is the resolution of a request withdrawn for reason.
+func withdrawnStatus(reason string) domain.ActionRequestStatus {
+	if reason == actionReasonStopped {
+		return domain.ActionInterrupted
+	}
+	return domain.ActionCancelled
+}
+
+// interruptActions resolves every pending request at shutdown and admits no
+// new ones.
 func (s *Service) interruptActions(ctx context.Context) {
-	for _, id := range s.actions.pendingIDs("") {
+	for _, id := range s.actions.close("", actionReasonStopped) {
 		s.finishAction(ctx, id, domain.ActionInterrupted, "", actionReasonStopped)
 	}
 }
