@@ -199,9 +199,6 @@ func (s *Service) resolveMessageTarget(recipient string, sessions []domain.Sessi
 	if candidate.CurrentRun == nil || candidate.CurrentRun.Status != domain.SessionRunStatusRunning {
 		return messageTarget{condition: "recipient session " + candidate.ID + " is not running; delivered when it runs again"}
 	}
-	if candidate.Machine != "" {
-		return messageTarget{condition: "recipient session runs on " + config.MachineLabel(candidate.Machine) + "; message delivery to remote sessions is not available, the message is retained"}
-	}
 	run := *candidate.CurrentRun
 	if run.ProfileSnapshot == nil {
 		return messageTarget{condition: "recipient run has no agent profile snapshot"}
@@ -209,6 +206,14 @@ func (s *Service) resolveMessageTarget(recipient string, sessions []domain.Sessi
 	kind, err := parseAgentKind(run.ProfileSnapshot.Agent)
 	if err != nil {
 		return messageTarget{condition: "recipient agent kind: " + err.Error()}
+	}
+	// A remote session is reached over SSH with the provider's own CLI and
+	// record (remote_conversation.go): Claude through its waiter on the
+	// attachment's reverse tunnel, Codex through app-server on its machine.
+	if candidate.Machine != "" {
+		if reason := s.remoteConversationUnsupported(*candidate, kind); reason != "" {
+			return messageTarget{condition: "recipient session runs on " + config.MachineLabel(candidate.Machine) + ": " + reason + "; the message is retained"}
+		}
 	}
 	return messageTarget{session: *candidate, run: run, agent: kind, env: cloneStringMap(run.ProfileSnapshot.Env)}
 }
@@ -252,11 +257,21 @@ func (s *Service) attemptMessageDelivery(ctx context.Context, m *domain.AgentMes
 	m.TargetAgent = string(target.agent)
 	m.TargetNativeID = target.run.NativeID
 	m.TargetConfigRoot = adapter.ConfigRoot(target.env)
+	if target.session.Machine != "" {
+		// The record lives on the session's machine; no laptop path applies.
+		m.TargetConfigRoot = remoteConfigRootPrefix + target.session.Machine
+	}
 	m.TargetWorkdir = target.run.Workdir
 	m.Mechanism = capability.Mechanism
 
 	switch capability.Mode {
 	case agentruntime.MessageDeliveryPull:
+		// A remote Claude's waiter reaches the daemon only through the
+		// attachment's reverse tunnel.
+		if state := s.remoteConnectionState(target.session); state != "" && state != "connected" {
+			m.Condition = "the remote session's SSH attachment is " + state + "; its waiter is reachable only through it, the message is retained"
+			return
+		}
 		_, armed := s.messages.mailbox.Armed(target.session.ID)
 		switch {
 		case !armed:
@@ -310,11 +325,25 @@ func (s *Service) attemptMessageDelivery(ctx context.Context, m *domain.AgentMes
 			}
 			m.ProviderRef, req.ProviderRef = ref, ref
 		}
+		deliver := deliverer.DeliverMessage
+		if target.session.Machine != "" {
+			// The provider's queue is on the session's machine: its helper
+			// runs there over the session's conversation SSH master.
+			req.Exec = remoteProviderCommand(target.session.SSH)
+			deliver = func(ctx context.Context, req agentruntime.DeliverRequest) (result agentruntime.DeliverResult, err error) {
+				err = s.withRemoteConversation(ctx, target.session, func(ctx context.Context) error {
+					var deliverErr error
+					result, deliverErr = deliverer.DeliverMessage(ctx, req)
+					return deliverErr
+				})
+				return result, err
+			}
+		}
 		if !s.reserveMessageAttempt(ctx, m) {
 			return
 		}
 		deliverCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		result, err := deliverer.DeliverMessage(deliverCtx, req)
+		result, err := deliver(deliverCtx, req)
 		cancel()
 		if err != nil {
 			s.recordMessageAttemptFailure(m, err)
@@ -549,6 +578,15 @@ func (s *Service) confirmBeforeRedelivery(ctx context.Context, m *domain.AgentMe
 // readMessageReceipt resolves the target's provider record and asks the
 // adapter whether the message is in it.
 func (s *Service) readMessageReceipt(ctx context.Context, deliverer agentruntime.MessageDeliverer, adapter agentruntime.Adapter, m domain.AgentMessage, env map[string]string) (agentruntime.MessageReceipt, error) {
+	if m.TargetSessionID != "" {
+		if target, err := s.repo.GetSession(ctx, m.TargetSessionID); err == nil && target.Machine != "" {
+			return s.readRemoteMessageReceipt(ctx, deliverer, target, m)
+		}
+	}
+	if strings.HasPrefix(m.TargetConfigRoot, remoteConfigRootPrefix) {
+		// Never the laptop's provider home for a remote target.
+		return agentruntime.MessageReceipt{}, errors.New("the remote target session has ended; its record on " + strings.TrimPrefix(m.TargetConfigRoot, remoteConfigRootPrefix) + " is no longer read")
+	}
 	handle, err := adapter.LocateTranscript(ctx, agentruntime.LocateRequest{NativeSessionID: m.TargetNativeID, ConfigRoot: m.TargetConfigRoot, Workdir: m.TargetWorkdir})
 	if err != nil && agentruntime.AgentKind(m.TargetAgent) != agentruntime.AgentCodex {
 		return agentruntime.MessageReceipt{}, err
@@ -574,4 +612,59 @@ func (s *Service) readMessageReceipt(ctx context.Context, deliverer agentruntime
 		return receipt, errors.New("rollout not found yet: " + err.Error())
 	}
 	return receipt, nil
+}
+
+// remoteConfigRootPrefix marks a message's TargetConfigRoot when the target
+// ran on another machine: no local path locates its record.
+const remoteConfigRootPrefix = "remote:"
+
+// readRemoteMessageReceipt reads a remote session's record from its machine
+// (the mirrored native record, the same read the conversation API uses) and
+// finds the message by its id — Codex carries it as the input's client id,
+// every route embeds it in the text. A Codex message not in the record yet
+// is looked up in the queue on that machine.
+func (s *Service) readRemoteMessageReceipt(ctx context.Context, deliverer agentruntime.MessageDeliverer, session domain.Session, m domain.AgentMessage) (agentruntime.MessageReceipt, error) {
+	run := session.CurrentRun
+	if run == nil || run.ProfileSnapshot == nil || run.NativeID != m.TargetNativeID {
+		return agentruntime.MessageReceipt{}, errors.New("the remote session no longer runs the targeted native session")
+	}
+	history, err := s.syncTerminalHistory(ctx, session, false)
+	if err != nil {
+		return agentruntime.MessageReceipt{}, err
+	}
+	receipt := receiptFromHistory(history, m.ID)
+	if receipt.Appeared || agentruntime.AgentKind(m.TargetAgent) != agentruntime.AgentCodex {
+		return receipt, nil
+	}
+	inspector, ok := deliverer.(agentruntime.QueueInspector)
+	if !ok {
+		return receipt, nil
+	}
+	err = s.withRemoteConversation(ctx, session, func(ctx context.Context) error {
+		queued, err := inspector.MessageQueued(ctx, agentruntime.ConfirmRequest{
+			Env: cloneStringMap(run.ProfileSnapshot.Env), NativeSessionID: run.NativeID, MessageID: m.ID, ProviderRef: m.ProviderRef,
+			Exec: remoteProviderCommand(session.SSH),
+		})
+		receipt.Queued = queued
+		return err
+	})
+	return receipt, err
+}
+
+// receiptFromHistory finds an outbox message in a native record: appeared
+// when a user input carries its id, acknowledged when the agent replied
+// after it.
+func receiptFromHistory(history agentruntime.History, messageID string) agentruntime.MessageReceipt {
+	receipt := agentruntime.MessageReceipt{RecordedThrough: history.RecordedThrough}
+	marker := "Hiveryn message " + messageID + ":"
+	for _, item := range history.Items {
+		switch {
+		case !receipt.Appeared && item.Role == "user" && (item.Ref == messageID || strings.Contains(item.Text, marker)):
+			receipt.Appeared = true
+		case receipt.Appeared && item.Role == "assistant":
+			receipt.Acknowledged = true
+			return receipt
+		}
+	}
+	return receipt
 }

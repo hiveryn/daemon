@@ -27,6 +27,7 @@ type Dependencies struct {
 	Tickets         domain.TicketService
 	Workspaces      domain.WorkspaceService
 	Questions       domain.QuestionService
+	Companions      domain.CompanionService
 	IngestHandler   http.Handler
 	ArchitectEvents *archevents.Hub
 	// ContextReader reads worker context; nil uses contextref.NewReader.
@@ -45,6 +46,7 @@ type architectsHandler struct {
 	logger       *slog.Logger
 	sessions     domain.SessionService
 	tickets      domain.TicketService
+	companions   domain.CompanionService
 }
 
 type reposHandler struct {
@@ -67,6 +69,7 @@ type sessionsHandler struct {
 	logger           *slog.Logger
 	sessions         domain.SessionService
 	tickets          domain.TicketService
+	companions       domain.CompanionService
 	publishArchitect func(key string, event domain.ArchitectEvent)
 }
 
@@ -107,16 +110,17 @@ type repoResponse struct {
 func NewHandler(deps Dependencies) http.Handler {
 	mux := http.NewServeMux()
 	ph := &profilesHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
-	ah := &architectsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
+	ah := &architectsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets, companions: deps.Companions}
 	rh := &reposHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
 	sch := &shortcutsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger}
 	dch := &desktopConfigHandler{config: deps.Config}
 	srh := &systemRuntimeHandler{runtime: deps.Runtime, bindAddress: deps.Config.BindAddress, port: deps.Config.Port, baseURL: deps.BaseURL, configSource: deps.ConfigSource}
-	sh := &sessionsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
+	sh := &sessionsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets, companions: deps.Companions}
 	th := &ticketsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, tickets: deps.Tickets}
 	eh := &architectEventsHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, hub: deps.ArchitectEvents}
 	wh := &workspaceHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, workspaces: deps.Workspaces}
 	qh := &questionsHandler{logger: deps.Logger, questions: deps.Questions}
+	cph := &companionsHandler{logger: deps.Logger, companions: deps.Companions}
 	ch := &contextHandler{config: deps.Config, configSource: deps.ConfigSource, logger: deps.Logger, sessions: deps.Sessions, reader: deps.ContextReader}
 	if ch.reader == nil {
 		ch.reader = contextref.NewReader()
@@ -138,6 +142,8 @@ func NewHandler(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/architects/{key}/conclusions", ah.listConclusions)
 	mux.HandleFunc("GET /api/architects/{key}/conclusions/recent", ah.readRecentConclusion)
 	mux.HandleFunc("GET /api/architects/{key}/conclusions/{id}", ah.readConclusion)
+	// Companions of the architect's running session (desktop).
+	mux.HandleFunc("GET /api/architects/{key}/companions", cph.list)
 	// Agent messages of the project (delivery state and condition).
 	mux.HandleFunc("GET /api/architects/{key}/messages", ah.listMessages)
 	mux.HandleFunc("GET /api/architects/{key}/tickets", th.list)
@@ -193,6 +199,19 @@ func NewHandler(deps Dependencies) http.Handler {
 	// The architect agent's answer to an escalated ticket-worker question,
 	// addressed by the architect's own session; authorized by the daemon.
 	mux.HandleFunc("POST /api/sessions/{id}/questions/{questionID}/architect-answer", qh.architectAnswer)
+	// Companion tools, addressed by the calling companion session.
+	mux.HandleFunc("POST /api/sessions/{id}/companion/messages", cph.sendToArchitect)
+	mux.HandleFunc("POST /api/sessions/{id}/companion/replies", cph.replyToArchitect)
+	mux.HandleFunc("POST /api/sessions/{id}/companion/shutdown-completion", cph.completeShutdown)
+	// requestAction blocks until the user decides or the request ends.
+	mux.HandleFunc("POST /api/sessions/{id}/actions", cph.requestAction)
+	// Architect companion tools, addressed by the calling architect session.
+	mux.HandleFunc("POST /api/sessions/{id}/companions/{name}/messages", cph.sendToCompanion)
+	mux.HandleFunc("POST /api/sessions/{id}/companions/replies", cph.replyToCompanion)
+	mux.HandleFunc("POST /api/sessions/{id}/companions/shutdown", cph.requestShutdown)
+	// The desktop's action dialog: pending requests and the user's decision.
+	mux.HandleFunc("GET /api/sessions/{id}/actions", cph.listActions)
+	mux.HandleFunc("POST /api/sessions/{id}/actions/{actionID}/decision", cph.decideAction)
 	// Worker context reads, scoped to the calling session's architect.
 	mux.HandleFunc("GET /api/sessions/{id}/context/file", ch.readFile)
 	mux.HandleFunc("GET /api/sessions/{id}/context/directory", ch.listDirectory)

@@ -54,6 +54,7 @@ func scanSessionWithCurrentRun(scanner interface{ Scan(...any) error }) (domain.
 		&workflowsJSON,
 		&session.Instructions,
 		&createdBy,
+		&session.OwnerSessionID,
 		&createdAt,
 		&updatedAt,
 		&runID,

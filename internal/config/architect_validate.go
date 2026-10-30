@@ -37,7 +37,40 @@ func validateArchitect(key string, architect ArchitectConfig) error {
 			return fmt.Errorf("architects.%s.repos.%s is required", key, repoKey)
 		}
 	}
+	for name, companion := range architect.Companions {
+		// The name addresses the companion in sendMessageToCompanion and
+		// requestCompanionShutdown; it follows the repo-key grammar.
+		if !domain.ValidRepoKey(name) {
+			return fmt.Errorf("architects.%s.companions.%s: companion names must start with a letter or digit and use only letters, digits, '.', '_' or '-'", key, name)
+		}
+		if companion.Repo == "" {
+			return fmt.Errorf("architects.%s.companions.%s.repo is required: name a key of repos", key, name)
+		}
+		if _, ok := architect.Repos[companion.Repo]; !ok {
+			return fmt.Errorf("architects.%s.companions.%s.repo %q is not a key of repos", key, name, companion.Repo)
+		}
+		if companion.Variant == "" {
+			return fmt.Errorf("architects.%s.companions.%s.variant is required: name a claude or codex variant from variants.yaml for the repo's machine", key, name)
+		}
+	}
 	return nil
+}
+
+// CompanionVariant resolves a companion's variant for the machine its
+// repository is on (empty: local): it must exist, be a claude or codex variant
+// (OpenCode companions are unsupported) and be configured for that machine.
+// The error names the companion and what to fix.
+func (c Config) CompanionVariant(companion, variantName, machine string) (VariantConfig, error) {
+	variant, err := c.VariantForMachine(variantName, machine, "companion "+companion)
+	if err != nil {
+		return VariantConfig{}, err
+	}
+	switch variant.Agent {
+	case "claude", "codex":
+	default:
+		return VariantConfig{}, &domain.ValidationError{Field: "variant", Message: fmt.Sprintf("companion %s: variant %q uses agent %q; companions support claude and codex variants only", companion, variantName, variant.Agent)}
+	}
+	return variant, nil
 }
 
 // ValidateArchitectConfig reads the architect's hiveryn.yaml from disk and

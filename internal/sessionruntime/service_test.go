@@ -1900,6 +1900,8 @@ func (f *fakePrepareLaunchAdapter) ParseUsage(ctx context.Context, transcriptPat
 }
 
 type fakeTerminalManager struct {
+	// Companions launch concurrently.
+	mu         sync.Mutex
 	startErr   error
 	startSpecs []terminalStartSpec
 	terminals  []domain.TerminalInfo
@@ -1911,6 +1913,8 @@ type fakeTerminalManager struct {
 }
 
 func (f *fakeTerminalManager) Start(_ context.Context, spec terminalStartSpec) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.startSpecs = append(f.startSpecs, spec)
 	if f.startErr == nil {
 		f.terminals = append(f.terminals, domain.TerminalInfo{TerminalID: spec.TerminalID, SessionID: spec.SessionID, Command: spec.Command, Status: "running"})
@@ -1919,6 +1923,8 @@ func (f *fakeTerminalManager) Start(_ context.Context, spec terminalStartSpec) e
 }
 
 func (f *fakeTerminalManager) firstStartSpec() terminalStartSpec {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if len(f.startSpecs) > 0 {
 		return f.startSpecs[0]
 	}
@@ -1930,6 +1936,8 @@ func (f *fakeTerminalManager) Attach(context.Context, string, string) (domain.Te
 }
 
 func (f *fakeTerminalManager) Kill(_ context.Context, sessionID, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.killed = append(f.killed, sessionID+":"+id)
 	for i, terminal := range f.terminals {
 		if terminal.SessionID == sessionID && terminal.TerminalID == id {
@@ -1941,6 +1949,8 @@ func (f *fakeTerminalManager) Kill(_ context.Context, sessionID, id string) erro
 }
 
 func (f *fakeTerminalManager) KillBySession(context.Context, string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.operations != nil {
 		*f.operations = append(*f.operations, "kill")
 	}
@@ -1951,6 +1961,8 @@ func (f *fakeTerminalManager) KillBySession(context.Context, string) error {
 }
 
 func (f *fakeTerminalManager) ListBySession(sessionID string) []domain.TerminalInfo {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	terminals := make([]domain.TerminalInfo, 0, len(f.terminals))
 	for _, terminal := range f.terminals {
 		if terminal.SessionID == sessionID {

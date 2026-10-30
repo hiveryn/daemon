@@ -2,6 +2,7 @@ package sessionruntime
 
 import (
 	"context"
+	"database/sql"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -23,6 +24,7 @@ type serviceFixture struct {
 	adapter  *fakeAdapter
 	terminal *fakeTerminalManager
 	dbPath   string
+	db       *sql.DB
 }
 
 func newServiceFixture(t *testing.T) *serviceFixture {
@@ -41,6 +43,7 @@ func (f *serviceFixture) open(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	f.db = db
 	f.sessions = store.NewSessionStore(db)
 	f.adapter = &fakeAdapter{}
 	f.terminal = &fakeTerminalManager{}

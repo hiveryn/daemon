@@ -19,7 +19,7 @@ import (
 // project-level customization is the optional ARCHITECT_SYSTEM.md in the
 // architect workspace, which is appended to the architect instructions.
 //
-//go:embed prompts/architect/*.md prompts/work/*.md
+//go:embed prompts/architect/*.md prompts/work/*.md prompts/companion/*.md
 var promptFS embed.FS
 
 const (
@@ -28,6 +28,8 @@ const (
 	workerSystemPromptName     = "prompts/work/SYSTEM.md"
 	workerKickoffPromptName    = "prompts/work/KICKOFF.md"
 	workerContextPromptName    = "prompts/work/CONTEXT.md"
+	companionSystemPromptName  = "prompts/companion/SYSTEM.md"
+	companionKickoffPromptName = "prompts/companion/KICKOFF.md"
 )
 
 // builtinPrompt reads one embedded prompt. A missing embed is a build defect,
@@ -176,4 +178,21 @@ func workerLaunchPrompt(kickoff string, ctx workspacefs.WorkerContext) (string, 
 		return "", err
 	}
 	return strings.TrimSpace(kickoff) + "\n\n" + section, nil
+}
+
+// companionInstructions returns the built-in companion SYSTEM text, the same
+// for every companion; its repository's AGENTS.md carries the rest.
+func companionInstructions() (string, error) {
+	return builtinPrompt(companionSystemPromptName)
+}
+
+// companionKickoffData is the template data for prompts/companion/KICKOFF.md:
+// the session start time only. No task or operational instruction is
+// injected; the companion orients itself and waits for the architect.
+type companionKickoffData struct {
+	CurrentDate string
+}
+
+func renderCompanionKickoff(now time.Time) (string, error) {
+	return renderBuiltinPrompt(companionKickoffPromptName, companionKickoffData{CurrentDate: now.UTC().Format(time.RFC3339)})
 }

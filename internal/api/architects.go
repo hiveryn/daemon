@@ -23,6 +23,9 @@ type architectStatusResponse struct {
 	Status    *string                          `json:"status"`
 	SessionID *string                          `json:"session_id"`
 	Sessions  []architectWorkerSessionResponse `json:"sessions"`
+	// Companions of the running architect session (empty without one);
+	// the same records as GET /api/architects/{key}/companions.
+	Companions []domain.Companion `json:"companions"`
 }
 
 // architectWorkerSessionResponse is a running ticket worker. Machine and
@@ -116,6 +119,8 @@ func (h *architectsHandler) listStatus(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			architectStatus.Sessions = append(architectStatus.Sessions, session)
+		case domain.SessionTypeCompanion:
+			// Listed with their records below, beneath the architect.
 		default:
 			writeDomainError(w, r, fmt.Errorf("session %s has unsupported session type %q", session.ID, session.SessionType))
 			return
@@ -123,6 +128,14 @@ func (h *architectsHandler) listStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for i := range statuses {
+		if h.companions != nil && statuses[i].SessionID != nil {
+			list, err := h.companions.ListArchitectCompanions(r.Context(), statuses[i].Key)
+			if err != nil {
+				writeDomainError(w, r, err)
+				return
+			}
+			statuses[i].Companions = list.Companions
+		}
 		sort.Slice(statuses[i].Sessions, func(a, b int) bool {
 			left := statuses[i].Sessions[a]
 			right := statuses[i].Sessions[b]
@@ -144,10 +157,11 @@ func architectStatusesFromConfig(cfg config.Config) ([]architectStatusResponse, 
 	byKey := make(map[string]*architectStatusResponse, len(keys))
 	for i, key := range keys {
 		statuses[i] = architectStatusResponse{
-			Key:      key,
-			Name:     cfg.Architects[key].Name,
-			Path:     cfg.Architects[key].Path,
-			Sessions: []architectWorkerSessionResponse{},
+			Key:        key,
+			Name:       cfg.Architects[key].Name,
+			Path:       cfg.Architects[key].Path,
+			Sessions:   []architectWorkerSessionResponse{},
+			Companions: []domain.Companion{},
 		}
 		byKey[key] = &statuses[i]
 	}

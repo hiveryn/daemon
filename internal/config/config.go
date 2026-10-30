@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -152,6 +153,18 @@ type ArchitectConfig struct {
 	Path         string
 	Repos        map[string]string
 	RepoMachines map[string]string
+	// Companions are started with every new architect session, keyed by the
+	// name the architect addresses them with. Edits apply to later sessions;
+	// a running session keeps the companions it started with.
+	Companions map[string]CompanionConfig
+}
+
+// CompanionConfig is one hiveryn.yaml `companions` entry: the repository (a
+// key of `repos`, which also fixes the machine it runs on) and the explicit
+// agent variant, which must be a claude or codex variant for that machine.
+type CompanionConfig struct {
+	Repo    string `yaml:"repo"`
+	Variant string `yaml:"variant"`
 }
 
 // architectFile is the on-disk shape of <architectPath>/hiveryn.yaml. It is
@@ -159,8 +172,9 @@ type ArchitectConfig struct {
 // removed availableActions list) is an error, because a key the daemon silently ignores would look configured while
 // doing nothing.
 type architectFile struct {
-	Name  string              `yaml:"name,omitempty"`
-	Repos map[string]repoFile `yaml:"repos,omitempty"`
+	Name       string                     `yaml:"name,omitempty"`
+	Repos      map[string]repoFile        `yaml:"repos,omitempty"`
+	Companions map[string]CompanionConfig `yaml:"companions,omitempty"`
 }
 
 type TabEntry struct {
@@ -493,7 +507,7 @@ func decodeArchitectFile(data []byte) (architectFile, error) {
 			// name, which is the actionable message.
 			return architectFile{}, nil
 		}
-		return architectFile{}, fmt.Errorf("%w (hiveryn.yaml holds only `name` and `repos`; prompt overrides were removed — architect and worker instructions are built into the daemon, and project instructions belong in AGENTS.md — and Actions were removed, so `availableActions` must be deleted: map former Action repositories under `repos` instead)", err)
+		return architectFile{}, fmt.Errorf("%w (hiveryn.yaml holds only `name`, `repos` and `companions`; prompt overrides were removed — architect and worker instructions are built into the daemon, and project instructions belong in AGENTS.md — and Actions were removed, so `availableActions` must be deleted: map former Action repositories under `repos` instead)", err)
 	}
 	return file, nil
 }
@@ -528,11 +542,16 @@ func architectConfigFromFile(key, workspacePath string, file architectFile) (Arc
 		repos[name] = expanded
 	}
 
+	companions := make(map[string]CompanionConfig, len(file.Companions))
+	for name, entry := range file.Companions {
+		companions[name] = CompanionConfig{Repo: strings.TrimSpace(entry.Repo), Variant: strings.TrimSpace(entry.Variant)}
+	}
 	return ArchitectConfig{
 		Name:         file.Name,
 		Path:         workspacePath,
 		Repos:        repos,
 		RepoMachines: machines,
+		Companions:   companions,
 	}, nil
 }
 
@@ -911,6 +930,7 @@ func cloneArchitectConfigs(src map[string]ArchitectConfig) map[string]ArchitectC
 			Path:         architect.Path,
 			Repos:        cloneStringMap(architect.Repos),
 			RepoMachines: cloneStringMap(architect.RepoMachines),
+			Companions:   maps.Clone(architect.Companions),
 		}
 	}
 	return dst

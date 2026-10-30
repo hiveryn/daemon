@@ -513,6 +513,9 @@ func TestBeginAndCommitDedupeAndGateDelivery(t *testing.T) {
 	}
 }
 
+// A remote recipient without a route (here: an adapter that cannot locate its
+// record on another machine) keeps the message; remote Claude and Codex are
+// covered by TestOutboxDeliversToRemoteSessions.
 func TestSessionRecipientGoneFailsAndRemoteRecipientIsRetained(t *testing.T) {
 	f := newMessageFixture(t)
 	gone, err := f.service.EnqueueAgentMessage(context.Background(), AgentMessageParams{Kind: "note", Recipient: "session:missing", DedupeKey: "g", Body: "b"})
@@ -531,7 +534,7 @@ func TestSessionRecipientGoneFailsAndRemoteRecipientIsRetained(t *testing.T) {
 	if got := f.get(gone.ID); got.State != domain.AgentMessageFailed || !strings.Contains(got.LastError, "no longer exists") || got.EndedAt == nil {
 		t.Fatalf("gone = %+v", got)
 	}
-	f.expect(remote.ID, domain.AgentMessagePending, "remote sessions is not available")
+	f.expect(remote.ID, domain.AgentMessagePending, "the message is retained")
 }
 
 func TestHandedMessageWhoseTargetEndedGoesToTheNextSession(t *testing.T) {

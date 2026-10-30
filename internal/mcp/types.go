@@ -7,6 +7,7 @@ type SessionType string
 const (
 	SessionTypeArchitect SessionType = "architect"
 	SessionTypeTicket    SessionType = "ticket"
+	SessionTypeCompanion SessionType = "companion"
 )
 
 type ReadTicketInput struct {

@@ -21,6 +21,13 @@ func (s *Server) registerArchitectTools() {
 	// Escalated worker questions: the architect may answer a ticket worker's
 	// question the user left unanswered. Workers never get this tool.
 	s.registerAnswerQuestionTool()
+
+	// Companions of this architect session.
+	s.registerArchitectCompanionTools()
+
+	// Read-only context of this project — the workspace and every configured
+	// repo where it lives — so a remote companion's AGENTS.md is readable.
+	s.registerContextTools()
 }
 
 func (s *Server) handleReadTicket(

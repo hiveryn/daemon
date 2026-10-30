@@ -97,6 +97,16 @@ func Run(configPath, databasePath string, portOverride int) error {
 		logger.Info("agent event archival enabled", "dir", runtime.Home)
 	}
 	service.SetAgentMessageRepository(store.NewAgentMessageStore(db))
+	service.SetCompanionRepository(store.NewCompanionStore(db))
+	// Before restore: a companion whose launch a restart interrupted is
+	// settled and reported, and one whose handoff was recorded is terminated
+	// rather than restored.
+	if err := service.ReconcileCompanions(ctx); err != nil {
+		return fmt.Errorf("reconcile companions: %w", err)
+	}
+	if err := service.ReconcileActions(ctx); err != nil {
+		return fmt.Errorf("reconcile action requests: %w", err)
+	}
 	// Before restore: every question still pending in the log belongs to an
 	// agent call that died with the previous daemon.
 	if err := service.ReconcileQuestions(ctx); err != nil {
@@ -167,6 +177,7 @@ func Run(configPath, databasePath string, portOverride int) error {
 		Tickets:         ticketService,
 		Workspaces:      workspaceService,
 		Questions:       service,
+		Companions:      service,
 		IngestHandler:   service.IngestHandler(),
 		ArchitectEvents: architectHub,
 	})

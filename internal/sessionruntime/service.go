@@ -118,6 +118,15 @@ type Service struct {
 
 	// messages is the agent-message outbox runtime (messages.go).
 	messages *messageRuntime
+
+	// companionRepo persists companion records and shutdown requests
+	// (companions.go); companionRT tracks their background work. actions
+	// holds pending action requests (actions.go); actionTimeout overrides
+	// their one-hour expiry in tests.
+	companionRepo domain.CompanionRepository
+	companionRT   companionRuntime
+	actions       *actionStore
+	actionTimeout time.Duration
 }
 
 type eventSubscription struct {
@@ -186,6 +195,7 @@ func New(ctx context.Context, cfg config.Config, configSource config.Source, rep
 		notifier:       notifierFromConfig(cfg),
 		questions:      newQuestionStore(),
 		messages:       messages,
+		actions:        newActionStore(),
 
 		questionEscalationDelay: cfg.QuestionEscalationDelayDuration(),
 		eventStreams:            map[string]map[uint64]chan domain.SessionEvent{},
@@ -645,6 +655,9 @@ func (s *Service) createRun(ctx context.Context, sessionID string, req domain.Cr
 	if session.InteractionMode == domain.InteractionChat {
 		s.activateChat(session.ID)
 	}
+	// A new architect session starts its configured companions; they launch
+	// in the background and report their outcomes to it.
+	s.startCompanions(ctx, session)
 
 	return domain.CreateSessionRunResult{Run: run, MainTerminalID: mainTerminalID}, nil
 }
@@ -728,7 +741,11 @@ func (s *Service) RestoreRunningSessions(ctx context.Context) error {
 			}
 			if session.Machine != "" {
 				s.logger.Error("remote attachment restore failed; worker lifecycle retained", "session_id", session.ID, "error", err)
-				s.storeSessionTerminalState(session.ID, sessionTerminalState{runID: run.ID, mainTerminalID: uuid.NewString(), tabs: []sessionTabState{{tab: domain.SessionTab{Type: "ticket"}}}})
+				var tabs []sessionTabState
+				for _, tab := range defaultTabsBySessionType[string(session.SessionType)] {
+					tabs = append(tabs, sessionTabState{tab: domain.SessionTab{Type: tab.Type}})
+				}
+				s.storeSessionTerminalState(session.ID, sessionTerminalState{runID: run.ID, mainTerminalID: uuid.NewString(), tabs: tabs})
 				continue
 			}
 
@@ -748,6 +765,7 @@ func (s *Service) RestoreRunningSessions(ctx context.Context) error {
 				)
 			}
 
+			s.companionRunFailed(ctx, session, "its process could not be restored after the Hiveryn daemon restarted: "+err.Error())
 			if session.SessionType == domain.SessionTypeTicket {
 				if ticketErr := s.moveTicketToBacklog(ctx, session); ticketErr != nil {
 					s.logger.Error("failed to move ticket back to backlog after restore failure",
@@ -1224,6 +1242,13 @@ func (s *Service) RequestConclusion(
 			return zero, err
 		}
 	}
+	// An architect with companions still running cannot conclude: say so
+	// before the user is asked to approve a conclusion that would fail.
+	if session.SessionType == domain.SessionTypeArchitect {
+		if err := s.companionConclusionConflict(ctx, session.ID); err != nil {
+			return zero, err
+		}
+	}
 
 	// Deliberately not moved into the generic intent path: restoring the prior
 	// status after resolution would race with other intents open on the same
@@ -1414,6 +1439,11 @@ func (s *Service) concludeArchitectSession(ctx context.Context, session domain.S
 			Message:  fmt.Sprintf("Cannot conclude architect session: %d ticket session(s) still active: %s", len(activeTicketSessionIDs), strings.Join(activeTicketSessionIDs, ", ")),
 		}
 	}
+	// Enforced here, independently of the prompt: every companion this
+	// session owns must be stopped (or never have started).
+	if err := s.companionConclusionConflict(ctx, session.ID); err != nil {
+		return domain.ConcludeSessionResult{}, err
+	}
 
 	architect, err := s.currentArchitect(session.ArchitectKey)
 	if err != nil {
@@ -1466,6 +1496,9 @@ func (s *Service) concludeArchitectSession(ctx context.Context, session domain.S
 		return domain.ConcludeSessionResult{}, fmt.Errorf("kill session terminal: %w", err)
 	}
 
+	// What is left of companions that ended without a shutdown (a failed
+	// process keeps its session); their records go with the architect session.
+	s.removeSettledCompanionSessions(ctx, session.ID)
 	if err := s.repo.DeleteSession(ctx, session.ID); err != nil {
 		return domain.ConcludeSessionResult{}, err
 	}
@@ -1728,6 +1761,7 @@ func (s *Service) appendAndPublishSessionEnded(ctx context.Context, sessionID, r
 	// claimed, so it is skipped rather than resolved twice.
 	s.failPendingIntents(ctx, sessionID, "session ended before this intent was resolved")
 	s.cancelSessionQuestions(ctx, sessionID)
+	s.failSessionActions(ctx, sessionID, domain.ActionCancelled, actionReasonEnded)
 
 	raw = cloneAnyMap(raw)
 	raw["lifecycle"] = lifecycle
@@ -2114,7 +2148,8 @@ func (s *Service) terminalWorkdirs(ctx context.Context, session domain.Session) 
 		return "Session repository"
 	}
 	run := session.CurrentRun
-	if session.SessionType == domain.SessionTypeTicket {
+	switch session.SessionType {
+	case domain.SessionTypeTicket:
 		primaryTitle := repoTitle(run.Workdir)
 		if s.tickets != nil {
 			ticket, ticketErr := s.tickets.GetTicket(ctx, architect.Path, session.ContextID)
@@ -2135,7 +2170,10 @@ func (s *Service) terminalWorkdirs(ctx context.Context, session domain.Session) 
 			add(fmt.Sprintf("session-additional:%d", i), title, path, false, session.Machine)
 		}
 		add("architect-workspace", "Architect workspace", architect.Path, false)
-	} else {
+	case domain.SessionTypeCompanion:
+		add("session-primary", repoTitle(run.Workdir), run.Workdir, true, session.Machine)
+		add("architect-workspace", "Architect workspace", architect.Path, false)
+	default:
 		add("architect-workspace", "Architect workspace", architect.Path, true)
 	}
 	keys := make([]string, 0, len(architect.Repos))
@@ -2226,6 +2264,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	// a blocked askQuestion gets an honest reply instead of a dropped
 	// connection, and the desktop stops offering an answer nobody would read.
 	s.interruptQuestions(ctx)
+	s.interruptActions(ctx)
 	s.stopMessageDelivery()
 	s.stopConversationStreams(ctx)
 	s.remoteMu.Lock()
@@ -2367,7 +2406,13 @@ func (s *Service) handleReceiverEvent(event agentruntime.Event) {
 		panic(fmt.Errorf("get current run for session %s on receiver event: %w", event.ID, err))
 	}
 	if run == nil || run.Status != domain.SessionRunStatusRunning {
-		panic(fmt.Errorf("receiver event for session %s has no running run", event.ID))
+		// The session is ending: its run was marked ended while the agent
+		// process was still alive (a companion continues after acknowledging
+		// its shutdown; an architect concluded from the desktop keeps running
+		// until its terminals are killed). A hook sent in that window is not a
+		// daemon defect and must not take every other session down with it.
+		s.logger.Info("receiver event after the session's run ended; dropped", "session_id", event.ID, "status", event.Status)
+		return
 	}
 
 	persisted, err := s.repo.AppendSessionEvent(context.Background(), domain.AppendSessionEventParams{
@@ -2450,6 +2495,7 @@ func (s *Service) handleTerminalExit(exit terminalExit) {
 			"error", err,
 		)
 		s.markRunFailed(run.ID, domain.SessionRunFailureLaunchFailed, "resume_main_terminal")
+		s.companionRunFailed(context.Background(), session, "its process ended and could not be resumed: "+err.Error())
 		if session.SessionType == domain.SessionTypeTicket {
 			if ticketErr := s.moveTicketToBacklog(context.Background(), session); ticketErr != nil {
 				s.logger.Error("failed to move ticket back to backlog after resume failure",

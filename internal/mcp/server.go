@@ -38,7 +38,7 @@ func NewServer(cfg Config) (*Server, error) {
 	if sessionType == "" {
 		sessionType = SessionTypeArchitect
 	}
-	if sessionType != SessionTypeArchitect && sessionType != SessionTypeTicket {
+	if sessionType != SessionTypeArchitect && sessionType != SessionTypeTicket && sessionType != SessionTypeCompanion {
 		return nil, fmt.Errorf("unsupported HIVERYN_SESSION_TYPE %q", sessionType)
 	}
 
@@ -74,10 +74,15 @@ func NewServer(cfg Config) (*Server, error) {
 	switch sessionType {
 	case SessionTypeArchitect:
 		server.registerArchitectTools()
+		server.registerUserTools()
 	case SessionTypeTicket:
 		server.registerTicketTools()
+		server.registerUserTools()
+	case SessionTypeCompanion:
+		// Exactly the approved companion contract: the companion talks to
+		// its architect and asks the user only through requestAction.
+		server.registerCompanionTools()
 	}
-	server.registerUserTools()
 
 	return server, nil
 }

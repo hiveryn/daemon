@@ -19,6 +19,13 @@ const (
 	AgentMessageTicketConcluded   = sd.AgentMessageTicketConcluded
 	AgentMessageQuestionEscalated = sd.AgentMessageQuestionEscalated
 
+	AgentMessageCompanionStartup           = sd.AgentMessageCompanionStartup
+	AgentMessageCompanionMessage           = sd.AgentMessageCompanionMessage
+	AgentMessageArchitectMessage           = sd.AgentMessageArchitectMessage
+	AgentMessageCompanionShutdownRequested = sd.AgentMessageCompanionShutdownRequested
+	AgentMessageCompanionShutdownOutcome   = sd.AgentMessageCompanionShutdownOutcome
+	AgentMessageCompanionFailed            = sd.AgentMessageCompanionFailed
+
 	AgentMessagePendingCommit = sd.AgentMessagePendingCommit
 	AgentMessagePending       = sd.AgentMessagePending
 	AgentMessageHanded        = sd.AgentMessageHanded

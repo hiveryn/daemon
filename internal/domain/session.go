@@ -56,9 +56,12 @@ const (
 const (
 	SessionTypeArchitect = sd.SessionTypeArchitect
 	SessionTypeTicket    = sd.SessionTypeTicket
+	SessionTypeCompanion = sd.SessionTypeCompanion
 
 	SessionCreatedByDesktop   = sd.SessionCreatedByDesktop
 	SessionCreatedByArchitect = sd.SessionCreatedByArchitect
+
+	SessionCreatedByCompanionStartup = sd.SessionCreatedByCompanionStartup
 
 	SessionRunStatusRunning   = sd.SessionRunStatusRunning
 	SessionRunStatusCompleted = sd.SessionRunStatusCompleted

@@ -193,6 +193,22 @@ func (h *sessionsHandler) discard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A companion is discarded only to retry a termination the daemon could
+	// not confirm, or to remove one whose process ended; a running companion
+	// ends through its architect's shutdown request.
+	if session, err := h.sessions.GetSession(r.Context(), r.PathValue("id")); err == nil && session.SessionType == domain.SessionTypeCompanion {
+		if h.companions == nil {
+			writeError(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "companion service not configured", nil)
+			return
+		}
+		if err := h.companions.DiscardCompanion(r.Context(), session.ID); err != nil {
+			writeDomainError(w, r, err)
+			return
+		}
+		writeJSON(w, r, http.StatusOK, map[string]any{"success": true, "session_id": session.ID})
+		return
+	}
+
 	result, err := h.sessions.UnspawnTicketSession(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeDomainError(w, r, err)

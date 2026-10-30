@@ -32,6 +32,7 @@ var migrationFiles = []string{
 	"migrations/0018_chat_archives.sql",
 	"migrations/0019_terminal_submissions.sql",
 	"migrations/0020_synchronous_submissions.sql",
+	"migrations/0021_companions.sql",
 }
 
 func runMigrations(ctx context.Context, db *sql.DB) error {

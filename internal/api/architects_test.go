@@ -252,6 +252,18 @@ func TestArchitectsStatusAPI(t *testing.T) {
 				},
 			},
 			{
+				ID:             "companion-session",
+				ArchitectKey:   "hiveryn",
+				SessionType:    domain.SessionTypeCompanion,
+				ContextID:      "browser",
+				OwnerSessionID: "architect-session",
+				CurrentRun: &domain.SessionRun{
+					ID:        "run-companion",
+					Status:    domain.SessionRunStatusRunning,
+					StartedAt: &ticketStartedAt,
+				},
+			},
+			{
 				ID:           "completed-session",
 				ArchitectKey: "hiveryn",
 				SessionType:  domain.SessionTypeTicket,
@@ -271,6 +283,9 @@ func TestArchitectsStatusAPI(t *testing.T) {
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Sessions:     service,
 		Tickets:      ticketService,
+		Companions: &fakeCompanionService{list: domain.CompanionList{ArchitectSessionID: "architect-session", Companions: []domain.Companion{
+			{Name: "browser", SessionID: "companion-session", Status: domain.CompanionRunning, PendingActions: []domain.ActionRequest{}},
+		}}},
 	})
 
 	status, body := request(t, handler, http.MethodGet, "/api/architects/status", nil)
@@ -282,6 +297,9 @@ func TestArchitectsStatusAPI(t *testing.T) {
 		Architects []architectStatusResponse `json:"architects"`
 	}
 	decodeEnvelopeData(t, body, &payload)
+	if len(payload.Architects[0].Companions) != 1 || payload.Architects[0].Companions[0].SessionID != "companion-session" || len(payload.Architects[1].Companions) != 0 {
+		t.Fatalf("companions = %#v / %#v", payload.Architects[0].Companions, payload.Architects[1].Companions)
+	}
 	if len(payload.Architects) != 2 {
 		t.Fatalf("expected 2 architects, got %#v", payload.Architects)
 	}

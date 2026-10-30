@@ -82,12 +82,18 @@ var definitions = map[domain.ArtifactKind]definition{
 				Type:        domain.ArtifactFieldMapping,
 				Description: "Repo key → local path string or {path, machine} object. Machine is an SSH machine key; omitted means local. Remote paths must be absolute POSIX paths and are never expanded or inspected locally.",
 			},
+			{
+				Name:        "companions",
+				Type:        domain.ArtifactFieldMapping,
+				Description: "Optional. Companion name → {repo, variant}: repo is a key of repos (its machine is where the companion runs), variant an explicit claude or codex variant for that machine. Every entry starts with each new architect session.",
+			},
 		},
 		Rules: []string{
 			"Required: a workspace without a readable " + ConfigFileName + " has no repo map.",
 			"Repo keys are unique. Duplicate keys are rejected by the YAML decoder.",
 			"Local repo paths must resolve to existing directories; remote directories are checked over SSH at launch. All writable repos in a ticket must use one machine.",
 			"A repo key referenced by a workflow or a ticket must exist here.",
+			"Companion names follow the repo-key grammar; each companion's repo must be a key of repos and its variant is required. The variant's existence, agent and machine are checked when the architect session starts its companions.",
 			"No other keys are accepted: a leftover availableActions list from the removed Actions feature is rejected; map those repositories under repos instead.",
 			"Edit it with your filesystem tools; an invalid edit is reported by the workspace check, blocks worker launch until repaired, and never replaces the last valid runtime config.",
 		},

@@ -189,6 +189,9 @@ func (s *Service) messageRepo() (domain.AgentMessageRepository, error) {
 
 // AgentMessageParams is what a producer supplies.
 type AgentMessageParams struct {
+	// ID is the message id; empty mints one. A producer that names the id in
+	// the body chooses it first.
+	ID           string
 	Kind         domain.AgentMessageKind
 	Recipient    string
 	ArchitectKey string
@@ -225,8 +228,11 @@ func (s *Service) BeginAgentMessage(ctx context.Context, params AgentMessagePara
 		return domain.AgentMessage{}, &domain.ValidationError{Field: "message", Message: err.Error()}
 	}
 	now := s.messages.now()
+	if params.ID == "" {
+		params.ID = uuid.NewString()
+	}
 	m := domain.AgentMessage{
-		ID:           uuid.NewString(),
+		ID:           params.ID,
 		Kind:         params.Kind,
 		Recipient:    params.Recipient,
 		ArchitectKey: params.ArchitectKey,

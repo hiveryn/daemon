@@ -356,15 +356,17 @@ func TestCutoverSettlesFormerQueuedUserInputWithoutDispatch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version=?", len(migrationFiles)); err != nil {
-		t.Fatal(err)
-	}
 	for _, column := range []string{"error_code", "accepted_at", "acceptance"} {
 		if _, err := db.ExecContext(ctx, "ALTER TABLE conversation_submissions DROP COLUMN "+column); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := runMigrations(ctx, db); err != nil {
+	// Replay 0020 alone: later migrations are applied already.
+	script, err := migrationsFS.ReadFile("migrations/0020_synchronous_submissions.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, string(script)); err != nil {
 		t.Fatal(err)
 	}
 	repo := NewSessionStore(db)

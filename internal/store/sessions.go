@@ -59,9 +59,9 @@ func (s *SessionStore) CreateSession(ctx context.Context, params domain.CreateSe
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO sessions (id, architect_key, session_type, context_id, prompt, workdir, additional_repos, additional_workdirs, workflows, instructions, created_by, machine, ssh, remote_token, remote_port, interaction_mode)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, params.ID, params.ArchitectKey, string(params.SessionType), params.ContextID, params.Prompt, params.Workdir, string(additionalRepos), string(additionalWorkdirs), string(workflows), nullIfEmpty(params.Instructions), nullIfEmpty(string(params.CreatedBy)), params.Machine, params.SSH, params.RemoteToken, params.RemotePort, params.InteractionMode)
+		INSERT INTO sessions (id, architect_key, session_type, context_id, prompt, workdir, additional_repos, additional_workdirs, workflows, instructions, created_by, machine, ssh, remote_token, remote_port, interaction_mode, owner_session_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, params.ID, params.ArchitectKey, string(params.SessionType), params.ContextID, params.Prompt, params.Workdir, string(additionalRepos), string(additionalWorkdirs), string(workflows), nullIfEmpty(params.Instructions), nullIfEmpty(string(params.CreatedBy)), params.Machine, params.SSH, params.RemoteToken, params.RemotePort, params.InteractionMode, params.OwnerSessionID)
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("insert session: %w", err)
 	}
@@ -117,7 +117,7 @@ func (s *SessionStore) DeleteSession(ctx context.Context, id string) error {
 func intentWithCurrentRunQuery(suffix string) string {
 	return `
 		SELECT i.interaction_mode, i.machine, i.ssh, i.remote_token, i.remote_port, i.id, i.architect_key, i.session_type, i.context_id, i.prompt, i.workdir, i.additional_repos, i.additional_workdirs, i.workflows, COALESCE(i.instructions, ''),
-		       COALESCE(i.created_by, ''), i.created_at, i.updated_at,
+		       COALESCE(i.created_by, ''), i.owner_session_id, i.created_at, i.updated_at,
 		       r.id, r.session_id, r.status, COALESCE(r.agent_status, ''), r.profile_name, COALESCE(r.profile_snapshot, ''), COALESCE(r.workdir, ''), COALESCE(r.additional_repos, '[]'), COALESCE(r.additional_workdirs, '[]'),
 		       COALESCE(r.native_id, ''), COALESCE(r.failure_reason, ''), COALESCE(r.started_at, ''), COALESCE(r.ended_at, ''),
 		       COALESCE(r.created_at, ''), COALESCE(r.updated_at, '')
@@ -167,6 +167,27 @@ func ensureNoActiveSessionTx(ctx context.Context, tx *sql.Tx, params domain.Crea
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("check active architect session: %w", err)
+		}
+	case domain.SessionTypeCompanion:
+		var existingID string
+		err := tx.QueryRowContext(ctx, `
+			SELECT i.id
+			FROM sessions i
+			WHERE i.owner_session_id = ?
+			  AND i.context_id = ?
+			  AND i.session_type = ?
+			  AND `+activeSessionSQL+`
+			LIMIT 1
+		`, params.OwnerSessionID, params.ContextID, string(domain.SessionTypeCompanion), string(domain.SessionRunStatusRunning)).Scan(&existingID)
+		if err == nil {
+			return &domain.ConflictError{
+				Resource: "session",
+				Field:    "companion",
+				Message:  fmt.Sprintf("architect session %s already has an active companion %s (session %s)", params.OwnerSessionID, params.ContextID, existingID),
+			}
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("check active companion session: %w", err)
 		}
 	case domain.SessionTypeTicket:
 		var existingID string
